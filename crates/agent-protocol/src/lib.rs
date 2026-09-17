@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -185,6 +185,22 @@ pub enum AgentOperation {
         filename: String,
         target_path: String,
     },
+    /// Load averages and uptime (`uptime`).
+    LoadAverage,
+    /// The 15 processes currently consuming the most CPU
+    /// (`ps -eo ... --sort=-%cpu`).
+    TopProcessesByCpu,
+    /// The 15 processes currently consuming the most memory
+    /// (`ps -eo ... --sort=-%mem`).
+    TopProcessesByMemory,
+    /// Full `/proc/meminfo` -- buffers, cache, swap, dirty pages, and more
+    /// detail than the summary `ResourceUsage` (Cystoolbox) gives.
+    MemoryDetail,
+    /// Per-device disk I/O statistics (`vmstat -d`).
+    DiskIoStats,
+    /// Currently-failed systemd units (`systemctl --failed`) -- a direct
+    /// "is anything broken right now" health signal. systemd-only.
+    FailedServices,
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -281,6 +297,12 @@ impl fmt::Debug for AgentOperation {
                 .field("filename", filename)
                 .field("target_path", target_path)
                 .finish(),
+            AgentOperation::LoadAverage => write!(f, "LoadAverage"),
+            AgentOperation::TopProcessesByCpu => write!(f, "TopProcessesByCpu"),
+            AgentOperation::TopProcessesByMemory => write!(f, "TopProcessesByMemory"),
+            AgentOperation::MemoryDetail => write!(f, "MemoryDetail"),
+            AgentOperation::DiskIoStats => write!(f, "DiskIoStats"),
+            AgentOperation::FailedServices => write!(f, "FailedServices"),
         }
     }
 }

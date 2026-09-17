@@ -300,6 +300,35 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/reliquary/:host_id/restore",
             post(routes::reliquary::restore_backup),
         )
+        .route("/arsenals/mortiscope", get(routes::mortiscope::show))
+        .route(
+            "/arsenals/mortiscope/:host_id",
+            get(routes::mortiscope::show_host),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/load-average",
+            post(routes::mortiscope::load_average),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/top-cpu",
+            post(routes::mortiscope::top_processes_by_cpu),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/top-memory",
+            post(routes::mortiscope::top_processes_by_memory),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/memory-detail",
+            post(routes::mortiscope::memory_detail),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/disk-io",
+            post(routes::mortiscope::disk_io_stats),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/failed-services",
+            post(routes::mortiscope::failed_services),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

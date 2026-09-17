@@ -9,6 +9,7 @@ pub mod dashboard;
 pub mod hosts;
 pub mod login;
 pub mod modules;
+pub mod mortiscope;
 pub mod necrolink;
 pub mod obituary;
 pub mod postmortem;

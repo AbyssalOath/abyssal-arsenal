@@ -405,6 +405,33 @@ pub struct PostmortemHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct MortiscopeHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "mortiscope.html")]
+pub struct MortiscopeTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<MortiscopeHostRow>,
+}
+
+/// No `can_manage` field -- every op in this arsenal is read-only
+/// monitoring, so there's no write/destructive section to gate.
+#[derive(Template)]
+#[template(path = "mortiscope_host.html")]
+pub struct MortiscopeHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct ReliquaryHostRow {
     pub id: String,
     pub name: String,

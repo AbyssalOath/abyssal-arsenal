@@ -3,7 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-use crate::{firewall, network, obituary, postmortem, process::run_command, reliquary};
+use crate::{firewall, mortiscope, network, obituary, postmortem, process::run_command, reliquary};
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
@@ -75,6 +75,14 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
             filename,
             target_path,
         } => reliquary::restore_backup(filename, target_path, elevation).await,
+        AgentOperation::LoadAverage => mortiscope::load_average(elevation).await,
+        AgentOperation::TopProcessesByCpu => mortiscope::top_processes_by_cpu(elevation).await,
+        AgentOperation::TopProcessesByMemory => {
+            mortiscope::top_processes_by_memory(elevation).await
+        }
+        AgentOperation::MemoryDetail => mortiscope::memory_detail(elevation).await,
+        AgentOperation::DiskIoStats => mortiscope::disk_io_stats(elevation).await,
+        AgentOperation::FailedServices => mortiscope::failed_services(elevation).await,
     }
 }
 

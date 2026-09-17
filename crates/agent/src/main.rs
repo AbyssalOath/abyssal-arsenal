@@ -2,6 +2,7 @@ mod elevation;
 mod enroll;
 mod firewall;
 mod init_system;
+mod mortiscope;
 mod network;
 mod obituary;
 mod ops;
