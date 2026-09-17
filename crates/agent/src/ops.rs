@@ -4,8 +4,8 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    firewall, incarnation, mortiscope, network, obituary, postmortem, process::run_command,
-    reliquary, resurrection,
+    firewall, incarnation, mortiscope, necropsy, network, obituary, postmortem,
+    process::run_command, reliquary, resurrection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -110,6 +110,11 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::RemountReadWrite { target } => {
             resurrection::remount_read_write(target, elevation).await
         }
+        AgentOperation::CpuInfo => necropsy::cpu_info(elevation).await,
+        AgentOperation::PciDevices => necropsy::pci_devices(elevation).await,
+        AgentOperation::BlockDevices => necropsy::block_devices(elevation).await,
+        AgentOperation::MemoryHardware => necropsy::memory_hardware(elevation).await,
+        AgentOperation::DiskHealth { device } => necropsy::disk_health(device, elevation).await,
     }
 }
 

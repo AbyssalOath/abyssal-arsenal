@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -269,6 +269,26 @@ pub enum AgentOperation {
     /// the control plane requires explicit confirmation before ever
     /// dispatching this.
     RemountReadWrite { target: String },
+    /// CPU model, core/thread counts, and clock speeds (`lscpu`).
+    CpuInfo,
+    /// PCI-attached hardware (GPUs, NICs, storage/RAID controllers, ...)
+    /// (`lspci`).
+    PciDevices,
+    /// Block devices and their partitions -- size, type, filesystem, and
+    /// mount point (`lsblk`).
+    BlockDevices,
+    /// Installed memory modules -- slots, capacity, speed, manufacturer
+    /// (`dmidecode -t memory`). Often sparse or entirely unavailable
+    /// inside VMs and containers (no real SMBIOS data to report), which
+    /// is a normal result here, not a failure.
+    MemoryHardware,
+    /// SMART health and identification for one block device
+    /// (`smartctl -H -i <device>`), e.g. `/dev/sda`. `smartctl`'s exit
+    /// code is a bitmask of SMART findings (failing attributes, pre-fail
+    /// warnings, ...), not a simple success/failure signal, so a non-zero
+    /// exit reporting a real finding is exactly the useful case here, not
+    /// an error.
+    DiskHealth { device: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -403,6 +423,14 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::RemountReadWrite { target } => f
                 .debug_struct("RemountReadWrite")
                 .field("target", target)
+                .finish(),
+            AgentOperation::CpuInfo => write!(f, "CpuInfo"),
+            AgentOperation::PciDevices => write!(f, "PciDevices"),
+            AgentOperation::BlockDevices => write!(f, "BlockDevices"),
+            AgentOperation::MemoryHardware => write!(f, "MemoryHardware"),
+            AgentOperation::DiskHealth { device } => f
+                .debug_struct("DiskHealth")
+                .field("device", device)
                 .finish(),
         }
     }

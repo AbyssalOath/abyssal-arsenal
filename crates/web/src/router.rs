@@ -407,6 +407,31 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/resurrection/:host_id/remount",
             post(routes::resurrection::remount_read_write),
         )
+        .route("/arsenals/necropsy", get(routes::necropsy::show))
+        .route(
+            "/arsenals/necropsy/:host_id",
+            get(routes::necropsy::show_host),
+        )
+        .route(
+            "/arsenals/necropsy/:host_id/cpu",
+            post(routes::necropsy::cpu_info),
+        )
+        .route(
+            "/arsenals/necropsy/:host_id/pci",
+            post(routes::necropsy::pci_devices),
+        )
+        .route(
+            "/arsenals/necropsy/:host_id/block-devices",
+            post(routes::necropsy::block_devices),
+        )
+        .route(
+            "/arsenals/necropsy/:host_id/memory-hardware",
+            post(routes::necropsy::memory_hardware),
+        )
+        .route(
+            "/arsenals/necropsy/:host_id/disk-health",
+            post(routes::necropsy::disk_health),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

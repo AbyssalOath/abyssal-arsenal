@@ -1,0 +1,83 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Necropsy — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Necropsy — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/necropsy">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Hardware inventory and diagnostics -- inspection only, nothing here changes the host.</p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/necropsy/{{ host_id }}/cpu">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} CPU Info</button>
+    </form>
+    <form method="post" action="/arsenals/necropsy/{{ host_id }}/pci">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("route") %} PCI Devices</button>
+    </form>
+    <form method="post" action="/arsenals/necropsy/{{ host_id }}/block-devices">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("socket") %} Block Devices</button>
+    </form>
+    <form method="post" action="/arsenals/necropsy/{{ host_id }}/memory-hardware">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("settings") %} Memory Hardware</button>
+    </form>
+    <form method="post" action="/arsenals/necropsy/{{ host_id }}/disk-health">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="disk-health-device">Device</label>
+      <input type="text" id="disk-health-device" name="device" placeholder="e.g. /dev/sda" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="disk-health-password">Sudo password (if needed)</label>
+      <input type="password" id="disk-health-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Disk Health (SMART)</button>
+    </form>
+  </div>
+</div>
+
+{% endblock %}
