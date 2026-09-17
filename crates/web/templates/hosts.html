@@ -18,6 +18,13 @@
   <div class="info-banner" style="margin-top:14px;">
     <strong>Token expires in 15 minutes.</strong> Run this on the target host:
     <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ cmd }}</pre>
+    <p style="color:var(--text-muted); margin:8px 0 0;">
+      Don't have <code>abyssal-agent</code> installed on that host yet? Build and
+      install it first (from a clone of this repo, on the target host):
+      <code>cargo install --path crates/agent</code>. See
+      <code>crates/agent/README.md</code> for alternatives (downloading a release
+      binary, running it as a systemd service).
+    </p>
   </div>
   {% endif %}
 

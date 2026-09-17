@@ -119,6 +119,21 @@ project is pre-release, so everything so far lives under "Unreleased".
   claiming something happened when it hadn't. Caught while verifying Set
   Hostname; the same fix applies to every operation, including Reboot,
   where reporting a failed reboot as successful would have been worse.
+- `abyssal-agent`'s enrollment step now verifies the credentials file's
+  directory is actually writable *before* calling the control plane's
+  enrollment endpoint, not after. The endpoint consumes the (single-use)
+  enrollment token as soon as it accepts the request, before returning a
+  credential; if the agent then failed to persist that credential locally
+  (e.g. no permission to create `/etc/abyssal-agent` without root), the
+  token was already unrecoverably burned and the run had to fail with a
+  filesystem error that gave no hint the enrollment itself had actually
+  succeeded server-side. Now a local write-permission problem fails fast,
+  before the token is spent.
+- The `/admin/hosts` enrollment-token banner now notes that
+  `abyssal-agent` needs to be built/installed on the target host first
+  (`cargo install --path crates/agent`, or see `crates/agent/README.md`
+  for alternatives) -- the copy-paste command alone gave no indication the
+  binary wasn't just already there.
 
 ### Security
 

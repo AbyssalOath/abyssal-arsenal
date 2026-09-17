@@ -41,6 +41,22 @@ pub async fn load_or_enroll(
         )
     })?;
 
+    // The enrollment token is single-use and gets consumed by the control
+    // plane the moment it accepts the request, before it even returns a
+    // credential -- so if we can't actually save that credential locally,
+    // we need to find out *before* spending the token, not after. A token
+    // burned by a request that then fails to persist its own response
+    // can't be reused; the operator would just have to generate a fresh
+    // one anyway, so fail fast here instead.
+    ensure_writable(credentials_file).await.map_err(|e| {
+        anyhow::anyhow!(
+            "cannot write credentials to {} (before even attempting enrollment): {e} -- \
+             pass --credentials-file to point somewhere writable (e.g. under your home \
+             directory for local testing), or run as a user/root that can write to this path",
+            credentials_file.display()
+        )
+    })?;
+
     let host_name = name.unwrap_or_else(default_hostname);
 
     let client = reqwest::Client::new();
@@ -69,6 +85,19 @@ pub async fn load_or_enroll(
 
     tracing::info!(host_id = %credentials.host_id, name = %host_name, "enrolled with control plane");
     Ok(credentials)
+}
+
+/// Proves the credentials file's directory exists and is actually writable
+/// by creating and removing a hidden probe file in it, rather than writing
+/// (and potentially leaving behind) an incomplete or empty real credentials
+/// file if enrollment fails for some other reason afterward.
+async fn ensure_writable(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    tokio::fs::create_dir_all(parent).await?;
+    let probe = parent.join(".abyssal-agent-write-test");
+    tokio::fs::write(&probe, b"").await?;
+    let _ = tokio::fs::remove_file(&probe).await;
+    Ok(())
 }
 
 async fn persist(path: &Path, credentials: &Credentials) -> anyhow::Result<()> {
