@@ -18,6 +18,14 @@ pub async fn get_bool(pool: &DbPool, key: &str, default: bool) -> anyhow::Result
         .unwrap_or(default))
 }
 
+pub async fn get_u32(pool: &DbPool, key: &str, default: u32) -> anyhow::Result<u32> {
+    Ok(get(pool, key)
+        .await?
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(default))
+}
+
 pub async fn set(
     pool: &DbPool,
     key: &str,

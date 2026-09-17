@@ -1,4 +1,5 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Settings — Abyssal Arsenal{% endblock %}
 {% block heading %}Settings{% endblock %}
 {% block content %}
@@ -7,23 +8,43 @@
 <div class="info-banner">{{ m }}</div>
 {% endif %}
 
-<div class="card">
-  <h2 style="margin-top:0;">Public registration</h2>
-  <p style="color:var(--text-muted);">
-    When enabled, the "Create Account" link appears on the login page and anyone can self-register.
-    Disabled by default after the first administrator is created.
-  </p>
-  <form method="post" action="/admin/settings/registration">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <p>Currently:
-      {% if public_registration_enabled %}<span class="badge badge-success">Enabled</span>
-      {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+<div class="action-grid">
+  <div class="card">
+    <h2 style="margin-top:0;">{% call macros::icon("user") %} Public registration</h2>
+    <p style="color:var(--text-muted);">
+      When enabled, the "Create Account" link appears on the login page and anyone can self-register.
+      Disabled by default after the first administrator is created.
     </p>
-    <input type="hidden" name="enabled" value="{% if public_registration_enabled %}false{% else %}true{% endif %}">
-    <button type="submit">
-      {% if public_registration_enabled %}Disable registration{% else %}Enable registration{% endif %}
-    </button>
-  </form>
+    <form method="post" action="/admin/settings/registration">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <p>Currently:
+        {% if public_registration_enabled %}<span class="badge badge-success">Enabled</span>
+        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+      </p>
+      <input type="hidden" name="enabled" value="{% if public_registration_enabled %}false{% else %}true{% endif %}">
+      <button type="submit" class="{% if public_registration_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+        {% if public_registration_enabled %}Disable registration{% else %}Enable registration{% endif %}
+      </button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">{% call macros::icon("elevate") %} Apotheosis elevation window</h2>
+    <p style="color:var(--text-muted);">
+      How long a host stays elevated after a successful sudo password prompt, with no
+      further action needed, before it drops back to unprivileged. Applies to new
+      elevations only -- hosts already elevated keep whatever window was in effect
+      when they were elevated.
+    </p>
+    <form method="post" action="/admin/settings/elevation-window" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <div>
+        <label for="elevation-window-minutes">Minutes (1-1440)</label>
+        <input type="number" id="elevation-window-minutes" name="minutes" min="1" max="1440" value="{{ apotheosis_elevation_window_minutes }}" required style="margin-bottom:0; width:110px;">
+      </div>
+      <button type="submit" class="btn-warning">Save</button>
+    </form>
+  </div>
 </div>
 
 {% endblock %}

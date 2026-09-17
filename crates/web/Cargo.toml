@@ -34,4 +34,5 @@ base64.workspace = true
 time.workspace = true
 anyhow.workspace = true
 zeroize.workspace = true
+form_urlencoded.workspace = true
 async-trait.workspace = true

@@ -1,4 +1,5 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Cadavault — {{ host_name }} — Abyssal Arsenal{% endblock %}
 {% block heading %}Cadavault — {{ host_name }}{% endblock %}
 {% block content %}
@@ -7,47 +8,48 @@
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="margin:0;">{{ host_name }}</h2>
-    {% if elevated %}<span class="badge badge-danger">Apotheosis: Elevated</span>
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
-  {% if let Some(label) = result_label %}
-  <div style="margin-top:14px;">
-    <h3 style="margin:0 0 6px;">{{ label }}</h3>
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
     {% if let Some(output) = result_output %}
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ output }}</pre>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
     {% endif %}
     {% if let Some(err) = result_error %}
-    <div class="error-banner" style="margin:0;">{{ err }}</div>
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
     {% endif %}
-  </div>
-  {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
 </div>
 
 <div class="card">
   <h3 style="margin-top:0;">Read</h3>
-  <div class="actions">
-    <form method="post" action="/arsenals/cadavault/{{ host_id }}/firewall-status" style="display:inline;">
+  <div class="action-grid">
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/firewall-status">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
       {% endif %}
-      <button type="submit" class="btn-secondary">Firewall Status</button>
+      <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} Firewall Status</button>
     </form>
-    <form method="post" action="/arsenals/cadavault/{{ host_id }}/listening-ports" style="display:inline;">
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/listening-ports">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
       {% endif %}
-      <button type="submit" class="btn-secondary">Listening Ports</button>
+      <button type="submit" class="btn-secondary">{% call macros::icon("socket") %} Listening Ports</button>
     </form>
-    <form method="post" action="/arsenals/cadavault/{{ host_id }}/recent-auth-log" style="display:inline;">
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/recent-auth-log">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
       {% endif %}
-      <button type="submit" class="btn-secondary">Recent Auth Log</button>
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Recent Auth Log</button>
     </form>
   </div>
 </div>
@@ -55,30 +57,29 @@
 {% if can_manage %}
 <div class="card">
   <h3 style="margin-top:0;">Write / Destructive</h3>
-  <form method="post" action="/arsenals/cadavault/{{ host_id }}/allow-port" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:620px;">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <div>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/allow-port">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="port">Allow port</label>
-      <input type="number" id="port" name="port" min="1" max="65535" placeholder="e.g. 8080" required style="margin-bottom:0; width:110px;">
-    </div>
-    <div>
+      <input type="number" id="port" name="port" min="1" max="65535" placeholder="e.g. 8080" required>
       <label for="protocol">Protocol</label>
-      <select id="protocol" name="protocol" style="margin-bottom:0;">
+      <select id="protocol" name="protocol">
         <option value="tcp">tcp</option>
         <option value="udp">udp</option>
       </select>
-    </div>
-    {% if !elevated && base.can_hosts_elevate %}
-    <div>
+      {% if !elevated && base.can_hosts_elevate %}
       <label for="allow-port-password">Sudo password (if needed)</label>
-      <input type="password" id="allow-port-password" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
-    </div>
-    {% endif %}
-    <button type="submit" class="btn-secondary">Allow Port</button>
-  </form>
+      <input type="password" id="allow-port-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Allow Port</button>
+    </form>
 
-  <div class="actions" style="margin-top:14px;">
-    <a class="btn btn-danger" href="/arsenals/cadavault/{{ host_id }}/firewall-enable/confirm">Enable Firewall</a>
+    <div>
+      <p style="color:var(--text-muted); margin-top:0;">
+        Can cut off remote access if the current management port isn't already allowed.
+      </p>
+      <a class="btn btn-danger" href="/arsenals/cadavault/{{ host_id }}/firewall-enable/confirm">{% call macros::icon("firewall") %} Enable Firewall&hellip;</a>
+    </div>
   </div>
 </div>
 {% endif %}

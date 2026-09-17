@@ -182,7 +182,11 @@ pub struct SimpleForm {
     csrf_token: String,
 }
 
-pub async fn toggle_active(
+/// Enabling a disabled user is low-risk and reversible (you can always
+/// disable them again), so it stays a one-click action -- only *disabling*
+/// (which also silently revokes every active session) goes through a
+/// confirm step below.
+pub async fn enable(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
@@ -195,21 +199,11 @@ pub async fn toggle_active(
     let target = repo::users::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let new_active = !target.is_active;
-    repo::users::set_active(&state.pool, id, new_active).await?;
+    repo::users::set_active(&state.pool, id, true).await?;
 
-    if !new_active {
-        abyssal_auth::session::revoke_all_for_user(&state.pool, id).await?;
-    }
-
-    let action = if new_active {
-        AuditAction::UserEnabled
-    } else {
-        AuditAction::UserDisabled
-    };
     abyssal_audit::record(
         &state.pool,
-        AuditEvent::new(action, AuditOutcome::Success)
+        AuditEvent::new(AuditAction::UserEnabled, AuditOutcome::Success)
             .actor(Actor {
                 user_id: ctx.user.id,
                 username: &ctx.user.username,
@@ -221,15 +215,132 @@ pub async fn toggle_active(
     Ok(Redirect::to("/admin/users").into_response())
 }
 
+pub async fn disable_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
+
+    let target = repo::users::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+
+    let tpl = ConfirmTemplate {
+        base,
+        title: "Disable user".to_string(),
+        message: format!(
+            "This will disable \"{}\" and immediately sign them out everywhere -- every active session of theirs is revoked. They can be re-enabled later.",
+            target.username
+        ),
+        action_url: format!("/admin/users/{id}/disable"),
+        cancel_url: "/admin/users".to_string(),
+        escalate_host_id: None,
+        type_to_confirm: None,
+        extra_hidden_fields: vec![],
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmOnlyForm {
+    csrf_token: String,
+    #[serde(default)]
+    confirm: bool,
+}
+
+pub async fn disable(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<ConfirmOnlyForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Disabling this user was not confirmed.".into(),
+        )));
+    }
+
+    let target = repo::users::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    repo::users::set_active(&state.pool, id, false).await?;
+    abyssal_auth::session::revoke_all_for_user(&state.pool, id).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::UserDisabled, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&target.username),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/users").into_response())
+}
+
+pub async fn revoke_sessions_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
+
+    let target = repo::users::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+
+    let tpl = ConfirmTemplate {
+        base,
+        title: "Force logout".to_string(),
+        message: format!(
+            "This will immediately sign \"{}\" out of every active session.",
+            target.username
+        ),
+        action_url: format!("/admin/users/{id}/revoke-sessions"),
+        cancel_url: "/admin/users".to_string(),
+        escalate_host_id: None,
+        type_to_confirm: None,
+        extra_hidden_fields: vec![],
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
 pub async fn revoke_sessions(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(id): Path<Uuid>,
-    Form(form): Form<SimpleForm>,
+    Form(form): Form<ConfirmOnlyForm>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
     require_csrf(&jar, &form.csrf_token)?;
+
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Force logout was not confirmed.".into(),
+        )));
+    }
 
     let target = repo::users::find_by_id(&state.pool, id)
         .await?
@@ -274,6 +385,11 @@ pub async fn delete_confirm(
         action_url: format!("/admin/users/{id}/delete"),
         cancel_url: "/admin/users".to_string(),
         escalate_host_id: None,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "username".to_string(),
+            expected: target.username.clone(),
+        }),
+        extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -287,6 +403,8 @@ pub struct DeleteForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
 }
 
 pub async fn delete(
@@ -308,6 +426,7 @@ pub async fn delete(
     let target = repo::users::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
+    crate::common::require_typed_confirmation(&form.confirm_text, &target.username)?;
     repo::users::delete(&state.pool, id).await?;
 
     abyssal_audit::record(

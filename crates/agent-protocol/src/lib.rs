@@ -49,8 +49,14 @@ pub enum AgentOperation {
     /// time-boxed elevation window on the agent ("Apotheosis"). Write --
     /// the password prompt itself is the meaningful confirmation step, so
     /// this doesn't additionally require the `Destructive` confirmation
-    /// gate.
-    Elevate { password: String },
+    /// gate. `idle_timeout_secs` is the control plane's admin-configured
+    /// window (Settings); the agent has no DB access of its own, so it has
+    /// to be told the value on every elevation rather than reading it
+    /// locally.
+    Elevate {
+        password: String,
+        idle_timeout_secs: u64,
+    },
     /// Clears the elevation window early and drops sudo's own cache too.
     Deescalate,
     /// Human-readable elevation status (elevated or not, remaining time).
@@ -121,9 +127,12 @@ impl fmt::Debug for AgentOperation {
                 .field("protocol", protocol)
                 .finish(),
             AgentOperation::FirewallEnable => write!(f, "FirewallEnable"),
-            AgentOperation::Elevate { .. } => f
+            AgentOperation::Elevate {
+                idle_timeout_secs, ..
+            } => f
                 .debug_struct("Elevate")
                 .field("password", &"[REDACTED]")
+                .field("idle_timeout_secs", idle_timeout_secs)
                 .finish(),
             AgentOperation::Deescalate => write!(f, "Deescalate"),
             AgentOperation::ElevationStatus => write!(f, "ElevationStatus"),

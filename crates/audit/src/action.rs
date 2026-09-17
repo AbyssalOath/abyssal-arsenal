@@ -25,6 +25,10 @@ pub enum AuditAction {
     HostEnrolled,
     HostRevoked,
     HostRemoved,
+    HostElevated,
+    HostElevationFailed,
+    HostDeescalated,
+    HostElevationExpired,
 }
 
 impl AuditAction {
@@ -52,6 +56,10 @@ impl AuditAction {
             AuditAction::HostEnrolled => "HOST_ENROLLED",
             AuditAction::HostRevoked => "HOST_REVOKED",
             AuditAction::HostRemoved => "HOST_REMOVED",
+            AuditAction::HostElevated => "HOST_ELEVATED",
+            AuditAction::HostElevationFailed => "HOST_ELEVATION_FAILED",
+            AuditAction::HostDeescalated => "HOST_DEESCALATED",
+            AuditAction::HostElevationExpired => "HOST_ELEVATION_EXPIRED",
         }
     }
 
@@ -78,6 +86,10 @@ impl AuditAction {
         AuditAction::HostEnrolled,
         AuditAction::HostRevoked,
         AuditAction::HostRemoved,
+        AuditAction::HostElevated,
+        AuditAction::HostElevationFailed,
+        AuditAction::HostDeescalated,
+        AuditAction::HostElevationExpired,
     ];
 }
 

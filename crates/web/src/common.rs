@@ -1,7 +1,11 @@
 use std::time::Duration;
 
 use abyssal_agent_protocol::AgentOperation;
+use abyssal_core::settings::{
+    APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES, APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
+};
 use abyssal_core::{AppError, Permission};
+use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
@@ -19,6 +23,20 @@ pub fn require_csrf(jar: &CookieJar, submitted: &str) -> Result<(), WebError> {
         Err(WebError(AppError::Validation(
             "Your session expired or this form was submitted from an untrusted origin. Please try again.".into(),
         )))
+    }
+}
+
+/// Server-side type-to-confirm check for irreversible/lockout-risk actions
+/// (see `crate::templates::TypeToConfirm`). There's no JS to disable the
+/// submit button until the input matches, so a mismatch just re-renders
+/// the normal validation error, the same as any other bad input.
+pub fn require_typed_confirmation(submitted: &str, expected: &str) -> Result<(), WebError> {
+    if submitted.trim() == expected {
+        Ok(())
+    } else {
+        Err(WebError(AppError::Validation(format!(
+            "Typed confirmation didn't match \"{expected}\" -- please try again."
+        ))))
     }
 }
 
@@ -80,6 +98,15 @@ pub async fn maybe_elevate(
     };
     let password = Zeroizing::new(password);
 
+    let window_minutes = repo::settings::get_u32(
+        &state.pool,
+        APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
+        APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES,
+    )
+    .await
+    .unwrap_or(APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES);
+    let window = Duration::from_secs(u64::from(window_minutes) * 60);
+
     let result = state
         .executor
         .execute_on_host(
@@ -89,12 +116,14 @@ pub async fn maybe_elevate(
             &format!("Elevate Privileges -- {host_name}"),
             AgentOperation::Elevate {
                 password: password.to_string(),
+                idle_timeout_secs: window.as_secs(),
             },
             Permission::HostsElevate,
             OperationKind::Write,
             false,
             Duration::from_secs(10),
             None,
+            false,
         )
         .await;
     drop(password);
@@ -103,7 +132,7 @@ pub async fn maybe_elevate(
         Ok(_) => {
             state
                 .elevation
-                .mark_elevated(host_id, host_name.to_string());
+                .mark_elevated(host_id, host_name.to_string(), window);
             Ok((!state.config.cookie_secure).then_some(TLS_WARNING))
         }
         Err(e) => Err(format!("Escalation failed: {e}")),

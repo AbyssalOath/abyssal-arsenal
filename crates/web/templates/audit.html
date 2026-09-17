@@ -9,7 +9,7 @@
       <label for="action">Filter by action</label>
       <input type="text" id="action" name="action" value="{{ action_filter }}" placeholder="e.g. LOGIN_SUCCESS">
     </div>
-    <button type="submit" style="margin-bottom:16px;">Filter</button>
+    <button type="submit" class="btn-secondary" style="margin-bottom:16px;">Filter</button>
     <a class="btn btn-secondary" style="margin-bottom:16px;" href="/admin/audit/export?action={{ action_filter }}">Export CSV</a>
   </form>
 

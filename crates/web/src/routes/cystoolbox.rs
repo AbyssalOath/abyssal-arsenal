@@ -125,6 +125,7 @@ async fn run_read_op(
         Err(e) => return render_host(state, jar, ctx, host_id, result_label, None, Some(e)).await,
     };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -138,6 +139,7 @@ async fn run_read_op(
             false,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -271,6 +273,7 @@ pub async fn set_hostname(
             }
         };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -286,6 +289,7 @@ pub async fn set_hostname(
             false,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -348,6 +352,11 @@ pub async fn reboot_confirm(
         action_url: format!("/arsenals/cystoolbox/{host_id}/reboot"),
         cancel_url: format!("/arsenals/cystoolbox/{host_id}"),
         escalate_host_id,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "hostname".to_string(),
+            expected: host.name.clone(),
+        }),
+        extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -361,6 +370,8 @@ pub struct RebootForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
     #[serde(default)]
     sudo_password: Option<String>,
 }
@@ -384,6 +395,7 @@ pub async fn reboot(
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
+    crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
     let result_label = Some(format!("Reboot -- {}", host.name));
 
     let tls_warning =
@@ -394,6 +406,7 @@ pub async fn reboot(
             }
         };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -407,6 +420,7 @@ pub async fn reboot(
             true,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 

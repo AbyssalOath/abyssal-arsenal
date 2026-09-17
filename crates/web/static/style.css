@@ -3,16 +3,36 @@
   --surface: #16101299;
   --surface-solid: #171012;
   --surface-raised: #1f1417;
+  --surface-inset: #0d0809;
   --border: #34181d;
   --text: #ece4e4;
-  --text-muted: #a8969a;
+  --text-muted: #b7a7ab;
   --accent: #b3122a;
   --accent-hover: #d1172f;
   --accent-text: #ffffff;
-  --danger: #ff4d4d;
+  --neutral: #3d5b73;
+  --neutral-hover: #4d7190;
+  --neutral-text: #ffffff;
   --warning: #e0a72b;
+  --warning-hover: #f2ba3e;
+  --warning-text: #201400;
+  --danger: #ff4d4d;
+  /* Deliberately distinct from --danger: white text on the raw --danger
+     red only hits 3.27:1 (fails WCAG AA's 4.5:1 for normal text), but
+     --danger itself needs to stay this bright to keep badge text/borders/
+     banner tints legible against dark surfaces. Buttons use this darker
+     mix instead so both roles pass contrast without fighting each other. */
+  --danger-btn-bg: color-mix(in srgb, #ff4d4d 75%, black);
+  --danger-text: #ffffff;
   --success: #3fb37f;
   --focus: #ff5a72;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 32px;
 }
 
 html[data-theme="light"] {
@@ -20,14 +40,25 @@ html[data-theme="light"] {
   --surface: #ffffff;
   --surface-solid: #ffffff;
   --surface-raised: #fbeef0;
+  --surface-inset: #f1dfe1;
   --border: #e3c9cc;
   --text: #201415;
-  --text-muted: #6b5457;
+  --text-muted: #5c474a;
   --accent: #9c0f24;
   --accent-hover: #7d0c1d;
   --accent-text: #ffffff;
-  --danger: #b3122a;
+  --neutral: #45607a;
+  --neutral-hover: #344a5f;
+  --neutral-text: #ffffff;
   --warning: #8a5a00;
+  --warning-hover: #6e4700;
+  --warning-text: #ffffff;
+  --danger: #b3122a;
+  /* Already passes 6.92:1 with white text in this theme -- no separate mix
+     needed, but the variable exists in both themes so `.btn-danger` never
+     has to special-case which one it's in. */
+  --danger-btn-bg: var(--danger);
+  --danger-text: #ffffff;
   --success: #14663f;
   --focus: #9c0f24;
 }
@@ -60,6 +91,7 @@ a:hover { color: var(--accent-hover); }
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 32px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.24);
 }
 
 .brand {
@@ -77,65 +109,127 @@ a:hover { color: var(--accent-hover); }
   margin-bottom: 24px;
 }
 
-label { display: block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-muted); }
+label { display: block; font-size: 0.85rem; margin-bottom: var(--space-1); color: var(--text-muted); font-weight: 600; }
 
-input[type="text"], input[type="email"], input[type="password"], select, textarea {
+input[type="text"], input[type="email"], input[type="password"], input[type="number"], select, textarea {
   width: 100%;
   padding: 9px 11px;
-  margin-bottom: 16px;
-  background: var(--surface-raised);
+  margin-bottom: var(--space-4);
+  background: var(--surface-inset);
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--text);
   font-size: 0.95rem;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
 }
 
 input:focus, select:focus, textarea:focus {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35), 0 0 0 3px color-mix(in srgb, var(--focus) 35%, transparent);
+}
+
+input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 button, .btn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--accent);
   color: var(--accent-text);
   border: none;
   border-radius: 5px;
   padding: 9px 16px;
   font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
   text-decoration: none;
+  transition: background-color 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
 }
 
 button:hover, .btn:hover { background: var(--accent-hover); }
-
-.btn-secondary {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border);
+button:active, .btn:active { transform: translateY(1px); }
+button:focus-visible, .btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 45%, transparent);
 }
-.btn-secondary:hover { background: var(--surface-raised); }
+button:disabled, .btn:disabled,
+button:disabled:hover, .btn:disabled:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  background: var(--accent);
+}
 
-.btn-danger { background: var(--danger); }
-.btn-danger:hover { filter: brightness(1.1); }
+/* Neutral / view-only actions: view, check, list, filter. */
+.btn-secondary {
+  background: var(--neutral);
+  color: var(--neutral-text);
+}
+.btn-secondary:hover { background: var(--neutral-hover); }
+.btn-secondary:disabled, .btn-secondary:disabled:hover { background: var(--neutral); }
+
+/* Write actions: create, update, enable, bring up. */
+.btn-warning {
+  background: var(--warning);
+  color: var(--warning-text);
+}
+.btn-warning:hover { background: var(--warning-hover); }
+.btn-warning:disabled, .btn-warning:disabled:hover { background: var(--warning); }
+
+/* Destructive actions: delete, remove, bring down, revoke. Always gated by a confirm page. */
+.btn-danger { background: var(--danger-btn-bg); color: var(--danger-text); }
+/* A smaller bump than the other buttons' hover states (1.12) -- any higher
+   and the lightened background drops white text below 4.5:1 in the dark
+   theme's already-close-to-the-line --danger-btn-bg. */
+.btn-danger:hover { filter: brightness(1.08); }
+.btn-danger:disabled, .btn-danger:disabled:hover { background: var(--danger-btn-bg); filter: none; }
 
 .error-banner {
-  background: #3a0d14;
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface-solid));
   border: 1px solid var(--danger);
-  color: #ffb3b3;
+  color: var(--text);
   padding: 10px 14px;
   border-radius: 5px;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
   font-size: 0.9rem;
 }
-html[data-theme="light"] .error-banner { background: #fbdcdc; color: #7d0c1d; }
 
 .info-banner {
   background: var(--surface-raised);
   border: 1px solid var(--border);
   padding: 10px 14px;
   border-radius: 5px;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
+  font-size: 0.9rem;
+}
+
+.success-banner {
+  background: color-mix(in srgb, var(--success) 16%, var(--surface-solid));
+  border: 1px solid var(--success);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 5px;
+  margin-bottom: var(--space-4);
+  font-size: 0.9rem;
+}
+
+.warning-banner {
+  background: color-mix(in srgb, var(--warning) 16%, var(--surface-solid));
+  border: 1px solid var(--warning);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 5px;
+  margin-bottom: var(--space-4);
   font-size: 0.9rem;
 }
 
@@ -220,13 +314,13 @@ html[data-theme="light"] .error-banner { background: #fbdcdc; color: #7d0c1d; }
 }
 
 .apotheosis-toggle.active summary {
-  color: var(--danger);
+  color: var(--warning);
   animation: apotheosis-nav-pulse 2.2s ease-in-out infinite;
 }
 
 @keyframes apotheosis-nav-pulse {
-  0%, 100% { box-shadow: 0 0 4px 0 rgba(179, 18, 42, 0.3); }
-  50% { box-shadow: 0 0 14px 3px rgba(179, 18, 42, 0.65); }
+  0%, 100% { box-shadow: 0 0 4px 0 color-mix(in srgb, var(--warning) 40%, transparent); }
+  50% { box-shadow: 0 0 14px 3px color-mix(in srgb, var(--warning) 70%, transparent); }
 }
 
 .apotheosis-panel-row {
@@ -236,8 +330,6 @@ html[data-theme="light"] .error-banner { background: #fbdcdc; color: #7d0c1d; }
   gap: 10px;
   font-size: 0.85rem;
 }
-.apotheosis-panel-row .remaining { color: var(--text-muted); font-size: 0.78rem; }
-
 .main { flex: 1; width: 100%; padding: 28px 36px; }
 
 .topbar { margin-bottom: 24px; }
@@ -248,7 +340,31 @@ html[data-theme="light"] .error-banner { background: #fbdcdc; color: #7d0c1d; }
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 20px;
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.card > h2:first-child, .card > h3:first-child { margin-top: 0; }
+
+/* Groups related actions/inputs into a responsive grid instead of a long
+   vertical stack -- used on module action pages, settings, role editors. */
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.results-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--space-2) 0;
+  user-select: none;
+}
+.results-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  padding: var(--space-2) 0;
 }
 
 .tile-grid {
@@ -260,8 +376,9 @@ html[data-theme="light"] .error-banner { background: #fbdcdc; color: #7d0c1d; }
 .tile {
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
 }
 .tile .category { color: var(--accent); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .tile h3 { margin: 6px 0; font-size: 1.02rem; }
@@ -281,17 +398,31 @@ table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; }
 
-.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; }
-.badge-success { background: rgba(63,179,127,0.15); color: var(--success); }
-.badge-danger { background: rgba(255,77,77,0.15); color: var(--danger); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+.badge-success { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.badge-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
 .badge-muted { background: var(--surface-raised); color: var(--text-muted); }
+.badge-elevated { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
 
-.actions form { display: inline; margin-right: 6px; }
+.status-strip { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.actions form { display: inline-flex; margin: 0; }
 
 .theme-toggle { font-size: 0.8rem; }
 
 .kind-destructive { border-left: 3px solid var(--danger); }
 .kind-write { border-left: 3px solid var(--warning); }
-.kind-read { border-left: 3px solid var(--success); }
+.kind-read { border-left: 3px solid var(--neutral); }
 
 .pagination { margin-top: 12px; display: flex; gap: 10px; align-items: center; font-size: 0.85rem; }
+
+.icon { display: inline-block; width: 1em; height: 1em; vertical-align: -2px; flex-shrink: 0; }
+
+.style-guide-swatch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  margin-bottom: var(--space-3);
+}

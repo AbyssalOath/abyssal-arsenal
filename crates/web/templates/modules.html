@@ -1,4 +1,5 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Modules — Abyssal Arsenal{% endblock %}
 {% block heading %}Arsenal Modules{% endblock %}
 {% block content %}
@@ -9,7 +10,7 @@
     <tbody>
       {% for m in modules %}
       <tr>
-        <td>{{ m.display_name }}</td>
+        <td>{% call macros::icon("module") %} {{ m.display_name }}</td>
         <td>{{ m.category }}</td>
         <td>{{ m.description }}</td>
         <td>
@@ -17,14 +18,14 @@
           {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
         </td>
         <td class="actions">
-          <form method="post" action="/admin/modules/{{ m.key }}/toggle">
+          {% if m.enabled %}
+          <a class="btn btn-danger" href="/admin/modules/{{ m.key }}/disable/confirm">{% call macros::icon("danger") %} Disable</a>
+          {% else %}
+          <form method="post" action="/admin/modules/{{ m.key }}/enable">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            {% if m.enabled %}
-            <button type="submit" class="btn-secondary">Disable</button>
-            {% else %}
-            <button type="submit">Enable</button>
-            {% endif %}
+            <button type="submit" class="btn-warning">{% call macros::icon("module") %} Enable</button>
           </form>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

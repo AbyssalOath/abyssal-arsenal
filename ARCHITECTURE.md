@@ -237,16 +237,22 @@ side and unchanged regardless of where it's triggered from:
   the agent as an `AgentOperation::Elevate`. The agent validates it by
   running `sudo -S -v` -- the same mechanism interactive `sudo` already
   uses to populate its own timestamp cache -- rather than running an
-  arbitrary command as root. On success, the agent starts a 20-minute
-  sliding idle window (`crates/agent/src/elevation.rs`, `ElevationState`);
-  it refreshes on every use, so activity keeps elevation alive but
-  idleness lets it lapse on its own.
+  arbitrary command as root. On success, the agent starts a sliding idle
+  window (`crates/agent/src/elevation.rs`, `ElevationState`) whose length
+  is configurable, default 20 minutes, set on the control plane's Settings
+  page (`apotheosis.elevation_window_minutes`) and sent to the agent on
+  each `Elevate` call as `idle_timeout_secs` -- the agent has no database
+  access of its own, so it can't look the value up locally. The window
+  refreshes on every use, so activity keeps elevation alive but idleness
+  lets it lapse on its own. Changing the setting only affects elevations
+  granted after the change; a host already elevated keeps whatever window
+  was in effect when it was elevated.
 - While elevated, operations that need root (`SetHostname`, `Reboot`, the
   firewall operations) run as `sudo -n <command>` instead of unprivileged;
   everything else is unaffected.
 - De-escalating clears the window early and also runs `sudo -k` to drop
   sudo's own cache, in case its configured `timestamp_timeout` is longer
-  than Abyssal Arsenal's own 20 minutes.
+  than Abyssal Arsenal's own configured window.
 - Elevation state lives only in the agent process's memory -- a reboot or
   an agent restart clears it unconditionally, with nothing persisted to the
   control plane's database. The password itself is never written to disk,

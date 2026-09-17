@@ -122,6 +122,7 @@ async fn run_read_op(
         Err(e) => return render_host(state, jar, ctx, host_id, result_label, None, Some(e)).await,
     };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -135,6 +136,7 @@ async fn run_read_op(
             false,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -328,6 +330,7 @@ pub async fn interface_up(
             }
         };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -344,6 +347,7 @@ pub async fn interface_up(
             false,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -423,6 +427,11 @@ pub async fn interface_down_confirm(
         ),
         cancel_url: format!("/arsenals/necrolink/{host_id}"),
         escalate_host_id,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "interface name".to_string(),
+            expected: interface.clone(),
+        }),
+        extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -436,6 +445,8 @@ pub struct InterfaceDownForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
     #[serde(default)]
     sudo_password: Option<String>,
 }
@@ -463,6 +474,7 @@ pub async fn interface_down(
             "That doesn't look like a valid interface name.".into(),
         )));
     }
+    crate::common::require_typed_confirmation(&form.confirm_text, &interface)?;
 
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
@@ -477,6 +489,7 @@ pub async fn interface_down(
             }
         };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -493,6 +506,7 @@ pub async fn interface_down(
             true,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -592,6 +606,11 @@ pub async fn scan_confirm(
         action_url,
         cancel_url: format!("/arsenals/necrolink/{host_id}"),
         escalate_host_id,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "scan target".to_string(),
+            expected: target.clone(),
+        }),
+        extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -605,6 +624,8 @@ pub struct NetworkScanForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
     #[serde(default)]
     sudo_password: Option<String>,
 }
@@ -646,6 +667,8 @@ pub async fn network_scan(
         }
     }
 
+    crate::common::require_typed_confirmation(&form.confirm_text, &target)?;
+
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -659,6 +682,7 @@ pub async fn network_scan(
             }
         };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -672,6 +696,7 @@ pub async fn network_scan(
             true,
             Duration::from_secs(120),
             None,
+            elevated,
         )
         .await;
 

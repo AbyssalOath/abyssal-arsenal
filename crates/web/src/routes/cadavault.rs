@@ -122,6 +122,7 @@ async fn run_read_op(
         Err(e) => return render_host(state, jar, ctx, host_id, result_label, None, Some(e)).await,
     };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -135,6 +136,7 @@ async fn run_read_op(
             false,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -271,6 +273,7 @@ pub async fn allow_port(
             }
         };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -287,6 +290,7 @@ pub async fn allow_port(
             false,
             Duration::from_secs(15),
             None,
+            elevated,
         )
         .await;
 
@@ -349,6 +353,11 @@ pub async fn enable_firewall_confirm(
         action_url: format!("/arsenals/cadavault/{host_id}/firewall-enable"),
         cancel_url: format!("/arsenals/cadavault/{host_id}"),
         escalate_host_id,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "hostname".to_string(),
+            expected: host.name.clone(),
+        }),
+        extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -362,6 +371,8 @@ pub struct EnableFirewallForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
     #[serde(default)]
     sudo_password: Option<String>,
 }
@@ -385,6 +396,7 @@ pub async fn enable_firewall(
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
+    crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
     let result_label = Some(format!("Enable Firewall -- {}", host.name));
 
     let tls_warning =
@@ -395,6 +407,7 @@ pub async fn enable_firewall(
             }
         };
 
+    let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
         .execute_on_host(
@@ -408,6 +421,7 @@ pub async fn enable_firewall(
             true,
             Duration::from_secs(15),
             None,
+            elevated,
         )
         .await;
 

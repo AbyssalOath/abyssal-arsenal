@@ -1,4 +1,5 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Hosts — Abyssal Arsenal{% endblock %}
 {% block heading %}Managed Hosts{% endblock %}
 {% block content %}
@@ -11,7 +12,7 @@
   </p>
   <form method="post" action="/admin/hosts/enroll-token">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <button type="submit">Generate enrollment token</button>
+    <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Generate enrollment token</button>
   </form>
 
   {% if let Some(cmd) = enrollment_command %}
@@ -59,18 +60,20 @@
           {% if h.revoked %}<span class="badge badge-danger">Revoked</span>
           {% else if h.online %}<span class="badge badge-success">Online</span>
           {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
+          {% if let Some(remaining) = h.elevation_remaining %}<span class="badge badge-elevated">Elevated ({{ remaining }})</span>
+          {% endif %}
         </td>
         <td>{{ h.enrolled_at }}</td>
         <td>{{ h.last_seen_at }}</td>
         <td class="actions">
           <form method="post" action="/admin/hosts/{{ h.id }}/system-info">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>Run System Info</button>
+            <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>{% call macros::icon("host") %} Run System Info</button>
           </form>
           {% if !h.revoked %}
-          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">Revoke</a>
+          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">{% call macros::icon("danger") %} Revoke</a>
           {% endif %}
-          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/remove/confirm">Remove</a>
+          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
         </td>
       </tr>
       {% endfor %}

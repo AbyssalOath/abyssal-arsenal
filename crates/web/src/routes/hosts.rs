@@ -51,6 +51,10 @@ async fn render(
 
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
+        let elevation_remaining = state
+            .elevation
+            .remaining_for(host.id)
+            .map(crate::templates::format_remaining);
         hosts.push(HostRow {
             id: host.id.to_string(),
             name: host.name.clone(),
@@ -61,6 +65,7 @@ async fn render(
                 .unwrap_or_else(|| "never".to_string()),
             online: state.hosts.is_connected(host.id),
             revoked: host.revoked_at.is_some(),
+            elevation_remaining,
         });
     }
 
@@ -135,6 +140,7 @@ pub async fn run_system_info(
         .await?
         .ok_or(AppError::NotFound)?;
 
+    let elevated = state.elevation.is_elevated(id);
     let result = state
         .executor
         .execute_on_host(
@@ -148,6 +154,7 @@ pub async fn run_system_info(
             false,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -171,6 +178,7 @@ pub async fn deescalate(
         .await?
         .ok_or(AppError::NotFound)?;
 
+    let elevated = state.elevation.is_elevated(id);
     let result = state
         .executor
         .execute_on_host(
@@ -184,6 +192,7 @@ pub async fn deescalate(
             false,
             Duration::from_secs(10),
             None,
+            elevated,
         )
         .await;
 
@@ -219,6 +228,8 @@ pub async fn revoke_confirm(
         action_url: format!("/admin/hosts/{id}/revoke"),
         cancel_url: "/admin/hosts".to_string(),
         escalate_host_id: None,
+        type_to_confirm: None,
+        extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -296,6 +307,11 @@ pub async fn remove_confirm(
         action_url: format!("/admin/hosts/{id}/remove"),
         cancel_url: "/admin/hosts".to_string(),
         escalate_host_id: None,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "hostname".to_string(),
+            expected: host.name.clone(),
+        }),
+        extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -304,12 +320,21 @@ pub async fn remove_confirm(
     Ok((jar, tpl).into_response())
 }
 
+#[derive(Deserialize)]
+pub struct RemoveForm {
+    csrf_token: String,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
+}
+
 pub async fn remove(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(id): Path<Uuid>,
-    Form(form): Form<RevokeForm>,
+    Form(form): Form<RemoveForm>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
     require_csrf(&jar, &form.csrf_token)?;
@@ -323,6 +348,7 @@ pub async fn remove(
     let host = repo::hosts::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
+    crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
 
     // Delete first, then drop any live connection -- a connection that
     // outlives the DB row can no longer be dispatched to via `/admin/hosts`

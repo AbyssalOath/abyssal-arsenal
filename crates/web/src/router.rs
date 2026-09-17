@@ -26,11 +26,18 @@ pub fn build(state: AppState) -> Router {
             get(routes::register::show).post(routes::register::submit),
         )
         .route("/theme", post(routes::theme::set))
+        .route("/style-guide", get(routes::style_guide::show))
         .route("/admin/users", get(routes::users::list))
         .route("/admin/users/create", post(routes::users::create))
+        .route("/admin/users/:id/enable", post(routes::users::enable))
         .route(
-            "/admin/users/:id/toggle-active",
-            post(routes::users::toggle_active),
+            "/admin/users/:id/disable/confirm",
+            get(routes::users::disable_confirm),
+        )
+        .route("/admin/users/:id/disable", post(routes::users::disable))
+        .route(
+            "/admin/users/:id/revoke-sessions/confirm",
+            get(routes::users::revoke_sessions_confirm),
         )
         .route(
             "/admin/users/:id/revoke-sessions",
@@ -46,14 +53,30 @@ pub fn build(state: AppState) -> Router {
             "/admin/roles/:id/permissions",
             post(routes::roles::update_permissions),
         )
+        .route(
+            "/admin/roles/:id/permissions/apply",
+            post(routes::roles::apply_permissions),
+        )
         .route("/admin/audit", get(routes::audit::list))
         .route("/admin/audit/export", get(routes::audit::export))
         .route("/admin/modules", get(routes::modules::list))
-        .route("/admin/modules/:key/toggle", post(routes::modules::toggle))
+        .route("/admin/modules/:key/enable", post(routes::modules::enable))
+        .route(
+            "/admin/modules/:key/disable/confirm",
+            get(routes::modules::disable_confirm),
+        )
+        .route(
+            "/admin/modules/:key/disable",
+            post(routes::modules::disable),
+        )
         .route("/admin/settings", get(routes::settings::show))
         .route(
             "/admin/settings/registration",
             post(routes::settings::set_registration),
+        )
+        .route(
+            "/admin/settings/elevation-window",
+            post(routes::settings::set_elevation_window),
         )
         .route("/admin/hosts", get(routes::hosts::list))
         .route(

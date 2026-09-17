@@ -4,7 +4,9 @@ mod config;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
 use abyssal_auth::LoginLimiter;
+use abyssal_database::DbPool;
 use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
@@ -46,6 +48,8 @@ async fn main() -> anyhow::Result<()> {
         elevation: Arc::new(ElevationTracker::new()),
     };
 
+    spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());
+
     let app = abyssal_web::build(state);
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
@@ -58,6 +62,31 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+/// The first background task in this codebase: everything else here is
+/// request-driven. `ElevationTracker`'s own `is_elevated`/`snapshot` already
+/// evict lapsed entries lazily (only when something happens to look), which
+/// is fine for UI correctness but means a natural expiry with nothing else
+/// touching that host would otherwise never get an audit record at all.
+/// This loop is the one active, unconditional check, on a fixed interval
+/// regardless of what else is happening.
+fn spawn_elevation_expiry_sweep(pool: DbPool, elevation: Arc<ElevationTracker>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            for (host_id, host_name) in elevation.sweep_expired() {
+                let event =
+                    AuditEvent::new(AuditAction::HostElevationExpired, AuditOutcome::Success)
+                        .resource(&host_name)
+                        .metadata(serde_json::json!({ "host_id": host_id.to_string() }));
+                if let Err(e) = abyssal_audit::record(&pool, event).await {
+                    tracing::error!(error = %e, "failed to write audit record for elevation expiry");
+                }
+            }
+        }
+    });
 }
 
 fn build_notifications(config: &Config) -> NotificationDispatcher {

@@ -41,7 +41,7 @@
     <button type="submit" name="intent" value="generate" class="btn-secondary" style="margin-right:10px;">
       Generate strong password
     </button>
-    <button type="submit" name="intent" value="create">Create user</button>
+    <button type="submit" name="intent" value="create" class="btn-warning">Create user</button>
   </form>
 </div>
 
@@ -60,18 +60,15 @@
         </td>
         <td>{{ u.roles }}</td>
         <td class="actions">
-          <form method="post" action="/admin/users/{{ u.id }}/toggle-active">
+          {% if u.is_active %}
+          <a class="btn btn-danger" href="/admin/users/{{ u.id }}/disable/confirm">Disable</a>
+          {% else %}
+          <form method="post" action="/admin/users/{{ u.id }}/enable">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            {% if u.is_active %}
-            <button type="submit" class="btn-secondary">Disable</button>
-            {% else %}
-            <button type="submit" class="btn-secondary">Enable</button>
-            {% endif %}
+            <button type="submit" class="btn-warning">Enable</button>
           </form>
-          <form method="post" action="/admin/users/{{ u.id }}/revoke-sessions">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <button type="submit" class="btn-secondary">Force logout</button>
-          </form>
+          {% endif %}
+          <a class="btn btn-danger" href="/admin/users/{{ u.id }}/revoke-sessions/confirm">Force logout</a>
           <a class="btn btn-danger" href="/admin/users/{{ u.id }}/delete/confirm">Delete</a>
         </td>
       </tr>

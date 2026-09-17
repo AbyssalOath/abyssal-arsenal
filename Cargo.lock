@@ -33,6 +33,7 @@ dependencies = [
 name = "abyssal-arsenal"
 version = "0.1.0"
 dependencies = [
+ "abyssal-audit",
  "abyssal-auth",
  "abyssal-core",
  "abyssal-database",
@@ -67,6 +68,7 @@ dependencies = [
  "axum",
  "chrono",
  "dotenvy",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -219,6 +221,7 @@ dependencies = [
  "axum-extra",
  "base64 0.22.1",
  "chrono",
+ "form_urlencoded",
  "rand 0.8.8",
  "serde",
  "serde_json",

@@ -8,10 +8,19 @@
   <form method="post" action="{{ action_url }}">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <input type="hidden" name="confirm" value="true">
+    {% for (name, value) in extra_hidden_fields %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
+    {% if let Some(ttc) = type_to_confirm %}
+    <div style="max-width:360px;">
+      <label for="confirm-text">Type the {{ ttc.label }} <strong>{{ ttc.expected }}</strong> to confirm</label>
+      <input type="text" id="confirm-text" name="confirm_text" autocomplete="off" required>
+    </div>
+    {% endif %}
     {% if let Some(host_id) = escalate_host_id %}
-    <div style="margin-bottom:14px; max-width:360px;">
+    <div style="max-width:360px;">
       <label for="sudo-password-{{ host_id }}">Apotheosis -- sudo password (only needed if this host isn't already elevated)</label>
-      <input type="password" id="sudo-password-{{ host_id }}" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
+      <input type="password" id="sudo-password-{{ host_id }}" name="sudo_password" autocomplete="off">
     </div>
     {% endif %}
     <button type="submit" class="btn-danger">Confirm</button>

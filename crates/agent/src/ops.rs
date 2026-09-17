@@ -28,7 +28,10 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
             firewall::allow_port(port, &protocol, elevation).await
         }
         AgentOperation::FirewallEnable => firewall::enable(elevation).await,
-        AgentOperation::Elevate { password } => elevate(password, elevation).await,
+        AgentOperation::Elevate {
+            password,
+            idle_timeout_secs,
+        } => elevate(password, idle_timeout_secs, elevation).await,
         AgentOperation::Deescalate => deescalate(elevation).await,
         AgentOperation::ElevationStatus => elevation_status(elevation).await,
         AgentOperation::NetworkInterfaces => network::interfaces().await,
@@ -147,9 +150,14 @@ async fn reboot(elevation: &ElevationState) -> CommandOutcome {
     }
 }
 
-async fn elevate(password: String, elevation: &ElevationState) -> CommandOutcome {
+async fn elevate(
+    password: String,
+    idle_timeout_secs: u64,
+    elevation: &ElevationState,
+) -> CommandOutcome {
     let password = Zeroizing::new(password);
-    match elevation.elevate(password).await {
+    let idle_timeout = std::time::Duration::from_secs(idle_timeout_secs);
+    match elevation.elevate(password, idle_timeout).await {
         Ok(()) => CommandOutcome::Ok(OperationOutput {
             stdout: "Elevated.".to_string(),
             stderr: String::new(),

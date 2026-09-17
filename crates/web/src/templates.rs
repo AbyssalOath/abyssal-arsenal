@@ -68,7 +68,7 @@ impl BaseCtx {
     }
 }
 
-fn format_remaining(remaining: std::time::Duration) -> String {
+pub(crate) fn format_remaining(remaining: std::time::Duration) -> String {
     let minutes = remaining.as_secs() / 60;
     let seconds = remaining.as_secs() % 60;
     format!("{minutes}m{seconds:02}s left")
@@ -215,7 +215,14 @@ pub struct ModulesTemplate {
 pub struct SettingsTemplate {
     pub base: BaseCtx,
     pub public_registration_enabled: bool,
+    pub apotheosis_elevation_window_minutes: u32,
     pub message: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "style_guide.html")]
+pub struct StyleGuideTemplate {
+    pub base: BaseCtx,
 }
 
 #[derive(Template)]
@@ -234,6 +241,7 @@ pub struct HostRow {
     pub last_seen_at: String,
     pub online: bool,
     pub revoked: bool,
+    pub elevation_remaining: Option<String>,
 }
 
 #[derive(Template)]
@@ -245,6 +253,18 @@ pub struct HostsTemplate {
     pub uninstall_command: Option<String>,
     pub action_result: Option<String>,
     pub action_error: Option<String>,
+}
+
+/// Extra friction for confirming an action that's irreversible or risks
+/// locking out access: the admin must type the exact resource name back,
+/// not just click a button. Checked server-side in the POST handler --
+/// there's no JS to disable the submit button until it matches, so a
+/// mismatch just re-renders the normal validation error, same as any
+/// other bad input.
+pub struct TypeToConfirm {
+    /// e.g. "hostname", "username" -- what the input's label calls it.
+    pub label: String,
+    pub expected: String,
 }
 
 #[derive(Template)]
@@ -261,6 +281,15 @@ pub struct ConfirmTemplate {
     /// button. `None` for confirm pages unrelated to a host operation
     /// (e.g. revoking/removing a host itself).
     pub escalate_host_id: Option<String>,
+    /// Some(..) for confirms that need the admin to type the resource name
+    /// back rather than just clicking Confirm (see `TypeToConfirm`).
+    pub type_to_confirm: Option<TypeToConfirm>,
+    /// Extra opaque (name, value) pairs carried through the confirm step as
+    /// hidden fields -- e.g. a JSON-encoded payload computed on the way
+    /// into the confirm page that the final POST handler needs back
+    /// unchanged. Empty for confirms that need nothing beyond the standard
+    /// `csrf_token`/`confirm`.
+    pub extra_hidden_fields: Vec<(String, String)>,
 }
 
 pub struct CystoolboxHostRow {

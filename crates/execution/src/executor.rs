@@ -101,7 +101,10 @@ impl Executor {
     /// Dispatches a fixed `AgentOperation` to `host_id` over its live agent
     /// connection. `host_label` is only used for the audit record (the
     /// caller already has the `Host` loaded to check it's the right one, so
-    /// this avoids a redundant lookup here).
+    /// this avoids a redundant lookup here). `elevated` is the caller's
+    /// `state.elevation.is_elevated(host_id)` snapshot taken just before the
+    /// call, recorded on the audit event so a normal action's row shows
+    /// whether it ran with elevated privileges.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_on_host(
         &self,
@@ -115,11 +118,16 @@ impl Executor {
         confirm: bool,
         timeout: Duration,
         source_ip: Option<&str>,
+        elevated: bool,
     ) -> Result<OperationOutput, ExecutionError> {
+        let op_kind = HostOpKind::from(&operation);
+
         if !ctx.has(required_permission) {
-            self.audit(
+            self.audit_host_op(
                 ctx,
                 host_label,
+                op_kind,
+                elevated,
                 AuditOutcome::Failure,
                 source_ip,
                 "permission denied",
@@ -129,9 +137,11 @@ impl Executor {
         }
 
         if kind == OperationKind::Destructive && !confirm {
-            self.audit(
+            self.audit_host_op(
                 ctx,
                 host_label,
+                op_kind,
+                elevated,
                 AuditOutcome::Failure,
                 source_ip,
                 "confirmation required",
@@ -154,13 +164,23 @@ impl Executor {
 
         match &outcome {
             Ok(_) => {
-                self.audit(ctx, host_label, AuditOutcome::Success, source_ip, "ok")
-                    .await
-            }
-            Err(e) => {
-                self.audit(
+                self.audit_host_op(
                     ctx,
                     host_label,
+                    op_kind,
+                    elevated,
+                    AuditOutcome::Success,
+                    source_ip,
+                    "ok",
+                )
+                .await
+            }
+            Err(e) => {
+                self.audit_host_op(
+                    ctx,
+                    host_label,
+                    op_kind,
+                    elevated,
                     AuditOutcome::Failure,
                     source_ip,
                     &e.to_string(),
@@ -196,6 +216,63 @@ impl Executor {
 
         if let Err(e) = abyssal_audit::record(&self.pool, event).await {
             tracing::error!(error = %e, "failed to write audit record for executed operation");
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn audit_host_op(
+        &self,
+        ctx: &AuthContext,
+        resource: &str,
+        op_kind: HostOpKind,
+        elevated: bool,
+        outcome: AuditOutcome,
+        source_ip: Option<&str>,
+        detail: &str,
+    ) {
+        let action = match (op_kind, outcome) {
+            (HostOpKind::Elevate, AuditOutcome::Success) => AuditAction::HostElevated,
+            (HostOpKind::Elevate, AuditOutcome::Failure) => AuditAction::HostElevationFailed,
+            (HostOpKind::Deescalate, _) => AuditAction::HostDeescalated,
+            (HostOpKind::Other, _) => AuditAction::SystemCommandExecuted,
+        };
+
+        let event = AuditEvent::new(action, outcome)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(resource)
+            .metadata(serde_json::json!({ "detail": detail, "elevated": elevated }));
+
+        let event = if let Some(ip) = source_ip {
+            event.source_ip(ip)
+        } else {
+            event
+        };
+
+        if let Err(e) = abyssal_audit::record(&self.pool, event).await {
+            tracing::error!(error = %e, "failed to write audit record for host operation");
+        }
+    }
+}
+
+/// Which of the small set of audit-distinguished `AgentOperation` variants
+/// this dispatch is, computed once up front since `operation` is moved into
+/// `hosts.dispatch` before the outcome (and thus the audit action) is known.
+#[derive(Clone, Copy)]
+enum HostOpKind {
+    Elevate,
+    Deescalate,
+    Other,
+}
+
+impl From<&AgentOperation> for HostOpKind {
+    fn from(operation: &AgentOperation) -> Self {
+        match operation {
+            AgentOperation::Elevate { .. } => HostOpKind::Elevate,
+            AgentOperation::Deescalate => HostOpKind::Deescalate,
+            _ => HostOpKind::Other,
         }
     }
 }
@@ -364,6 +441,7 @@ mod tests {
                 false,
                 StdDuration::from_millis(50),
                 None,
+                false,
             )
             .await;
         assert!(matches!(result, Err(ExecutionError::Forbidden)));
@@ -389,6 +467,7 @@ mod tests {
                 false,
                 StdDuration::from_millis(50),
                 None,
+                false,
             )
             .await;
         assert!(matches!(result, Err(ExecutionError::Failed(_))));

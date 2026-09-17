@@ -22,12 +22,13 @@ use zeroize::Zeroizing;
 use crate::process::{run_command, run_command_with_stdin};
 use abyssal_agent_protocol::OperationOutput;
 
-/// Sliding idle window: elevation lasts this long since the *last* use, not
-/// a fixed expiry from when it was granted.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// Used only by tests -- real elevation windows arrive per-`Elevate`-call
+/// from the control plane (`AgentOperation::Elevate::idle_timeout_secs`).
+#[cfg(test)]
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 #[derive(Clone, Default)]
-pub struct ElevationState(Arc<Mutex<Option<Instant>>>);
+pub struct ElevationState(Arc<Mutex<Option<(Instant, Duration)>>>);
 
 impl ElevationState {
     pub fn new() -> Self {
@@ -35,9 +36,14 @@ impl ElevationState {
     }
 
     /// Validates `password` against this host's sudo/PAM stack and, on
-    /// success, starts (or refreshes) the elevation window. The password is
-    /// wiped from memory as soon as this call returns, regardless of outcome.
-    pub async fn elevate(&self, password: Zeroizing<String>) -> Result<(), String> {
+    /// success, starts (or refreshes) the elevation window using the
+    /// control-plane-supplied `idle_timeout`. The password is wiped from
+    /// memory as soon as this call returns, regardless of outcome.
+    pub async fn elevate(
+        &self,
+        password: Zeroizing<String>,
+        idle_timeout: Duration,
+    ) -> Result<(), String> {
         let result = run_sudo_validate(&password).await;
         // `password` (and the temporary stdin buffer inside
         // `run_sudo_validate`) are `Zeroizing`, so they're actively wiped
@@ -45,7 +51,7 @@ impl ElevationState {
         drop(password);
 
         result?;
-        *self.0.lock().await = Some(Instant::now());
+        *self.0.lock().await = Some((Instant::now(), idle_timeout));
         Ok(())
     }
 
@@ -62,8 +68,8 @@ impl ElevationState {
     pub async fn is_elevated(&self) -> bool {
         let mut guard = self.0.lock().await;
         match *guard {
-            Some(last_used) if last_used.elapsed() < IDLE_TIMEOUT => {
-                *guard = Some(Instant::now());
+            Some((last_used, idle_timeout)) if last_used.elapsed() < idle_timeout => {
+                *guard = Some((Instant::now(), idle_timeout));
                 true
             }
             Some(_) => {
@@ -80,7 +86,7 @@ impl ElevationState {
             let remaining = {
                 let guard = self.0.lock().await;
                 guard
-                    .map(|t| IDLE_TIMEOUT.saturating_sub(t.elapsed()))
+                    .map(|(since, idle_timeout)| idle_timeout.saturating_sub(since.elapsed()))
                     .unwrap_or_default()
             };
             let minutes = remaining.as_secs() / 60;
@@ -200,7 +206,7 @@ mod tests {
     async fn deescalate_clears_elevation() {
         let state = ElevationState::new();
         // Simulate a successful elevation without invoking real sudo.
-        *state.0.lock().await = Some(Instant::now());
+        *state.0.lock().await = Some((Instant::now(), DEFAULT_IDLE_TIMEOUT));
         assert!(state.is_elevated().await);
 
         state.deescalate().await;
@@ -211,16 +217,34 @@ mod tests {
     async fn idle_window_expires() {
         let state = ElevationState::new();
         // Backdate the "last used" timestamp past the idle window.
-        *state.0.lock().await = Instant::now().checked_sub(IDLE_TIMEOUT + Duration::from_secs(1));
+        *state.0.lock().await = Instant::now()
+            .checked_sub(DEFAULT_IDLE_TIMEOUT + Duration::from_secs(1))
+            .map(|t| (t, DEFAULT_IDLE_TIMEOUT));
         assert!(!state.is_elevated().await);
     }
 
     #[tokio::test]
     async fn checking_status_refreshes_the_window() {
         let state = ElevationState::new();
-        *state.0.lock().await = Some(Instant::now() - Duration::from_secs(60));
+        *state.0.lock().await = Some((
+            Instant::now() - Duration::from_secs(60),
+            DEFAULT_IDLE_TIMEOUT,
+        ));
         assert!(state.is_elevated().await);
-        let refreshed = state.0.lock().await.unwrap();
+        let (refreshed, _) = state.0.lock().await.unwrap();
         assert!(refreshed.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn configured_idle_timeout_is_used_over_the_default() {
+        let state = ElevationState::new();
+        // A short custom window backdated past itself but within the
+        // default -- proves the per-elevation duration is what's checked,
+        // not the module default.
+        *state.0.lock().await = Some((
+            Instant::now() - Duration::from_secs(5),
+            Duration::from_secs(1),
+        ));
+        assert!(!state.is_elevated().await);
     }
 }
