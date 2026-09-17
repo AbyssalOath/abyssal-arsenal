@@ -36,6 +36,7 @@ members = [
     "crates/arsenals/vivisection",
     "crates/arsenals/inquest",
     "crates/arsenals/thanatos",
+    "crates/arsenals/panopticon",
 ]
 
 [workspace.package]
@@ -79,6 +80,7 @@ arsenal-defleshing = { path = "crates/arsenals/defleshing" }
 arsenal-vivisection = { path = "crates/arsenals/vivisection" }
 arsenal-inquest = { path = "crates/arsenals/inquest" }
 arsenal-thanatos = { path = "crates/arsenals/thanatos" }
+arsenal-panopticon = { path = "crates/arsenals/panopticon" }
 
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "ws"] }

@@ -58,6 +58,7 @@ dependencies = [
  "arsenal-necropsy",
  "arsenal-obituary",
  "arsenal-ossuary",
+ "arsenal-panopticon",
  "arsenal-parish",
  "arsenal-postmortem",
  "arsenal-reanimation",
@@ -442,6 +443,14 @@ dependencies = [
 
 [[package]]
 name = "arsenal-ossuary"
+version = "0.1.0"
+dependencies = [
+ "abyssal-core",
+ "abyssal-modules",
+]
+
+[[package]]
+name = "arsenal-panopticon"
 version = "0.1.0"
 dependencies = [
  "abyssal-core",

@@ -126,6 +126,23 @@ across the control-plane / agent boundary except through
   See [CHANGELOG.md](CHANGELOG.md) for which ones have real capabilities
   wired up.
 
+**Control-plane arsenals vs. host-agent arsenals.** Every arsenal built so
+far (Cystoolbox, Cadavault, Necrolink, Postmortem, Reliquary, Mortiscope,
+Incarnation, ...) dispatches its real work to a specific enrolled host via
+`execute_on_host()` -- the arsenal's page always starts with picking a
+host. Panopticon (`crates/arsenals/panopticon`, network visibility and
+device discovery) is the first arsenal that is a **control-plane arsenal**
+by design: it runs directly against the control plane's own network stack
+via `execute()`, not against any one host's agent. This is a deliberate
+boundary, not a gap to fill in later -- network discovery finds devices
+that may never have an agent installed on them at all, so there's no host
+to dispatch to in the first place. See "Controlled execution" below for
+what `execute()` vs. `execute_on_host()` each mean concretely; a future
+arsenal only belongs in the host-agent camp if its work is inherently
+per-host (something to run *on* a specific machine), and in the
+control-plane camp if it's work the control plane does about its
+environment at large.
+
 ## Controlled execution
 
 Two different problems share one shape (permission check, then run, then

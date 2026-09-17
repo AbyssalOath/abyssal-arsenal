@@ -146,6 +146,18 @@ project is pre-release, so everything so far lives under "Unreleased".
   `cargo fmt --check`, and a Docker build-validation job on every push/PR;
   separate workflows publish the control-plane image to GHCR and package
   release binaries for both `abyssal-arsenal` and `abyssal-agent`.
+- **Panopticon arsenal** (metadata-only stub, 23rd arsenal): network
+  visibility and access control -- discovery, device identification,
+  MAC/IP inventory, service and OS fingerprinting, topology mapping, NAC
+  visibility, IoT/OT coverage, and network policy enforcement, gated by
+  `network.view`. No real operations yet, matching most of the other stub
+  arsenals, but it's architecturally distinct from all of them: Panopticon
+  is the first **control-plane arsenal** -- its future operations are
+  meant to run directly against the control plane's own network stack via
+  `Executor::execute()`, not dispatched to a host's agent via
+  `execute_on_host()`, since network discovery has to work on devices that
+  may never carry an agent at all. See ARCHITECTURE.md's "Modules
+  (arsenals)" section for the full reasoning.
 
 ### Fixed
 
