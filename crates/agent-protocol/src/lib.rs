@@ -55,6 +55,43 @@ pub enum AgentOperation {
     Deescalate,
     /// Human-readable elevation status (elevated or not, remaining time).
     ElevationStatus,
+    /// Network interfaces and their addresses (`ip addr show`).
+    NetworkInterfaces,
+    /// The routing table (`ip route show`).
+    NetworkRoutes,
+    /// DNS resolver configuration, from whichever of systemd-resolved or
+    /// plain `/etc/resolv.conf` the agent detects on its host.
+    DnsConfig,
+    /// All active TCP/UDP sockets, not just listening ones -- complements
+    /// Cadavault's `ListeningPorts` (attack-surface focus) with a
+    /// diagnostics-focused view of what's actually connected right now.
+    ActiveConnections,
+    /// Ping + DNS lookup against a target the operator supplies. Read --
+    /// sends network traffic, but only ICMP echo/DNS query, not the kind
+    /// of thing that needs a confirmation gate.
+    ConnectivityCheck { target: String },
+    /// Brings a network interface up or down (`ip link set <iface> up|down`).
+    /// The control plane treats `up: true` as Write (additive, safe) and
+    /// `up: false` as Destructive (can cut off remote access to the host if
+    /// it's the interface currently in use) -- same command either way, the
+    /// risk categorization lives on the control-plane side of the dispatch,
+    /// same as every other op here.
+    InterfaceSetState { interface: String, up: bool },
+    /// Active network scan ("Necrolink" -- network visibility) via nmap, if
+    /// present on the host. Destructive: sends real traffic to a
+    /// third-party target and can trip IDS/IPS elsewhere on the network, so
+    /// the control plane requires explicit confirmation and gates this
+    /// behind its own dedicated `network.scan` permission (Super Admin
+    /// only by default), independent of the general `network.manage`
+    /// permission the rest of this arsenal's write operations use.
+    /// `ports` is an optional nmap `-p` spec (e.g. `"22,80,443"` or
+    /// `"1-1024"`); omitted means nmap's own default port set. Uses a TCP
+    /// connect scan (`-sT`), which doesn't need root -- unlike a SYN scan,
+    /// so this isn't entangled with Apotheosis elevation.
+    NetworkScan {
+        target: String,
+        ports: Option<String>,
+    },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -90,6 +127,24 @@ impl fmt::Debug for AgentOperation {
                 .finish(),
             AgentOperation::Deescalate => write!(f, "Deescalate"),
             AgentOperation::ElevationStatus => write!(f, "ElevationStatus"),
+            AgentOperation::NetworkInterfaces => write!(f, "NetworkInterfaces"),
+            AgentOperation::NetworkRoutes => write!(f, "NetworkRoutes"),
+            AgentOperation::DnsConfig => write!(f, "DnsConfig"),
+            AgentOperation::ActiveConnections => write!(f, "ActiveConnections"),
+            AgentOperation::ConnectivityCheck { target } => f
+                .debug_struct("ConnectivityCheck")
+                .field("target", target)
+                .finish(),
+            AgentOperation::InterfaceSetState { interface, up } => f
+                .debug_struct("InterfaceSetState")
+                .field("interface", interface)
+                .field("up", up)
+                .finish(),
+            AgentOperation::NetworkScan { target, ports } => f
+                .debug_struct("NetworkScan")
+                .field("target", target)
+                .field("ports", ports)
+                .finish(),
         }
     }
 }
@@ -151,6 +206,49 @@ pub fn is_valid_port_protocol(port: u16, protocol: &str) -> bool {
     port != 0 && (protocol == "tcp" || protocol == "udp")
 }
 
+/// A target for `ConnectivityCheck` or `NetworkScan`: an IPv4 address, an
+/// IPv4 CIDR range (e.g. `192.168.1.0/24`), or a hostname. Explicitly
+/// rejects anything starting with `-` even though the character classes
+/// below already couldn't produce one -- belt and suspenders against the
+/// value ever being misread as a flag by whatever it's eventually passed
+/// to as an argv entry (`ping`, `nmap`, ...).
+pub fn is_valid_network_target(target: &str) -> bool {
+    if target.is_empty() || target.len() > 253 || target.starts_with('-') {
+        return false;
+    }
+
+    if let Some((addr, prefix)) = target.split_once('/') {
+        return addr.parse::<std::net::Ipv4Addr>().is_ok()
+            && prefix.parse::<u8>().is_ok_and(|p| p <= 32);
+    }
+
+    target.parse::<std::net::Ipv4Addr>().is_ok() || is_valid_hostname(target)
+}
+
+/// A Linux network interface name: up to `IFNAMSIZ - 1` (15) characters,
+/// no spaces or path separators.
+pub fn is_valid_interface_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 15
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
+}
+
+/// An nmap `-p` port spec: digits, commas, and hyphens only (e.g.
+/// `"22,80,443"` or `"1-1024"`). The restricted character set is itself
+/// the argument-injection defense: no letters or spaces means this value
+/// can never spell out a different flag, even though a literal `-` is
+/// allowed for ranges.
+pub fn is_valid_port_spec(spec: &str) -> bool {
+    !spec.is_empty()
+        && spec.len() <= 256
+        && spec
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +278,54 @@ mod tests {
         assert!(!is_valid_port_protocol(0, "tcp"));
         assert!(!is_valid_port_protocol(22, "icmp"));
         assert!(!is_valid_port_protocol(22, "TCP"));
+    }
+
+    #[test]
+    fn accepts_reasonable_network_targets() {
+        assert!(is_valid_network_target("192.168.1.1"));
+        assert!(is_valid_network_target("192.168.1.0/24"));
+        assert!(is_valid_network_target("host.example.com"));
+        assert!(is_valid_network_target("web-01"));
+    }
+
+    #[test]
+    fn rejects_malformed_network_targets() {
+        assert!(!is_valid_network_target(""));
+        assert!(!is_valid_network_target("-oN /etc/passwd"));
+        assert!(!is_valid_network_target("192.168.1.0/33"));
+        assert!(!is_valid_network_target("192.168.1.0/"));
+        assert!(!is_valid_network_target("not a hostname"));
+        assert!(!is_valid_network_target("2001:db8::1"));
+    }
+
+    #[test]
+    fn accepts_reasonable_interface_names() {
+        assert!(is_valid_interface_name("eth0"));
+        assert!(is_valid_interface_name("wlan0"));
+        assert!(is_valid_interface_name("enp0s3"));
+        assert!(is_valid_interface_name("br-abc123"));
+    }
+
+    #[test]
+    fn rejects_malformed_interface_names() {
+        assert!(!is_valid_interface_name(""));
+        assert!(!is_valid_interface_name("-eth0"));
+        assert!(!is_valid_interface_name("eth0; rm -rf /"));
+        assert!(!is_valid_interface_name(&"a".repeat(16)));
+    }
+
+    #[test]
+    fn accepts_reasonable_port_specs() {
+        assert!(is_valid_port_spec("22"));
+        assert!(is_valid_port_spec("22,80,443"));
+        assert!(is_valid_port_spec("1-1024"));
+    }
+
+    #[test]
+    fn rejects_malformed_port_specs() {
+        assert!(!is_valid_port_spec(""));
+        assert!(!is_valid_port_spec("22,80,--script=vuln"));
+        assert!(!is_valid_port_spec("22 80"));
+        assert!(!is_valid_port_spec(&"1".repeat(257)));
     }
 }

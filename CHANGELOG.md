@@ -70,6 +70,25 @@ project is pre-release, so everything so far lives under "Unreleased".
   (clear error instead of a guess at an unfamiliar ruleset's table/chain
   layout); port/protocol input is validated on both the control plane and
   the agent, matching the hostname validation pattern.
+- **Necrolink arsenal** (third arsenal with real capabilities): network
+  interfaces (`ip addr show`), routes (`ip route show`), DNS resolver
+  configuration, and active TCP/UDP connections (`ss -tuanp`, complements
+  Cadavault's listening-only view with a diagnostics-focused "what's
+  connected right now" one) as read-only operations (`network.view`); a
+  Connectivity Check (ping + DNS lookup against an operator-supplied
+  target); bringing a network interface up (Write, `network.manage`) or
+  down (Destructive, confirmation required -- can cut off remote access);
+  and an active network scan via nmap TCP connect scan against an
+  operator-supplied target/CIDR/hostname (Destructive, confirmation
+  required, gated by a new dedicated `network.scan` permission --
+  Super Admin only by default, independent of `network.manage` -- since it
+  sends real traffic to a third-party target rather than managing the host
+  itself). DNS configuration auto-detects systemd-resolved
+  (`resolvectl status`) vs. falling back to reading `/etc/resolv.conf`
+  directly. Scan/connectivity/interface targets are validated (IPv4
+  address, IPv4 CIDR, or hostname; explicitly rejects anything starting
+  with `-`) on both the control plane and the agent, matching the
+  hostname/port validation pattern from the first two arsenals.
 - **Apotheosis**: time-boxed sudo elevation for managed hosts, modeled on
   Cockpit's "Administrative access" toggle. An admin with the new
   `hosts.elevate` permission (Super Admin only by default) can elevate a
@@ -231,8 +250,8 @@ project is pre-release, so everything so far lives under "Unreleased".
 - `LoginLimiter` and `HostConnectionRegistry` are in-memory and
   process-local; a multi-instance control plane would need both backed by
   shared state.
-- SSO/OIDC, non-SMTP notification providers, and 20 of the 22 arsenals'
+- SSO/OIDC, non-SMTP notification providers, and 19 of the 22 arsenals'
   real capabilities beyond metadata are not implemented yet (only
-  `cystoolbox` and `cadavault` have real operations so far).
+  `cystoolbox`, `cadavault`, and `necrolink` have real operations so far).
 - No Tauri desktop client yet; `/api/health` and `/api/me` establish the
   API seam it would use.

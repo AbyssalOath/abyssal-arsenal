@@ -8,6 +8,7 @@ pub mod dashboard;
 pub mod hosts;
 pub mod login;
 pub mod modules;
+pub mod necrolink;
 pub mod register;
 pub mod roles;
 pub mod settings;

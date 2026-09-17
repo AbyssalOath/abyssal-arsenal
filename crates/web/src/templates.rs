@@ -314,3 +314,31 @@ pub struct CadavaultHostTemplate {
     pub result_output: Option<String>,
     pub result_error: Option<String>,
 }
+
+pub struct NecrolinkHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "necrolink.html")]
+pub struct NecrolinkTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<NecrolinkHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "necrolink_host.html")]
+pub struct NecrolinkHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub can_manage: bool,
+    /// `network.scan` specifically -- distinct from `can_manage`
+    /// (`network.manage`), Super Admin only by default.
+    pub can_scan: bool,
+    pub elevated: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}

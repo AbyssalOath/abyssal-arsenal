@@ -3,7 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-use crate::{firewall, process::run_command};
+use crate::{firewall, network, process::run_command};
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
@@ -31,6 +31,17 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::Elevate { password } => elevate(password, elevation).await,
         AgentOperation::Deescalate => deescalate(elevation).await,
         AgentOperation::ElevationStatus => elevation_status(elevation).await,
+        AgentOperation::NetworkInterfaces => network::interfaces().await,
+        AgentOperation::NetworkRoutes => network::routes().await,
+        AgentOperation::DnsConfig => network::dns_config().await,
+        AgentOperation::ActiveConnections => network::active_connections().await,
+        AgentOperation::ConnectivityCheck { target } => network::connectivity_check(target).await,
+        AgentOperation::InterfaceSetState { interface, up } => {
+            network::interface_set_state(interface, up, elevation).await
+        }
+        AgentOperation::NetworkScan { target, ports } => {
+            network::network_scan(target, ports, elevation).await
+        }
     }
 }
 

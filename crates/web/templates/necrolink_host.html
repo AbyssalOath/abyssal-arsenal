@@ -1,0 +1,127 @@
+{% extends "app_base.html" %}
+{% block title %}Necrolink — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Necrolink — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/necrolink">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-danger">Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if let Some(label) = result_label %}
+  <div style="margin-top:14px;">
+    <h3 style="margin:0 0 6px;">{{ label }}</h3>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:0;">{{ err }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <div class="actions">
+    <form method="post" action="/arsenals/necrolink/{{ host_id }}/interfaces" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      {% endif %}
+      <button type="submit" class="btn-secondary">Network Interfaces</button>
+    </form>
+    <form method="post" action="/arsenals/necrolink/{{ host_id }}/routes" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      {% endif %}
+      <button type="submit" class="btn-secondary">Routes</button>
+    </form>
+    <form method="post" action="/arsenals/necrolink/{{ host_id }}/dns" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      {% endif %}
+      <button type="submit" class="btn-secondary">DNS Configuration</button>
+    </form>
+    <form method="post" action="/arsenals/necrolink/{{ host_id }}/connections" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      {% endif %}
+      <button type="submit" class="btn-secondary">Active Connections</button>
+    </form>
+  </div>
+
+  <form method="post" action="/arsenals/necrolink/{{ host_id }}/connectivity-check" style="margin-top:14px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:620px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div>
+      <label for="check-target">Connectivity check (ping + DNS lookup)</label>
+      <input type="text" id="check-target" name="target" placeholder="e.g. 8.8.8.8 or example.com" required style="margin-bottom:0;">
+    </div>
+    {% if !elevated && base.can_hosts_elevate %}
+    <div>
+      <label for="check-password">Sudo password (if needed)</label>
+      <input type="password" id="check-password" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
+    </div>
+    {% endif %}
+    <button type="submit" class="btn-secondary">Check</button>
+  </form>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write / Destructive</h3>
+
+  <form method="post" action="/arsenals/necrolink/{{ host_id }}/interface/up" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:620px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div>
+      <label for="iface-up">Bring interface up</label>
+      <input type="text" id="iface-up" name="interface" placeholder="e.g. eth0" required style="margin-bottom:0;">
+    </div>
+    {% if !elevated && base.can_hosts_elevate %}
+    <div>
+      <label for="iface-up-password">Sudo password (if needed)</label>
+      <input type="password" id="iface-up-password" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
+    </div>
+    {% endif %}
+    <button type="submit" class="btn-secondary">Bring Up</button>
+  </form>
+
+  <form method="get" action="/arsenals/necrolink/{{ host_id }}/interface/down/confirm" style="margin-top:10px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:620px;">
+    <div>
+      <label for="iface-down">Bring interface down</label>
+      <input type="text" id="iface-down" name="interface" placeholder="e.g. eth0" required style="margin-bottom:0;">
+    </div>
+    <button type="submit" class="btn-danger">Bring Down&hellip;</button>
+  </form>
+</div>
+{% endif %}
+
+{% if can_scan %}
+<div class="card">
+  <h3 style="margin-top:0;">Network Scan</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Runs an nmap TCP connect scan from this host against a target you specify. Sends real
+    network traffic -- only scan targets you're authorized to scan.
+  </p>
+  <form method="get" action="/arsenals/necrolink/{{ host_id }}/scan/confirm" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:620px;">
+    <div>
+      <label for="scan-target">Target</label>
+      <input type="text" id="scan-target" name="target" placeholder="e.g. 192.168.1.0/24" required style="margin-bottom:0;">
+    </div>
+    <div>
+      <label for="scan-ports">Ports (optional)</label>
+      <input type="text" id="scan-ports" name="ports" placeholder="e.g. 22,80,443" style="margin-bottom:0;">
+    </div>
+    <button type="submit" class="btn-danger">Scan&hellip;</button>
+  </form>
+</div>
+{% endif %}
+
+{% endblock %}

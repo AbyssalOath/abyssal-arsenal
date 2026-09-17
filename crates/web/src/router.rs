@@ -136,6 +136,51 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/cadavault/:host_id/firewall-enable",
             post(routes::cadavault::enable_firewall),
         )
+        .route("/arsenals/necrolink", get(routes::necrolink::show))
+        .route(
+            "/arsenals/necrolink/:host_id",
+            get(routes::necrolink::show_host),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/interfaces",
+            post(routes::necrolink::network_interfaces),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/routes",
+            post(routes::necrolink::network_routes),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/dns",
+            post(routes::necrolink::dns_config),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/connections",
+            post(routes::necrolink::active_connections),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/connectivity-check",
+            post(routes::necrolink::connectivity_check),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/interface/up",
+            post(routes::necrolink::interface_up),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/interface/down/confirm",
+            get(routes::necrolink::interface_down_confirm),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/interface/down",
+            post(routes::necrolink::interface_down),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/scan/confirm",
+            get(routes::necrolink::scan_confirm),
+        )
+        .route(
+            "/arsenals/necrolink/:host_id/scan",
+            post(routes::necrolink::network_scan),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

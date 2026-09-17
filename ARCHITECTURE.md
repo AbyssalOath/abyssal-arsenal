@@ -171,6 +171,13 @@ tool creates, like `/run/systemd/system`, is usually more reliable than
 checking whether a same-named binary happens to be on `PATH`, since some
 distros ship non-functional compatibility shims) and dispatch accordingly,
 rather than assuming the tool the developer's own machine happens to have.
+Not every case needs a dedicated module, though: Necrolink's DNS
+configuration read (`network::dns_config` in `crates/agent/src/network.rs`)
+is the same detect-don't-assume idea handled inline, in a few lines --
+try `resolvectl status`, fall back to reading `/etc/resolv.conf` directly
+if that's not usable -- since it's a single yes/no fallback, not several
+named backends worth their own enum and file the way firewalld/ufw/nftables
+/iptables or systemd/non-systemd are.
 
 ## Host enrollment and the agent protocol
 
@@ -331,9 +338,9 @@ model, not oversights:
   process-local. A multi-instance control plane would need both backed by
   shared state instead.
 - SSO/OIDC, additional notification providers (Telegram, Slack, Teams,
-  Discord), and 20 of the 22 arsenals' real capabilities beyond metadata are
-  not implemented yet (only `cystoolbox` and `cadavault` have real
-  operations so far) --
+  Discord), and 19 of the 22 arsenals' real capabilities beyond metadata are
+  not implemented yet (only `cystoolbox`, `cadavault`, and `necrolink` have
+  real operations so far) --
   see [CHANGELOG.md](CHANGELOG.md) for current status.
 - The agent does not sandbox or rate-limit operations beyond the fixed
   `AgentOperation` whitelist. Privilege escalation for an unprivileged

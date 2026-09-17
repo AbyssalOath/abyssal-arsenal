@@ -14,6 +14,7 @@ pub enum Permission {
 
     NetworkView,
     NetworkManage,
+    NetworkScan,
 
     SecurityView,
     SecurityManage,
@@ -58,6 +59,7 @@ impl Permission {
 
             Permission::NetworkView => "network.view",
             Permission::NetworkManage => "network.manage",
+            Permission::NetworkScan => "network.scan",
 
             Permission::SecurityView => "security.view",
             Permission::SecurityManage => "security.manage",
@@ -103,6 +105,7 @@ impl Permission {
         Permission::SystemsManage,
         Permission::NetworkView,
         Permission::NetworkManage,
+        Permission::NetworkScan,
         Permission::SecurityView,
         Permission::SecurityManage,
         Permission::ContainersView,
