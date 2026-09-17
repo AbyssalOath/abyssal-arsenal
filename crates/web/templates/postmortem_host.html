@@ -1,0 +1,115 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Postmortem — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Postmortem — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/postmortem">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Boot &amp; Crash Forensics</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/postmortem/{{ host_id }}/boot-history">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("reboot") %} Boot History</button>
+    </form>
+    <form method="post" action="/arsenals/postmortem/{{ host_id }}/kernel-ring-buffer">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Kernel Ring Buffer</button>
+    </form>
+    <form method="post" action="/arsenals/postmortem/{{ host_id }}/oom-kills">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} OOM-Kill Events</button>
+    </form>
+    <form method="post" action="/arsenals/postmortem/{{ host_id }}/core-dumps">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Core Dumps</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Log &amp; Access Forensics</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/postmortem/{{ host_id }}/journal-errors">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} System Journal Errors</button>
+    </form>
+    <form method="post" action="/arsenals/postmortem/{{ host_id }}/failed-logins">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Failed Login Attempts</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">File Integrity</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Lists files under <code>/etc</code>, <code>/bin</code>, <code>/sbin</code>, <code>/usr/bin</code>,
+    <code>/usr/sbin</code>, <code>/usr/local/bin</code>, and <code>/usr/local/sbin</code> modified within
+    the chosen window -- a standard check for tampering or a dropped backdoor after a suspected compromise.
+  </p>
+  <form method="post" action="/arsenals/postmortem/{{ host_id }}/modified-files" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:620px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div>
+      <label for="modified-hours">Lookback window (hours)</label>
+      <input type="number" id="modified-hours" name="hours" min="1" max="720" value="24" required style="margin-bottom:0; width:110px;">
+    </div>
+    {% if !elevated && base.can_hosts_elevate %}
+    <div>
+      <label for="modified-password">Sudo password (if needed)</label>
+      <input type="password" id="modified-password" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
+    </div>
+    {% endif %}
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Check</button>
+  </form>
+</div>
+
+{% endblock %}

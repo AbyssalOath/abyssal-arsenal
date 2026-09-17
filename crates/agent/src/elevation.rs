@@ -19,7 +19,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
-use crate::process::{run_command, run_command_with_stdin};
+use crate::process::{run_command, run_command_allow_failure, run_command_with_stdin};
 use abyssal_agent_protocol::OperationOutput;
 
 /// Used only by tests -- real elevation windows arrive per-`Elevate`-call
@@ -110,6 +110,27 @@ impl ElevationState {
             run_command("sudo", &sudo_args).await
         } else {
             run_command(program, args).await
+        }
+    }
+
+    /// Like `run`, but via `process::run_command_allow_failure` -- for tools
+    /// whose own exit code conventions use non-zero to mean "ran fine, found
+    /// nothing" rather than "something went wrong" (`coredumpctl list` with
+    /// no recorded dumps, `find` hitting one unreadable subdirectory while
+    /// still finding everything else).
+    pub async fn run_allow_failure(
+        &self,
+        program: &str,
+        args: &[&str],
+    ) -> Result<OperationOutput, String> {
+        if self.is_elevated().await {
+            let mut sudo_args = Vec::with_capacity(args.len() + 2);
+            sudo_args.push("-n");
+            sudo_args.push(program);
+            sudo_args.extend_from_slice(args);
+            run_command_allow_failure("sudo", &sudo_args).await
+        } else {
+            run_command_allow_failure(program, args).await
         }
     }
 

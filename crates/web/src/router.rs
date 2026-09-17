@@ -205,6 +205,39 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/necrolink/:host_id/scan",
             post(routes::necrolink::network_scan),
         )
+        .route("/arsenals/postmortem", get(routes::postmortem::show))
+        .route(
+            "/arsenals/postmortem/:host_id",
+            get(routes::postmortem::show_host),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/boot-history",
+            post(routes::postmortem::boot_history),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/kernel-ring-buffer",
+            post(routes::postmortem::kernel_ring_buffer),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/journal-errors",
+            post(routes::postmortem::system_journal_errors),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/failed-logins",
+            post(routes::postmortem::failed_login_attempts),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/oom-kills",
+            post(routes::postmortem::oom_kill_events),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/core-dumps",
+            post(routes::postmortem::core_dumps),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/modified-files",
+            post(routes::postmortem::recently_modified_files),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

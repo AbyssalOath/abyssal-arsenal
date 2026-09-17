@@ -378,6 +378,33 @@ pub struct CadavaultHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct PostmortemHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "postmortem.html")]
+pub struct PostmortemTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<PostmortemHostRow>,
+}
+
+/// No `can_manage` field -- every op in this arsenal is read-only forensic
+/// examination, so there's no write/destructive section to gate.
+#[derive(Template)]
+#[template(path = "postmortem_host.html")]
+pub struct PostmortemHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct NecrolinkHostRow {
     pub id: String,
     pub name: String,

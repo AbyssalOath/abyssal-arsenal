@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -113,6 +113,32 @@ pub enum AgentOperation {
         target: String,
         ports: Option<String>,
     },
+    /// Reboot/shutdown history (`last -x`) -- forensic starting point for
+    /// "did this host crash or was it intentional."
+    BootHistory,
+    /// Recent error/warning-level kernel ring buffer messages (`dmesg`) --
+    /// crash traces, hardware errors, driver failures.
+    KernelRingBuffer,
+    /// Recent warning-or-worse system log entries since the current boot.
+    SystemJournalErrors,
+    /// Failed login/authentication attempts (ssh, sudo, su, PAM in general)
+    /// found in the recent system log window -- a standard first check when
+    /// a host is suspected of compromise. Distinct from Cadavault's
+    /// `RecentAuthLog` (a raw recent-activity tail): this one searches
+    /// specifically for failures, not everything.
+    FailedLoginAttempts,
+    /// Out-of-memory killer events from the kernel ring buffer -- explains
+    /// processes that died with no other obvious cause.
+    OomKillEvents,
+    /// Recorded crash/core dumps (`coredumpctl`, or on-disk artifacts under
+    /// `/var/crash` / `/var/lib/systemd/coredump` where that's unavailable).
+    CoreDumps,
+    /// Files under common system binary/config directories modified within
+    /// the last `hours` -- a classic tamper/backdoor indicator after a
+    /// suspected compromise. Read-only (stats file metadata, reads no file
+    /// contents); `hours` is validated (1-720, i.e. up to 30 days) both here
+    /// and again on the agent, which is the actual execution boundary.
+    RecentlyModifiedFiles { hours: u32 },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -168,6 +194,16 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("NetworkScan")
                 .field("target", target)
                 .field("ports", ports)
+                .finish(),
+            AgentOperation::BootHistory => write!(f, "BootHistory"),
+            AgentOperation::KernelRingBuffer => write!(f, "KernelRingBuffer"),
+            AgentOperation::SystemJournalErrors => write!(f, "SystemJournalErrors"),
+            AgentOperation::FailedLoginAttempts => write!(f, "FailedLoginAttempts"),
+            AgentOperation::OomKillEvents => write!(f, "OomKillEvents"),
+            AgentOperation::CoreDumps => write!(f, "CoreDumps"),
+            AgentOperation::RecentlyModifiedFiles { hours } => f
+                .debug_struct("RecentlyModifiedFiles")
+                .field("hours", hours)
                 .finish(),
         }
     }
@@ -273,6 +309,13 @@ pub fn is_valid_port_spec(spec: &str) -> bool {
             .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-'))
 }
 
+/// The lookback window for `RecentlyModifiedFiles`, in hours. Bounded to
+/// 1-720 (30 days) -- long enough to cover any plausible incident window,
+/// short enough that the underlying `find` stays fast on a normal host.
+pub fn is_valid_lookback_hours(hours: u32) -> bool {
+    (1..=720).contains(&hours)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +394,19 @@ mod tests {
         assert!(!is_valid_port_spec("22,80,--script=vuln"));
         assert!(!is_valid_port_spec("22 80"));
         assert!(!is_valid_port_spec(&"1".repeat(257)));
+    }
+
+    #[test]
+    fn accepts_reasonable_lookback_windows() {
+        assert!(is_valid_lookback_hours(1));
+        assert!(is_valid_lookback_hours(24));
+        assert!(is_valid_lookback_hours(720));
+    }
+
+    #[test]
+    fn rejects_out_of_range_lookback_windows() {
+        assert!(!is_valid_lookback_hours(0));
+        assert!(!is_valid_lookback_hours(721));
+        assert!(!is_valid_lookback_hours(u32::MAX));
     }
 }

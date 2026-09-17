@@ -3,7 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-use crate::{firewall, network, process::run_command};
+use crate::{firewall, network, postmortem, process::run_command};
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
@@ -44,6 +44,15 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         }
         AgentOperation::NetworkScan { target, ports } => {
             network::network_scan(target, ports, elevation).await
+        }
+        AgentOperation::BootHistory => postmortem::boot_history().await,
+        AgentOperation::KernelRingBuffer => postmortem::kernel_ring_buffer(elevation).await,
+        AgentOperation::SystemJournalErrors => postmortem::system_journal_errors(elevation).await,
+        AgentOperation::FailedLoginAttempts => postmortem::failed_login_attempts(elevation).await,
+        AgentOperation::OomKillEvents => postmortem::oom_kill_events(elevation).await,
+        AgentOperation::CoreDumps => postmortem::core_dumps(elevation).await,
+        AgentOperation::RecentlyModifiedFiles { hours } => {
+            postmortem::recently_modified_files(hours, elevation).await
         }
     }
 }

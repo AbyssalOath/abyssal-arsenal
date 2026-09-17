@@ -1,0 +1,24 @@
+{% extends "app_base.html" %}
+{% block title %}Postmortem — Abyssal Arsenal{% endblock %}
+{% block heading %}Postmortem — Forensic Examination{% endblock %}
+{% block content %}
+
+{% if hosts.is_empty() %}
+<div class="card">
+  <p style="color:var(--text-muted);">
+    No hosts are currently online. Enroll and connect a host from
+    <a href="/admin/hosts">Hosts</a> first.
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">Pick a host to examine.</p>
+  <div class="actions">
+    {% for h in hosts %}
+    <a class="btn btn-secondary" href="/arsenals/postmortem/{{ h.id }}">{{ h.name }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

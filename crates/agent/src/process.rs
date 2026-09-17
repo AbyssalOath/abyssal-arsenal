@@ -59,6 +59,31 @@ pub async fn run_command_with_stdin(
     finish(program, output)
 }
 
+/// Like `run_command`, but never turns a non-zero exit into an `Err` --
+/// returns the raw stdout/stderr/exit code regardless of status. Some tools
+/// use a non-zero exit to mean "ran fine, found nothing" rather than
+/// "something went wrong" (`coredumpctl list` with zero recorded dumps,
+/// `find` hitting a permission-denied subdirectory while still finding
+/// everything else) -- callers that know they're dealing with one of those
+/// should use this instead of `run_command` and interpret the result
+/// themselves, rather than have a clean "nothing found" misreported as a
+/// failure.
+pub async fn run_command_allow_failure(
+    program: &str,
+    args: &[&str],
+) -> Result<OperationOutput, String> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("failed to run {program}: {e}"))?;
+    Ok(OperationOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code(),
+    })
+}
+
 fn finish(program: &str, output: std::process::Output) -> Result<OperationOutput, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

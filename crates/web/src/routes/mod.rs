@@ -10,6 +10,7 @@ pub mod hosts;
 pub mod login;
 pub mod modules;
 pub mod necrolink;
+pub mod postmortem;
 pub mod register;
 pub mod roles;
 pub mod settings;
