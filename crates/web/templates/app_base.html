@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" data-theme="{{ base.theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Abyssal Arsenal{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">Abyssal Arsenal</div>
+      <nav>
+        <a href="/">Dashboard</a>
+        {% if base.can_users_view %}<a href="/admin/users">Users</a>{% endif %}
+        {% if base.can_roles_manage %}<a href="/admin/roles">Roles</a>{% endif %}
+        {% if base.can_hosts_view %}<a href="/admin/hosts">Hosts</a>{% endif %}
+        {% if base.can_audit_view %}<a href="/admin/audit">Obituary (Audit Log)</a>{% endif %}
+        {% if base.can_modules_manage %}<a href="/admin/modules">Modules</a>{% endif %}
+        {% if base.can_settings_manage %}<a href="/admin/settings">Settings</a>{% endif %}
+
+        <div class="section-label">Session</div>
+        <form method="post" action="/theme">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="theme" value="{% if base.theme == "dark" %}light{% else %}dark{% endif %}">
+          <button type="submit" class="btn-secondary theme-toggle" style="width:100%;">
+            {% if base.theme == "dark" %}Switch to light{% else %}Switch to dark{% endif %}
+          </button>
+        </form>
+        <form method="post" action="/logout" style="margin-top:8px;">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <button type="submit" class="btn-secondary" style="width:100%;">Log out</button>
+        </form>
+      </nav>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <h1>{% block heading %}{% endblock %}</h1>
+        <div class="who">Signed in as <strong>{{ base.username }}</strong></div>
+      </div>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

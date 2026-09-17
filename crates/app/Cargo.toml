@@ -1,0 +1,50 @@
+[package]
+name = "abyssal-arsenal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "abyssal-arsenal"
+path = "src/main.rs"
+
+[dependencies]
+abyssal-core.workspace = true
+abyssal-database.workspace = true
+abyssal-auth.workspace = true
+abyssal-modules.workspace = true
+abyssal-notifications.workspace = true
+abyssal-web.workspace = true
+abyssal-execution.workspace = true
+abyssal-hosts.workspace = true
+
+arsenal-cystoolbox.workspace = true
+arsenal-cadavault.workspace = true
+arsenal-necrolink.workspace = true
+arsenal-postmortem.workspace = true
+arsenal-reliquary.workspace = true
+arsenal-mortiscope.workspace = true
+arsenal-incarnation.workspace = true
+arsenal-resurrection.workspace = true
+arsenal-necropsy.workspace = true
+arsenal-necropolis.workspace = true
+arsenal-obituary.workspace = true
+arsenal-reanimation.workspace = true
+arsenal-ossuary.workspace = true
+arsenal-catacomb.workspace = true
+arsenal-parish.workspace = true
+arsenal-apothecary.workspace = true
+arsenal-grimoire.workspace = true
+arsenal-cryptkeeper.workspace = true
+arsenal-defleshing.workspace = true
+arsenal-vivisection.workspace = true
+arsenal-inquest.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy.workspace = true
+anyhow.workspace = true
+chrono.workspace = true

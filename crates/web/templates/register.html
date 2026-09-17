@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="{{ theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create Account — Abyssal Arsenal</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="auth-shell">
+    <div class="auth-card">
+      <div class="brand">Abyssal Arsenal</div>
+      <div class="brand-subtitle">Create a new account</div>
+
+      {% if let Some(e) = error %}
+      <div class="error-banner">{{ e }}</div>
+      {% endif %}
+
+      <form method="post" action="/register">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required autofocus>
+
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required>
+
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required minlength="12">
+
+        <label for="password_confirm">Confirm password</label>
+        <input type="password" id="password_confirm" name="password_confirm" required minlength="12">
+
+        <button type="submit">Create account</button>
+      </form>
+
+      <p style="margin-top:16px;"><a href="/login">Back to sign in</a></p>
+    </div>
+  </div>
+</body>
+</html>

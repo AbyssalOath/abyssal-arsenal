@@ -1,0 +1,15 @@
+[package]
+name = "abyssal-rbac"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+abyssal-core.workspace = true
+abyssal-database.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+uuid.workspace = true

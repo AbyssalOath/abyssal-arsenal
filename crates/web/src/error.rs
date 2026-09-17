@@ -1,0 +1,50 @@
+use abyssal_core::AppError;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Redirect, Response};
+
+/// Newtype so we can implement `IntoResponse` for `AppError` despite both
+/// being defined outside this crate (Rust's orphan rule requires it).
+pub struct WebError(pub AppError);
+
+impl From<AppError> for WebError {
+    fn from(e: AppError) -> Self {
+        WebError(e)
+    }
+}
+
+impl From<anyhow::Error> for WebError {
+    fn from(e: anyhow::Error) -> Self {
+        WebError(AppError::Internal(e))
+    }
+}
+
+impl IntoResponse for WebError {
+    fn into_response(self) -> Response {
+        // Unauthenticated is special-cased to a redirect rather than a bare
+        // 401 body: nearly every route behind `CurrentUser` is a browser page,
+        // so bouncing to /login is the right default here. `/api/me` is the
+        // one caller that would prefer a plain 401 — a documented rough edge
+        // for this pass rather than splitting this type in two.
+        if matches!(self.0, AppError::Unauthenticated) {
+            return Redirect::to("/login").into_response();
+        }
+
+        let (status, message) = match &self.0 {
+            AppError::NotFound => (StatusCode::NOT_FOUND, "Not found.".to_string()),
+            AppError::Unauthenticated => unreachable!("handled above"),
+            AppError::Forbidden => (StatusCode::FORBIDDEN, "Permission denied.".to_string()),
+            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::Internal(e) => {
+                tracing::error!(error = %e, "internal server error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error.".to_string(),
+                )
+            }
+        };
+        (status, message).into_response()
+    }
+}
+
+pub type WebResult<T> = Result<T, WebError>;

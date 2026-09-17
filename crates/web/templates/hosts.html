@@ -1,0 +1,61 @@
+{% extends "app_base.html" %}
+{% block title %}Hosts — Abyssal Arsenal{% endblock %}
+{% block heading %}Managed Hosts{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted);">
+    Arsenals operate on these hosts, not on this control-plane container.
+    Generate an enrollment token, then run the <code>abyssal-agent</code>
+    binary on the target Linux host with it.
+  </p>
+  <form method="post" action="/admin/hosts/enroll-token">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit">Generate enrollment token</button>
+  </form>
+
+  {% if let Some(cmd) = enrollment_command %}
+  <div class="info-banner" style="margin-top:14px;">
+    <strong>Token expires in 15 minutes.</strong> Run this on the target host:
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ cmd }}</pre>
+  </div>
+  {% endif %}
+
+  {% if let Some(result) = action_result %}
+  <div class="info-banner" style="margin-top:14px;">
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ result }}</pre>
+  </div>
+  {% endif %}
+
+  {% if let Some(err) = action_error %}
+  <div class="error-banner" style="margin-top:14px;">{{ err }}</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Name</th><th>Status</th><th>Enrolled</th><th>Last seen</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for h in hosts %}
+      <tr>
+        <td>{{ h.name }}</td>
+        <td>
+          {% if h.online %}<span class="badge badge-success">Online</span>
+          {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
+        </td>
+        <td>{{ h.enrolled_at }}</td>
+        <td>{{ h.last_seen_at }}</td>
+        <td class="actions">
+          <form method="post" action="/admin/hosts/{{ h.id }}/system-info">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>Run System Info</button>
+          </form>
+          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">Revoke</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

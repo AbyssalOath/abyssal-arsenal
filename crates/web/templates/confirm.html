@@ -1,0 +1,16 @@
+{% extends "app_base.html" %}
+{% block title %}Confirm — Abyssal Arsenal{% endblock %}
+{% block heading %}{{ title }}{% endblock %}
+{% block content %}
+
+<div class="card kind-destructive">
+  <p>{{ message }}</p>
+  <form method="post" action="{{ action_url }}">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="confirm" value="true">
+    <button type="submit" class="btn-danger">Confirm</button>
+    <a class="btn btn-secondary" href="{{ cancel_url }}">Cancel</a>
+  </form>
+</div>
+
+{% endblock %}

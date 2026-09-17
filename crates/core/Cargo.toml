@@ -1,0 +1,16 @@
+[package]
+name = "abyssal-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+rand.workspace = true
+sha2.workspace = true

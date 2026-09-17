@@ -1,0 +1,54 @@
+# --- Build output ---
+# One shared target/ dir at the workspace root (not per-crate), so this
+# doesn't need a recursive pattern.
+/target
+
+# --- Secrets / environment ---
+# .env* covers .env, .env.local, etc. -- anything derived from .env.example
+# that install.sh or a person fills in with real values. .env.example itself
+# is intentionally NOT matched (it has no further extension after "example"
+# for this pattern to catch).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.pkcs12
+
+# Agent credentials written by `abyssal-agent run` if ever pointed at an
+# in-repo path during local testing -- the real runtime location is
+# /etc/abyssal-agent/, outside the repo entirely, but this guards against
+# a stray local-testing invocation.
+**/credentials.json
+
+# install.sh generates this from a prompted domain/IP -- environment-
+# specific, not something to commit.
+Caddyfile
+
+# Local-only Docker Compose overrides (a common convention for
+# machine-specific tweaks that shouldn't apply to every deployment).
+docker-compose.override.yml
+
+# --- Runtime data ---
+# scripts/backup-db.sh/restore-db.sh only ever produce/consume *.sql.xz, but
+# this guards against a BACKUP_DIR override landing a dump in-tree in any
+# common dump format. Deliberately NOT a bare *.sql -- migrations/*.sql is
+# tracked source, not a backup artifact.
+*.sql.gz
+*.sql.xz
+*.dump
+!/migrations/*.sql
+
+*.log
+
+# --- Editor / OS cruft ---
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

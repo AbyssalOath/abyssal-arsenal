@@ -1,0 +1,29 @@
+{% extends "app_base.html" %}
+{% block title %}Settings — Abyssal Arsenal{% endblock %}
+{% block heading %}Settings{% endblock %}
+{% block content %}
+
+{% if let Some(m) = message %}
+<div class="info-banner">{{ m }}</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0;">Public registration</h2>
+  <p style="color:var(--text-muted);">
+    When enabled, the "Create Account" link appears on the login page and anyone can self-register.
+    Disabled by default after the first administrator is created.
+  </p>
+  <form method="post" action="/admin/settings/registration">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <p>Currently:
+      {% if public_registration_enabled %}<span class="badge badge-success">Enabled</span>
+      {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+    </p>
+    <input type="hidden" name="enabled" value="{% if public_registration_enabled %}false{% else %}true{% endif %}">
+    <button type="submit">
+      {% if public_registration_enabled %}Disable registration{% else %}Enable registration{% endif %}
+    </button>
+  </form>
+</div>
+
+{% endblock %}

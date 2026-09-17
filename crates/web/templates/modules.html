@@ -1,0 +1,35 @@
+{% extends "app_base.html" %}
+{% block title %}Modules — Abyssal Arsenal{% endblock %}
+{% block heading %}Arsenal Modules{% endblock %}
+{% block content %}
+
+<div class="card">
+  <table>
+    <thead><tr><th>Arsenal</th><th>Category</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for m in modules %}
+      <tr>
+        <td>{{ m.display_name }}</td>
+        <td>{{ m.category }}</td>
+        <td>{{ m.description }}</td>
+        <td>
+          {% if m.enabled %}<span class="badge badge-success">Enabled</span>
+          {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+        </td>
+        <td class="actions">
+          <form method="post" action="/admin/modules/{{ m.key }}/toggle">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            {% if m.enabled %}
+            <button type="submit" class="btn-secondary">Disable</button>
+            {% else %}
+            <button type="submit">Enable</button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

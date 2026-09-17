@@ -1,0 +1,17 @@
+[package]
+name = "abyssal-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+abyssal-core.workspace = true
+abyssal-database.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+argon2 = { workspace = true, features = ["std"] }

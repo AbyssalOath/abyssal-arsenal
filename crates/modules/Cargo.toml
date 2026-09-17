@@ -1,0 +1,12 @@
+[package]
+name = "abyssal-modules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+abyssal-core.workspace = true
+abyssal-database.workspace = true
+abyssal-audit.workspace = true
+anyhow.workspace = true

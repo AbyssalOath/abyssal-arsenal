@@ -1,0 +1,28 @@
+[package]
+name = "abyssal-execution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+abyssal-core.workspace = true
+abyssal-rbac.workspace = true
+abyssal-audit.workspace = true
+abyssal-database.workspace = true
+abyssal-hosts.workspace = true
+abyssal-agent-protocol.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+chrono.workspace = true
+uuid.workspace = true
+sqlx.workspace = true

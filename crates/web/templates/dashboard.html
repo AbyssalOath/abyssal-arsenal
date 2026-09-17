@@ -1,0 +1,53 @@
+{% extends "app_base.html" %}
+{% block title %}Dashboard — Abyssal Arsenal{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2 style="margin-top:0;">Active tasks</h2>
+  <p style="color:var(--text-muted);">No tasks are currently running. The controlled execution layer has no
+  arsenal-triggered operations wired up yet — this panel will populate once one exists, rather than showing
+  placeholder data.</p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Recent activity</h2>
+  {% if recent_activity.is_empty() %}
+  <p style="color:var(--text-muted);">No recent activity.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>When</th><th>User</th><th>Action</th><th>Result</th></tr></thead>
+    <tbody>
+      {% for row in recent_activity %}
+      <tr>
+        <td>{{ row.occurred_at }}</td>
+        <td>{{ row.username }}</td>
+        <td>{{ row.action }}</td>
+        <td>
+          {% if row.result == "SUCCESS" %}
+          <span class="badge badge-success">{{ row.result }}</span>
+          {% else %}
+          <span class="badge badge-danger">{{ row.result }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Arsenals</h2>
+  <div class="tile-grid">
+    {% for m in modules %}
+    <a href="/arsenals/{{ m.key }}" class="tile" style="text-decoration:none; color:inherit; display:block;">
+      <div class="category">{{ m.category }}</div>
+      <h3>{{ m.display_name }}</h3>
+      <p>{{ m.description }}</p>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+{% endblock %}

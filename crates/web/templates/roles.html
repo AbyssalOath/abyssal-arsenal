@@ -1,0 +1,27 @@
+{% extends "app_base.html" %}
+{% block title %}Roles — Abyssal Arsenal{% endblock %}
+{% block heading %}Roles & Permissions{% endblock %}
+{% block content %}
+
+{% for role in roles %}
+<div class="card">
+  <h2 style="margin-top:0;">{{ role.name }}
+    {% if role.is_system %}<span class="badge badge-muted">System role</span>{% endif %}
+  </h2>
+  <p style="color:var(--text-muted);">{{ role.description }}</p>
+  <form method="post" action="/admin/roles/{{ role.id }}/permissions">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div class="tile-grid">
+      {% for perm in role.permissions %}
+      <label style="display:flex; align-items:center; gap:8px; background:var(--surface-raised); padding:8px 10px; border-radius:5px; border:1px solid var(--border);">
+        <input type="checkbox" name="permissions" value="{{ perm.key }}" {% if perm.granted %}checked{% endif %} style="width:auto; margin:0;">
+        {{ perm.key }}
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" style="margin-top:14px;">Save permissions</button>
+  </form>
+</div>
+{% endfor %}
+
+{% endblock %}

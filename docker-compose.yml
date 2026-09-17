@@ -1,0 +1,92 @@
+name: abyssal-arsenal
+
+services:
+  mariadb:
+    image: mariadb:11
+    container_name: abyssal-arsenal-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-changeme-root}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-abyssal_arsenal}
+      MARIADB_USER: ${MARIADB_USER:-abyssal}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-changeme}
+    volumes:
+      - abyssal_db_data:/var/lib/mysql
+    # Bound to localhost only -- lets scripts/migrate.sh (sqlx-cli, run on
+    # the host) and scripts/backup-db.sh reach it without exposing MariaDB
+    # to the network.
+    ports:
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # A brand-new data volume needs a one-time full initialization that
+      # can take well over a minute before MariaDB can answer any
+      # healthcheck at all -- without this, Compose gives up (5 x 10s)
+      # before init even finishes and never gets the chance to see it come
+      # up healthy. Failed checks during this window don't count against
+      # `retries`; a restart (data already initialized) starts answering in
+      # a few seconds either way.
+      start_period: 120s
+    networks:
+      - abyssal
+
+  app:
+    build: .
+    container_name: abyssal-arsenal-app
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      # Container always listens on 8080 internally (PORT below); only the
+      # host-side port is configurable, in case 8080 is already taken by
+      # something else on this machine. Set HTTP_PORT in .env to change it.
+      - "${HTTP_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: mysql://${MARIADB_USER:-abyssal}:${MARIADB_PASSWORD:-changeme}@mariadb:3306/${MARIADB_DATABASE:-abyssal_arsenal}
+      PORT: 8080
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-abyssal_session}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      RUST_LOG: ${RUST_LOG:-info}
+      STATIC_DIR: static
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - abyssal
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: abyssal-arsenal-caddy
+    restart: unless-stopped
+    profiles: ["caddy"]
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - abyssal_caddy_data:/data
+      - abyssal_caddy_config:/config
+    networks:
+      - abyssal
+
+volumes:
+  abyssal_db_data:
+  abyssal_caddy_data:
+  abyssal_caddy_config:
+
+networks:
+  abyssal:

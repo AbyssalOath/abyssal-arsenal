@@ -1,0 +1,42 @@
+{% extends "app_base.html" %}
+{% block title %}Obituary — Abyssal Arsenal{% endblock %}
+{% block heading %}Obituary — Audit Log{% endblock %}
+{% block content %}
+
+<div class="card">
+  <form method="get" action="/admin/audit" style="display:flex; gap:10px; align-items:flex-end;">
+    <div style="flex:1;">
+      <label for="action">Filter by action</label>
+      <input type="text" id="action" name="action" value="{{ action_filter }}" placeholder="e.g. LOGIN_SUCCESS">
+    </div>
+    <button type="submit" style="margin-bottom:16px;">Filter</button>
+    <a class="btn btn-secondary" style="margin-bottom:16px;" href="/admin/audit/export?action={{ action_filter }}">Export CSV</a>
+  </form>
+
+  <table>
+    <thead><tr><th>When</th><th>User</th><th>Action</th><th>Resource</th><th>Result</th><th>Source IP</th></tr></thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td>{{ e.occurred_at }}</td>
+        <td>{{ e.username }}</td>
+        <td>{{ e.action }}</td>
+        <td>{{ e.resource }}</td>
+        <td>
+          {% if e.result == "SUCCESS" %}<span class="badge badge-success">{{ e.result }}</span>
+          {% else %}<span class="badge badge-danger">{{ e.result }}</span>{% endif %}
+        </td>
+        <td>{{ e.source_ip }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="pagination">
+    {% if page > 0 %}<a href="/admin/audit?action={{ action_filter }}&page={{ page - 1 }}">&larr; Newer</a>{% endif %}
+    <span>Page {{ page + 1 }} of {{ total_pages }}</span>
+    {% if page + 1 < total_pages %}<a href="/admin/audit?action={{ action_filter }}&page={{ page + 1 }}">Older &rarr;</a>{% endif %}
+  </div>
+</div>
+
+{% endblock %}

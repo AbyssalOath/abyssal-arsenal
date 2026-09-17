@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" data-theme="{{ theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — Abyssal Arsenal</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="auth-shell">
+    <div class="auth-card">
+      <div class="brand">Abyssal Arsenal</div>
+      <div class="brand-subtitle">Self-hosted sysadmin operations platform</div>
+
+      {% if let Some(e) = error %}
+      <div class="error-banner">{{ e }}</div>
+      {% endif %}
+
+      <form method="post" action="/login">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required autofocus>
+
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+
+        <button type="submit">Sign in</button>
+      </form>
+
+      {% if registration_enabled %}
+      <p style="margin-top:16px;"><a href="/register">Create Account</a></p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

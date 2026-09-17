@@ -1,0 +1,115 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/app",
+    "crates/agent",
+    "crates/agent-protocol",
+    "crates/core",
+    "crates/database",
+    "crates/auth",
+    "crates/rbac",
+    "crates/audit",
+    "crates/notifications",
+    "crates/execution",
+    "crates/hosts",
+    "crates/modules",
+    "crates/web",
+    "crates/arsenals/cystoolbox",
+    "crates/arsenals/cadavault",
+    "crates/arsenals/necrolink",
+    "crates/arsenals/postmortem",
+    "crates/arsenals/reliquary",
+    "crates/arsenals/mortiscope",
+    "crates/arsenals/incarnation",
+    "crates/arsenals/resurrection",
+    "crates/arsenals/necropsy",
+    "crates/arsenals/necropolis",
+    "crates/arsenals/obituary",
+    "crates/arsenals/reanimation",
+    "crates/arsenals/ossuary",
+    "crates/arsenals/catacomb",
+    "crates/arsenals/parish",
+    "crates/arsenals/apothecary",
+    "crates/arsenals/grimoire",
+    "crates/arsenals/cryptkeeper",
+    "crates/arsenals/defleshing",
+    "crates/arsenals/vivisection",
+    "crates/arsenals/inquest",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+authors = ["LordSodomiser <lordsodomiser@proton.me>"]
+
+[workspace.dependencies]
+abyssal-core = { path = "crates/core" }
+abyssal-database = { path = "crates/database" }
+abyssal-auth = { path = "crates/auth" }
+abyssal-rbac = { path = "crates/rbac" }
+abyssal-audit = { path = "crates/audit" }
+abyssal-notifications = { path = "crates/notifications" }
+abyssal-execution = { path = "crates/execution" }
+abyssal-modules = { path = "crates/modules" }
+abyssal-web = { path = "crates/web" }
+abyssal-hosts = { path = "crates/hosts" }
+abyssal-agent-protocol = { path = "crates/agent-protocol" }
+
+arsenal-cystoolbox = { path = "crates/arsenals/cystoolbox" }
+arsenal-cadavault = { path = "crates/arsenals/cadavault" }
+arsenal-necrolink = { path = "crates/arsenals/necrolink" }
+arsenal-postmortem = { path = "crates/arsenals/postmortem" }
+arsenal-reliquary = { path = "crates/arsenals/reliquary" }
+arsenal-mortiscope = { path = "crates/arsenals/mortiscope" }
+arsenal-incarnation = { path = "crates/arsenals/incarnation" }
+arsenal-resurrection = { path = "crates/arsenals/resurrection" }
+arsenal-necropsy = { path = "crates/arsenals/necropsy" }
+arsenal-necropolis = { path = "crates/arsenals/necropolis" }
+arsenal-obituary = { path = "crates/arsenals/obituary" }
+arsenal-reanimation = { path = "crates/arsenals/reanimation" }
+arsenal-ossuary = { path = "crates/arsenals/ossuary" }
+arsenal-catacomb = { path = "crates/arsenals/catacomb" }
+arsenal-parish = { path = "crates/arsenals/parish" }
+arsenal-apothecary = { path = "crates/arsenals/apothecary" }
+arsenal-grimoire = { path = "crates/arsenals/grimoire" }
+arsenal-cryptkeeper = { path = "crates/arsenals/cryptkeeper" }
+arsenal-defleshing = { path = "crates/arsenals/defleshing" }
+arsenal-vivisection = { path = "crates/arsenals/vivisection" }
+arsenal-inquest = { path = "crates/arsenals/inquest" }
+
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
+axum-extra = { version = "0.9", features = ["cookie"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+http = "1"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "fs", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.7", features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "json", "migrate"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+argon2 = "0.5"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+askama = "0.12"
+askama_axum = "0.4"
+dotenvy = "0.15"
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+tokio-util = "0.7"
+strum = { version = "0.26", features = ["derive"] }
+time = "0.3"
+
+[profile.release]
+lto = true
+codegen-units = 1

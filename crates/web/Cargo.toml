@@ -1,0 +1,36 @@
+[package]
+name = "abyssal-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+abyssal-core.workspace = true
+abyssal-database.workspace = true
+abyssal-auth.workspace = true
+abyssal-rbac.workspace = true
+abyssal-audit.workspace = true
+abyssal-modules.workspace = true
+abyssal-notifications.workspace = true
+abyssal-execution.workspace = true
+abyssal-hosts.workspace = true
+abyssal-agent-protocol.workspace = true
+tokio-util.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+askama.workspace = true
+askama_axum.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+rand.workspace = true
+base64.workspace = true
+time.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
