@@ -166,6 +166,58 @@ pub async fn logged_in_users(
     .await
 }
 
+#[derive(Deserialize)]
+pub struct SetHostnameForm {
+    csrf_token: String,
+    hostname: String,
+}
+
+pub async fn set_hostname(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<SetHostnameForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let hostname = form.hostname.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_hostname(&hostname) {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid hostname (letters, digits, hyphens, and dots only; no leading/trailing hyphen).".into(),
+        )));
+    }
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            host_id,
+            &host.name,
+            AgentOperation::SetHostname {
+                hostname: hostname.clone(),
+            },
+            Permission::SystemsManage,
+            OperationKind::Write,
+            false,
+            Duration::from_secs(10),
+            None,
+        )
+        .await;
+
+    let result_label = Some(format!("Set Hostname ({hostname}) -- {}", host.name));
+    match result {
+        Ok(output) => render(&state, &jar, &ctx, result_label, Some(output.stdout), None).await,
+        Err(e) => render(&state, &jar, &ctx, result_label, None, Some(e.to_string())).await,
+    }
+}
+
 pub async fn reboot_confirm(
     State(state): State<AppState>,
     jar: CookieJar,

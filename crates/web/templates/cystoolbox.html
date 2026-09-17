@@ -44,6 +44,17 @@
     <a class="btn btn-danger" href="/arsenals/cystoolbox/{{ h.id }}/reboot/confirm">Reboot Host</a>
     {% endif %}
   </div>
+
+  {% if can_manage %}
+  <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/set-hostname" style="margin-top:14px; display:flex; gap:8px; align-items:flex-end; max-width:420px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div style="flex:1;">
+      <label for="hostname-{{ h.id }}">New hostname</label>
+      <input type="text" id="hostname-{{ h.id }}" name="hostname" placeholder="e.g. web-01" required style="margin-bottom:0;">
+    </div>
+    <button type="submit" class="btn-secondary">Set Hostname</button>
+  </form>
+  {% endif %}
 </div>
 {% endfor %}
 

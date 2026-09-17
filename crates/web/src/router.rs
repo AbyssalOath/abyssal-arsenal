@@ -83,6 +83,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::cystoolbox::logged_in_users),
         )
         .route(
+            "/arsenals/cystoolbox/:host_id/set-hostname",
+            post(routes::cystoolbox::set_hostname),
+        )
+        .route(
             "/arsenals/cystoolbox/:host_id/reboot/confirm",
             get(routes::cystoolbox::reboot_confirm),
         )

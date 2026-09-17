@@ -47,10 +47,14 @@ project is pre-release, so everything so far lives under "Unreleased".
 - **Cystoolbox arsenal** (first arsenal with real capabilities): a
   per-host admin page (`/arsenals/cystoolbox`) listing online managed hosts
   with System Overview, Resource Usage (memory + disk), and Logged-in Users
-  as read-only operations (`systems.view`), plus Reboot Host as a
-  Destructive operation (`systems.manage`) requiring explicit confirmation.
-  Proves the full Read/Destructive spectrum of the execution layer against
-  a real managed host, not just in local unit tests.
+  as read-only operations (`systems.view`); Set Hostname as a Write
+  operation (`systems.manage`, no confirmation required); and Reboot Host as
+  a Destructive operation (`systems.manage`) requiring explicit
+  confirmation. Proves the full Read/Write/Destructive spectrum of the
+  execution layer against a real managed host, not just in local unit
+  tests. Hostnames are validated (RFC 1123 label rules) on both the control
+  plane and the agent -- the agent never trusts a wire value just because
+  the control plane already checked it.
 - **Password policy**: local account passwords now require at least 15
   characters, an uppercase letter, a lowercase letter, a number, and a
   special character, enforced server-side (`abyssal_auth::password::
@@ -74,6 +78,16 @@ project is pre-release, so everything so far lives under "Unreleased".
   `cargo fmt --check`, and a Docker build-validation job on every push/PR;
   separate workflows publish the control-plane image to GHCR and package
   release binaries for both `abyssal-arsenal` and `abyssal-agent`.
+
+### Fixed
+
+- `abyssal-agent`'s command runner now treats a non-zero exit code as a
+  failure, not just a spawn error. Previously, a command that ran but
+  failed partway (e.g. `hostnamectl` refusing for lack of privilege) came
+  back as a reported success with empty-looking output -- silently
+  claiming something happened when it hadn't. Caught while verifying Set
+  Hostname; the same fix applies to every operation, including Reboot,
+  where reporting a failed reboot as successful would have been worse.
 
 ### Changed
 
