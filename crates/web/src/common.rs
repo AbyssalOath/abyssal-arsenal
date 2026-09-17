@@ -9,12 +9,25 @@ use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::csrf;
 use crate::error::WebError;
 use crate::state::AppState;
+
+/// Renders a UTC timestamp (everything is stored in UTC) in `tz_name`
+/// (an IANA name, e.g. `"America/Chicago"`, as stored on `User::timezone`).
+/// Falls back to UTC if `tz_name` somehow isn't a real zone -- this is
+/// display-only, so a bad value here should never become a hard error for
+/// an otherwise-unrelated page.
+pub fn format_in_tz(dt: DateTime<Utc>, tz_name: &str) -> String {
+    let tz: chrono_tz::Tz = tz_name.parse().unwrap_or(chrono_tz::UTC);
+    dt.with_timezone(&tz)
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string()
+}
 
 pub fn require_csrf(jar: &CookieJar, submitted: &str) -> Result<(), WebError> {
     if csrf::verify(jar, submitted) {

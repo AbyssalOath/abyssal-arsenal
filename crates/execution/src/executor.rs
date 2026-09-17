@@ -299,6 +299,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 last_login_at: None,
+                timezone: "UTC".into(),
             },
             permissions: permissions.iter().copied().collect::<HashSet<_>>(),
         }

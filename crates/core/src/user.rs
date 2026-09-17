@@ -34,4 +34,10 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
+    /// An IANA timezone name (e.g. `"America/Chicago"`), used to render
+    /// this user's own view of every timestamp in the app. Defaults to
+    /// `"UTC"` at the database level; this crate stores it as a plain
+    /// string rather than depending on `chrono-tz` itself -- parsing and
+    /// display are display-layer concerns, handled in `abyssal-web`.
+    pub timezone: String,
 }

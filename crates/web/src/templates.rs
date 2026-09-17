@@ -12,6 +12,15 @@ pub struct ElevatedHostView {
     pub remaining: String,
 }
 
+/// One IANA timezone name for the account-menu `<select>`, with the
+/// comparison against the user's current choice done server-side rather
+/// than in the template -- same pattern as `PermissionRow::granted`.
+#[derive(Clone)]
+pub struct TimezoneOption {
+    pub name: &'static str,
+    pub selected: bool,
+}
+
 /// Shared chrome context every authenticated page template embeds: identity,
 /// theme, the CSRF token forms must echo back, and which admin nav links this
 /// user is even allowed to see. The links are a convenience — every one of
@@ -32,6 +41,10 @@ pub struct BaseCtx {
     /// drives the nav button's red pulse.
     pub apotheosis_active: bool,
     pub elevated_hosts: Vec<ElevatedHostView>,
+    /// This user's own chosen IANA timezone name, used to render every
+    /// timestamp in the app from their point of view.
+    pub timezone: String,
+    pub available_timezones: Vec<TimezoneOption>,
 }
 
 impl BaseCtx {
@@ -51,6 +64,17 @@ impl BaseCtx {
             })
             .collect::<Vec<_>>();
 
+        let mut zone_names: Vec<&'static str> =
+            chrono_tz::TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
+        zone_names.sort_unstable();
+        let available_timezones = zone_names
+            .into_iter()
+            .map(|name| TimezoneOption {
+                name,
+                selected: name == ctx.user.timezone,
+            })
+            .collect();
+
         Self {
             username: ctx.user.username.clone(),
             theme: theme.to_string(),
@@ -64,6 +88,8 @@ impl BaseCtx {
             can_hosts_elevate: ctx.has(Permission::HostsElevate),
             apotheosis_active: !elevated_hosts.is_empty(),
             elevated_hosts,
+            timezone: ctx.user.timezone.clone(),
+            available_timezones,
         }
     }
 }

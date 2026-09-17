@@ -58,10 +58,10 @@ async fn render(
         hosts.push(HostRow {
             id: host.id.to_string(),
             name: host.name.clone(),
-            enrolled_at: host.enrolled_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            enrolled_at: crate::common::format_in_tz(host.enrolled_at, &ctx.user.timezone),
             last_seen_at: host
                 .last_seen_at
-                .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .map(|t| crate::common::format_in_tz(t, &ctx.user.timezone))
                 .unwrap_or_else(|| "never".to_string()),
             online: state.hosts.is_connected(host.id),
             revoked: host.revoked_at.is_some(),

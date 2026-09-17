@@ -39,10 +39,7 @@ pub async fn show(
             .await?
             .into_iter()
             .map(|e| ActivityRow {
-                occurred_at: e
-                    .occurred_at_utc()
-                    .format("%Y-%m-%d %H:%M:%S UTC")
-                    .to_string(),
+                occurred_at: crate::common::format_in_tz(e.occurred_at_utc(), &ctx.user.timezone),
                 username: e.username_snapshot,
                 action: e.action,
                 result: e.result,

@@ -27,6 +27,7 @@ serde_json.workspace = true
 askama.workspace = true
 askama_axum.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 rand.workspace = true

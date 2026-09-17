@@ -54,10 +54,7 @@ pub async fn list(
         .await?
         .into_iter()
         .map(|e| AuditRow {
-            occurred_at: e
-                .occurred_at_utc()
-                .format("%Y-%m-%d %H:%M:%S UTC")
-                .to_string(),
+            occurred_at: crate::common::format_in_tz(e.occurred_at_utc(), &ctx.user.timezone),
             username: e.username_snapshot,
             action: e.action,
             resource: e.resource.unwrap_or_default(),

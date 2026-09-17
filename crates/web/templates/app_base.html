@@ -43,7 +43,7 @@
       {% endif %}
       <details class="user-menu">
         <summary>Signed in as <strong>{{ base.username }}</strong></summary>
-        <div class="user-menu-panel">
+        <div class="user-menu-panel" style="min-width:220px;">
           <form method="post" action="/theme">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
             <input type="hidden" name="theme" value="{% if base.theme == "dark" %}light{% else %}dark{% endif %}">
@@ -51,7 +51,17 @@
               {% if base.theme == "dark" %}Switch to light{% else %}Switch to dark{% endif %}
             </button>
           </form>
-          <form method="post" action="/logout">
+          <form method="post" action="/account/timezone" style="margin-top:8px;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <label for="timezone-select" style="font-size:0.78rem;">Timezone</label>
+            <select id="timezone-select" name="timezone" style="width:100%; margin-bottom:8px;">
+              {% for tz in base.available_timezones %}
+              <option value="{{ tz.name }}" {% if tz.selected %}selected{% endif %}>{{ tz.name }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn-secondary" style="width:100%;">Save timezone</button>
+          </form>
+          <form method="post" action="/logout" style="margin-top:8px;">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
             <button type="submit" class="btn-secondary" style="width:100%;">Log out</button>
           </form>

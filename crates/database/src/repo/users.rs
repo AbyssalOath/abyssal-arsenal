@@ -17,6 +17,7 @@ struct UserRow {
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
     last_login_at: Option<NaiveDateTime>,
+    timezone: String,
 }
 
 fn utc(naive: NaiveDateTime) -> DateTime<Utc> {
@@ -36,6 +37,7 @@ impl From<UserRow> for User {
             created_at: utc(row.created_at),
             updated_at: utc(row.updated_at),
             last_login_at: row.last_login_at.map(utc),
+            timezone: row.timezone,
         }
     }
 }
@@ -131,6 +133,18 @@ pub async fn update_password(
 
 pub async fn touch_last_login(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
     sqlx::query("UPDATE users SET last_login_at = CURRENT_TIMESTAMP(6) WHERE id = ?")
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Sets a user's own display timezone. Callers are expected to have already
+/// validated `timezone` against a real IANA name (see
+/// `crates/web/src/routes/account.rs`) -- this layer just persists it.
+pub async fn set_timezone(pool: &DbPool, id: Uuid, timezone: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE users SET timezone = ? WHERE id = ?")
+        .bind(timezone)
         .bind(id.to_string())
         .execute(pool)
         .await?;

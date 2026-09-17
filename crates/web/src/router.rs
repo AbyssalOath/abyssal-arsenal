@@ -26,6 +26,7 @@ pub fn build(state: AppState) -> Router {
             get(routes::register::show).post(routes::register::submit),
         )
         .route("/theme", post(routes::theme::set))
+        .route("/account/timezone", post(routes::account::set_timezone))
         .route("/style-guide", get(routes::style_guide::show))
         .route("/admin/users", get(routes::users::list))
         .route("/admin/users/create", post(routes::users::create))
