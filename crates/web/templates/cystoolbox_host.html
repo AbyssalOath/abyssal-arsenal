@@ -13,6 +13,14 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
   <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
     <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
     {% if let Some(output) = result_output %}

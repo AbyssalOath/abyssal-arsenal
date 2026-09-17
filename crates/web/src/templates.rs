@@ -242,6 +242,10 @@ pub struct HostRow {
     pub online: bool,
     pub revoked: bool,
     pub elevation_remaining: Option<String>,
+    /// True when this host is currently connected but its agent's reported
+    /// (or missing) protocol version doesn't match this control plane's --
+    /// see `abyssal_hosts::HostConnectionRegistry::agent_protocol_mismatch`.
+    pub protocol_mismatch: bool,
 }
 
 #[derive(Template)]
@@ -314,6 +318,8 @@ pub struct CystoolboxHostTemplate {
     /// True when this host is believed already elevated -- hides the sudo
     /// password fields on every action form when true.
     pub elevated: bool,
+    /// True when connected but the agent's protocol version doesn't match.
+    pub protocol_mismatch: bool,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -339,6 +345,8 @@ pub struct CadavaultHostTemplate {
     pub host_name: String,
     pub can_manage: bool,
     pub elevated: bool,
+    /// True when connected but the agent's protocol version doesn't match.
+    pub protocol_mismatch: bool,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -367,6 +375,8 @@ pub struct NecrolinkHostTemplate {
     /// (`network.manage`), Super Admin only by default.
     pub can_scan: bool,
     pub elevated: bool,
+    /// True when connected but the agent's protocol version doesn't match.
+    pub protocol_mismatch: bool,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,

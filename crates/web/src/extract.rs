@@ -56,7 +56,15 @@ impl FromRequestParts<AppState> for CurrentUser {
 /// Authenticates a managed host's agent connection via a `Bearer` credential
 /// — deliberately separate from `CurrentUser`: an agent is not a logged-in
 /// browser session, has no CSRF token, and must never be treated as one.
-pub struct AgentAuth(pub Host);
+/// Also captures the agent's self-reported protocol version (if any) off
+/// the same request, since both are read from the connection's headers at
+/// the same point — see `abyssal_agent_protocol::PROTOCOL_VERSION`. `None`
+/// means the header was missing or unparseable, which is itself meaningful:
+/// it's what every agent build that predates version reporting will send.
+pub struct AgentAuth {
+    pub host: Host,
+    pub protocol_version: Option<u32>,
+}
 
 /// Distinct from `WebError` on purpose: an agent is a machine client, not a
 /// browser — it must get a plain 401/500, never `WebError`'s
@@ -100,6 +108,15 @@ impl FromRequestParts<AppState> for AgentAuth {
             return Err(AgentAuthError(StatusCode::FORBIDDEN));
         }
 
-        Ok(AgentAuth(host))
+        let protocol_version = parts
+            .headers
+            .get("X-Agent-Protocol-Version")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u32>().ok());
+
+        Ok(AgentAuth {
+            host,
+            protocol_version,
+        })
     }
 }

@@ -62,6 +62,8 @@
           {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
           {% if let Some(remaining) = h.elevation_remaining %}<span class="badge badge-elevated">Elevated ({{ remaining }})</span>
           {% endif %}
+          {% if h.protocol_mismatch %}<span class="badge badge-warning" title="This agent's protocol version doesn't match the control plane's -- rebuild and redeploy abyssal-agent on this host.">{% call macros::icon("warning") %} Agent out of date</span>
+          {% endif %}
         </td>
         <td>{{ h.enrolled_at }}</td>
         <td>{{ h.last_seen_at }}</td>

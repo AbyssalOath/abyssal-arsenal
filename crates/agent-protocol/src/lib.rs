@@ -13,6 +13,21 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Bumped whenever a change here could break an older agent build's ability
+/// to deserialize a message from the control plane -- most commonly, adding
+/// a new `AgentOperation` variant (an agent that predates it has no match
+/// arm for it and fails to deserialize the whole `ServerMessage`, which
+/// disconnects it). The agent reports this over an HTTP header on every
+/// connection (`X-Agent-Protocol-Version`, see `crates/agent/src/transport.rs`);
+/// the control plane compares it against its own copy of this constant and
+/// surfaces a mismatch in the UI rather than letting a stale agent silently
+/// disconnect/reconnect in a loop the moment it's sent an operation it
+/// doesn't recognize. This is a coarse, conservative signal, not a real
+/// compatibility check -- an old agent might still handle every operation
+/// actually sent to it, but there's no cheap way to know that in advance,
+/// so any change here just calls the whole build "out of date."
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
     /// Pure connectivity/liveness check — no work performed.

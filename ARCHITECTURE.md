@@ -225,6 +225,29 @@ sysadmin capability an arsenal needs on a host means adding a variant to
 `agent-protocol` and a handler in `crates/agent/src/ops.rs` -- there is no
 path from a wire message to running something outside that fixed list.
 
+**Protocol versioning.** A stale agent build (one compiled before some
+`AgentOperation` variant it's now being sent) fails to deserialize the
+`ServerMessage` and disconnects -- its own reconnect loop then quietly
+brings it back online, which used to make a real incompatibility look like
+a transient network blip. `agent-protocol::PROTOCOL_VERSION` exists to make
+that loud instead: the agent sends it as an `X-Agent-Protocol-Version`
+header on every connection, the control plane compares it against its own
+copy, and a mismatch (including an agent old enough to predate this header
+entirely) shows a warning banner on that host's pages
+(`HostConnectionRegistry::agent_protocol_mismatch`) rather than silently
+flapping. **Bump this constant whenever a change here could break an older
+agent's ability to deserialize a message** -- most commonly, adding a new
+`AgentOperation` variant. This is a coarse, conservative signal, not a real
+compatibility check: an old agent might still handle everything actually
+sent to it, but there's no cheap way to know that in advance, so any wire
+change just calls the whole build "out of date." There is deliberately no
+remote/self-update mechanism -- the agent only ever running its fixed,
+named whitelist (never arbitrary code from the wire) is the actual security
+boundary, and a binary-push update would mean the control plane could push
+arbitrary code to every enrolled host, which is a categorically different
+risk. Redeploying a flagged agent is a manual step (rebuild, reinstall,
+restart -- see `crates/agent/README.md`).
+
 ### Apotheosis: time-boxed sudo elevation
 
 Rather than requiring the agent to run permanently as root, an admin with

@@ -79,14 +79,31 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
 pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    AgentAuth(host): AgentAuth,
+    AgentAuth {
+        host,
+        protocol_version,
+    }: AgentAuth,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, host))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, host, protocol_version))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState, host: Host) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    host: Host,
+    protocol_version: Option<u32>,
+) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(16);
-    state.hosts.register(host.id, tx);
+    state.hosts.register(host.id, tx, protocol_version);
+    if state.hosts.agent_protocol_mismatch(host.id) {
+        tracing::warn!(
+            host_id = %host.id,
+            name = %host.name,
+            ?protocol_version,
+            control_plane_version = abyssal_agent_protocol::PROTOCOL_VERSION,
+            "agent connected with a mismatched or unreported protocol version -- it may be running a stale build",
+        );
+    }
     tracing::info!(host_id = %host.id, name = %host.name, "agent connected");
     if let Err(e) = repo::hosts::touch_last_seen(&state.pool, host.id).await {
         tracing::warn!(error = %e, "failed to record host connection time");

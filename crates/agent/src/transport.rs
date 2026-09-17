@@ -1,4 +1,4 @@
-use abyssal_agent_protocol::{AgentMessage, ServerMessage};
+use abyssal_agent_protocol::{AgentMessage, ServerMessage, PROTOCOL_VERSION};
 use futures_util::{SinkExt, StreamExt};
 use http::{Request, Uri};
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
@@ -36,6 +36,7 @@ pub async fn connect_and_serve(
         .uri(ws_url)
         .header("Host", authority)
         .header("Authorization", format!("Bearer {credential}"))
+        .header("X-Agent-Protocol-Version", PROTOCOL_VERSION.to_string())
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")

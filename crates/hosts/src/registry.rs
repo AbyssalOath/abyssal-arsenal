@@ -19,6 +19,18 @@ pub enum DispatchError {
 
 struct Connection {
     sender: mpsc::Sender<ServerMessage>,
+    protocol_version: Option<u32>,
+}
+
+/// What's known about a connected agent's protocol compatibility, for the UI
+/// to surface -- see `abyssal_agent_protocol::PROTOCOL_VERSION`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentProtocolStatus {
+    NotConnected,
+    /// Connected, but reported no version at all -- every agent build that
+    /// predates version reporting looks like this.
+    Unknown,
+    Version(u32),
 }
 
 /// Tracks which hosts currently have a live agent connection and routes
@@ -39,11 +51,19 @@ impl HostConnectionRegistry {
         Self::default()
     }
 
-    pub fn register(&self, host_id: Uuid, sender: mpsc::Sender<ServerMessage>) {
-        self.connections
-            .lock()
-            .unwrap()
-            .insert(host_id, Connection { sender });
+    pub fn register(
+        &self,
+        host_id: Uuid,
+        sender: mpsc::Sender<ServerMessage>,
+        protocol_version: Option<u32>,
+    ) {
+        self.connections.lock().unwrap().insert(
+            host_id,
+            Connection {
+                sender,
+                protocol_version,
+            },
+        );
     }
 
     /// Also fails any dispatch still waiting on a response from this host
@@ -66,6 +86,30 @@ impl HostConnectionRegistry {
 
     pub fn is_connected(&self, host_id: Uuid) -> bool {
         self.connections.lock().unwrap().contains_key(&host_id)
+    }
+
+    pub fn agent_protocol_status(&self, host_id: Uuid) -> AgentProtocolStatus {
+        match self.connections.lock().unwrap().get(&host_id) {
+            None => AgentProtocolStatus::NotConnected,
+            Some(Connection {
+                protocol_version: None,
+                ..
+            }) => AgentProtocolStatus::Unknown,
+            Some(Connection {
+                protocol_version: Some(v),
+                ..
+            }) => AgentProtocolStatus::Version(*v),
+        }
+    }
+
+    /// True only while connected -- an offline host already shows as
+    /// offline, so there's nothing extra to flag until it reconnects.
+    pub fn agent_protocol_mismatch(&self, host_id: Uuid) -> bool {
+        match self.agent_protocol_status(host_id) {
+            AgentProtocolStatus::NotConnected => false,
+            AgentProtocolStatus::Unknown => true,
+            AgentProtocolStatus::Version(v) => v != abyssal_agent_protocol::PROTOCOL_VERSION,
+        }
     }
 
     /// Routes a response already unwrapped from `AgentMessage::Response` to
@@ -143,7 +187,7 @@ mod tests {
         let registry = HostConnectionRegistry::new();
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(1);
-        registry.register(host_id, tx);
+        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
 
         // Drain the command so the channel doesn't fill up, but never reply.
         tokio::spawn(async move {
@@ -161,7 +205,7 @@ mod tests {
         let registry = std::sync::Arc::new(HostConnectionRegistry::new());
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(1);
-        registry.register(host_id, tx);
+        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
 
         let registry_clone = registry.clone();
         tokio::spawn(async move {
@@ -188,7 +232,7 @@ mod tests {
         let registry = std::sync::Arc::new(HostConnectionRegistry::new());
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(1);
-        registry.register(host_id, tx);
+        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
 
         let registry_clone = registry.clone();
         tokio::spawn(async move {
@@ -211,5 +255,44 @@ mod tests {
             Ok(CommandOutcome::Ok(output)) => assert_eq!(output.stdout, "pong"),
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn protocol_status_and_mismatch_by_connection_state() {
+        let registry = HostConnectionRegistry::new();
+        let host_id = Uuid::new_v4();
+
+        assert_eq!(
+            registry.agent_protocol_status(host_id),
+            AgentProtocolStatus::NotConnected
+        );
+        assert!(!registry.agent_protocol_mismatch(host_id));
+
+        let (tx, _rx) = mpsc::channel(1);
+        registry.register(host_id, tx, None);
+        assert_eq!(
+            registry.agent_protocol_status(host_id),
+            AgentProtocolStatus::Unknown
+        );
+        assert!(
+            registry.agent_protocol_mismatch(host_id),
+            "an agent reporting no version at all should be flagged as mismatched"
+        );
+
+        let (tx, _rx) = mpsc::channel(1);
+        registry.register(
+            host_id,
+            tx,
+            Some(abyssal_agent_protocol::PROTOCOL_VERSION + 1),
+        );
+        assert!(registry.agent_protocol_mismatch(host_id));
+
+        let (tx, _rx) = mpsc::channel(1);
+        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
+        assert_eq!(
+            registry.agent_protocol_status(host_id),
+            AgentProtocolStatus::Version(abyssal_agent_protocol::PROTOCOL_VERSION)
+        );
+        assert!(!registry.agent_protocol_mismatch(host_id));
     }
 }

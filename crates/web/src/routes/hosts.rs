@@ -66,6 +66,7 @@ async fn render(
             online: state.hosts.is_connected(host.id),
             revoked: host.revoked_at.is_some(),
             elevation_remaining,
+            protocol_mismatch: state.hosts.agent_protocol_mismatch(host.id),
         });
     }
 

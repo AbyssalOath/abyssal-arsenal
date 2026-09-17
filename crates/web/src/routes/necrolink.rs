@@ -70,6 +70,7 @@ async fn render_host(
         can_manage: ctx.has(Permission::NetworkManage),
         can_scan: ctx.has(Permission::NetworkScan),
         elevated: state.elevation.is_elevated(host_id),
+        protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         base,
         host_id: host_id.to_string(),
         host_name: host.name,

@@ -403,6 +403,7 @@ th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transf
 .badge-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
 .badge-muted { background: var(--surface-raised); color: var(--text-muted); }
 .badge-elevated { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
+.badge-warning { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
 
 .status-strip { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 
