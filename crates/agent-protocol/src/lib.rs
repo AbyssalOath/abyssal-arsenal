@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -201,6 +201,37 @@ pub enum AgentOperation {
     /// Currently-failed systemd units (`systemctl --failed`) -- a direct
     /// "is anything broken right now" health signal. systemd-only.
     FailedServices,
+    /// Every systemd service unit and its current state
+    /// (`systemctl list-units --type=service --all`).
+    ListServices,
+    /// Detailed status for one unit (`systemctl status`) -- active/inactive,
+    /// recent log lines, and process info. systemd's own exit code for this
+    /// reflects the unit's state (0 active, non-zero otherwise), not
+    /// whether the command itself succeeded, so a "stopped" unit is a
+    /// perfectly normal result here, not an error.
+    ServiceStatus { unit: String },
+    /// The last 50 journal lines for one unit (`journalctl -u`).
+    ServiceLogs { unit: String },
+    /// Starts a stopped unit. Write -- a real mutation, but not
+    /// irreversible (stopping it again undoes it), so it doesn't require
+    /// the explicit confirmation a `Destructive` operation does.
+    StartService { unit: String },
+    /// Stops a running unit. Destructive: whatever the unit was providing
+    /// becomes unavailable immediately, so the control plane requires
+    /// explicit confirmation before ever dispatching this.
+    StopService { unit: String },
+    /// Restarts a unit. Destructive for the same reason as `StopService`
+    /// -- a brief outage is guaranteed, and if the unit is what's carrying
+    /// the connection used to manage this host (e.g. `sshd`), restarting
+    /// it can cut that connection.
+    RestartService { unit: String },
+    /// Enables a unit to start automatically at boot, without touching
+    /// whether it's running right now. Write -- additive, not disruptive.
+    EnableService { unit: String },
+    /// Disables a unit from starting automatically at boot, without
+    /// touching whether it's running right now. Write, not Destructive --
+    /// the currently-running instance (if any) is unaffected.
+    DisableService { unit: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -303,6 +334,30 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::MemoryDetail => write!(f, "MemoryDetail"),
             AgentOperation::DiskIoStats => write!(f, "DiskIoStats"),
             AgentOperation::FailedServices => write!(f, "FailedServices"),
+            AgentOperation::ListServices => write!(f, "ListServices"),
+            AgentOperation::ServiceStatus { unit } => {
+                f.debug_struct("ServiceStatus").field("unit", unit).finish()
+            }
+            AgentOperation::ServiceLogs { unit } => {
+                f.debug_struct("ServiceLogs").field("unit", unit).finish()
+            }
+            AgentOperation::StartService { unit } => {
+                f.debug_struct("StartService").field("unit", unit).finish()
+            }
+            AgentOperation::StopService { unit } => {
+                f.debug_struct("StopService").field("unit", unit).finish()
+            }
+            AgentOperation::RestartService { unit } => f
+                .debug_struct("RestartService")
+                .field("unit", unit)
+                .finish(),
+            AgentOperation::EnableService { unit } => {
+                f.debug_struct("EnableService").field("unit", unit).finish()
+            }
+            AgentOperation::DisableService { unit } => f
+                .debug_struct("DisableService")
+                .field("unit", unit)
+                .finish(),
         }
     }
 }
@@ -482,6 +537,20 @@ pub fn is_valid_absolute_path(path: &str) -> bool {
         && path.chars().all(|c| !c.is_control())
 }
 
+/// A systemd unit name (e.g. `"sshd.service"`, `"nginx"`,
+/// `"getty@tty1.service"`). Letters, digits, and the punctuation systemd
+/// itself allows in unit names (`-_.:@`) only, and never starting with
+/// `-` -- the argument-injection defense, same reasoning as every other
+/// validator here: this can never spell out a different flag.
+pub fn is_valid_unit_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 256
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '@'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +722,22 @@ mod tests {
         assert!(!is_valid_absolute_path("/"));
         assert!(!is_valid_absolute_path("/etc\nmalicious"));
         assert!(!is_valid_absolute_path(&format!("/{}", "a".repeat(4096))));
+    }
+
+    #[test]
+    fn accepts_reasonable_unit_names() {
+        assert!(is_valid_unit_name("sshd.service"));
+        assert!(is_valid_unit_name("nginx"));
+        assert!(is_valid_unit_name("getty@tty1.service"));
+        assert!(is_valid_unit_name("docker.socket"));
+    }
+
+    #[test]
+    fn rejects_malformed_unit_names() {
+        assert!(!is_valid_unit_name(""));
+        assert!(!is_valid_unit_name("-sshd"));
+        assert!(!is_valid_unit_name("sshd; rm -rf /"));
+        assert!(!is_valid_unit_name("sshd service"));
+        assert!(!is_valid_unit_name(&"a".repeat(257)));
     }
 }

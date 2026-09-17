@@ -7,6 +7,7 @@ pub mod cadavault;
 pub mod cystoolbox;
 pub mod dashboard;
 pub mod hosts;
+pub mod incarnation;
 pub mod login;
 pub mod modules;
 pub mod mortiscope;

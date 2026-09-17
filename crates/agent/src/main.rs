@@ -1,6 +1,7 @@
 mod elevation;
 mod enroll;
 mod firewall;
+mod incarnation;
 mod init_system;
 mod mortiscope;
 mod network;

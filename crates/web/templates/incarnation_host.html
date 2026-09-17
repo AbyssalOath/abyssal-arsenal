@@ -1,0 +1,130 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Incarnation — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Incarnation — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/incarnation">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <p style="color:var(--text-muted); margin-top:0;">systemd services only -- this arsenal doesn't assume any particular application stack.</p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/incarnation/{{ host_id }}/list">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} List Services</button>
+    </form>
+    <form method="post" action="/arsenals/incarnation/{{ host_id }}/status">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="status-unit">Unit</label>
+      <input type="text" id="status-unit" name="unit" placeholder="e.g. sshd.service" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="status-password">Sudo password (if needed)</label>
+      <input type="password" id="status-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Service Status</button>
+    </form>
+    <form method="post" action="/arsenals/incarnation/{{ host_id }}/logs">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="logs-unit">Unit</label>
+      <input type="text" id="logs-unit" name="unit" placeholder="e.g. sshd.service" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="logs-password">Sudo password (if needed)</label>
+      <input type="password" id="logs-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Service Logs</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/incarnation/{{ host_id }}/start">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="start-unit">Unit</label>
+      <input type="text" id="start-unit" name="unit" placeholder="e.g. sshd.service" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="start-password">Sudo password (if needed)</label>
+      <input type="password" id="start-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Start</button>
+    </form>
+    <form method="post" action="/arsenals/incarnation/{{ host_id }}/enable">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="enable-unit">Unit</label>
+      <input type="text" id="enable-unit" name="unit" placeholder="e.g. sshd.service" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="enable-password">Sudo password (if needed)</label>
+      <input type="password" id="enable-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Enable at Boot</button>
+    </form>
+    <form method="post" action="/arsenals/incarnation/{{ host_id }}/disable">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="disable-unit">Unit</label>
+      <input type="text" id="disable-unit" name="unit" placeholder="e.g. sshd.service" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="disable-password">Sudo password (if needed)</label>
+      <input type="password" id="disable-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Disable at Boot</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Stopping or restarting a unit interrupts whatever it provides -- if it's carrying your
+    connection to this host (e.g. sshd), that includes you.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/incarnation/{{ host_id }}/stop/confirm">
+      <label for="stop-unit">Unit</label>
+      <input type="text" id="stop-unit" name="unit" placeholder="e.g. sshd.service" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Stop&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/incarnation/{{ host_id }}/restart/confirm">
+      <label for="restart-unit">Unit</label>
+      <input type="text" id="restart-unit" name="unit" placeholder="e.g. sshd.service" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("reboot") %} Restart&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

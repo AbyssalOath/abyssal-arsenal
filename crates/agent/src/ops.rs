@@ -3,7 +3,10 @@ use zeroize::Zeroizing;
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-use crate::{firewall, mortiscope, network, obituary, postmortem, process::run_command, reliquary};
+use crate::{
+    firewall, incarnation, mortiscope, network, obituary, postmortem, process::run_command,
+    reliquary,
+};
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
@@ -83,6 +86,22 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::MemoryDetail => mortiscope::memory_detail(elevation).await,
         AgentOperation::DiskIoStats => mortiscope::disk_io_stats(elevation).await,
         AgentOperation::FailedServices => mortiscope::failed_services(elevation).await,
+        AgentOperation::ListServices => incarnation::list_services(elevation).await,
+        AgentOperation::ServiceStatus { unit } => {
+            incarnation::service_status(unit, elevation).await
+        }
+        AgentOperation::ServiceLogs { unit } => incarnation::service_logs(unit, elevation).await,
+        AgentOperation::StartService { unit } => incarnation::start_service(unit, elevation).await,
+        AgentOperation::StopService { unit } => incarnation::stop_service(unit, elevation).await,
+        AgentOperation::RestartService { unit } => {
+            incarnation::restart_service(unit, elevation).await
+        }
+        AgentOperation::EnableService { unit } => {
+            incarnation::enable_service(unit, elevation).await
+        }
+        AgentOperation::DisableService { unit } => {
+            incarnation::disable_service(unit, elevation).await
+        }
     }
 }
 

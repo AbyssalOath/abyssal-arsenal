@@ -329,6 +329,51 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/mortiscope/:host_id/failed-services",
             post(routes::mortiscope::failed_services),
         )
+        .route("/arsenals/incarnation", get(routes::incarnation::show))
+        .route(
+            "/arsenals/incarnation/:host_id",
+            get(routes::incarnation::show_host),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/list",
+            post(routes::incarnation::list_services),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/status",
+            post(routes::incarnation::service_status),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/logs",
+            post(routes::incarnation::service_logs),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/start",
+            post(routes::incarnation::start_service),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/enable",
+            post(routes::incarnation::enable_service),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/disable",
+            post(routes::incarnation::disable_service),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/stop/confirm",
+            get(routes::incarnation::stop_confirm),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/stop",
+            post(routes::incarnation::stop_service),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/restart/confirm",
+            get(routes::incarnation::restart_confirm),
+        )
+        .route(
+            "/arsenals/incarnation/:host_id/restart",
+            post(routes::incarnation::restart_service),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))
