@@ -14,9 +14,12 @@ services:
       - abyssal_db_data:/var/lib/mysql
     # Bound to localhost only -- lets scripts/migrate.sh (sqlx-cli, run on
     # the host) and scripts/backup-db.sh reach it without exposing MariaDB
-    # to the network.
+    # to the network. Container always listens on 3306 internally; only the
+    # host-side port is configurable, in case 3306 is already taken by
+    # another MySQL/MariaDB instance on this machine. Set DB_PORT in .env
+    # to change it.
     ports:
-      - "127.0.0.1:3306:3306"
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s

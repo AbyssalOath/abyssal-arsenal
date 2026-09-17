@@ -19,6 +19,14 @@ if ! command -v openssl &> /dev/null; then
         exit 1
 fi
 
+# --- Port availability helper ---
+# Needed below both for the database's host-side port (DATABASE_URL is
+# generated as part of .env, so this has to run before that) and again
+# further down for HTTP_PORT.
+port_in_use() {
+        (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
 # --- Generate .env if it doesn't exist ---
 if [ -f .env ]; then
         echo ".env already exists -- skipping secret generation (existing install detected)."
@@ -27,26 +35,41 @@ else
         MARIADB_ROOT_PASSWORD=$(openssl rand -hex 24)
         MARIADB_PASSWORD=$(openssl rand -hex 24)
 
+        # --- Host port (database) ---
+        # MariaDB is bound to 127.0.0.1 only (see docker-compose.yml) so host-side
+        # tooling (scripts/migrate.sh, sqlx-cli) can reach it without exposing it to
+        # the network; only the host-side port is configurable, in case 3306 is
+        # already taken by another MySQL/MariaDB instance on this machine. Resolved
+        # here, before .env generation, since DATABASE_URL below needs it.
+        default_db_port=3306
+        while port_in_use "$default_db_port"; do
+                default_db_port=$((default_db_port + 1))
+        done
+        if [ "$default_db_port" != "3306" ]; then
+                echo ""
+                echo "Port 3306 already looks taken on this machine (another MySQL/MariaDB?)."
+        fi
+        echo ""
+        read -rp "Host port to expose MariaDB on [default: ${default_db_port}]: " db_port
+        db_port=${db_port:-$default_db_port}
+
         cat > .env << EOF
 MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
 MARIADB_DATABASE=abyssal_arsenal
 MARIADB_USER=abyssal
 MARIADB_PASSWORD=${MARIADB_PASSWORD}
-DATABASE_URL=mysql://abyssal:${MARIADB_PASSWORD}@127.0.0.1:3306/abyssal_arsenal
+DB_PORT=${db_port}
+DATABASE_URL=mysql://abyssal:${MARIADB_PASSWORD}@127.0.0.1:${db_port}/abyssal_arsenal
 EOF
 
         chmod 600 .env # restrict readability to the owning user only
         echo ".env generated with strong random secrets."
 fi
 
-# --- Host port ---
+# --- Host port (web) ---
 # The container always listens on 8080 internally; only the host-side
 # mapping is configurable (docker-compose.yml's HTTP_PORT), in case
 # something else on this machine already has 8080.
-port_in_use() {
-        (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
 if grep -q "^HTTP_PORT=" .env 2>/dev/null; then
         http_port=$(grep -E '^HTTP_PORT=' .env | cut -d '=' -f2-)
         echo "Host port already recorded in .env (${http_port}) -- skipping prompt."
