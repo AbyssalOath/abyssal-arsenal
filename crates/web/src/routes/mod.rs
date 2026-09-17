@@ -13,6 +13,7 @@ pub mod necrolink;
 pub mod obituary;
 pub mod postmortem;
 pub mod register;
+pub mod reliquary;
 pub mod roles;
 pub mod settings;
 pub mod setup;

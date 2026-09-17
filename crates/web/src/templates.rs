@@ -405,6 +405,36 @@ pub struct PostmortemHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct ReliquaryHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "reliquary.html")]
+pub struct ReliquaryTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<ReliquaryHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "reliquary_host.html")]
+pub struct ReliquaryHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `backups.create` -- gates the Create Backup form.
+    pub can_create: bool,
+    /// `backups.restore` -- gates the Restore Backup form, distinct from
+    /// `backups.create` since restoring is destructive and creating isn't.
+    pub can_restore: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct NecrolinkHostRow {
     pub id: String,
     pub name: String,

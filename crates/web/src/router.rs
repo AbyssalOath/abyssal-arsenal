@@ -275,6 +275,31 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/obituary/:host_id/vacuum-time",
             post(routes::obituary::vacuum_by_time),
         )
+        .route("/arsenals/reliquary", get(routes::reliquary::show))
+        .route(
+            "/arsenals/reliquary/:host_id",
+            get(routes::reliquary::show_host),
+        )
+        .route(
+            "/arsenals/reliquary/:host_id/list",
+            post(routes::reliquary::list_backups),
+        )
+        .route(
+            "/arsenals/reliquary/:host_id/verify",
+            post(routes::reliquary::verify_backup),
+        )
+        .route(
+            "/arsenals/reliquary/:host_id/create",
+            post(routes::reliquary::create_backup),
+        )
+        .route(
+            "/arsenals/reliquary/:host_id/restore/confirm",
+            get(routes::reliquary::restore_confirm),
+        )
+        .route(
+            "/arsenals/reliquary/:host_id/restore",
+            post(routes::reliquary::restore_backup),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

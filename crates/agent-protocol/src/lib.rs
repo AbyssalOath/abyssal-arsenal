@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -165,6 +165,26 @@ pub enum AgentOperation {
     /// Same destructive/irreversible characteristics and permission gate as
     /// `VacuumJournalBySize`.
     VacuumJournalByTime { duration: String },
+    /// Backups already present under this host's fixed backup directory
+    /// (`/var/backups/abyssal-arsenal`) -- name, size, and creation time.
+    ListBackups,
+    /// Archives `source_path` into a timestamped `<name>-<unix-time>.tar.gz`
+    /// under the fixed backup directory. Write -- a real mutation (creates
+    /// a file), but purely additive, so it doesn't require the explicit
+    /// confirmation a `Destructive` operation does.
+    CreateBackup { source_path: String, name: String },
+    /// Tests a backup archive's integrity (`tar -tzf`) and lists its
+    /// contents, without extracting anything.
+    VerifyBackup { filename: String },
+    /// Extracts `filename` from the fixed backup directory into
+    /// `target_path`, overwriting anything already there. Destructive --
+    /// this can silently clobber current data with an old backup, so the
+    /// control plane requires explicit confirmation before ever dispatching
+    /// this.
+    RestoreBackup {
+        filename: String,
+        target_path: String,
+    },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -242,6 +262,24 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::VacuumJournalByTime { duration } => f
                 .debug_struct("VacuumJournalByTime")
                 .field("duration", duration)
+                .finish(),
+            AgentOperation::ListBackups => write!(f, "ListBackups"),
+            AgentOperation::CreateBackup { source_path, name } => f
+                .debug_struct("CreateBackup")
+                .field("source_path", source_path)
+                .field("name", name)
+                .finish(),
+            AgentOperation::VerifyBackup { filename } => f
+                .debug_struct("VerifyBackup")
+                .field("filename", filename)
+                .finish(),
+            AgentOperation::RestoreBackup {
+                filename,
+                target_path,
+            } => f
+                .debug_struct("RestoreBackup")
+                .field("filename", filename)
+                .field("target_path", target_path)
                 .finish(),
         }
     }
@@ -377,6 +415,51 @@ pub fn is_valid_vacuum_duration(value: &str) -> bool {
     is_digit_led_alphanumeric(value, 32)
 }
 
+/// A backup archive's logical name, as the operator chooses it when
+/// creating a backup (the agent appends `-<unix-time>.tar.gz` itself to
+/// build the actual filename). Letters, digits, hyphens, and underscores
+/// only -- both the argument-injection defense and the path-traversal
+/// defense, since no `.` or `/` means this can never escape the fixed
+/// backup directory or spell out a different flag.
+pub fn is_valid_backup_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 100
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// A backup archive's exact on-disk filename (as shown by `ListBackups`),
+/// used to build the full path for verify/restore. Must end in `.tar.gz`
+/// and contain no path separators or `..` -- same defense as
+/// `is_valid_backup_name`, extended to allow the `-<unix-time>.tar.gz`
+/// suffix this agent appends when creating one.
+pub fn is_valid_backup_filename(filename: &str) -> bool {
+    filename.ends_with(".tar.gz")
+        && filename.len() <= 120
+        && !filename.contains('/')
+        && !filename.contains("..")
+        && filename
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// An absolute filesystem path for a backup source or restore target --
+/// must start with `/`, must not be root itself (backing up or restoring
+/// onto the entire filesystem at once isn't a sane single operation for
+/// this tool), and must contain no control characters. Deliberately
+/// permissive on which printable characters are allowed -- real paths can
+/// contain spaces and most punctuation, and argument-injection safety here
+/// comes from never passing this through a shell, not from a restricted
+/// character set. A leading `/` also means this can never be mistaken for
+/// a flag by whichever tool receives it as an argument.
+pub fn is_valid_absolute_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path != "/"
+        && path.len() <= 4096
+        && path.chars().all(|c| !c.is_control())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,5 +585,51 @@ mod tests {
         assert!(!is_valid_vacuum_duration("d7"));
         assert!(!is_valid_vacuum_duration("7 days"));
         assert!(!is_valid_vacuum_duration("7d; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_reasonable_backup_names() {
+        assert!(is_valid_backup_name("mydata"));
+        assert!(is_valid_backup_name("my-data_2"));
+    }
+
+    #[test]
+    fn rejects_malformed_backup_names() {
+        assert!(!is_valid_backup_name(""));
+        assert!(!is_valid_backup_name("../etc"));
+        assert!(!is_valid_backup_name("my/data"));
+        assert!(!is_valid_backup_name("my data"));
+        assert!(!is_valid_backup_name(&"a".repeat(101)));
+    }
+
+    #[test]
+    fn accepts_reasonable_backup_filenames() {
+        assert!(is_valid_backup_filename("mydata-1758138245.tar.gz"));
+        assert!(is_valid_backup_filename("my-data_2-1.tar.gz"));
+    }
+
+    #[test]
+    fn rejects_malformed_backup_filenames() {
+        assert!(!is_valid_backup_filename(""));
+        assert!(!is_valid_backup_filename("mydata.tar.gz/../../etc/passwd"));
+        assert!(!is_valid_backup_filename("../../etc/passwd.tar.gz"));
+        assert!(!is_valid_backup_filename("mydata.tar"));
+        assert!(!is_valid_backup_filename("mydata; rm -rf /.tar.gz"));
+    }
+
+    #[test]
+    fn accepts_reasonable_absolute_paths() {
+        assert!(is_valid_absolute_path("/etc"));
+        assert!(is_valid_absolute_path("/home/user/my project"));
+        assert!(is_valid_absolute_path("/var/backups/restore-target"));
+    }
+
+    #[test]
+    fn rejects_malformed_absolute_paths() {
+        assert!(!is_valid_absolute_path(""));
+        assert!(!is_valid_absolute_path("relative/path"));
+        assert!(!is_valid_absolute_path("/"));
+        assert!(!is_valid_absolute_path("/etc\nmalicious"));
+        assert!(!is_valid_absolute_path(&format!("/{}", "a".repeat(4096))));
     }
 }

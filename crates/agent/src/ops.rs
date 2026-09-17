@@ -3,7 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-use crate::{firewall, network, obituary, postmortem, process::run_command};
+use crate::{firewall, network, obituary, postmortem, process::run_command, reliquary};
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
@@ -64,6 +64,17 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::VacuumJournalByTime { duration } => {
             obituary::vacuum_journal_by_time(duration, elevation).await
         }
+        AgentOperation::ListBackups => reliquary::list_backups(elevation).await,
+        AgentOperation::CreateBackup { source_path, name } => {
+            reliquary::create_backup(source_path, name, elevation).await
+        }
+        AgentOperation::VerifyBackup { filename } => {
+            reliquary::verify_backup(filename, elevation).await
+        }
+        AgentOperation::RestoreBackup {
+            filename,
+            target_path,
+        } => reliquary::restore_backup(filename, target_path, elevation).await,
     }
 }
 

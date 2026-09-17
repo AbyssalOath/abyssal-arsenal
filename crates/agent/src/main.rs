@@ -7,6 +7,7 @@ mod obituary;
 mod ops;
 mod postmortem;
 mod process;
+mod reliquary;
 mod transport;
 
 use std::path::PathBuf;
