@@ -84,6 +84,26 @@ pub async fn run_command_allow_failure(
     })
 }
 
+/// Substitutes a friendly message when `output.stdout` is empty, falling
+/// back to `stderr` if that has something more specific to say -- for
+/// tools run via `run_command_allow_failure` whose "found nothing" and
+/// "failed outright" cases both come back as empty stdout, so the caller
+/// needs to present *something* useful either way rather than an empty box.
+/// Shared by every read-only forensic/log op across Postmortem and
+/// Obituary.
+pub fn present(output: OperationOutput, empty_message: &str) -> OperationOutput {
+    if output.stdout.trim().is_empty() {
+        let stdout = if !output.stderr.trim().is_empty() {
+            output.stderr.trim().to_string()
+        } else {
+            empty_message.to_string()
+        };
+        OperationOutput { stdout, ..output }
+    } else {
+        output
+    }
+}
+
 fn finish(program: &str, output: std::process::Output) -> Result<OperationOutput, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

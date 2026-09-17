@@ -16,7 +16,7 @@ use abyssal_agent_protocol::{CommandOutcome, OperationOutput};
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-use crate::process::command_exists;
+use crate::process::{command_exists, present};
 
 /// Runs `program`/`args` (elevation-aware) and substitutes a friendly
 /// message when there's genuinely nothing to show, rather than an empty
@@ -29,19 +29,6 @@ async fn run_and_present(
     match elevation.run_allow_failure(program, args).await {
         Ok(output) => CommandOutcome::Ok(present(output, "(no output)")),
         Err(e) => CommandOutcome::Err(e),
-    }
-}
-
-fn present(output: OperationOutput, empty_message: &str) -> OperationOutput {
-    if output.stdout.trim().is_empty() {
-        let stdout = if !output.stderr.trim().is_empty() {
-            output.stderr.trim().to_string()
-        } else {
-            empty_message.to_string()
-        };
-        OperationOutput { stdout, ..output }
-    } else {
-        output
     }
 }
 

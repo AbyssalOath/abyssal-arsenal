@@ -238,6 +238,43 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/postmortem/:host_id/modified-files",
             post(routes::postmortem::recently_modified_files),
         )
+        .route("/arsenals/obituary", get(routes::obituary::show))
+        .route(
+            "/arsenals/obituary/:host_id",
+            get(routes::obituary::show_host),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/journal-disk-usage",
+            post(routes::obituary::journal_disk_usage),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/log-rotation-status",
+            post(routes::obituary::log_rotation_status),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/archived-logs",
+            post(routes::obituary::archived_log_listing),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/log-directory-sizes",
+            post(routes::obituary::log_directory_sizes),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/vacuum-size/confirm",
+            get(routes::obituary::vacuum_size_confirm),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/vacuum-size",
+            post(routes::obituary::vacuum_by_size),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/vacuum-time/confirm",
+            get(routes::obituary::vacuum_time_confirm),
+        )
+        .route(
+            "/arsenals/obituary/:host_id/vacuum-time",
+            post(routes::obituary::vacuum_by_time),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

@@ -434,3 +434,31 @@ pub struct NecrolinkHostTemplate {
     pub result_output: Option<String>,
     pub result_error: Option<String>,
 }
+
+pub struct ObituaryHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "obituary.html")]
+pub struct ObituaryTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<ObituaryHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "obituary_host.html")]
+pub struct ObituaryHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `audit.manage` -- gates the two destructive vacuum operations,
+    /// distinct from the `audit.view` the read operations use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}

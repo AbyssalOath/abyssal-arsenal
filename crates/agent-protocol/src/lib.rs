@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -139,6 +139,32 @@ pub enum AgentOperation {
     /// contents); `hours` is validated (1-720, i.e. up to 30 days) both here
     /// and again on the agent, which is the actual execution boundary.
     RecentlyModifiedFiles { hours: u32 },
+    /// Disk space consumed by the systemd journal (`journalctl --disk-usage`).
+    JournalDiskUsage,
+    /// `logrotate`'s own status file -- when each configured log was last
+    /// rotated.
+    LogRotationStatus,
+    /// Already-rotated/compressed log files under `/var/log`
+    /// (`*.gz`, `*.N`, `*.old`) -- what historical log data actually exists
+    /// on this host and how far back it goes.
+    ArchivedLogListing,
+    /// Per-subdirectory disk usage under `/var/log` -- which logs are
+    /// actually consuming space.
+    LogDirectorySizes,
+    /// Deletes journal data down to (at most) `size`
+    /// (`journalctl --vacuum-size=<size>`, e.g. `"500M"`, `"1G"`).
+    /// Destructive and irreversible -- this permanently discards historical
+    /// log data, which is exactly what a later investigation might need.
+    /// systemd-only; the control plane requires explicit confirmation and
+    /// gates this behind the dedicated `audit.manage` permission (Super
+    /// Admin only by default), not the general `audit.view` the rest of
+    /// this arsenal's read operations use.
+    VacuumJournalBySize { size: String },
+    /// Deletes journal entries older than `duration`
+    /// (`journalctl --vacuum-time=<duration>`, e.g. `"7d"`, `"2weeks"`).
+    /// Same destructive/irreversible characteristics and permission gate as
+    /// `VacuumJournalBySize`.
+    VacuumJournalByTime { duration: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -204,6 +230,18 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::RecentlyModifiedFiles { hours } => f
                 .debug_struct("RecentlyModifiedFiles")
                 .field("hours", hours)
+                .finish(),
+            AgentOperation::JournalDiskUsage => write!(f, "JournalDiskUsage"),
+            AgentOperation::LogRotationStatus => write!(f, "LogRotationStatus"),
+            AgentOperation::ArchivedLogListing => write!(f, "ArchivedLogListing"),
+            AgentOperation::LogDirectorySizes => write!(f, "LogDirectorySizes"),
+            AgentOperation::VacuumJournalBySize { size } => f
+                .debug_struct("VacuumJournalBySize")
+                .field("size", size)
+                .finish(),
+            AgentOperation::VacuumJournalByTime { duration } => f
+                .debug_struct("VacuumJournalByTime")
+                .field("duration", duration)
                 .finish(),
         }
     }
@@ -316,6 +354,29 @@ pub fn is_valid_lookback_hours(hours: u32) -> bool {
     (1..=720).contains(&hours)
 }
 
+/// Shared shape for the two `journalctl --vacuum-*` value formats: a
+/// leading digit followed by letters/digits only (e.g. `"500M"`, `"7d"`,
+/// `"2weeks"`). The restricted character set is the argument-injection
+/// defense -- no spaces, hyphens, or symbols means this can never spell out
+/// a different flag, even though the exact unit suffixes journalctl
+/// recognizes vary between the size and time forms.
+fn is_digit_led_alphanumeric(value: &str, max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && value.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && value.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// A `journalctl --vacuum-size=<size>` value (e.g. `"500M"`, `"1G"`).
+pub fn is_valid_vacuum_size(value: &str) -> bool {
+    is_digit_led_alphanumeric(value, 16)
+}
+
+/// A `journalctl --vacuum-time=<duration>` value (e.g. `"7d"`, `"2weeks"`).
+pub fn is_valid_vacuum_duration(value: &str) -> bool {
+    is_digit_led_alphanumeric(value, 32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +469,38 @@ mod tests {
         assert!(!is_valid_lookback_hours(0));
         assert!(!is_valid_lookback_hours(721));
         assert!(!is_valid_lookback_hours(u32::MAX));
+    }
+
+    #[test]
+    fn accepts_reasonable_vacuum_sizes() {
+        assert!(is_valid_vacuum_size("500M"));
+        assert!(is_valid_vacuum_size("1G"));
+        assert!(is_valid_vacuum_size("2048"));
+    }
+
+    #[test]
+    fn rejects_malformed_vacuum_sizes() {
+        assert!(!is_valid_vacuum_size(""));
+        assert!(!is_valid_vacuum_size("-1G"));
+        assert!(!is_valid_vacuum_size("G500"));
+        assert!(!is_valid_vacuum_size("500 M"));
+        assert!(!is_valid_vacuum_size("500M; rm -rf /"));
+        assert!(!is_valid_vacuum_size(&"1".repeat(17)));
+    }
+
+    #[test]
+    fn accepts_reasonable_vacuum_durations() {
+        assert!(is_valid_vacuum_duration("7d"));
+        assert!(is_valid_vacuum_duration("2weeks"));
+        assert!(is_valid_vacuum_duration("1month"));
+    }
+
+    #[test]
+    fn rejects_malformed_vacuum_durations() {
+        assert!(!is_valid_vacuum_duration(""));
+        assert!(!is_valid_vacuum_duration("-7d"));
+        assert!(!is_valid_vacuum_duration("d7"));
+        assert!(!is_valid_vacuum_duration("7 days"));
+        assert!(!is_valid_vacuum_duration("7d; rm -rf /"));
     }
 }

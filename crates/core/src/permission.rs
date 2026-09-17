@@ -34,6 +34,13 @@ pub enum Permission {
 
     AuditView,
     AuditExport,
+    /// Destructive log/journal retention operations on a managed host
+    /// (Obituary's vacuum-by-size/vacuum-by-time) -- distinct from
+    /// `AuditExport` (reads the control plane's own audit trail) and
+    /// deliberately not granted to any seeded role except Super Admin:
+    /// deleting a host's historical logs can destroy the exact evidence a
+    /// later investigation would need.
+    AuditManage,
 
     RolesManage,
     ModulesManage,
@@ -79,6 +86,7 @@ impl Permission {
 
             Permission::AuditView => "audit.view",
             Permission::AuditExport => "audit.export",
+            Permission::AuditManage => "audit.manage",
 
             Permission::RolesManage => "roles.manage",
             Permission::ModulesManage => "modules.manage",
@@ -119,6 +127,7 @@ impl Permission {
         Permission::IncidentsRespond,
         Permission::AuditView,
         Permission::AuditExport,
+        Permission::AuditManage,
         Permission::RolesManage,
         Permission::ModulesManage,
         Permission::SettingsManage,

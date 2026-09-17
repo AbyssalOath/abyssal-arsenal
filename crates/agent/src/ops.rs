@@ -3,7 +3,7 @@ use zeroize::Zeroizing;
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-use crate::{firewall, network, postmortem, process::run_command};
+use crate::{firewall, network, obituary, postmortem, process::run_command};
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
@@ -53,6 +53,16 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::CoreDumps => postmortem::core_dumps(elevation).await,
         AgentOperation::RecentlyModifiedFiles { hours } => {
             postmortem::recently_modified_files(hours, elevation).await
+        }
+        AgentOperation::JournalDiskUsage => obituary::journal_disk_usage(elevation).await,
+        AgentOperation::LogRotationStatus => obituary::log_rotation_status(elevation).await,
+        AgentOperation::ArchivedLogListing => obituary::archived_log_listing(elevation).await,
+        AgentOperation::LogDirectorySizes => obituary::log_directory_sizes(elevation).await,
+        AgentOperation::VacuumJournalBySize { size } => {
+            obituary::vacuum_journal_by_size(size, elevation).await
+        }
+        AgentOperation::VacuumJournalByTime { duration } => {
+            obituary::vacuum_journal_by_time(duration, elevation).await
         }
     }
 }

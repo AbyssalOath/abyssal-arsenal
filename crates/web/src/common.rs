@@ -151,3 +151,22 @@ pub async fn maybe_elevate(
         Err(e) => Err(format!("Escalation failed: {e}")),
     }
 }
+
+/// Minimal, dependency-free percent-encoding for the handful of characters
+/// that can plausibly show up in a scan target, interface name, or vacuum
+/// size/duration and would otherwise break a query string -- used to carry
+/// a parameterized destructive action's value from its confirm page's GET
+/// query string through to the POST handler (this crate doesn't already
+/// depend on a URL-encoding crate for anything else).
+pub fn urlencoding_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}

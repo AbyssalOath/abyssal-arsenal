@@ -17,15 +17,17 @@ use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, NecrolinkHostRow, NecrolinkHostTemplate, NecrolinkTemplate};
+use crate::templates::{BaseCtx, ObituaryHostRow, ObituaryHostTemplate, ObituaryTemplate};
 use crate::theme;
 
+/// Landing page for this arsenal: just a host picker, same as every other
+/// per-host arsenal.
 pub async fn show(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
@@ -33,14 +35,14 @@ pub async fn show(
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
         if host.is_active() && state.hosts.is_connected(host.id) {
-            hosts.push(NecrolinkHostRow {
+            hosts.push(ObituaryHostRow {
                 id: host.id.to_string(),
                 name: host.name,
             });
         }
     }
 
-    let tpl = NecrolinkTemplate { base, hosts };
+    let tpl = ObituaryTemplate { base, hosts };
     let jar = jar.clone();
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -49,7 +51,6 @@ pub async fn show(
     Ok((jar, tpl).into_response())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn render_host(
     state: &AppState,
     jar: &CookieJar,
@@ -66,9 +67,8 @@ async fn render_host(
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
 
-    let tpl = NecrolinkHostTemplate {
-        can_manage: ctx.has(Permission::NetworkManage),
-        can_scan: ctx.has(Permission::NetworkScan),
+    let tpl = ObituaryHostTemplate {
+        can_manage: ctx.has(Permission::AuditManage),
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         base,
@@ -92,7 +92,7 @@ pub async fn show_host(
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
     render_host(&state, &jar, &ctx, host_id, None, None, None).await
 }
 
@@ -103,6 +103,8 @@ pub struct SimpleForm {
     sudo_password: Option<String>,
 }
 
+/// Shared dispatch for the four read-only operations below, same shape as
+/// every other arsenal's `run_read_op`.
 #[allow(clippy::too_many_arguments)]
 async fn run_read_op(
     state: &AppState,
@@ -132,10 +134,10 @@ async fn run_read_op(
             host_id,
             &host.name,
             operation,
-            Permission::NetworkView,
+            Permission::AuditView,
             OperationKind::Read,
             false,
-            Duration::from_secs(10),
+            Duration::from_secs(15),
             None,
             elevated,
         )
@@ -170,235 +172,108 @@ async fn run_read_op(
     }
 }
 
-pub async fn network_interfaces(
+pub async fn journal_disk_usage(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
     Form(form): Form<SimpleForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
     require_csrf(&jar, &form.csrf_token)?;
     run_read_op(
         &state,
         &jar,
         &ctx,
         host_id,
-        AgentOperation::NetworkInterfaces,
-        "Network Interfaces",
+        AgentOperation::JournalDiskUsage,
+        "Journal Disk Usage",
         form.sudo_password,
     )
     .await
 }
 
-pub async fn network_routes(
+pub async fn log_rotation_status(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
     Form(form): Form<SimpleForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
     require_csrf(&jar, &form.csrf_token)?;
     run_read_op(
         &state,
         &jar,
         &ctx,
         host_id,
-        AgentOperation::NetworkRoutes,
-        "Routes",
+        AgentOperation::LogRotationStatus,
+        "Log Rotation Status",
         form.sudo_password,
     )
     .await
 }
 
-pub async fn dns_config(
+pub async fn archived_log_listing(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
     Form(form): Form<SimpleForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
     require_csrf(&jar, &form.csrf_token)?;
     run_read_op(
         &state,
         &jar,
         &ctx,
         host_id,
-        AgentOperation::DnsConfig,
-        "DNS Configuration",
+        AgentOperation::ArchivedLogListing,
+        "Archived Log Listing",
         form.sudo_password,
     )
     .await
 }
 
-pub async fn active_connections(
+pub async fn log_directory_sizes(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
     Form(form): Form<SimpleForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
     require_csrf(&jar, &form.csrf_token)?;
     run_read_op(
         &state,
         &jar,
         &ctx,
         host_id,
-        AgentOperation::ActiveConnections,
-        "Active Connections",
+        AgentOperation::LogDirectorySizes,
+        "Log Directory Sizes",
         form.sudo_password,
     )
     .await
 }
 
 #[derive(Deserialize)]
-pub struct ConnectivityCheckForm {
-    csrf_token: String,
-    target: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
+pub struct VacuumSizeQuery {
+    size: String,
 }
 
-pub async fn connectivity_check(
+pub async fn vacuum_size_confirm(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
-    Form(form): Form<ConnectivityCheckForm>,
+    Query(q): Query<VacuumSizeQuery>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
-    require_csrf(&jar, &form.csrf_token)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditManage)?;
 
-    let target = form.target.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_network_target(&target) {
+    let size = q.size.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_vacuum_size(&size) {
         return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid IP address or hostname.".into(),
-        )));
-    }
-
-    run_read_op(
-        &state,
-        &jar,
-        &ctx,
-        host_id,
-        AgentOperation::ConnectivityCheck {
-            target: target.clone(),
-        },
-        &format!("Connectivity Check ({target})"),
-        form.sudo_password,
-    )
-    .await
-}
-
-#[derive(Deserialize)]
-pub struct InterfaceUpForm {
-    csrf_token: String,
-    interface: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
-}
-
-pub async fn interface_up(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    CurrentUser(ctx): CurrentUser,
-    Path(host_id): Path<Uuid>,
-    Form(form): Form<InterfaceUpForm>,
-) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
-    require_csrf(&jar, &form.csrf_token)?;
-
-    let interface = form.interface.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_interface_name(&interface) {
-        return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid interface name.".into(),
-        )));
-    }
-
-    let host = repo::hosts::find_by_id(&state.pool, host_id)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    let result_label = Some(format!("Interface Up ({interface}) -- {}", host.name));
-
-    let tls_warning =
-        match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
-            Ok(warning) => warning.unwrap_or(""),
-            Err(e) => {
-                return render_host(&state, &jar, &ctx, host_id, result_label, None, Some(e)).await
-            }
-        };
-
-    let elevated = state.elevation.is_elevated(host_id);
-    let result = state
-        .executor
-        .execute_on_host(
-            &ctx,
-            &state.hosts,
-            host_id,
-            &host.name,
-            AgentOperation::InterfaceSetState {
-                interface,
-                up: true,
-            },
-            Permission::NetworkManage,
-            OperationKind::Write,
-            false,
-            Duration::from_secs(10),
-            None,
-            elevated,
-        )
-        .await;
-
-    match result {
-        Ok(output) => {
-            render_host(
-                &state,
-                &jar,
-                &ctx,
-                host_id,
-                result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
-                None,
-            )
-            .await
-        }
-        Err(e) => {
-            state.elevation.mark_deescalated(host_id);
-            render_host(
-                &state,
-                &jar,
-                &ctx,
-                host_id,
-                result_label,
-                None,
-                Some(e.to_string()),
-            )
-            .await
-        }
-    }
-}
-
-#[derive(Deserialize)]
-pub struct InterfaceDownQuery {
-    interface: String,
-}
-
-pub async fn interface_down_confirm(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    CurrentUser(ctx): CurrentUser,
-    Path(host_id): Path<Uuid>,
-    Query(q): Query<InterfaceDownQuery>,
-) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
-
-    let interface = q.interface.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_interface_name(&interface) {
-        return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid interface name.".into(),
+            "That doesn't look like a valid size (digits followed by an optional unit, e.g. 500M or 1G).".into(),
         )));
     }
 
@@ -416,21 +291,22 @@ pub async fn interface_down_confirm(
 
     let tpl = crate::templates::ConfirmTemplate {
         base,
-        title: "Bring interface down".to_string(),
+        title: "Vacuum journal by size".to_string(),
         message: format!(
-            "This will bring \"{interface}\" down on \"{}\". If that's the interface currently \
-             used to reach this host, it can cut off remote access.",
+            "This will permanently delete \"{}\"'s systemd journal data down to (at most) {size}, \
+             oldest entries first. This cannot be undone -- a later investigation may need the \
+             history this removes.",
             host.name
         ),
         action_url: format!(
-            "/arsenals/necrolink/{host_id}/interface/down?interface={}",
-            urlencoding_encode(&interface)
+            "/arsenals/obituary/{host_id}/vacuum-size?size={}",
+            urlencoding_encode(&size)
         ),
-        cancel_url: format!("/arsenals/necrolink/{host_id}"),
+        cancel_url: format!("/arsenals/obituary/{host_id}"),
         escalate_host_id,
         type_to_confirm: Some(crate::templates::TypeToConfirm {
-            label: "interface name".to_string(),
-            expected: interface.clone(),
+            label: "hostname".to_string(),
+            expected: host.name.clone(),
         }),
         extra_hidden_fields: vec![],
     };
@@ -442,7 +318,7 @@ pub async fn interface_down_confirm(
 }
 
 #[derive(Deserialize)]
-pub struct InterfaceDownForm {
+pub struct VacuumSizeForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
@@ -452,35 +328,35 @@ pub struct InterfaceDownForm {
     sudo_password: Option<String>,
 }
 
-pub async fn interface_down(
+pub async fn vacuum_by_size(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
-    Query(q): Query<InterfaceDownQuery>,
-    Form(form): Form<InterfaceDownForm>,
+    Query(q): Query<VacuumSizeQuery>,
+    Form(form): Form<VacuumSizeForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     if !form.confirm {
         return Err(WebError(AppError::Validation(
-            "Bringing the interface down was not confirmed.".into(),
+            "Vacuuming the journal was not confirmed.".into(),
         )));
     }
 
-    let interface = q.interface.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_interface_name(&interface) {
+    let size = q.size.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_vacuum_size(&size) {
         return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid interface name.".into(),
+            "That doesn't look like a valid size.".into(),
         )));
     }
-    crate::common::require_typed_confirmation(&form.confirm_text, &interface)?;
 
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let result_label = Some(format!("Interface Down ({interface}) -- {}", host.name));
+    crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
+    let result_label = Some(format!("Vacuum Journal ({size}) -- {}", host.name));
 
     let tls_warning =
         match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
@@ -498,14 +374,11 @@ pub async fn interface_down(
             &state.hosts,
             host_id,
             &host.name,
-            AgentOperation::InterfaceSetState {
-                interface,
-                up: false,
-            },
-            Permission::NetworkManage,
+            AgentOperation::VacuumJournalBySize { size },
+            Permission::AuditManage,
             OperationKind::Destructive,
             true,
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             None,
             elevated,
         )
@@ -541,34 +414,25 @@ pub async fn interface_down(
 }
 
 #[derive(Deserialize)]
-pub struct ScanQuery {
-    target: String,
-    #[serde(default)]
-    ports: Option<String>,
+pub struct VacuumTimeQuery {
+    duration: String,
 }
 
-pub async fn scan_confirm(
+pub async fn vacuum_time_confirm(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
-    Query(q): Query<ScanQuery>,
+    Query(q): Query<VacuumTimeQuery>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkScan)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditManage)?;
 
-    let target = q.target.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_network_target(&target) {
+    let duration = q.duration.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_vacuum_duration(&duration) {
         return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid IP address, CIDR range, or hostname.".into(),
+            "That doesn't look like a valid duration (digits followed by a unit, e.g. 7d or 2weeks)."
+                .into(),
         )));
-    }
-    let ports = q.ports.as_deref().map(str::trim).filter(|p| !p.is_empty());
-    if let Some(p) = ports {
-        if !abyssal_agent_protocol::is_valid_port_spec(p) {
-            return Err(WebError(AppError::Validation(
-                "That doesn't look like a valid port spec (digits, commas, and hyphens only, e.g. 22,80,443 or 1-1024).".into(),
-            )));
-        }
     }
 
     let host = repo::hosts::find_by_id(&state.pool, host_id)
@@ -583,33 +447,23 @@ pub async fn scan_confirm(
         None
     };
 
-    let mut action_url = format!(
-        "/arsenals/necrolink/{host_id}/scan?target={}",
-        urlencoding_encode(&target)
-    );
-    if let Some(p) = ports {
-        action_url.push_str(&format!("&ports={}", urlencoding_encode(p)));
-    }
-
     let tpl = crate::templates::ConfirmTemplate {
         base,
-        title: "Scan network target".to_string(),
+        title: "Vacuum journal by age".to_string(),
         message: format!(
-            "This will run an nmap TCP connect scan from \"{}\" against \"{target}\"{}. This \
-             sends real network traffic to that target and may trigger intrusion detection \
-             there or in between -- only scan targets you're authorized to scan.",
-            host.name,
-            match ports {
-                Some(p) => format!(" (ports: {p})"),
-                None => String::new(),
-            }
+            "This will permanently delete every entry in \"{}\"'s systemd journal older than {duration}. \
+             This cannot be undone -- a later investigation may need the history this removes.",
+            host.name
         ),
-        action_url,
-        cancel_url: format!("/arsenals/necrolink/{host_id}"),
+        action_url: format!(
+            "/arsenals/obituary/{host_id}/vacuum-time?duration={}",
+            urlencoding_encode(&duration)
+        ),
+        cancel_url: format!("/arsenals/obituary/{host_id}"),
         escalate_host_id,
         type_to_confirm: Some(crate::templates::TypeToConfirm {
-            label: "scan target".to_string(),
-            expected: target.clone(),
+            label: "hostname".to_string(),
+            expected: host.name.clone(),
         }),
         extra_hidden_fields: vec![],
     };
@@ -621,7 +475,7 @@ pub async fn scan_confirm(
 }
 
 #[derive(Deserialize)]
-pub struct NetworkScanForm {
+pub struct VacuumTimeForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
@@ -631,49 +485,35 @@ pub struct NetworkScanForm {
     sudo_password: Option<String>,
 }
 
-pub async fn network_scan(
+pub async fn vacuum_by_time(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
-    Query(q): Query<ScanQuery>,
-    Form(form): Form<NetworkScanForm>,
+    Query(q): Query<VacuumTimeQuery>,
+    Form(form): Form<VacuumTimeForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkScan)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     if !form.confirm {
         return Err(WebError(AppError::Validation(
-            "The scan was not confirmed.".into(),
+            "Vacuuming the journal was not confirmed.".into(),
         )));
     }
 
-    let target = q.target.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_network_target(&target) {
+    let duration = q.duration.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_vacuum_duration(&duration) {
         return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid IP address, CIDR range, or hostname.".into(),
+            "That doesn't look like a valid duration.".into(),
         )));
     }
-    let ports = q
-        .ports
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(str::to_string);
-    if let Some(p) = &ports {
-        if !abyssal_agent_protocol::is_valid_port_spec(p) {
-            return Err(WebError(AppError::Validation(
-                "That doesn't look like a valid port spec.".into(),
-            )));
-        }
-    }
-
-    crate::common::require_typed_confirmation(&form.confirm_text, &target)?;
 
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let result_label = Some(format!("Network Scan ({target}) -- {}", host.name));
+    crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
+    let result_label = Some(format!("Vacuum Journal ({duration}) -- {}", host.name));
 
     let tls_warning =
         match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
@@ -691,11 +531,11 @@ pub async fn network_scan(
             &state.hosts,
             host_id,
             &host.name,
-            AgentOperation::NetworkScan { target, ports },
-            Permission::NetworkScan,
+            AgentOperation::VacuumJournalByTime { duration },
+            Permission::AuditManage,
             OperationKind::Destructive,
             true,
-            Duration::from_secs(120),
+            Duration::from_secs(30),
             None,
             elevated,
         )

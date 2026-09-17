@@ -3,6 +3,7 @@ mod enroll;
 mod firewall;
 mod init_system;
 mod network;
+mod obituary;
 mod ops;
 mod postmortem;
 mod process;
