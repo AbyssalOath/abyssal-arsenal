@@ -86,3 +86,16 @@ pub async fn revoke(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
+
+/// Hard-deletes the host row. Nothing else references `hosts.id` by foreign
+/// key (the audit log stores a free-text resource label, not an FK, by
+/// design -- see the append-only audit model), so this is safe on its own;
+/// callers are still expected to revoke first so an already-connected agent
+/// can't keep being dispatched to after its row is gone.
+pub async fn delete(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM hosts WHERE id = ?")
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}

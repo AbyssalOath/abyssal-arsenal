@@ -24,6 +24,7 @@ pub enum AuditAction {
     BackupRestored,
     HostEnrolled,
     HostRevoked,
+    HostRemoved,
 }
 
 impl AuditAction {
@@ -50,6 +51,7 @@ impl AuditAction {
             AuditAction::BackupRestored => "BACKUP_RESTORED",
             AuditAction::HostEnrolled => "HOST_ENROLLED",
             AuditAction::HostRevoked => "HOST_REVOKED",
+            AuditAction::HostRemoved => "HOST_REMOVED",
         }
     }
 
@@ -75,6 +77,7 @@ impl AuditAction {
         AuditAction::BackupRestored,
         AuditAction::HostEnrolled,
         AuditAction::HostRevoked,
+        AuditAction::HostRemoved,
     ];
 }
 

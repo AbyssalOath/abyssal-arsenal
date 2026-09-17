@@ -86,6 +86,24 @@ project is pre-release, so everything so far lives under "Unreleased".
   hand-written to redact it as a backstop. Elevating without TLS in front
   of the control plane produces a warning (not a hard block), matching the
   existing local-testing posture elsewhere in the app.
+- **Host removal**: revoking a host (`/admin/hosts/<id>/revoke`) only ever
+  invalidated its credential -- it never took the host out of the list,
+  and a revoked host was indistinguishable from a merely-offline one.
+  Revoked hosts now show a "Revoked" badge, and a new, separate "Remove"
+  action (`/admin/hosts/<id>/remove`, `hosts.manage`, confirmation
+  required) hard-deletes the host row entirely; its audit history is
+  unaffected since the audit log never referenced hosts by foreign key.
+  Removal doesn't attempt to reach out and uninstall the agent remotely
+  (often impossible anyway, since removing a host is frequently exactly
+  what you do once it's already offline/decommissioned) -- it shows a
+  copy-paste uninstall command instead, the same UX as the enrollment
+  command.
+- **Thanatos arsenal** (metadata-only stub, 22nd arsenal): security
+  telemetry collection, threat detection, event correlation, endpoint
+  monitoring, and security alerting -- a SIEM/EDR capability, gated by
+  `security.view` like Cadavault. No real operations yet, matching the
+  other 20 stub arsenals; real capabilities are planned to build on an
+  existing separate SIEM/EDR project.
 - **Password policy**: local account passwords now require at least 15
   characters, an uppercase letter, a lowercase letter, a number, and a
   special character, enforced server-side (`abyssal_auth::password::
@@ -130,10 +148,16 @@ project is pre-release, so everything so far lives under "Unreleased".
   succeeded server-side. Now a local write-permission problem fails fast,
   before the token is spent.
 - The `/admin/hosts` enrollment-token banner now notes that
-  `abyssal-agent` needs to be built/installed on the target host first
-  (`cargo install --path crates/agent`, or see `crates/agent/README.md`
-  for alternatives) -- the copy-paste command alone gave no indication the
-  binary wasn't just already there.
+  `abyssal-agent` needs to be built/installed on the target host first --
+  the copy-paste command alone gave no indication the binary wasn't just
+  already there. `crates/agent/README.md` gained a proper "Building and
+  installing" section, including the `sudo`-vs-`cargo install` gotcha
+  found while writing it: `cargo install --path crates/agent` puts the
+  binary in `~/.cargo/bin`, which is on the invoking user's `PATH` but not
+  on `sudo`'s own restricted `secure_path` -- `sudo abyssal-agent` then
+  fails with `command not found` even though it runs fine unprivileged.
+  The recommended path installs to `/usr/local/bin` instead (also what the
+  systemd unit example already assumed).
 
 ### Security
 
@@ -159,7 +183,7 @@ project is pre-release, so everything so far lives under "Unreleased".
 - `LoginLimiter` and `HostConnectionRegistry` are in-memory and
   process-local; a multi-instance control plane would need both backed by
   shared state.
-- SSO/OIDC, non-SMTP notification providers, and 19 of the 21 arsenals'
+- SSO/OIDC, non-SMTP notification providers, and 20 of the 22 arsenals'
   real capabilities beyond metadata are not implemented yet (only
   `cystoolbox` and `cadavault` have real operations so far).
 - No Tauri desktop client yet; `/api/health` and `/api/me` establish the

@@ -19,12 +19,21 @@
     <strong>Token expires in 15 minutes.</strong> Run this on the target host:
     <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ cmd }}</pre>
     <p style="color:var(--text-muted); margin:8px 0 0;">
-      Don't have <code>abyssal-agent</code> installed on that host yet? Build and
-      install it first (from a clone of this repo, on the target host):
-      <code>cargo install --path crates/agent</code>. See
-      <code>crates/agent/README.md</code> for alternatives (downloading a release
-      binary, running it as a systemd service).
+      Don't have <code>abyssal-agent</code> installed on that host yet? From a
+      clone of this repo on the target host:
+      <code>cargo build --release -p abyssal-agent &amp;&amp; sudo install -m 755
+      target/release/abyssal-agent /usr/local/bin/abyssal-agent</code>. See
+      <code>crates/agent/README.md</code> for a quick-test-without-root
+      alternative and running it as a systemd service.
     </p>
+  </div>
+  {% endif %}
+
+  {% if let Some(cmd) = uninstall_command %}
+  <div class="info-banner" style="margin-top:14px;">
+    <strong>Host removed.</strong> Its agent keeps running on the remote machine
+    until you uninstall it there:
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ cmd }}</pre>
   </div>
   {% endif %}
 
@@ -47,7 +56,8 @@
       <tr>
         <td>{{ h.name }}</td>
         <td>
-          {% if h.online %}<span class="badge badge-success">Online</span>
+          {% if h.revoked %}<span class="badge badge-danger">Revoked</span>
+          {% else if h.online %}<span class="badge badge-success">Online</span>
           {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
         </td>
         <td>{{ h.enrolled_at }}</td>
@@ -67,7 +77,10 @@
             <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>De-escalate</button>
           </form>
           {% endif %}
+          {% if !h.revoked %}
           <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">Revoke</a>
+          {% endif %}
+          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/remove/confirm">Remove</a>
         </td>
       </tr>
       {% if base.can_hosts_elevate %}

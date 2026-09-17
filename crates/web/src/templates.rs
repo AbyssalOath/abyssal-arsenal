@@ -196,6 +196,7 @@ pub struct HostRow {
     pub enrolled_at: String,
     pub last_seen_at: String,
     pub online: bool,
+    pub revoked: bool,
 }
 
 #[derive(Template)]
@@ -204,6 +205,7 @@ pub struct HostsTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<HostRow>,
     pub enrollment_command: Option<String>,
+    pub uninstall_command: Option<String>,
     pub action_result: Option<String>,
     pub action_error: Option<String>,
 }

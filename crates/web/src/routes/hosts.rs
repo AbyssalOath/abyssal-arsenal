@@ -37,11 +37,13 @@ fn control_plane_base_url(state: &AppState, headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render(
     state: &AppState,
     jar: &CookieJar,
     ctx: &abyssal_rbac::AuthContext,
     enrollment_command: Option<String>,
+    uninstall_command: Option<String>,
     action_result: Option<String>,
     action_error: Option<String>,
 ) -> Result<Response, WebError> {
@@ -59,6 +61,7 @@ async fn render(
                 .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
                 .unwrap_or_else(|| "never".to_string()),
             online: state.hosts.is_connected(host.id),
+            revoked: host.revoked_at.is_some(),
         });
     }
 
@@ -66,6 +69,7 @@ async fn render(
         base,
         hosts,
         enrollment_command,
+        uninstall_command,
         action_result,
         action_error,
     };
@@ -83,7 +87,7 @@ pub async fn list(
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsView)?;
-    render(&state, &jar, &ctx, None, None, None).await
+    render(&state, &jar, &ctx, None, None, None, None).await
 }
 
 #[derive(Deserialize)]
@@ -115,7 +119,7 @@ pub async fn generate_enrollment_token(
     let command =
         format!("abyssal-agent run --control-plane-url {base_url} --enrollment-token {token}");
 
-    render(&state, &jar, &ctx, Some(command), None, None).await
+    render(&state, &jar, &ctx, Some(command), None, None, None).await
 }
 
 pub async fn run_system_info(
@@ -149,8 +153,8 @@ pub async fn run_system_info(
         .await;
 
     match result {
-        Ok(output) => render(&state, &jar, &ctx, None, Some(output.stdout), None).await,
-        Err(e) => render(&state, &jar, &ctx, None, None, Some(e.to_string())).await,
+        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
+        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
     }
 }
 
@@ -214,12 +218,13 @@ pub async fn elevate(
                 &jar,
                 &ctx,
                 None,
+                None,
                 Some(format!("{tls_warning}{}", output.stdout)),
                 None,
             )
             .await
         }
-        Err(e) => render(&state, &jar, &ctx, None, None, Some(e.to_string())).await,
+        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
     }
 }
 
@@ -254,8 +259,8 @@ pub async fn deescalate(
         .await;
 
     match result {
-        Ok(output) => render(&state, &jar, &ctx, None, Some(output.stdout), None).await,
-        Err(e) => render(&state, &jar, &ctx, None, None, Some(e.to_string())).await,
+        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
+        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
     }
 }
 
@@ -290,8 +295,8 @@ pub async fn elevation_status(
         .await;
 
     match result {
-        Ok(output) => render(&state, &jar, &ctx, None, Some(output.stdout), None).await,
-        Err(e) => render(&state, &jar, &ctx, None, None, Some(e.to_string())).await,
+        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
+        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
     }
 }
 
@@ -366,4 +371,96 @@ pub async fn revoke(
     .await?;
 
     Ok(Redirect::to("/admin/hosts").into_response())
+}
+
+pub async fn remove_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+
+    let host = repo::hosts::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+
+    let tpl = crate::templates::ConfirmTemplate {
+        base,
+        title: "Remove host".to_string(),
+        message: format!(
+            "This will permanently delete \"{}\" and its credential from Abyssal Arsenal -- \
+             this cannot be undone. Its audit history is kept. The agent itself keeps running \
+             on the remote machine until you uninstall it there; you'll be given the command to \
+             do that after confirming.",
+            host.name
+        ),
+        action_url: format!("/admin/hosts/{id}/remove"),
+        cancel_url: "/admin/hosts".to_string(),
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+pub async fn remove(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RevokeForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Removal was not confirmed.".into(),
+        )));
+    }
+
+    let host = repo::hosts::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    // Delete first, then drop any live connection -- a connection that
+    // outlives the DB row can no longer be dispatched to via `/admin/hosts`
+    // (its row is gone), and if it ever disconnects and tries to
+    // reconnect, its credential no longer resolves to a host either.
+    repo::hosts::delete(&state.pool, id).await?;
+    state.hosts.unregister(id);
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::HostRemoved, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&host.name),
+    )
+    .await?;
+
+    let uninstall_command = "sudo systemctl disable --now abyssal-agent\n\
+         sudo rm -f /usr/local/bin/abyssal-agent\n\
+         sudo rm -rf /etc/abyssal-agent\n\
+         sudo rm -f /etc/systemd/system/abyssal-agent.service\n\n\
+         (If you installed it with `cargo install` instead, remove \
+         ~/.cargo/bin/abyssal-agent and whatever --credentials-file path you gave it.)"
+        .to_string();
+
+    render(
+        &state,
+        &jar,
+        &ctx,
+        None,
+        Some(uninstall_command),
+        None,
+        None,
+    )
+    .await
 }

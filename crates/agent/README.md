@@ -6,6 +6,39 @@ executes a fixed, versioned whitelist of operations locally
 (`abyssal-agent-protocol::AgentOperation`) -- it never accepts an arbitrary
 command from the wire.
 
+## Building and installing
+
+There's no published package yet, so `abyssal-agent` isn't just already on
+`PATH` -- you need to build and place it there yourself, on the target host,
+from a clone of this repo. Two ways, and it matters which one you pick:
+
+- **System-wide (recommended, needed for the systemd setup below and for
+  the default `/etc/abyssal-agent/credentials.json` path, both of which
+  need root):**
+
+  ```bash
+  cargo build --release -p abyssal-agent
+  sudo install -m 755 target/release/abyssal-agent /usr/local/bin/abyssal-agent
+  ```
+
+  `/usr/local/bin` is on `sudo`'s own restricted `secure_path`, so
+  `sudo abyssal-agent ...` finds it.
+
+- **User-local, for quick testing without root:**
+
+  ```bash
+  cargo install --path crates/agent
+  ```
+
+  This installs to `~/.cargo/bin/abyssal-agent`, which is on *your* shell's
+  `PATH` but almost certainly **not** on `sudo`'s -- `sudo`'s `secure_path`
+  is a fixed list that ignores the invoking user's `PATH` entirely, home
+  directories included. `sudo abyssal-agent ...` will fail with `command not
+  found` even though it runs fine unprivileged. If you use this route,
+  either run unprivileged with `--credentials-file` pointing somewhere you
+  own (see below -- no root needed at all), or invoke it by full path when
+  you do need `sudo`: `sudo ~/.cargo/bin/abyssal-agent ...`.
+
 ## Enrolling a host
 
 1. In the control plane's web UI, go to `/admin/hosts` and generate an
@@ -19,10 +52,12 @@ command from the wire.
    ```
 
    This enrolls the host (storing a long-lived credential at
-   `/etc/abyssal-agent/credentials.json` by default -- override with
-   `--credentials-file`) and then connects and serves commands. On
-   subsequent runs, drop `--enrollment-token`; the stored credential is
-   reused automatically.
+   `/etc/abyssal-agent/credentials.json` by default -- needs root to create
+   that directory; override with `--credentials-file` to use an
+   unprivileged path instead, e.g. `~/.abyssal-agent/credentials.json` for
+   local testing) and then connects and serves commands. On subsequent
+   runs, drop `--enrollment-token`; the stored credential is reused
+   automatically.
 
 ## Running it as a systemd service
 

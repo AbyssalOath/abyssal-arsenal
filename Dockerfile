@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependency compilation separately from actual source. This is a
-# 34-crate workspace, so the dummy-source trick needs a stub for every
+# 35-crate workspace, so the dummy-source trick needs a stub for every
 # member crate, not just the binaries -- otherwise `cargo build` fails
 # resolving the workspace before it ever gets to compiling real dependencies.
 COPY Cargo.toml Cargo.lock ./
@@ -45,13 +45,14 @@ COPY crates/arsenals/cryptkeeper/Cargo.toml crates/arsenals/cryptkeeper/Cargo.to
 COPY crates/arsenals/defleshing/Cargo.toml crates/arsenals/defleshing/Cargo.toml
 COPY crates/arsenals/vivisection/Cargo.toml crates/arsenals/vivisection/Cargo.toml
 COPY crates/arsenals/inquest/Cargo.toml crates/arsenals/inquest/Cargo.toml
+COPY crates/arsenals/thanatos/Cargo.toml crates/arsenals/thanatos/Cargo.toml
 
 RUN for crate in core database auth rbac audit notifications execution hosts modules agent-protocol web \
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \
         arsenals/apothecary arsenals/grimoire arsenals/cryptkeeper arsenals/defleshing arsenals/vivisection \
-        arsenals/inquest; do \
+        arsenals/inquest arsenals/thanatos; do \
         mkdir -p crates/$crate/src && echo "// stub" > crates/$crate/src/lib.rs; \
     done \
     && mkdir -p crates/app/src && echo "fn main() {}" > crates/app/src/main.rs \

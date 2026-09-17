@@ -187,6 +187,19 @@ pattern rather than assume one specific tool is present.
 6. Revoking a host (`/admin/hosts/<id>/revoke`) invalidates its credential
    immediately; the agent's own reconnect loop will keep retrying and
    failing with a clear error until it's re-enrolled with a fresh token.
+   The host row itself stays (shown with a "Revoked" badge) so its audit
+   history remains attributable.
+7. Removing a host (`/admin/hosts/<id>/remove`) hard-deletes the row
+   entirely -- a separate, stronger action from revoke, since revoke alone
+   never took the host out of the list. Nothing else references
+   `hosts.id` by foreign key (the audit log stores a free-text resource
+   label, not an FK, by design), so this is safe on its own and the audit
+   trail survives the host's deletion. This only removes Abyssal
+   Arsenal's own record of the host; it does not (and, on an already
+   offline/decommissioned host, often *can't*) reach out and uninstall
+   the agent remotely. The confirmation flow instead shows a copy-paste
+   uninstall command for the target host, the same UX as the enrollment
+   command.
 
 `AgentOperation` is deliberately a fixed, named whitelist. Every new
 sysadmin capability an arsenal needs on a host means adding a variant to
@@ -274,7 +287,7 @@ model, not oversights:
   process-local. A multi-instance control plane would need both backed by
   shared state instead.
 - SSO/OIDC, additional notification providers (Telegram, Slack, Teams,
-  Discord), and 19 of the 21 arsenals' real capabilities beyond metadata are
+  Discord), and 20 of the 22 arsenals' real capabilities beyond metadata are
   not implemented yet (only `cystoolbox` and `cadavault` have real
   operations so far) --
   see [CHANGELOG.md](CHANGELOG.md) for current status.

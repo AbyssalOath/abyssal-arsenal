@@ -78,6 +78,11 @@ pub fn build(state: AppState) -> Router {
             get(routes::hosts::revoke_confirm),
         )
         .route("/admin/hosts/:id/revoke", post(routes::hosts::revoke))
+        .route(
+            "/admin/hosts/:id/remove/confirm",
+            get(routes::hosts::remove_confirm),
+        )
+        .route("/admin/hosts/:id/remove", post(routes::hosts::remove))
         .route("/arsenals/cystoolbox", get(routes::cystoolbox::show))
         .route(
             "/arsenals/cystoolbox/:host_id/system-overview",

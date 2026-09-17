@@ -62,6 +62,7 @@ dependencies = [
  "arsenal-reanimation",
  "arsenal-reliquary",
  "arsenal-resurrection",
+ "arsenal-thanatos",
  "arsenal-vivisection",
  "axum",
  "chrono",
@@ -477,6 +478,14 @@ dependencies = [
 
 [[package]]
 name = "arsenal-resurrection"
+version = "0.1.0"
+dependencies = [
+ "abyssal-core",
+ "abyssal-modules",
+]
+
+[[package]]
+name = "arsenal-thanatos"
 version = "0.1.0"
 dependencies = [
  "abyssal-core",
