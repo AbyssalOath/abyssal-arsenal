@@ -1,0 +1,50 @@
+{% extends "app_base.html" %}
+{% block title %}Cystoolbox — Abyssal Arsenal{% endblock %}
+{% block heading %}Cystoolbox — General Administration{% endblock %}
+{% block content %}
+
+{% if let Some(label) = result_label %}
+<div class="card">
+  <h2 style="margin-top:0;">{{ label }}</h2>
+  {% if let Some(output) = result_output %}
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ output }}</pre>
+  {% endif %}
+  {% if let Some(err) = result_error %}
+  <div class="error-banner" style="margin:0;">{{ err }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if hosts.is_empty() %}
+<div class="card">
+  <p style="color:var(--text-muted);">
+    No hosts are currently online. Enroll and connect a host from
+    <a href="/admin/hosts">Hosts</a> first.
+  </p>
+</div>
+{% endif %}
+
+{% for h in hosts %}
+<div class="card">
+  <h2 style="margin-top:0;">{{ h.name }}</h2>
+  <div class="actions">
+    <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/system-overview" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">System Overview</button>
+    </form>
+    <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/resource-usage" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">Resource Usage</button>
+    </form>
+    <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/logged-in-users" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">Logged-in Users</button>
+    </form>
+    {% if can_manage %}
+    <a class="btn btn-danger" href="/arsenals/cystoolbox/{{ h.id }}/reboot/confirm">Reboot Host</a>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+{% endblock %}

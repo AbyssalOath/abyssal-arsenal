@@ -91,6 +91,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "chrono",
+ "rand 0.8.8",
  "thiserror 1.0.69",
  "tokio",
  "uuid",

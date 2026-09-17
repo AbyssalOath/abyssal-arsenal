@@ -41,6 +41,10 @@ pub struct SetupTemplate {
     pub theme: String,
     pub csrf_token: String,
     pub error: Option<String>,
+    pub username: String,
+    pub email: String,
+    pub generated_password: Option<String>,
+    pub password_prefill: String,
 }
 
 #[derive(Template)]
@@ -49,6 +53,10 @@ pub struct RegisterTemplate {
     pub theme: String,
     pub csrf_token: String,
     pub error: Option<String>,
+    pub username: String,
+    pub email: String,
+    pub generated_password: Option<String>,
+    pub password_prefill: String,
 }
 
 #[derive(Template)]
@@ -102,6 +110,11 @@ pub struct UsersTemplate {
     pub users: Vec<UserRow>,
     pub roles: Vec<RoleOption>,
     pub message: Option<String>,
+    pub error: Option<String>,
+    pub new_username: String,
+    pub new_email: String,
+    pub generated_password: Option<String>,
+    pub password_prefill: String,
 }
 
 pub struct PermissionRow {
@@ -201,4 +214,20 @@ pub struct ConfirmTemplate {
     pub message: String,
     pub action_url: String,
     pub cancel_url: String,
+}
+
+pub struct CystoolboxHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "cystoolbox.html")]
+pub struct CystoolboxTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<CystoolboxHostRow>,
+    pub can_manage: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
 }

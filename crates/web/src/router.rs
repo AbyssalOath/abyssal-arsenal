@@ -69,6 +69,27 @@ pub fn build(state: AppState) -> Router {
             get(routes::hosts::revoke_confirm),
         )
         .route("/admin/hosts/:id/revoke", post(routes::hosts::revoke))
+        .route("/arsenals/cystoolbox", get(routes::cystoolbox::show))
+        .route(
+            "/arsenals/cystoolbox/:host_id/system-overview",
+            post(routes::cystoolbox::system_overview),
+        )
+        .route(
+            "/arsenals/cystoolbox/:host_id/resource-usage",
+            post(routes::cystoolbox::resource_usage),
+        )
+        .route(
+            "/arsenals/cystoolbox/:host_id/logged-in-users",
+            post(routes::cystoolbox::logged_in_users),
+        )
+        .route(
+            "/arsenals/cystoolbox/:host_id/reboot/confirm",
+            get(routes::cystoolbox::reboot_confirm),
+        )
+        .route(
+            "/arsenals/cystoolbox/:host_id/reboot",
+            post(routes::cystoolbox::reboot),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

@@ -2,6 +2,7 @@ pub mod agent;
 pub mod api;
 pub mod arsenals;
 pub mod audit;
+pub mod cystoolbox;
 pub mod dashboard;
 pub mod hosts;
 pub mod login;

@@ -1,6 +1,7 @@
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
+use abyssal_rbac::AuthContext;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
@@ -16,21 +17,19 @@ use crate::state::AppState;
 use crate::templates::{BaseCtx, ConfirmTemplate, RoleOption, UserRow, UsersTemplate};
 use crate::theme;
 
-#[derive(Deserialize)]
-pub struct ListQuery {
+#[allow(clippy::too_many_arguments)]
+async fn render_list(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
     message: Option<String>,
-}
-
-pub async fn list(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    CurrentUser(ctx): CurrentUser,
-    Query(q): Query<ListQuery>,
+    error: Option<String>,
+    new_username: String,
+    new_email: String,
+    generated_password: Option<String>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::UsersView)?;
-
-    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token);
 
     let mut users = Vec::new();
     for u in repo::users::list(&state.pool).await? {
@@ -58,12 +57,20 @@ pub async fn list(
         })
         .collect();
 
+    let password_prefill = generated_password.clone().unwrap_or_default();
+
     let tpl = UsersTemplate {
         base,
         users,
         roles,
-        message: q.message,
+        message,
+        error,
+        new_username,
+        new_email,
+        generated_password,
+        password_prefill,
     };
+    let jar = jar.clone();
     let jar = match new_cookie {
         Some(c) => jar.add(c),
         None => jar,
@@ -72,8 +79,34 @@ pub async fn list(
 }
 
 #[derive(Deserialize)]
+pub struct ListQuery {
+    message: Option<String>,
+}
+
+pub async fn list(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<ListQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersView)?;
+    render_list(
+        &state,
+        &jar,
+        &ctx,
+        q.message,
+        None,
+        String::new(),
+        String::new(),
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
 pub struct CreateUserForm {
     csrf_token: String,
+    intent: String,
     username: String,
     email: String,
     password: String,
@@ -89,10 +122,33 @@ pub async fn create(
     abyssal_rbac::ensure(&ctx, Permission::UsersCreate)?;
     require_csrf(&jar, &form.csrf_token)?;
 
-    if form.password.len() < 12 {
-        return Err(WebError(AppError::Validation(
-            "Password must be at least 12 characters.".into(),
-        )));
+    if form.intent == "generate" {
+        let generated = abyssal_auth::password::generate_strong_password();
+        return render_list(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            None,
+            form.username,
+            form.email,
+            Some(generated),
+        )
+        .await;
+    }
+
+    if let Err(message) = abyssal_auth::password::validate_strength(&form.password) {
+        return render_list(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            Some(message),
+            form.username,
+            form.email,
+            None,
+        )
+        .await;
     }
 
     let hash = abyssal_auth::password::hash_password(&form.password)?;

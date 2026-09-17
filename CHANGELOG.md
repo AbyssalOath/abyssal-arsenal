@@ -42,7 +42,22 @@ project is pre-release, so everything so far lives under "Unreleased".
   `/api/hosts/enroll`), a live connection registry, host
   online/offline status and revocation, and `Executor::execute_on_host()`
   for dispatching a fixed, versioned whitelist of operations
-  (`AgentOperation`: `Ping`, `SystemInfo`) to a specific host.
+  (`AgentOperation`: `Ping`, `SystemInfo`, `ResourceUsage`, `LoggedInUsers`,
+  `Reboot`) to a specific host.
+- **Cystoolbox arsenal** (first arsenal with real capabilities): a
+  per-host admin page (`/arsenals/cystoolbox`) listing online managed hosts
+  with System Overview, Resource Usage (memory + disk), and Logged-in Users
+  as read-only operations (`systems.view`), plus Reboot Host as a
+  Destructive operation (`systems.manage`) requiring explicit confirmation.
+  Proves the full Read/Destructive spectrum of the execution layer against
+  a real managed host, not just in local unit tests.
+- **Password policy**: local account passwords now require at least 15
+  characters, an uppercase letter, a lowercase letter, a number, and a
+  special character, enforced server-side (`abyssal_auth::password::
+  validate_strength`) on `/setup`, `/register`, and admin-created users. A
+  "Generate strong password" option produces a 20-character
+  cryptographically random password satisfying the policy while excluding
+  visually ambiguous characters (`I`, `O`, `l`, `o`, `0`, `1`).
 - **Web UI**: server-rendered HTML (Askama), dark theme by default with a
   light theme toggle, no separate JavaScript build pipeline. Destructive
   actions require a real confirmation page rather than a client-side
@@ -69,7 +84,8 @@ project is pre-release, so everything so far lives under "Unreleased".
 - `LoginLimiter` and `HostConnectionRegistry` are in-memory and
   process-local; a multi-instance control plane would need both backed by
   shared state.
-- SSO/OIDC, non-SMTP notification providers, and most arsenal capabilities
-  beyond metadata are not implemented yet.
+- SSO/OIDC, non-SMTP notification providers, and 20 of the 21 arsenals'
+  real capabilities beyond metadata are not implemented yet (only
+  `cystoolbox` has real operations so far).
 - No Tauri desktop client yet; `/api/health` and `/api/me` establish the
   API seam it would use.

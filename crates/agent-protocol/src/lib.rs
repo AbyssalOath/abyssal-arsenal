@@ -17,6 +17,13 @@ pub enum AgentOperation {
     Ping,
     /// Hostname, kernel version, and uptime, read locally on the agent's host.
     SystemInfo,
+    /// Memory and disk usage, read locally on the agent's host.
+    ResourceUsage,
+    /// Currently logged-in users/sessions on the agent's host.
+    LoggedInUsers,
+    /// Immediately reboots the agent's host. Destructive -- the control
+    /// plane requires explicit confirmation before ever dispatching this.
+    Reboot,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

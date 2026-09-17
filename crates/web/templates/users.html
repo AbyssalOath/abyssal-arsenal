@@ -7,23 +7,41 @@
 <div class="info-banner">{{ m }}</div>
 {% endif %}
 
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
 <div class="card">
   <h2 style="margin-top:0;">Create user</h2>
+
+  {% if let Some(pw) = generated_password %}
+  <div class="info-banner">
+    <strong>Generated password — copy it now, it will not be shown again:</strong>
+    <input type="text" readonly value="{{ pw }}" style="margin-top:8px; font-family:monospace;">
+  </div>
+  {% endif %}
+
   <form method="post" action="/admin/users/create">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label for="username">Username</label>
-    <input type="text" id="username" name="username" required>
+    <input type="text" id="username" name="username" value="{{ new_username }}" required>
     <label for="email">Email</label>
-    <input type="email" id="email" name="email" required>
+    <input type="email" id="email" name="email" value="{{ new_email }}" required>
     <label for="password">Initial password</label>
-    <input type="password" id="password" name="password" required minlength="12">
+    <input type="password" id="password" name="password" value="{{ password_prefill }}" required minlength="15">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-10px 0 16px;">
+      At least 15 characters, with an uppercase letter, a lowercase letter, a number, and a special character.
+    </p>
     <label for="role_id">Role</label>
     <select id="role_id" name="role_id" required>
       {% for role in roles %}
       <option value="{{ role.id }}">{{ role.name }}</option>
       {% endfor %}
     </select>
-    <button type="submit">Create user</button>
+    <button type="submit" name="intent" value="generate" class="btn-secondary" style="margin-right:10px;">
+      Generate strong password
+    </button>
+    <button type="submit" name="intent" value="create">Create user</button>
   </form>
 </div>
 

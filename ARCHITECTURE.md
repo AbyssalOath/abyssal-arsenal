@@ -231,8 +231,9 @@ model, not oversights:
   process-local. A multi-instance control plane would need both backed by
   shared state instead.
 - SSO/OIDC, additional notification providers (Telegram, Slack, Teams,
-  Discord), and most arsenal capabilities beyond metadata are not
-  implemented yet -- see [CHANGELOG.md](CHANGELOG.md) for current status.
+  Discord), and 20 of the 21 arsenals' real capabilities beyond metadata are
+  not implemented yet (only `cystoolbox` has real operations so far) --
+  see [CHANGELOG.md](CHANGELOG.md) for current status.
 - The agent does not sandbox or rate-limit operations beyond the fixed
   `AgentOperation` whitelist and does not manage privilege escalation
   itself; how it's deployed (as root, via `sudo`-scoped commands in a

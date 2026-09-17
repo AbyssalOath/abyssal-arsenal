@@ -24,27 +24,43 @@ async fn registration_enabled(state: &AppState) -> anyhow::Result<bool> {
     repo::settings::get_bool(&state.pool, PUBLIC_REGISTRATION_ENABLED, false).await
 }
 
-pub async fn show(State(state): State<AppState>, jar: CookieJar) -> Result<Response, WebError> {
-    if !registration_enabled(&state).await? {
-        return Ok(Redirect::to("/login").into_response());
-    }
-
-    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+fn render(
+    jar: &CookieJar,
+    username: &str,
+    email: &str,
+    error: Option<String>,
+    generated_password: Option<String>,
+) -> Response {
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let password_prefill = generated_password.clone().unwrap_or_default();
     let tpl = RegisterTemplate {
-        theme: theme::current(&jar),
+        theme: theme::current(jar),
         csrf_token,
-        error: None,
+        error,
+        username: username.to_string(),
+        email: email.to_string(),
+        generated_password,
+        password_prefill,
     };
+    let jar = jar.clone();
     let jar = match new_cookie {
         Some(c) => jar.add(c),
         None => jar,
     };
-    Ok((jar, tpl).into_response())
+    (jar, tpl).into_response()
+}
+
+pub async fn show(State(state): State<AppState>, jar: CookieJar) -> Result<Response, WebError> {
+    if !registration_enabled(&state).await? {
+        return Ok(Redirect::to("/login").into_response());
+    }
+    Ok(render(&jar, "", "", None, None))
 }
 
 #[derive(Deserialize)]
 pub struct RegisterForm {
     csrf_token: String,
+    intent: String,
     username: String,
     email: String,
     password: String,
@@ -62,13 +78,33 @@ pub async fn submit(
         return Ok(Redirect::to("/login").into_response());
     }
 
-    if form.password != form.password_confirm {
-        return Ok(register_error(&jar, "Passwords do not match."));
-    }
-    if form.password.len() < 12 {
-        return Ok(register_error(
+    if form.intent == "generate" {
+        let generated = abyssal_auth::password::generate_strong_password();
+        return Ok(render(
             &jar,
-            "Password must be at least 12 characters.",
+            &form.username,
+            &form.email,
+            None,
+            Some(generated),
+        ));
+    }
+
+    if form.password != form.password_confirm {
+        return Ok(render(
+            &jar,
+            &form.username,
+            &form.email,
+            Some("Passwords do not match.".to_string()),
+            None,
+        ));
+    }
+    if let Err(message) = abyssal_auth::password::validate_strength(&form.password) {
+        return Ok(render(
+            &jar,
+            &form.username,
+            &form.email,
+            Some(message),
+            None,
         ));
     }
 
@@ -85,7 +121,7 @@ pub async fn submit(
 
     let regular = repo::roles::find_by_name(&state.pool, role::REGULAR_USER)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Regular User role missing — did startup seeding run?"))?;
+        .ok_or_else(|| anyhow::anyhow!("Regular User role missing -- did startup seeding run?"))?;
     repo::roles::assign_role_to_user(&state.pool, user.id, regular.id).await?;
 
     abyssal_audit::record(
@@ -105,14 +141,4 @@ pub async fn submit(
             .await?;
     let jar = jar.add(build_session_cookie(&state, token));
     Ok((jar, Redirect::to("/")).into_response())
-}
-
-fn register_error(jar: &CookieJar, message: &str) -> Response {
-    let (csrf_token, _) = csrf::ensure_token(jar);
-    let tpl = RegisterTemplate {
-        theme: theme::current(jar),
-        csrf_token,
-        error: Some(message.to_string()),
-    };
-    tpl.into_response()
 }
