@@ -149,6 +149,19 @@ project is pre-release, so everything so far lives under "Unreleased".
 
 ### Fixed
 
+- `HostConnectionRegistry::unregister()` never cleaned up requests still in
+  flight to the connection that just dropped -- a `dispatch()` call waiting
+  on a response from a host whose connection closed mid-request (e.g. a
+  stale agent build disconnecting because it can't deserialize a newer
+  `AgentOperation` variant, then reconnecting) would silently burn its
+  *entire* timeout before failing, rather than failing immediately with
+  the existing, clearer "host disconnected before responding" error.
+  `unregister()` now also drops every pending request for that host,
+  which resolves them right away via the dispatch loop's existing
+  connection-closed handling. Caught live: every Necrolink read operation
+  against a real host was timing out after exactly 10 seconds instead of
+  surfacing an obvious error, traced to the host's agent build predating
+  this session's new `AgentOperation` variants.
 - `abyssal-agent`'s command runner now treats a non-zero exit code as a
   failure, not just a spawn error. Previously, a command that ran but
   failed partway (e.g. `hostnamectl` refusing for lack of privilege) came

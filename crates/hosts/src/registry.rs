@@ -28,7 +28,10 @@ struct Connection {
 #[derive(Default)]
 pub struct HostConnectionRegistry {
     connections: Mutex<HashMap<Uuid, Connection>>,
-    pending: Mutex<HashMap<Uuid, oneshot::Sender<CommandOutcome>>>,
+    /// Keyed by request ID; each entry also carries the host ID it was sent
+    /// to, so `unregister` can find and drop every request still in flight
+    /// to a connection that just went away.
+    pending: Mutex<HashMap<Uuid, (Uuid, oneshot::Sender<CommandOutcome>)>>,
 }
 
 impl HostConnectionRegistry {
@@ -43,8 +46,22 @@ impl HostConnectionRegistry {
             .insert(host_id, Connection { sender });
     }
 
+    /// Also fails any dispatch still waiting on a response from this host
+    /// immediately, rather than leaving it to silently burn its full
+    /// timeout. Dropping the oneshot sender here (instead of trying to
+    /// send an outcome through it) is what makes `dispatch`'s `rx.await`
+    /// resolve right away, via the existing `Ok(Err(_)) =>
+    /// DispatchError::ConnectionClosed` arm -- no other change needed
+    /// there. This is what makes a stale agent build (one that disconnects
+    /// because it can't deserialize a newer `AgentOperation` variant)
+    /// surface as a clear, fast "host disconnected before responding"
+    /// instead of a confusing multi-second timeout.
     pub fn unregister(&self, host_id: Uuid) {
         self.connections.lock().unwrap().remove(&host_id);
+        self.pending
+            .lock()
+            .unwrap()
+            .retain(|_, (pending_host_id, _)| *pending_host_id != host_id);
     }
 
     pub fn is_connected(&self, host_id: Uuid) -> bool {
@@ -56,7 +73,7 @@ impl HostConnectionRegistry {
     /// with no matching waiter (e.g. arriving after `dispatch` already timed
     /// out) is simply dropped.
     pub fn resolve(&self, request_id: Uuid, outcome: CommandOutcome) {
-        if let Some(tx) = self.pending.lock().unwrap().remove(&request_id) {
+        if let Some((_, tx)) = self.pending.lock().unwrap().remove(&request_id) {
             let _ = tx.send(outcome);
         }
     }
@@ -75,7 +92,10 @@ impl HostConnectionRegistry {
 
         let request_id = Uuid::new_v4();
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(request_id, tx);
+        self.pending
+            .lock()
+            .unwrap()
+            .insert(request_id, (host_id, tx));
 
         if sender
             .send(ServerMessage::Command {
@@ -134,6 +154,33 @@ mod tests {
             .dispatch(host_id, AgentOperation::Ping, Duration::from_millis(50))
             .await;
         assert!(matches!(result, Err(DispatchError::Timeout)));
+    }
+
+    #[tokio::test]
+    async fn unregister_fails_pending_dispatch_immediately_instead_of_waiting_for_timeout() {
+        let registry = std::sync::Arc::new(HostConnectionRegistry::new());
+        let host_id = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(1);
+        registry.register(host_id, tx);
+
+        let registry_clone = registry.clone();
+        tokio::spawn(async move {
+            // Simulate the agent choking on the message (e.g. an unknown
+            // `AgentOperation` variant on a stale build) and its connection
+            // handler unregistering as a result, without ever responding.
+            let _ = rx.recv().await;
+            registry_clone.unregister(host_id);
+        });
+
+        let start = std::time::Instant::now();
+        let result = registry
+            .dispatch(host_id, AgentOperation::Ping, Duration::from_secs(30))
+            .await;
+        assert!(matches!(result, Err(DispatchError::ConnectionClosed)));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "should fail fast on unregister, not wait anywhere near the 30s timeout"
+        );
     }
 
     #[tokio::test]
