@@ -120,6 +120,21 @@ project is pre-release, so everything so far lives under "Unreleased".
   Hostname; the same fix applies to every operation, including Reboot,
   where reporting a failed reboot as successful would have been worse.
 
+### Security
+
+- Upgraded `sqlx` from 0.7.4 to 0.8.6, resolving four Dependabot alerts: a
+  reachable panic in CRL parsing and two name-constraint validation issues
+  in the transitively-pulled `rustls-webpki` 0.101.7 (RUSTSEC-2026-0104,
+  RUSTSEC-2026-0099, RUSTSEC-2026-0098 -- all came from sqlx-core's old
+  `rustls` 0.21 dependency, now replaced by the same modern `rustls` 0.23
+  stack already used elsewhere in the workspace), and a binary protocol
+  misinterpretation issue in sqlx itself from truncating/overflowing casts
+  (RUSTSEC-2024-0363). No API changes needed on our side (runtime-checked
+  queries only, no compile-time `query!` macros); verified against a real
+  MariaDB that migrations, login, and admin page reads/writes all still
+  work correctly post-upgrade. Also incidentally dropped two now-unused
+  unmaintained transitive dependencies (`paste`, `rustls-pemfile`).
+
 ### Changed
 
 - Project license set to AGPL-3.0-or-later (Copyright (C) 2026 AbyssalOath).

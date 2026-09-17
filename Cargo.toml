@@ -92,7 +92,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.7", features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "json", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "json", "migrate"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
