@@ -3,18 +3,6 @@
 {% block heading %}Cystoolbox — General Administration{% endblock %}
 {% block content %}
 
-{% if let Some(label) = result_label %}
-<div class="card">
-  <h2 style="margin-top:0;">{{ label }}</h2>
-  {% if let Some(output) = result_output %}
-  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ output }}</pre>
-  {% endif %}
-  {% if let Some(err) = result_error %}
-  <div class="error-banner" style="margin:0;">{{ err }}</div>
-  {% endif %}
-</div>
-{% endif %}
-
 {% if hosts.is_empty() %}
 <div class="card">
   <p style="color:var(--text-muted);">
@@ -22,40 +10,15 @@
     <a href="/admin/hosts">Hosts</a> first.
   </p>
 </div>
-{% endif %}
-
-{% for h in hosts %}
+{% else %}
 <div class="card">
-  <h2 style="margin-top:0;">{{ h.name }}</h2>
+  <p style="color:var(--text-muted); margin-top:0;">Pick a host to run Cystoolbox operations on.</p>
   <div class="actions">
-    <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/system-overview" style="display:inline;">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <button type="submit" class="btn-secondary">System Overview</button>
-    </form>
-    <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/resource-usage" style="display:inline;">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <button type="submit" class="btn-secondary">Resource Usage</button>
-    </form>
-    <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/logged-in-users" style="display:inline;">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <button type="submit" class="btn-secondary">Logged-in Users</button>
-    </form>
-    {% if can_manage %}
-    <a class="btn btn-danger" href="/arsenals/cystoolbox/{{ h.id }}/reboot/confirm">Reboot Host</a>
-    {% endif %}
+    {% for h in hosts %}
+    <a class="btn btn-secondary" href="/arsenals/cystoolbox/{{ h.id }}">{{ h.name }}</a>
+    {% endfor %}
   </div>
-
-  {% if can_manage %}
-  <form method="post" action="/arsenals/cystoolbox/{{ h.id }}/set-hostname" style="margin-top:14px; display:flex; gap:8px; align-items:flex-end; max-width:420px;">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <div style="flex:1;">
-      <label for="hostname-{{ h.id }}">New hostname</label>
-      <input type="text" id="hostname-{{ h.id }}" name="hostname" placeholder="e.g. web-01" required style="margin-bottom:0;">
-    </div>
-    <button type="submit" class="btn-secondary">Set Hostname</button>
-  </form>
-  {% endif %}
 </div>
-{% endfor %}
+{% endif %}
 
 {% endblock %}

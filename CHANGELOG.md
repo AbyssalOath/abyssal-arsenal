@@ -177,6 +177,31 @@ project is pre-release, so everything so far lives under "Unreleased".
 ### Changed
 
 - Project license set to AGPL-3.0-or-later (Copyright (C) 2026 AbyssalOath).
+- **Apotheosis moved out of `/admin/hosts` into per-host arsenal pages.**
+  The standalone Elevate/Check Elevation/De-escalate controls are gone
+  from the hosts list; `/admin/hosts` is back to being purely host
+  management (enroll, revoke, remove). In their place:
+  - `cystoolbox` and `cadavault` changed from a single page listing every
+    host with inline per-host buttons to a host picker
+    (`/arsenals/<name>`) that leads to a dedicated per-host page
+    (`/arsenals/<name>/<host_id>`) -- one host in view at a time, matching
+    how elevation is itself scoped per host.
+  - Every action form on a host's page carries an optional sudo password
+    field, shown only while that host isn't already believed elevated.
+    Submitting one elevates first and, only on success, proceeds to run
+    the actual action in the same request -- no separate confirmation
+    round trip. Destructive actions' own confirm pages (Reboot, Enable
+    Firewall) carry the same field.
+  - A new "Apotheosis" item in the top nav (visible only with
+    `hosts.elevate`) pulses red whenever at least one host is believed
+    elevated and opens a panel listing every such host with remaining
+    time and a De-escalate button -- a status/control surface, not itself
+    where elevation happens.
+  - New `abyssal_hosts::ElevationTracker`: a lightweight, best-effort,
+    control-plane-local mirror of which hosts are believed elevated,
+    purely so the UI above can render without an agent round-trip on
+    every page load. Explicitly not a security boundary -- see
+    "Apotheosis" in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Known limitations
 

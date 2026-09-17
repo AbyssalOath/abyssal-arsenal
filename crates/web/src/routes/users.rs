@@ -29,7 +29,7 @@ async fn render_list(
     generated_password: Option<String>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
-    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token);
+    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
 
     let mut users = Vec::new();
     for u in repo::users::list(&state.pool).await? {
@@ -262,7 +262,7 @@ pub async fn delete_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
 
     let tpl = ConfirmTemplate {
         base,
@@ -273,6 +273,7 @@ pub async fn delete_confirm(
         ),
         action_url: format!("/admin/users/{id}/delete"),
         cancel_url: "/admin/users".to_string(),
+        escalate_host_id: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

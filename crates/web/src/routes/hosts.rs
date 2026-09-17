@@ -14,7 +14,6 @@ use axum_extra::extract::cookie::CookieJar;
 use chrono::Duration as ChronoDuration;
 use serde::Deserialize;
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use crate::common::require_csrf;
 use crate::csrf;
@@ -48,7 +47,7 @@ async fn render(
     action_error: Option<String>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
-    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token);
+    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
 
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
@@ -158,76 +157,6 @@ pub async fn run_system_info(
     }
 }
 
-#[derive(Deserialize)]
-pub struct ElevateForm {
-    csrf_token: String,
-    sudo_password: String,
-}
-
-/// "Apotheosis" -- validates the submitted sudo password against the host's
-/// own PAM stack and starts a time-boxed elevation window on the agent. The
-/// password is wrapped in `Zeroizing` immediately on extraction and is never
-/// logged, stored, or included in the audit record's metadata -- only the
-/// pass/fail outcome is.
-pub async fn elevate(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    CurrentUser(ctx): CurrentUser,
-    Path(id): Path<Uuid>,
-    Form(form): Form<ElevateForm>,
-) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsElevate)?;
-    require_csrf(&jar, &form.csrf_token)?;
-    let password = Zeroizing::new(form.sudo_password);
-
-    let host = repo::hosts::find_by_id(&state.pool, id)
-        .await?
-        .ok_or(AppError::NotFound)?;
-
-    let result = state
-        .executor
-        .execute_on_host(
-            &ctx,
-            &state.hosts,
-            id,
-            &format!("Elevate Privileges -- {}", host.name),
-            AgentOperation::Elevate {
-                password: password.to_string(),
-            },
-            Permission::HostsElevate,
-            OperationKind::Write,
-            false,
-            Duration::from_secs(10),
-            None,
-        )
-        .await;
-    drop(password);
-
-    let tls_warning = if !state.config.cookie_secure {
-        "WARNING: this connection is not running over TLS -- the sudo password was sent in \
-         plaintext over the network. Do not use Apotheosis over an untrusted network without \
-         TLS.\n\n"
-    } else {
-        ""
-    };
-
-    match result {
-        Ok(output) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                Some(format!("{tls_warning}{}", output.stdout)),
-                None,
-            )
-            .await
-        }
-        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
-    }
-}
-
 pub async fn deescalate(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -258,41 +187,7 @@ pub async fn deescalate(
         )
         .await;
 
-    match result {
-        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
-        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
-    }
-}
-
-pub async fn elevation_status(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    CurrentUser(ctx): CurrentUser,
-    Path(id): Path<Uuid>,
-    Form(form): Form<SimpleForm>,
-) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsElevate)?;
-    require_csrf(&jar, &form.csrf_token)?;
-
-    let host = repo::hosts::find_by_id(&state.pool, id)
-        .await?
-        .ok_or(AppError::NotFound)?;
-
-    let result = state
-        .executor
-        .execute_on_host(
-            &ctx,
-            &state.hosts,
-            id,
-            &format!("Elevate Privileges -- {}", host.name),
-            AgentOperation::ElevationStatus,
-            Permission::HostsElevate,
-            OperationKind::Read,
-            false,
-            Duration::from_secs(10),
-            None,
-        )
-        .await;
+    state.elevation.mark_deescalated(id);
 
     match result {
         Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
@@ -312,7 +207,7 @@ pub async fn revoke_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
 
     let tpl = crate::templates::ConfirmTemplate {
         base,
@@ -323,6 +218,7 @@ pub async fn revoke_confirm(
         ),
         action_url: format!("/admin/hosts/{id}/revoke"),
         cancel_url: "/admin/hosts".to_string(),
+        escalate_host_id: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -385,7 +281,7 @@ pub async fn remove_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
 
     let tpl = crate::templates::ConfirmTemplate {
         base,
@@ -399,6 +295,7 @@ pub async fn remove_confirm(
         ),
         action_url: format!("/admin/hosts/{id}/remove"),
         cancel_url: "/admin/hosts".to_string(),
+        escalate_host_id: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

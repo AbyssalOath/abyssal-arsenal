@@ -76,10 +76,11 @@ The design principles this codebase follows are documented in
   from `.env.example` is gitignored; `install.sh` generates strong random
   secrets rather than shipping defaults.
 - **Sudo elevation ("Apotheosis") never persists the password.** A sudo
-  password submitted via `/admin/hosts/<id>/elevate` (permission
-  `hosts.elevate`, Super Admin only by default) is validated once against
-  the target host's own PAM stack (`sudo -S -v`) and is never written to
-  the database, disk, or any log on either the control plane or the agent.
+  password submitted alongside any host-dispatched arsenal action
+  (permission `hosts.elevate`, Super Admin only by default) is validated
+  once against the target host's own PAM stack (`sudo -S -v`) and is never
+  written to the database, disk, or any log on either the control plane or
+  the agent.
   It is held in process memory only for the minimum time needed and is
   actively zeroized (`zeroize::Zeroizing`), not just dropped, once
   consumed on the agent side. `AgentOperation`'s `Debug` implementation is
@@ -98,8 +99,8 @@ These are documented tradeoffs, not something you need to report:
   in front of the control plane; the Axum server itself does not terminate
   TLS. Running without TLS in front of it is only appropriate for local
   testing -- `install.sh` says as much when you choose that option. This
-  matters most concretely for Apotheosis: the elevate form submits a real
-  sudo password, and without TLS that password travels in plaintext over
+  matters most concretely for Apotheosis: elevating submits a real sudo
+  password, and without TLS that password travels in plaintext over
   the network. The control plane warns (rather than blocks) when
   `COOKIE_SECURE` is off, for local-testing convenience, but does not
   refuse the request.

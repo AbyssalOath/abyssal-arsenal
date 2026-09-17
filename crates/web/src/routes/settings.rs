@@ -24,7 +24,7 @@ pub async fn show(
     abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
     let public_registration_enabled =
         repo::settings::get_bool(&state.pool, PUBLIC_REGISTRATION_ENABLED, false).await?;
 

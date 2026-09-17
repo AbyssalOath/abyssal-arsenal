@@ -8,6 +8,12 @@
   <form method="post" action="{{ action_url }}">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <input type="hidden" name="confirm" value="true">
+    {% if let Some(host_id) = escalate_host_id %}
+    <div style="margin-bottom:14px; max-width:360px;">
+      <label for="sudo-password-{{ host_id }}">Apotheosis -- sudo password (only needed if this host isn't already elevated)</label>
+      <input type="password" id="sudo-password-{{ host_id }}" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
+    </div>
+    {% endif %}
     <button type="submit" class="btn-danger">Confirm</button>
     <a class="btn btn-secondary" href="{{ cancel_url }}">Cancel</a>
   </form>

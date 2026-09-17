@@ -19,6 +19,26 @@
         {% if base.can_modules_manage %}<a href="/admin/modules">Modules</a>{% endif %}
         {% if base.can_settings_manage %}<a href="/admin/settings">Settings</a>{% endif %}
       </nav>
+      {% if base.can_hosts_elevate %}
+      <details class="user-menu apotheosis-toggle{% if base.apotheosis_active %} active{% endif %}">
+        <summary>Apotheosis</summary>
+        <div class="user-menu-panel" style="min-width:260px;">
+          {% if base.elevated_hosts.is_empty() %}
+          <p style="color:var(--text-muted); margin:0;">No hosts currently elevated.</p>
+          {% else %}
+          {% for h in base.elevated_hosts %}
+          <div class="apotheosis-panel-row">
+            <span>{{ h.name }} <span class="remaining">({{ h.remaining }})</span></span>
+            <form method="post" action="/admin/hosts/{{ h.id }}/deescalate" style="margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-secondary" style="padding:2px 8px;">De-escalate</button>
+            </form>
+          </div>
+          {% endfor %}
+          {% endif %}
+        </div>
+      </details>
+      {% endif %}
       <details class="user-menu">
         <summary>Signed in as <strong>{{ base.username }}</strong></summary>
         <div class="user-menu-panel">

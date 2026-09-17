@@ -29,7 +29,7 @@ pub async fn show(
     }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
 
     let tpl = ArsenalDetailTemplate {
         base,

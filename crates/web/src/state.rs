@@ -3,7 +3,7 @@ use std::sync::Arc;
 use abyssal_auth::LoginLimiter;
 use abyssal_database::DbPool;
 use abyssal_execution::Executor;
-use abyssal_hosts::HostConnectionRegistry;
+use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
 use abyssal_notifications::NotificationDispatcher;
 use chrono::Duration;
@@ -26,4 +26,8 @@ pub struct AppState {
     pub notifications: Arc<NotificationDispatcher>,
     pub hosts: Arc<HostConnectionRegistry>,
     pub executor: Arc<Executor>,
+    /// Best-effort, control-plane-local mirror of which hosts are believed
+    /// elevated -- see `abyssal_hosts::ElevationTracker` for why this isn't
+    /// itself a security boundary.
+    pub elevation: Arc<ElevationTracker>,
 }

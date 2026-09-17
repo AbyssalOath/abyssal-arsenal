@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use abyssal_auth::LoginLimiter;
 use abyssal_execution::Executor;
-use abyssal_hosts::HostConnectionRegistry;
+use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
 use abyssal_notifications::{NotificationDispatcher, SmtpProvider};
 use abyssal_web::{AppState, WebConfig};
@@ -43,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
         notifications: Arc::new(build_notifications(&config)),
         hosts: Arc::new(HostConnectionRegistry::new()),
         executor: Arc::new(executor),
+        elevation: Arc::new(ElevationTracker::new()),
     };
 
     let app = abyssal_web::build(state);

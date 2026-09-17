@@ -22,7 +22,7 @@ pub async fn list(
     abyssal_rbac::ensure(&ctx, Permission::ModulesManage)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
 
     let modules = state
         .modules

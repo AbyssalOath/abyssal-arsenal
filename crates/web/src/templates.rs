@@ -1,6 +1,16 @@
 use abyssal_core::Permission;
+use abyssal_hosts::ElevationTracker;
 use abyssal_rbac::AuthContext;
 use askama::Template;
+
+/// One host the nav's Apotheosis panel shows as currently (believed)
+/// elevated, with a human-readable remaining time.
+#[derive(Clone)]
+pub struct ElevatedHostView {
+    pub id: String,
+    pub name: String,
+    pub remaining: String,
+}
 
 /// Shared chrome context every authenticated page template embeds: identity,
 /// theme, the CSRF token forms must echo back, and which admin nav links this
@@ -18,10 +28,29 @@ pub struct BaseCtx {
     pub can_settings_manage: bool,
     pub can_hosts_view: bool,
     pub can_hosts_elevate: bool,
+    /// True when at least one host is currently (believed) elevated --
+    /// drives the nav button's red pulse.
+    pub apotheosis_active: bool,
+    pub elevated_hosts: Vec<ElevatedHostView>,
 }
 
 impl BaseCtx {
-    pub fn build(ctx: &AuthContext, theme: &str, csrf_token: &str) -> Self {
+    pub fn build(
+        ctx: &AuthContext,
+        theme: &str,
+        csrf_token: &str,
+        elevation: &ElevationTracker,
+    ) -> Self {
+        let snapshot = elevation.snapshot();
+        let elevated_hosts = snapshot
+            .into_iter()
+            .map(|h| ElevatedHostView {
+                id: h.host_id.to_string(),
+                name: h.host_name,
+                remaining: format_remaining(h.remaining),
+            })
+            .collect::<Vec<_>>();
+
         Self {
             username: ctx.user.username.clone(),
             theme: theme.to_string(),
@@ -33,8 +62,16 @@ impl BaseCtx {
             can_settings_manage: ctx.has(Permission::SettingsManage),
             can_hosts_view: ctx.has(Permission::HostsView),
             can_hosts_elevate: ctx.has(Permission::HostsElevate),
+            apotheosis_active: !elevated_hosts.is_empty(),
+            elevated_hosts,
         }
     }
+}
+
+fn format_remaining(remaining: std::time::Duration) -> String {
+    let minutes = remaining.as_secs() / 60;
+    let seconds = remaining.as_secs() % 60;
+    format!("{minutes}m{seconds:02}s left")
 }
 
 #[derive(Template)]
@@ -218,6 +255,12 @@ pub struct ConfirmTemplate {
     pub message: String,
     pub action_url: String,
     pub cancel_url: String,
+    /// Some(host_id) when confirming a host-dispatched operation that might
+    /// need escalation and the host isn't already believed elevated --
+    /// renders an optional sudo password field alongside the confirm
+    /// button. `None` for confirm pages unrelated to a host operation
+    /// (e.g. revoking/removing a host itself).
+    pub escalate_host_id: Option<String>,
 }
 
 pub struct CystoolboxHostRow {
@@ -230,7 +273,18 @@ pub struct CystoolboxHostRow {
 pub struct CystoolboxTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<CystoolboxHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "cystoolbox_host.html")]
+pub struct CystoolboxHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
     pub can_manage: bool,
+    /// True when this host is believed already elevated -- hides the sudo
+    /// password fields on every action form when true.
+    pub elevated: bool,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -246,7 +300,16 @@ pub struct CadavaultHostRow {
 pub struct CadavaultTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<CadavaultHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "cadavault_host.html")]
+pub struct CadavaultHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
     pub can_manage: bool,
+    pub elevated: bool,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,

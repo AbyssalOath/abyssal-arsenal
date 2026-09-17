@@ -1,0 +1,79 @@
+{% extends "app_base.html" %}
+{% block title %}Cystoolbox — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Cystoolbox — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/cystoolbox">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-danger">Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if let Some(label) = result_label %}
+  <div style="margin-top:14px;">
+    <h3 style="margin:0 0 6px;">{{ label }}</h3>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:0;">{{ err }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <div class="actions">
+    <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/system-overview" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      {% endif %}
+      <button type="submit" class="btn-secondary">System Overview</button>
+    </form>
+    <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/resource-usage" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      {% endif %}
+      <button type="submit" class="btn-secondary">Resource Usage</button>
+    </form>
+    <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/logged-in-users" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off" style="margin-bottom:0; display:inline-block; width:200px;">
+      {% endif %}
+      <button type="submit" class="btn-secondary">Logged-in Users</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write / Destructive</h3>
+  <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/set-hostname" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:620px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div>
+      <label for="hostname">New hostname</label>
+      <input type="text" id="hostname" name="hostname" placeholder="e.g. web-01" required style="margin-bottom:0;">
+    </div>
+    {% if !elevated && base.can_hosts_elevate %}
+    <div>
+      <label for="set-hostname-password">Sudo password (if needed)</label>
+      <input type="password" id="set-hostname-password" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
+    </div>
+    {% endif %}
+    <button type="submit" class="btn-secondary">Set Hostname</button>
+  </form>
+
+  <div class="actions" style="margin-top:14px;">
+    <a class="btn btn-danger" href="/arsenals/cystoolbox/{{ host_id }}/reboot/confirm">Reboot Host</a>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

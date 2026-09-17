@@ -64,14 +64,9 @@ pub fn build(state: AppState) -> Router {
             "/admin/hosts/:id/system-info",
             post(routes::hosts::run_system_info),
         )
-        .route("/admin/hosts/:id/elevate", post(routes::hosts::elevate))
         .route(
             "/admin/hosts/:id/deescalate",
             post(routes::hosts::deescalate),
-        )
-        .route(
-            "/admin/hosts/:id/elevation-status",
-            post(routes::hosts::elevation_status),
         )
         .route(
             "/admin/hosts/:id/revoke/confirm",
@@ -84,6 +79,10 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/admin/hosts/:id/remove", post(routes::hosts::remove))
         .route("/arsenals/cystoolbox", get(routes::cystoolbox::show))
+        .route(
+            "/arsenals/cystoolbox/:host_id",
+            get(routes::cystoolbox::show_host),
+        )
         .route(
             "/arsenals/cystoolbox/:host_id/system-overview",
             post(routes::cystoolbox::system_overview),
@@ -109,6 +108,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::cystoolbox::reboot),
         )
         .route("/arsenals/cadavault", get(routes::cadavault::show))
+        .route(
+            "/arsenals/cadavault/:host_id",
+            get(routes::cadavault::show_host),
+        )
         .route(
             "/arsenals/cadavault/:host_id/firewall-status",
             post(routes::cadavault::firewall_status),

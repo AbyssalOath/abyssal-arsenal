@@ -210,23 +210,24 @@ path from a wire message to running something outside that fixed list.
 
 Rather than requiring the agent to run permanently as root, an admin with
 the dedicated `hosts.elevate` permission (Super Admin only by default) can
-elevate a connected host's agent on demand from `/admin/hosts`, modeled on
-Cockpit's "Administrative access" toggle:
+elevate a connected host's agent on demand, modeled on Cockpit's
+"Administrative access" toggle. The mechanism is entirely on the agent
+side and unchanged regardless of where it's triggered from:
 
-- `POST /admin/hosts/<id>/elevate` submits a sudo password, which the
-  control plane forwards to the agent as an `AgentOperation::Elevate`. The
-  agent validates it by running `sudo -S -v` -- the same mechanism
-  interactive `sudo` already uses to populate its own timestamp cache --
-  rather than running an arbitrary command as root. On success, the agent
-  starts a 20-minute sliding idle window (`crates/agent/src/elevation.rs`,
-  `ElevationState`); it refreshes on every use, so activity keeps elevation
-  alive but idleness lets it lapse on its own.
+- Elevating submits a sudo password, which the control plane forwards to
+  the agent as an `AgentOperation::Elevate`. The agent validates it by
+  running `sudo -S -v` -- the same mechanism interactive `sudo` already
+  uses to populate its own timestamp cache -- rather than running an
+  arbitrary command as root. On success, the agent starts a 20-minute
+  sliding idle window (`crates/agent/src/elevation.rs`, `ElevationState`);
+  it refreshes on every use, so activity keeps elevation alive but
+  idleness lets it lapse on its own.
 - While elevated, operations that need root (`SetHostname`, `Reboot`, the
   firewall operations) run as `sudo -n <command>` instead of unprivileged;
   everything else is unaffected.
-- `POST /admin/hosts/<id>/deescalate` clears the window early and also runs
-  `sudo -k` to drop sudo's own cache, in case its configured
-  `timestamp_timeout` is longer than Abyssal Arsenal's own 20 minutes.
+- De-escalating clears the window early and also runs `sudo -k` to drop
+  sudo's own cache, in case its configured `timestamp_timeout` is longer
+  than Abyssal Arsenal's own 20 minutes.
 - Elevation state lives only in the agent process's memory -- a reboot or
   an agent restart clears it unconditionally, with nothing persisted to the
   control plane's database. The password itself is never written to disk,
@@ -235,9 +236,40 @@ Cockpit's "Administrative access" toggle:
   (`zeroize::Zeroizing`), not just dropped. `AgentOperation`'s hand-written
   `Debug` impl redacts the password as a backstop, in case anything ever
   formats an operation with `{:?}`.
-- The elevate form posts a real password over the wire, so this is the one
+- Elevating posts a real password over the wire, so this is the one
   feature in the platform where running without TLS actively matters, not
   just generally recommended -- see [SECURITY.md](SECURITY.md).
+
+**Where elevation is triggered from, and how it's surfaced in the UI**
+(this part changed after the mechanism above was first built -- `/admin/hosts`
+no longer has any elevate/de-escalate controls of its own):
+
+- Each arsenal that dispatches host operations (`cystoolbox`, `cadavault`)
+  follows a host-picker -> per-host page navigation
+  (`/arsenals/<name>` lists connected hosts; `/arsenals/<name>/<host_id>`
+  is where operations actually run, one host at a time -- matching how
+  elevation is itself scoped per host, not per arsenal). Every action form
+  on that page carries an optional sudo password field, shown only while
+  the host isn't already believed elevated. Submitting a password elevates
+  first (`crate::common::maybe_elevate`) and, only on success, proceeds to
+  dispatch the operation the admin actually wanted, in the same request --
+  no separate confirmation step. A destructive action's own confirmation
+  page (Reboot, Enable Firewall) carries the same optional field.
+- The control plane keeps its own lightweight, best-effort mirror of which
+  hosts are currently believed elevated (`abyssal_hosts::ElevationTracker`,
+  `AppState.elevation`) purely so the UI can show status without an agent
+  round-trip on every page load. This is **not** a security boundary --
+  the agent's own `ElevationState` is what actually gates privileged
+  commands. The mirror can drift (e.g. the agent's window lapses without
+  the control plane finding out); the practical effect of drift is just
+  that the sudo password field might not reappear immediately after a
+  stale-positive entry, not that anything unauthorized runs -- a failed
+  dispatch defensively clears the entry either way.
+- A "Apotheosis" item in the top nav (visible only with `hosts.elevate`)
+  pulses red whenever the tracker believes at least one host is elevated,
+  and opens a panel listing every such host with its remaining time and a
+  De-escalate button -- a status/control surface, not itself where
+  elevation happens.
 
 ## Web layer
 

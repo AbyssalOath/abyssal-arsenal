@@ -43,7 +43,7 @@ pub async fn list(
     abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token);
+    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
 
     let filter = build_filter(&q.action);
     let page = q.page.max(0);
