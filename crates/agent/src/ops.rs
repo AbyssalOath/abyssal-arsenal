@@ -2,6 +2,7 @@ use abyssal_agent_protocol::{AgentOperation, CommandOutcome, OperationOutput};
 use zeroize::Zeroizing;
 
 use crate::elevation::ElevationState;
+use crate::init_system::{self, InitSystem};
 use crate::{firewall, process::run_command};
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -86,17 +87,50 @@ async fn set_hostname(hostname: String, elevation: &ElevationState) -> CommandOu
         return CommandOutcome::Err(format!("refusing to set invalid hostname: {hostname}"));
     }
 
-    match elevation
-        .run("hostnamectl", &["set-hostname", &hostname])
-        .await
-    {
-        Ok(output) => CommandOutcome::Ok(output),
-        Err(e) => CommandOutcome::Err(e),
+    match init_system::detect().await {
+        InitSystem::Systemd => {
+            match elevation
+                .run("hostnamectl", &["set-hostname", &hostname])
+                .await
+            {
+                Ok(output) => CommandOutcome::Ok(output),
+                Err(e) => CommandOutcome::Err(e),
+            }
+        }
+        // No systemd machinery to hand this to -- set the live hostname
+        // directly and persist it the traditional way `/etc/hostname` is
+        // read by virtually every non-systemd init's boot scripts.
+        InitSystem::Other => {
+            if let Err(e) = elevation.run("hostname", &[&hostname]).await {
+                return CommandOutcome::Err(format!("failed to set runtime hostname: {e}"));
+            }
+            match elevation
+                .run_with_stdin("tee", &["/etc/hostname"], &format!("{hostname}\n"))
+                .await
+            {
+                Ok(_) => CommandOutcome::Ok(OperationOutput {
+                    stdout: format!(
+                        "Hostname set to {hostname} (runtime) and persisted to /etc/hostname."
+                    ),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                }),
+                Err(e) => CommandOutcome::Err(format!(
+                    "runtime hostname was set, but persisting to /etc/hostname failed: {e}"
+                )),
+            }
+        }
     }
 }
 
 async fn reboot(elevation: &ElevationState) -> CommandOutcome {
-    match elevation.run("systemctl", &["reboot"]).await {
+    let result = match init_system::detect().await {
+        InitSystem::Systemd => elevation.run("systemctl", &["reboot"]).await,
+        // `reboot` (util-linux) works the same regardless of which
+        // non-systemd init is actually running.
+        InitSystem::Other => elevation.run("reboot", &[]).await,
+    };
+    match result {
         Ok(output) => CommandOutcome::Ok(output),
         Err(e) => CommandOutcome::Err(e),
     }

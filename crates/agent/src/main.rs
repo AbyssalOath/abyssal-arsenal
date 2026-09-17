@@ -1,6 +1,7 @@
 mod elevation;
 mod enroll;
 mod firewall;
+mod init_system;
 mod ops;
 mod process;
 mod transport;

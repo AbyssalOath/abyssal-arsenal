@@ -158,6 +158,29 @@ project is pre-release, so everything so far lives under "Unreleased".
   fails with `command not found` even though it runs fine unprivileged.
   The recommended path installs to `/usr/local/bin` instead (also what the
   systemd unit example already assumed).
+- Cystoolbox's `SetHostname` and `Reboot` hardcoded systemd-specific
+  commands (`hostnamectl set-hostname`, `systemctl reboot`), which fail
+  outright on non-systemd distros (Alpine/OpenRC, Void/runit, Devuan,
+  Gentoo with OpenRC, ...) -- the exact class of bug Cadavault's firewall
+  backend detection was already built to avoid. New
+  `crates/agent/src/init_system.rs` detects systemd via `/run/systemd/
+  system` (the same signal systemd's own `sd_booted()` uses) and falls
+  back to `hostname` + writing `/etc/hostname` directly (via a new
+  stdin-piping primitive, `process::run_command_with_stdin` /
+  `ElevationState::run_with_stdin`, added because there was no existing
+  way to write a file's contents through the agent's "explicit argument
+  vectors, never a shell string" execution discipline) and plain `reboot`
+  on non-systemd hosts. Live-verified against a real non-systemd host, not
+  just the code: ran a container-native agent build inside a disposable,
+  genuinely non-systemd Debian container on the same Docker network as the
+  control plane, dispatched a real `SetHostname` through the web UI, and
+  confirmed both the runtime hostname and `/etc/hostname` changed
+  correctly; separately confirmed `Reboot`'s command selection correctly
+  chose `reboot` over `systemctl` (the container's minimal image had no
+  init package installed at all, so it failed with a clear, honest "no
+  such file" error until a real init package was installed, at which
+  point `reboot` was where every real non-systemd host's init package --
+  `sysvinit-core`, `runit-init`, etc. -- puts it).
 
 ### Security
 

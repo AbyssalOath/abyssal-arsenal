@@ -152,13 +152,25 @@ runs on a managed host.
 **Detect the tool present, don't assume one.** There is no single standard
 Linux interface for most system-administration concerns -- firewalls alone
 split across firewalld, ufw, nftables, and iptables depending on the
-distro. `crates/agent/src/firewall.rs` detects which is actually present
+distro, and `hostnamectl`/`systemctl` (Cystoolbox's `SetHostname`/`Reboot`)
+only exist at all on systemd-based hosts. `crates/agent/src/firewall.rs`
+and `crates/agent/src/init_system.rs` each detect what's actually present
 (same idea the original bash toolbox used for package managers) and
-dispatches accordingly, refusing cleanly rather than guessing when an
-operation isn't well-defined for a given backend (e.g. there's no single
-"enable" command for raw nftables). Future arsenals needing the same kind
-of tool-detection (package managers, init systems, ...) should follow this
-pattern rather than assume one specific tool is present.
+dispatch accordingly, refusing cleanly rather than guessing when an
+operation isn't well-defined for what was detected (e.g. there's no single
+"enable" command for raw nftables). `init_system.rs` is the simpler of the
+two: unlike the firewall backends, the non-systemd fallback commands
+(`hostname` + writing `/etc/hostname`; `reboot`) don't themselves vary by
+*which* non-systemd init is running (OpenRC, runit, sysvinit, ...) --
+they're provided by whichever init package owns PID 1, not the init
+system's own tooling -- so detection only needs to answer systemd-or-not,
+not identify a specific alternative. **Every future arsenal that shells
+out to a command with more than one common Linux implementation should
+follow this same pattern**: detect what's present (a file/directory that
+tool creates, like `/run/systemd/system`, is usually more reliable than
+checking whether a same-named binary happens to be on `PATH`, since some
+distros ship non-functional compatibility shims) and dispatch accordingly,
+rather than assuming the tool the developer's own machine happens to have.
 
 ## Host enrollment and the agent protocol
 

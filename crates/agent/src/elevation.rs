@@ -19,7 +19,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
-use crate::process::run_command;
+use crate::process::{run_command, run_command_with_stdin};
 use abyssal_agent_protocol::OperationOutput;
 
 /// Sliding idle window: elevation lasts this long since the *last* use, not
@@ -104,6 +104,26 @@ impl ElevationState {
             run_command("sudo", &sudo_args).await
         } else {
             run_command(program, args).await
+        }
+    }
+
+    /// Like `run`, but feeds `stdin_data` to the process -- e.g. writing a
+    /// config file via `tee` on hosts that need to be told a value through
+    /// stdin rather than an argument.
+    pub async fn run_with_stdin(
+        &self,
+        program: &str,
+        args: &[&str],
+        stdin_data: &str,
+    ) -> Result<OperationOutput, String> {
+        if self.is_elevated().await {
+            let mut sudo_args = Vec::with_capacity(args.len() + 2);
+            sudo_args.push("-n");
+            sudo_args.push(program);
+            sudo_args.extend_from_slice(args);
+            run_command_with_stdin("sudo", &sudo_args, stdin_data).await
+        } else {
+            run_command_with_stdin(program, args, stdin_data).await
         }
     }
 }
