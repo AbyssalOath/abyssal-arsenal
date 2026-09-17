@@ -1,5 +1,7 @@
 # Abyssal Arsenal
 
+[![CI](https://github.com/AbyssalOath/abyssal-arsenal/actions/workflows/ci.yml/badge.svg)](https://github.com/AbyssalOath/abyssal-arsenal/actions/workflows/ci.yml)
+
 A self-hosted IT/sysadmin operations platform for Linux environments, written
 in Rust. Individual administrative capabilities ("arsenals" -- networking,
 security hardening, storage, backups, incident response, and so on) are
