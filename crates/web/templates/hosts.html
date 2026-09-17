@@ -50,9 +50,33 @@
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
             <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>Run System Info</button>
           </form>
+          {% if base.can_hosts_elevate %}
+          <form method="post" action="/admin/hosts/{{ h.id }}/elevation-status" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>Check Elevation</button>
+          </form>
+          <form method="post" action="/admin/hosts/{{ h.id }}/deescalate" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>De-escalate</button>
+          </form>
+          {% endif %}
           <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">Revoke</a>
         </td>
       </tr>
+      {% if base.can_hosts_elevate %}
+      <tr>
+        <td colspan="5">
+          <form method="post" action="/admin/hosts/{{ h.id }}/elevate" style="display:flex; gap:8px; align-items:flex-end; max-width:420px;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <div style="flex:1;">
+              <label for="sudo-password-{{ h.id }}">Apotheosis -- sudo password for {{ h.name }}</label>
+              <input type="password" id="sudo-password-{{ h.id }}" name="sudo_password" required autocomplete="off" style="margin-bottom:0;">
+            </div>
+            <button type="submit" class="btn-danger"{% if !h.online %} disabled{% endif %}>Elevate</button>
+          </form>
+        </td>
+      </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>

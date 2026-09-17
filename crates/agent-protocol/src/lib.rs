@@ -8,10 +8,12 @@
 //! adding a variant here (and implementing it in the agent) — the protocol
 //! itself can't be used to smuggle in anything else.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
     /// Pure connectivity/liveness check — no work performed.
     Ping,
@@ -28,6 +30,68 @@ pub enum AgentOperation {
     /// Immediately reboots the agent's host. Destructive -- the control
     /// plane requires explicit confirmation before ever dispatching this.
     Reboot,
+    /// Listening TCP/UDP sockets on the agent's host (`ss -tulpn`).
+    ListeningPorts,
+    /// The last ~30 sshd journal entries (login attempts, failures).
+    RecentAuthLog,
+    /// Current firewall status, from whichever of firewalld/ufw/nftables/
+    /// iptables the agent detects on its host.
+    FirewallStatus,
+    /// Allows a port through the detected firewall backend. Write -- a real
+    /// mutation, but additive/non-destructive, so no confirmation required.
+    FirewallAllowPort { port: u16, protocol: String },
+    /// Enables the detected firewall backend (firewalld/ufw only -- raw
+    /// nftables/iptables have no single well-defined "enable"). Destructive:
+    /// can cut off remote access if the current management port isn't
+    /// already allowed, so the control plane requires explicit confirmation.
+    FirewallEnable,
+    /// Validates a sudo password via `sudo -S -v` and starts/refreshes a
+    /// time-boxed elevation window on the agent ("Apotheosis"). Write --
+    /// the password prompt itself is the meaningful confirmation step, so
+    /// this doesn't additionally require the `Destructive` confirmation
+    /// gate.
+    Elevate { password: String },
+    /// Clears the elevation window early and drops sudo's own cache too.
+    Deescalate,
+    /// Human-readable elevation status (elevated or not, remaining time).
+    ElevationStatus,
+}
+
+/// Hand-written rather than derived so a value carrying a real sudo password
+/// (`Elevate`) can never have that password land in a log line just because
+/// something somewhere formatted an operation with `{:?}` -- this is a
+/// backstop, not the primary control (the primary control is that nothing
+/// logs an `AgentOperation` at all), but it means that stays true even if a
+/// future change accidentally would have.
+impl fmt::Debug for AgentOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentOperation::Ping => write!(f, "Ping"),
+            AgentOperation::SystemInfo => write!(f, "SystemInfo"),
+            AgentOperation::ResourceUsage => write!(f, "ResourceUsage"),
+            AgentOperation::LoggedInUsers => write!(f, "LoggedInUsers"),
+            AgentOperation::SetHostname { hostname } => f
+                .debug_struct("SetHostname")
+                .field("hostname", hostname)
+                .finish(),
+            AgentOperation::Reboot => write!(f, "Reboot"),
+            AgentOperation::ListeningPorts => write!(f, "ListeningPorts"),
+            AgentOperation::RecentAuthLog => write!(f, "RecentAuthLog"),
+            AgentOperation::FirewallStatus => write!(f, "FirewallStatus"),
+            AgentOperation::FirewallAllowPort { port, protocol } => f
+                .debug_struct("FirewallAllowPort")
+                .field("port", port)
+                .field("protocol", protocol)
+                .finish(),
+            AgentOperation::FirewallEnable => write!(f, "FirewallEnable"),
+            AgentOperation::Elevate { .. } => f
+                .debug_struct("Elevate")
+                .field("password", &"[REDACTED]")
+                .finish(),
+            AgentOperation::Deescalate => write!(f, "Deescalate"),
+            AgentOperation::ElevationStatus => write!(f, "ElevationStatus"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,6 +144,13 @@ pub fn is_valid_hostname(name: &str) -> bool {
     })
 }
 
+/// Shared the same way `is_valid_hostname` is: both the control plane (for a
+/// clean validation error) and the agent (the real execution boundary) check
+/// this independently before a `FirewallAllowPort` dispatch is honored.
+pub fn is_valid_port_protocol(port: u16, protocol: &str) -> bool {
+    port != 0 && (protocol == "tcp" || protocol == "udp")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +171,14 @@ mod tests {
         assert!(!is_valid_hostname("has_underscore"));
         assert!(!is_valid_hostname("semi;colon"));
         assert!(!is_valid_hostname(&"a".repeat(254)));
+    }
+
+    #[test]
+    fn validates_port_and_protocol() {
+        assert!(is_valid_port_protocol(22, "tcp"));
+        assert!(is_valid_port_protocol(53, "udp"));
+        assert!(!is_valid_port_protocol(0, "tcp"));
+        assert!(!is_valid_port_protocol(22, "icmp"));
+        assert!(!is_valid_port_protocol(22, "TCP"));
     }
 }

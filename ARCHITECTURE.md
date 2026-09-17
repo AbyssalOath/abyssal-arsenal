@@ -149,6 +149,17 @@ vectors (`crates/execution/src/process.rs`); the agent's whitelist of
 `AgentOperation` variants is the actual security boundary for anything that
 runs on a managed host.
 
+**Detect the tool present, don't assume one.** There is no single standard
+Linux interface for most system-administration concerns -- firewalls alone
+split across firewalld, ufw, nftables, and iptables depending on the
+distro. `crates/agent/src/firewall.rs` detects which is actually present
+(same idea the original bash toolbox used for package managers) and
+dispatches accordingly, refusing cleanly rather than guessing when an
+operation isn't well-defined for a given backend (e.g. there's no single
+"enable" command for raw nftables). Future arsenals needing the same kind
+of tool-detection (package managers, init systems, ...) should follow this
+pattern rather than assume one specific tool is present.
+
 ## Host enrollment and the agent protocol
 
 1. An admin generates a short-lived (15 minute), single-use enrollment
@@ -177,11 +188,43 @@ runs on a managed host.
    immediately; the agent's own reconnect loop will keep retrying and
    failing with a clear error until it's re-enrolled with a fresh token.
 
-`AgentOperation` (currently `Ping` and `SystemInfo`) is deliberately small.
-Every new sysadmin capability an arsenal needs on a host means adding a
-variant to `agent-protocol` and a handler in `crates/agent/src/ops.rs` --
-there is no path from a wire message to running something outside that
-fixed list.
+`AgentOperation` is deliberately a fixed, named whitelist. Every new
+sysadmin capability an arsenal needs on a host means adding a variant to
+`agent-protocol` and a handler in `crates/agent/src/ops.rs` -- there is no
+path from a wire message to running something outside that fixed list.
+
+### Apotheosis: time-boxed sudo elevation
+
+Rather than requiring the agent to run permanently as root, an admin with
+the dedicated `hosts.elevate` permission (Super Admin only by default) can
+elevate a connected host's agent on demand from `/admin/hosts`, modeled on
+Cockpit's "Administrative access" toggle:
+
+- `POST /admin/hosts/<id>/elevate` submits a sudo password, which the
+  control plane forwards to the agent as an `AgentOperation::Elevate`. The
+  agent validates it by running `sudo -S -v` -- the same mechanism
+  interactive `sudo` already uses to populate its own timestamp cache --
+  rather than running an arbitrary command as root. On success, the agent
+  starts a 20-minute sliding idle window (`crates/agent/src/elevation.rs`,
+  `ElevationState`); it refreshes on every use, so activity keeps elevation
+  alive but idleness lets it lapse on its own.
+- While elevated, operations that need root (`SetHostname`, `Reboot`, the
+  firewall operations) run as `sudo -n <command>` instead of unprivileged;
+  everything else is unaffected.
+- `POST /admin/hosts/<id>/deescalate` clears the window early and also runs
+  `sudo -k` to drop sudo's own cache, in case its configured
+  `timestamp_timeout` is longer than Abyssal Arsenal's own 20 minutes.
+- Elevation state lives only in the agent process's memory -- a reboot or
+  an agent restart clears it unconditionally, with nothing persisted to the
+  control plane's database. The password itself is never written to disk,
+  the database, or any log, on either side; it is held just long enough to
+  hand to `sudo`'s stdin and is then actively zeroized
+  (`zeroize::Zeroizing`), not just dropped. `AgentOperation`'s hand-written
+  `Debug` impl redacts the password as a backstop, in case anything ever
+  formats an operation with `{:?}`.
+- The elevate form posts a real password over the wire, so this is the one
+  feature in the platform where running without TLS actively matters, not
+  just generally recommended -- see [SECURITY.md](SECURITY.md).
 
 ## Web layer
 
@@ -231,10 +274,12 @@ model, not oversights:
   process-local. A multi-instance control plane would need both backed by
   shared state instead.
 - SSO/OIDC, additional notification providers (Telegram, Slack, Teams,
-  Discord), and 20 of the 21 arsenals' real capabilities beyond metadata are
-  not implemented yet (only `cystoolbox` has real operations so far) --
+  Discord), and 19 of the 21 arsenals' real capabilities beyond metadata are
+  not implemented yet (only `cystoolbox` and `cadavault` have real
+  operations so far) --
   see [CHANGELOG.md](CHANGELOG.md) for current status.
 - The agent does not sandbox or rate-limit operations beyond the fixed
-  `AgentOperation` whitelist and does not manage privilege escalation
-  itself; how it's deployed (as root, via `sudo`-scoped commands in a
-  future revision, and so on) is a deployment decision today.
+  `AgentOperation` whitelist. Privilege escalation for an unprivileged
+  agent deployment is handled by Apotheosis (see "Host enrollment and the
+  agent protocol" above); running the agent as root permanently remains a
+  valid alternative deployment choice.

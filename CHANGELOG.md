@@ -42,8 +42,8 @@ project is pre-release, so everything so far lives under "Unreleased".
   `/api/hosts/enroll`), a live connection registry, host
   online/offline status and revocation, and `Executor::execute_on_host()`
   for dispatching a fixed, versioned whitelist of operations
-  (`AgentOperation`: `Ping`, `SystemInfo`, `ResourceUsage`, `LoggedInUsers`,
-  `Reboot`) to a specific host.
+  (`AgentOperation`) to a specific host. See the Cystoolbox, Cadavault, and
+  Apotheosis entries below for the full current operation set.
 - **Cystoolbox arsenal** (first arsenal with real capabilities): a
   per-host admin page (`/arsenals/cystoolbox`) listing online managed hosts
   with System Overview, Resource Usage (memory + disk), and Logged-in Users
@@ -55,6 +55,37 @@ project is pre-release, so everything so far lives under "Unreleased".
   tests. Hostnames are validated (RFC 1123 label rules) on both the control
   plane and the agent -- the agent never trusts a wire value just because
   the control plane already checked it.
+- **Cadavault arsenal** (second arsenal with real capabilities): a
+  per-host admin page (`/arsenals/cadavault`) with Firewall Status,
+  Listening Ports (`ss -tulpn`), and Recent Auth Log (sshd journal) as
+  read-only operations (`security.view`); Allow Port as a Write operation
+  (`security.manage`, no confirmation required); and Enable Firewall as a
+  Destructive operation (`security.manage`) requiring explicit
+  confirmation since it can cut off remote access. Firewall operations
+  auto-detect which management tool is actually present on the host
+  (firewalld, ufw, nftables, or iptables, in that priority order) rather
+  than assuming one -- the same detect-don't-assume approach the original
+  bash toolbox used for package managers. Direct nftables rule management
+  and "enable" for raw nftables/iptables are intentionally unsupported
+  (clear error instead of a guess at an unfamiliar ruleset's table/chain
+  layout); port/protocol input is validated on both the control plane and
+  the agent, matching the hostname validation pattern.
+- **Apotheosis**: time-boxed sudo elevation for managed hosts, modeled on
+  Cockpit's "Administrative access" toggle. An admin with the new
+  `hosts.elevate` permission (Super Admin only by default) can elevate a
+  connected host's agent from `/admin/hosts` by submitting its sudo
+  password; the agent validates it via `sudo -S -v` (the same mechanism
+  interactive `sudo` already uses) and starts a 20-minute sliding idle
+  window during which privileged operations run as `sudo -n` instead of
+  failing outright. De-escalates automatically on idle timeout, or
+  explicitly via a De-escalate button (which also runs `sudo -k`). The
+  password is never persisted anywhere -- not hashed, not plaintext -- on
+  either the control plane or the agent; it's held in memory only long
+  enough to hand to `sudo` and is then actively zeroized
+  (`zeroize::Zeroizing`), with `AgentOperation`'s `Debug` impl
+  hand-written to redact it as a backstop. Elevating without TLS in front
+  of the control plane produces a warning (not a hard block), matching the
+  existing local-testing posture elsewhere in the app.
 - **Password policy**: local account passwords now require at least 15
   characters, an uppercase letter, a lowercase letter, a number, and a
   special character, enforced server-side (`abyssal_auth::password::
@@ -98,8 +129,8 @@ project is pre-release, so everything so far lives under "Unreleased".
 - `LoginLimiter` and `HostConnectionRegistry` are in-memory and
   process-local; a multi-instance control plane would need both backed by
   shared state.
-- SSO/OIDC, non-SMTP notification providers, and 20 of the 21 arsenals'
+- SSO/OIDC, non-SMTP notification providers, and 19 of the 21 arsenals'
   real capabilities beyond metadata are not implemented yet (only
-  `cystoolbox` has real operations so far).
+  `cystoolbox` and `cadavault` have real operations so far).
 - No Tauri desktop client yet; `/api/health` and `/api/me` establish the
   API seam it would use.

@@ -64,6 +64,15 @@ pub fn build(state: AppState) -> Router {
             "/admin/hosts/:id/system-info",
             post(routes::hosts::run_system_info),
         )
+        .route("/admin/hosts/:id/elevate", post(routes::hosts::elevate))
+        .route(
+            "/admin/hosts/:id/deescalate",
+            post(routes::hosts::deescalate),
+        )
+        .route(
+            "/admin/hosts/:id/elevation-status",
+            post(routes::hosts::elevation_status),
+        )
         .route(
             "/admin/hosts/:id/revoke/confirm",
             get(routes::hosts::revoke_confirm),
@@ -93,6 +102,31 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/cystoolbox/:host_id/reboot",
             post(routes::cystoolbox::reboot),
+        )
+        .route("/arsenals/cadavault", get(routes::cadavault::show))
+        .route(
+            "/arsenals/cadavault/:host_id/firewall-status",
+            post(routes::cadavault::firewall_status),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/listening-ports",
+            post(routes::cadavault::listening_ports),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/recent-auth-log",
+            post(routes::cadavault::recent_auth_log),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/allow-port",
+            post(routes::cadavault::allow_port),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/firewall-enable/confirm",
+            get(routes::cadavault::enable_firewall_confirm),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/firewall-enable",
+            post(routes::cadavault::enable_firewall),
         )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))

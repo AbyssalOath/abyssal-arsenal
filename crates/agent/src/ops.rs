@@ -1,10 +1,14 @@
 use abyssal_agent_protocol::{AgentOperation, CommandOutcome, OperationOutput};
+use zeroize::Zeroizing;
+
+use crate::elevation::ElevationState;
+use crate::{firewall, process::run_command};
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
 /// adding a variant to the shared protocol crate *and* a branch here; there
 /// is no path from a wire message to running something outside this list.
-pub async fn run(operation: AgentOperation) -> CommandOutcome {
+pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> CommandOutcome {
     match operation {
         AgentOperation::Ping => CommandOutcome::Ok(OperationOutput {
             stdout: "pong".to_string(),
@@ -14,52 +18,19 @@ pub async fn run(operation: AgentOperation) -> CommandOutcome {
         AgentOperation::SystemInfo => system_info().await,
         AgentOperation::ResourceUsage => resource_usage().await,
         AgentOperation::LoggedInUsers => logged_in_users().await,
-        AgentOperation::SetHostname { hostname } => set_hostname(hostname).await,
-        AgentOperation::Reboot => reboot().await,
+        AgentOperation::SetHostname { hostname } => set_hostname(hostname, elevation).await,
+        AgentOperation::Reboot => reboot(elevation).await,
+        AgentOperation::ListeningPorts => listening_ports().await,
+        AgentOperation::RecentAuthLog => recent_auth_log().await,
+        AgentOperation::FirewallStatus => firewall::status(elevation).await,
+        AgentOperation::FirewallAllowPort { port, protocol } => {
+            firewall::allow_port(port, &protocol, elevation).await
+        }
+        AgentOperation::FirewallEnable => firewall::enable(elevation).await,
+        AgentOperation::Elevate { password } => elevate(password, elevation).await,
+        AgentOperation::Deescalate => deescalate(elevation).await,
+        AgentOperation::ElevationStatus => elevation_status(elevation).await,
     }
-}
-
-/// Runs a process with an explicit argument vector -- never a shell string --
-/// matching the same discipline the control plane's own local execution uses
-/// (`crates/execution/src/process.rs`).
-///
-/// A non-zero exit is treated as a failure here, not just a spawn error.
-/// Without this, a command that runs but fails partway (e.g. `hostnamectl`
-/// refusing for lack of privilege) would come back as `CommandOutcome::Ok`
-/// with empty-looking output -- silently reporting success for something
-/// that didn't happen. That's especially dangerous for `Reboot`: a failed
-/// reboot must never be reported as one that succeeded.
-async fn run_command(program: &str, args: &[&str]) -> Result<OperationOutput, String> {
-    let output = tokio::process::Command::new(program)
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| format!("failed to run {program}: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-
-    if !output.status.success() {
-        let detail = if !stderr.trim().is_empty() {
-            stderr.trim()
-        } else if !stdout.trim().is_empty() {
-            stdout.trim()
-        } else {
-            "(no output)"
-        };
-        let status = output
-            .status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        return Err(format!("{program} exited with status {status}: {detail}"));
-    }
-
-    Ok(OperationOutput {
-        stdout,
-        stderr,
-        exit_code: output.status.code(),
-    })
 }
 
 async fn system_info() -> CommandOutcome {
@@ -107,7 +78,7 @@ async fn logged_in_users() -> CommandOutcome {
     }
 }
 
-async fn set_hostname(hostname: String) -> CommandOutcome {
+async fn set_hostname(hostname: String, elevation: &ElevationState) -> CommandOutcome {
     // Defense in depth: the control plane already validates this before
     // dispatching, but this agent is the actual execution boundary and never
     // trusts a wire value on that basis alone.
@@ -115,14 +86,60 @@ async fn set_hostname(hostname: String) -> CommandOutcome {
         return CommandOutcome::Err(format!("refusing to set invalid hostname: {hostname}"));
     }
 
-    match run_command("hostnamectl", &["set-hostname", &hostname]).await {
+    match elevation
+        .run("hostnamectl", &["set-hostname", &hostname])
+        .await
+    {
         Ok(output) => CommandOutcome::Ok(output),
         Err(e) => CommandOutcome::Err(e),
     }
 }
 
-async fn reboot() -> CommandOutcome {
-    match run_command("systemctl", &["reboot"]).await {
+async fn reboot(elevation: &ElevationState) -> CommandOutcome {
+    match elevation.run("systemctl", &["reboot"]).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+async fn elevate(password: String, elevation: &ElevationState) -> CommandOutcome {
+    let password = Zeroizing::new(password);
+    match elevation.elevate(password).await {
+        Ok(()) => CommandOutcome::Ok(OperationOutput {
+            stdout: "Elevated.".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+async fn deescalate(elevation: &ElevationState) -> CommandOutcome {
+    elevation.deescalate().await;
+    CommandOutcome::Ok(OperationOutput {
+        stdout: "De-escalated.".to_string(),
+        stderr: String::new(),
+        exit_code: Some(0),
+    })
+}
+
+async fn elevation_status(elevation: &ElevationState) -> CommandOutcome {
+    CommandOutcome::Ok(OperationOutput {
+        stdout: elevation.status_text().await,
+        stderr: String::new(),
+        exit_code: Some(0),
+    })
+}
+
+async fn listening_ports() -> CommandOutcome {
+    match run_command("ss", &["-tulpn"]).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+async fn recent_auth_log() -> CommandOutcome {
+    match run_command("journalctl", &["-u", "sshd", "-n", "30", "--no-pager"]).await {
         Ok(output) => CommandOutcome::Ok(output),
         Err(e) => CommandOutcome::Err(e),
     }

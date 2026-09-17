@@ -41,6 +41,7 @@ pub enum Permission {
 
     HostsView,
     HostsManage,
+    HostsElevate,
 }
 
 impl Permission {
@@ -84,6 +85,7 @@ impl Permission {
 
             Permission::HostsView => "hosts.view",
             Permission::HostsManage => "hosts.manage",
+            Permission::HostsElevate => "hosts.elevate",
         }
     }
 
@@ -120,6 +122,7 @@ impl Permission {
         Permission::NotificationsManage,
         Permission::HostsView,
         Permission::HostsManage,
+        Permission::HostsElevate,
     ];
 }
 

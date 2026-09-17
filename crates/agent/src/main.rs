@@ -1,5 +1,8 @@
+mod elevation;
 mod enroll;
+mod firewall;
 mod ops;
+mod process;
 mod transport;
 
 use std::path::PathBuf;
@@ -74,9 +77,15 @@ async fn run(
     .await?;
     let ws_url = transport::to_ws_url(&control_plane_url)?;
 
+    // Constructed once, outside the reconnect loop: a dropped/reconnected
+    // WebSocket shouldn't clear root access on its own -- only the idle
+    // timeout, an explicit de-escalate, or the process actually exiting
+    // should.
+    let elevation = elevation::ElevationState::new();
+
     let mut backoff = Duration::from_secs(1);
     loop {
-        match transport::connect_and_serve(&ws_url, &credentials.credential).await {
+        match transport::connect_and_serve(&ws_url, &credentials.credential, &elevation).await {
             Ok(()) => tracing::warn!("connection to control plane closed; reconnecting"),
             Err(e) => tracing::error!(error = %e, "connection error; retrying"),
         }

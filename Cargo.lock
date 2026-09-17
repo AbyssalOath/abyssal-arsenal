@@ -18,6 +18,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -227,6 +228,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

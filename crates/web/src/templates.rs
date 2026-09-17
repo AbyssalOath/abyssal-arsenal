@@ -17,6 +17,7 @@ pub struct BaseCtx {
     pub can_modules_manage: bool,
     pub can_settings_manage: bool,
     pub can_hosts_view: bool,
+    pub can_hosts_elevate: bool,
 }
 
 impl BaseCtx {
@@ -31,6 +32,7 @@ impl BaseCtx {
             can_modules_manage: ctx.has(Permission::ModulesManage),
             can_settings_manage: ctx.has(Permission::SettingsManage),
             can_hosts_view: ctx.has(Permission::HostsView),
+            can_hosts_elevate: ctx.has(Permission::HostsElevate),
         }
     }
 }
@@ -226,6 +228,22 @@ pub struct CystoolboxHostRow {
 pub struct CystoolboxTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<CystoolboxHostRow>,
+    pub can_manage: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
+pub struct CadavaultHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "cadavault.html")]
+pub struct CadavaultTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<CadavaultHostRow>,
     pub can_manage: bool,
     pub result_label: Option<String>,
     pub result_output: Option<String>,

@@ -1,0 +1,68 @@
+{% extends "app_base.html" %}
+{% block title %}Cadavault — Abyssal Arsenal{% endblock %}
+{% block heading %}Cadavault — Security &amp; Hardening{% endblock %}
+{% block content %}
+
+{% if let Some(label) = result_label %}
+<div class="card">
+  <h2 style="margin-top:0;">{{ label }}</h2>
+  {% if let Some(output) = result_output %}
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ output }}</pre>
+  {% endif %}
+  {% if let Some(err) = result_error %}
+  <div class="error-banner" style="margin:0;">{{ err }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if hosts.is_empty() %}
+<div class="card">
+  <p style="color:var(--text-muted);">
+    No hosts are currently online. Enroll and connect a host from
+    <a href="/admin/hosts">Hosts</a> first.
+  </p>
+</div>
+{% endif %}
+
+{% for h in hosts %}
+<div class="card">
+  <h2 style="margin-top:0;">{{ h.name }}</h2>
+  <div class="actions">
+    <form method="post" action="/arsenals/cadavault/{{ h.id }}/firewall-status" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">Firewall Status</button>
+    </form>
+    <form method="post" action="/arsenals/cadavault/{{ h.id }}/listening-ports" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">Listening Ports</button>
+    </form>
+    <form method="post" action="/arsenals/cadavault/{{ h.id }}/recent-auth-log" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">Recent Auth Log</button>
+    </form>
+    {% if can_manage %}
+    <a class="btn btn-danger" href="/arsenals/cadavault/{{ h.id }}/firewall-enable/confirm">Enable Firewall</a>
+    {% endif %}
+  </div>
+
+  {% if can_manage %}
+  <form method="post" action="/arsenals/cadavault/{{ h.id }}/allow-port" style="margin-top:14px; display:flex; gap:8px; align-items:flex-end; max-width:420px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div>
+      <label for="port-{{ h.id }}">Allow port</label>
+      <input type="number" id="port-{{ h.id }}" name="port" min="1" max="65535" placeholder="e.g. 8080" required style="margin-bottom:0; width:110px;">
+    </div>
+    <div>
+      <label for="protocol-{{ h.id }}">Protocol</label>
+      <select id="protocol-{{ h.id }}" name="protocol" style="margin-bottom:0;">
+        <option value="tcp">tcp</option>
+        <option value="udp">udp</option>
+      </select>
+    </div>
+    <button type="submit" class="btn-secondary">Allow Port</button>
+  </form>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% endblock %}

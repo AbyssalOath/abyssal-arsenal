@@ -75,6 +75,17 @@ The design principles this codebase follows are documented in
 - **No secrets committed to source control.** `.env` and anything deriving
   from `.env.example` is gitignored; `install.sh` generates strong random
   secrets rather than shipping defaults.
+- **Sudo elevation ("Apotheosis") never persists the password.** A sudo
+  password submitted via `/admin/hosts/<id>/elevate` (permission
+  `hosts.elevate`, Super Admin only by default) is validated once against
+  the target host's own PAM stack (`sudo -S -v`) and is never written to
+  the database, disk, or any log on either the control plane or the agent.
+  It is held in process memory only for the minimum time needed and is
+  actively zeroized (`zeroize::Zeroizing`), not just dropped, once
+  consumed on the agent side. `AgentOperation`'s `Debug` implementation is
+  hand-written specifically to redact this field, as a backstop against
+  accidental logging. See "Apotheosis" in
+  [ARCHITECTURE.md](ARCHITECTURE.md) for the full mechanism.
 
 ## Known limitations
 
@@ -86,9 +97,14 @@ These are documented tradeoffs, not something you need to report:
 - TLS is expected to be terminated by a reverse proxy (Caddy, or your own)
   in front of the control plane; the Axum server itself does not terminate
   TLS. Running without TLS in front of it is only appropriate for local
-  testing -- `install.sh` says as much when you choose that option.
+  testing -- `install.sh` says as much when you choose that option. This
+  matters most concretely for Apotheosis: the elevate form submits a real
+  sudo password, and without TLS that password travels in plaintext over
+  the network. The control plane warns (rather than blocks) when
+  `COOKIE_SECURE` is off, for local-testing convenience, but does not
+  refuse the request.
 - The `abyssal-agent` binary does not sandbox itself beyond the fixed
-  `AgentOperation` whitelist, and does not manage privilege escalation. How
-  it's deployed (as root, via scoped `sudo` rules in a future revision) is
-  currently a deployment decision, documented in
+  `AgentOperation` whitelist. Privilege escalation for an unprivileged
+  agent deployment is handled by Apotheosis (see above); running the agent
+  as root permanently remains a valid alternative, documented in
   `crates/agent/README.md`.
