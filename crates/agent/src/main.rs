@@ -10,6 +10,7 @@ mod ops;
 mod postmortem;
 mod process;
 mod reliquary;
+mod resurrection;
 mod transport;
 
 use std::path::PathBuf;

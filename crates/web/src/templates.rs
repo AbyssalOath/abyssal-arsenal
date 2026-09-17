@@ -460,6 +460,34 @@ pub struct IncarnationHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct ResurrectionHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "resurrection.html")]
+pub struct ResurrectionTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<ResurrectionHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "resurrection_host.html")]
+pub struct ResurrectionHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `systems.manage` -- gates the Write/Destructive recovery section,
+    /// distinct from the `systems.view` the read operations use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct ReliquaryHostRow {
     pub id: String,
     pub name: String,

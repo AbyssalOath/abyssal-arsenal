@@ -374,6 +374,39 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/incarnation/:host_id/restart",
             post(routes::incarnation::restart_service),
         )
+        .route("/arsenals/resurrection", get(routes::resurrection::show))
+        .route(
+            "/arsenals/resurrection/:host_id",
+            get(routes::resurrection::show_host),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/previous-boot-errors",
+            post(routes::resurrection::previous_boot_errors),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/system-state",
+            post(routes::resurrection::system_running_state),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/ro-filesystems",
+            post(routes::resurrection::read_only_filesystems),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/daemon-reload",
+            post(routes::resurrection::reload_systemd_daemon),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/reset-failed",
+            post(routes::resurrection::reset_failed_units),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/remount/confirm",
+            get(routes::resurrection::remount_confirm),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/remount",
+            post(routes::resurrection::remount_read_write),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

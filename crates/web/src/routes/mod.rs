@@ -16,6 +16,7 @@ pub mod obituary;
 pub mod postmortem;
 pub mod register;
 pub mod reliquary;
+pub mod resurrection;
 pub mod roles;
 pub mod settings;
 pub mod setup;

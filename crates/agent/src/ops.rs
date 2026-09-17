@@ -5,7 +5,7 @@ use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
     firewall, incarnation, mortiscope, network, obituary, postmortem, process::run_command,
-    reliquary,
+    reliquary, resurrection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -101,6 +101,14 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         }
         AgentOperation::DisableService { unit } => {
             incarnation::disable_service(unit, elevation).await
+        }
+        AgentOperation::PreviousBootErrors => resurrection::previous_boot_errors(elevation).await,
+        AgentOperation::SystemRunningState => resurrection::system_running_state(elevation).await,
+        AgentOperation::ReadOnlyFilesystems => resurrection::read_only_filesystems(elevation).await,
+        AgentOperation::ReloadSystemdDaemon => resurrection::reload_systemd_daemon(elevation).await,
+        AgentOperation::ResetFailedUnits => resurrection::reset_failed_units(elevation).await,
+        AgentOperation::RemountReadWrite { target } => {
+            resurrection::remount_read_write(target, elevation).await
         }
     }
 }

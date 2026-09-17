@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -232,6 +232,43 @@ pub enum AgentOperation {
     /// touching whether it's running right now. Write, not Destructive --
     /// the currently-running instance (if any) is unaffected.
     DisableService { unit: String },
+    /// Warning-or-worse journal entries from the *previous* boot
+    /// (`journalctl -b -1 -p err`) -- the direct "why did it go down last
+    /// time" query, the natural first read after an unexpected restart.
+    /// Distinct from Postmortem's `SystemJournalErrors`, which covers the
+    /// *current* boot. systemd-only: there's no reliable way to delimit
+    /// "the previous boot" in plain rotated syslog files.
+    PreviousBootErrors,
+    /// One-word overall systemd health (`running`, `degraded`,
+    /// `maintenance`, ...) via `systemctl is-system-running` -- the
+    /// fastest possible top-level "is anything wrong" check, one level
+    /// coarser than `FailedServices` (which lists *which* units failed).
+    /// systemd-only. Its exit code reflects system state, not command
+    /// success, so a "degraded" result is a normal outcome here, not an
+    /// error.
+    SystemRunningState,
+    /// Filesystems currently mounted read-only (`findmnt --options ro`) --
+    /// the classic signature of a disk that hit I/O errors and was forced
+    /// read-only by the kernel, often the actual root cause behind a host
+    /// that looks "failed" in every other respect.
+    ReadOnlyFilesystems,
+    /// Reloads systemd's unit file cache (`systemctl daemon-reload`) --
+    /// the standard first step after fixing a broken unit file on disk.
+    /// Write -- reloading is idempotent and never disruptive on its own.
+    ReloadSystemdDaemon,
+    /// Clears systemd's failed-unit bookkeeping (`systemctl reset-failed`)
+    /// once whatever broke has actually been fixed -- doesn't touch any
+    /// unit's running state. Write, not Destructive.
+    ResetFailedUnits,
+    /// Remounts an already-mounted filesystem read-write
+    /// (`mount -o remount,rw <target>`) -- restores write access after a
+    /// filesystem was forced read-only, most commonly the root filesystem
+    /// itself. Destructive: forcing writes to resume on a filesystem the
+    /// kernel chose to protect can worsen underlying corruption if the
+    /// I/O error that caused the read-only remount is still present, so
+    /// the control plane requires explicit confirmation before ever
+    /// dispatching this.
+    RemountReadWrite { target: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -357,6 +394,15 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::DisableService { unit } => f
                 .debug_struct("DisableService")
                 .field("unit", unit)
+                .finish(),
+            AgentOperation::PreviousBootErrors => write!(f, "PreviousBootErrors"),
+            AgentOperation::SystemRunningState => write!(f, "SystemRunningState"),
+            AgentOperation::ReadOnlyFilesystems => write!(f, "ReadOnlyFilesystems"),
+            AgentOperation::ReloadSystemdDaemon => write!(f, "ReloadSystemdDaemon"),
+            AgentOperation::ResetFailedUnits => write!(f, "ResetFailedUnits"),
+            AgentOperation::RemountReadWrite { target } => f
+                .debug_struct("RemountReadWrite")
+                .field("target", target)
                 .finish(),
         }
     }
@@ -551,6 +597,16 @@ pub fn is_valid_unit_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '@'))
 }
 
+/// An absolute filesystem path to remount (`RemountReadWrite`), e.g. `"/"`
+/// or `"/var"`. Unlike `is_valid_absolute_path`, root is explicitly
+/// allowed here -- remounting `/` itself read-write is the single most
+/// common disaster-recovery scenario this operation exists for (a root
+/// filesystem forced read-only by I/O errors), so excluding it the way
+/// backup source/target paths do would rule out the main case.
+pub fn is_valid_mount_target(path: &str) -> bool {
+    path.starts_with('/') && path.len() <= 4096 && path.chars().all(|c| !c.is_control())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,5 +795,20 @@ mod tests {
         assert!(!is_valid_unit_name("sshd; rm -rf /"));
         assert!(!is_valid_unit_name("sshd service"));
         assert!(!is_valid_unit_name(&"a".repeat(257)));
+    }
+
+    #[test]
+    fn accepts_reasonable_mount_targets() {
+        assert!(is_valid_mount_target("/"));
+        assert!(is_valid_mount_target("/var"));
+        assert!(is_valid_mount_target("/mnt/data disk"));
+    }
+
+    #[test]
+    fn rejects_malformed_mount_targets() {
+        assert!(!is_valid_mount_target(""));
+        assert!(!is_valid_mount_target("relative/path"));
+        assert!(!is_valid_mount_target("/etc\nmalicious"));
+        assert!(!is_valid_mount_target(&format!("/{}", "a".repeat(4096))));
     }
 }

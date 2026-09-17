@@ -1,0 +1,106 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Resurrection — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Resurrection — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/resurrection">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Triage checks for a host that looks like it's in a bad way.</p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/system-state">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} System Running State</button>
+    </form>
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/previous-boot-errors">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Previous Boot Errors</button>
+    </form>
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/ro-filesystems">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Read-Only Filesystems</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Bookkeeping/recovery steps that don't disrupt anything currently running.
+  </p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/daemon-reload">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Reload systemd Daemon</button>
+    </form>
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/reset-failed">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Reset Failed Units</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Forcing a filesystem back to read-write can worsen underlying corruption if the I/O
+    error that caused the read-only remount is still present.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/resurrection/{{ host_id }}/remount/confirm">
+      <label for="remount-target">Mount path</label>
+      <input type="text" id="remount-target" name="target" placeholder="e.g. / or /var" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Remount Read-Write&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
