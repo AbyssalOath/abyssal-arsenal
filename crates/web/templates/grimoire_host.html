@@ -1,0 +1,129 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Grimoire — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Grimoire — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/grimoire">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Everything here reads or writes exactly two files this tool exclusively owns -- never an
+    arbitrary or pre-existing system file.
+  </p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/view-sysctl">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("settings") %} View Managed Sysctl</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/view-cron">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} View Managed Scheduled Tasks</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/set-sysctl">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="set-sysctl-key">Sysctl key</label>
+      <input type="text" id="set-sysctl-key" name="key" placeholder="e.g. vm.swappiness" required>
+      <label for="set-sysctl-value">Value</label>
+      <input type="text" id="set-sysctl-value" name="value" placeholder="e.g. 10" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="set-sysctl-password">Sudo password (if needed)</label>
+      <input type="password" id="set-sysctl-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Set Persistent Sysctl</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/remove-sysctl-key">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="rm-sysctl-key">Sysctl key</label>
+      <input type="text" id="rm-sysctl-key" name="key" placeholder="e.g. vm.swappiness" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="rm-sysctl-password">Sudo password (if needed)</label>
+      <input type="password" id="rm-sysctl-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Remove Sysctl Key</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/set-cron">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="set-cron-name">Job name</label>
+      <input type="text" id="set-cron-name" name="job_name" placeholder="e.g. nightly-backup" required>
+      <label for="set-cron-schedule">Schedule</label>
+      <input type="text" id="set-cron-schedule" name="schedule" placeholder="e.g. @daily or 0 3 * * *" required>
+      <label for="set-cron-user">Run as user</label>
+      <input type="text" id="set-cron-user" name="run_as_user" placeholder="e.g. root" required>
+      <label for="set-cron-command">Command</label>
+      <input type="text" id="set-cron-command" name="command" placeholder="e.g. /usr/local/bin/backup.sh" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="set-cron-password">Sudo password (if needed)</label>
+      <input type="password" id="set-cron-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Set Scheduled Task</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Removing a scheduled task stops whatever it runs on a recurring basis. Clearing wipes
+    everything this tool manages of that kind at once.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/grimoire/{{ host_id }}/remove-cron/confirm">
+      <label for="rm-cron-name">Job name</label>
+      <input type="text" id="rm-cron-name" name="job_name" placeholder="e.g. nightly-backup" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Remove Scheduled Task&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/grimoire/{{ host_id }}/clear-sysctl/confirm">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Clear Managed Sysctl&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/grimoire/{{ host_id }}/clear-cron/confirm">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Clear Managed Scheduled Tasks&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

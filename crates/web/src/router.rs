@@ -817,6 +817,55 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/ossuary/:host_id/mkfs",
             post(routes::ossuary::create_filesystem),
         )
+        .route("/arsenals/grimoire", get(routes::grimoire::show))
+        .route(
+            "/arsenals/grimoire/:host_id",
+            get(routes::grimoire::show_host),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/view-sysctl",
+            post(routes::grimoire::view_managed_sysctl),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/view-cron",
+            post(routes::grimoire::view_managed_cron_jobs),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/set-sysctl",
+            post(routes::grimoire::set_persistent_sysctl),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/remove-sysctl-key",
+            post(routes::grimoire::remove_persistent_sysctl_key),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/set-cron",
+            post(routes::grimoire::set_cron_job),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/remove-cron/confirm",
+            get(routes::grimoire::remove_cron_job_confirm),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/remove-cron",
+            post(routes::grimoire::remove_cron_job),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-sysctl/confirm",
+            get(routes::grimoire::clear_managed_sysctl_confirm),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-sysctl",
+            post(routes::grimoire::clear_managed_sysctl),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-cron/confirm",
+            get(routes::grimoire::clear_managed_cron_jobs_confirm),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-cron",
+            post(routes::grimoire::clear_managed_cron_jobs),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

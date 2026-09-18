@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -41,7 +41,9 @@ pub enum AgentOperation {
     /// Sets the agent's host's persistent hostname. Write -- a real mutation,
     /// but not destructive/irreversible, so it doesn't require the explicit
     /// confirmation a `Destructive` operation does.
-    SetHostname { hostname: String },
+    SetHostname {
+        hostname: String,
+    },
     /// Immediately reboots the agent's host. Destructive -- the control
     /// plane requires explicit confirmation before ever dispatching this.
     Reboot,
@@ -54,7 +56,10 @@ pub enum AgentOperation {
     FirewallStatus,
     /// Allows a port through the detected firewall backend. Write -- a real
     /// mutation, but additive/non-destructive, so no confirmation required.
-    FirewallAllowPort { port: u16, protocol: String },
+    FirewallAllowPort {
+        port: u16,
+        protocol: String,
+    },
     /// Enables the detected firewall backend (firewalld/ufw only -- raw
     /// nftables/iptables have no single well-defined "enable"). Destructive:
     /// can cut off remote access if the current management port isn't
@@ -90,14 +95,19 @@ pub enum AgentOperation {
     /// Ping + DNS lookup against a target the operator supplies. Read --
     /// sends network traffic, but only ICMP echo/DNS query, not the kind
     /// of thing that needs a confirmation gate.
-    ConnectivityCheck { target: String },
+    ConnectivityCheck {
+        target: String,
+    },
     /// Brings a network interface up or down (`ip link set <iface> up|down`).
     /// The control plane treats `up: true` as Write (additive, safe) and
     /// `up: false` as Destructive (can cut off remote access to the host if
     /// it's the interface currently in use) -- same command either way, the
     /// risk categorization lives on the control-plane side of the dispatch,
     /// same as every other op here.
-    InterfaceSetState { interface: String, up: bool },
+    InterfaceSetState {
+        interface: String,
+        up: bool,
+    },
     /// Active network scan ("Necrolink" -- network visibility) via nmap, if
     /// present on the host. Destructive: sends real traffic to a
     /// third-party target and can trip IDS/IPS elsewhere on the network, so
@@ -138,7 +148,9 @@ pub enum AgentOperation {
     /// suspected compromise. Read-only (stats file metadata, reads no file
     /// contents); `hours` is validated (1-720, i.e. up to 30 days) both here
     /// and again on the agent, which is the actual execution boundary.
-    RecentlyModifiedFiles { hours: u32 },
+    RecentlyModifiedFiles {
+        hours: u32,
+    },
     /// Disk space consumed by the systemd journal (`journalctl --disk-usage`).
     JournalDiskUsage,
     /// `logrotate`'s own status file -- when each configured log was last
@@ -159,12 +171,16 @@ pub enum AgentOperation {
     /// gates this behind the dedicated `audit.manage` permission (Super
     /// Admin only by default), not the general `audit.view` the rest of
     /// this arsenal's read operations use.
-    VacuumJournalBySize { size: String },
+    VacuumJournalBySize {
+        size: String,
+    },
     /// Deletes journal entries older than `duration`
     /// (`journalctl --vacuum-time=<duration>`, e.g. `"7d"`, `"2weeks"`).
     /// Same destructive/irreversible characteristics and permission gate as
     /// `VacuumJournalBySize`.
-    VacuumJournalByTime { duration: String },
+    VacuumJournalByTime {
+        duration: String,
+    },
     /// Backups already present under this host's fixed backup directory
     /// (`/var/backups/abyssal-arsenal`) -- name, size, and creation time.
     ListBackups,
@@ -172,10 +188,15 @@ pub enum AgentOperation {
     /// under the fixed backup directory. Write -- a real mutation (creates
     /// a file), but purely additive, so it doesn't require the explicit
     /// confirmation a `Destructive` operation does.
-    CreateBackup { source_path: String, name: String },
+    CreateBackup {
+        source_path: String,
+        name: String,
+    },
     /// Tests a backup archive's integrity (`tar -tzf`) and lists its
     /// contents, without extracting anything.
-    VerifyBackup { filename: String },
+    VerifyBackup {
+        filename: String,
+    },
     /// Extracts `filename` from the fixed backup directory into
     /// `target_path`, overwriting anything already there. Destructive --
     /// this can silently clobber current data with an old backup, so the
@@ -209,29 +230,43 @@ pub enum AgentOperation {
     /// reflects the unit's state (0 active, non-zero otherwise), not
     /// whether the command itself succeeded, so a "stopped" unit is a
     /// perfectly normal result here, not an error.
-    ServiceStatus { unit: String },
+    ServiceStatus {
+        unit: String,
+    },
     /// The last 50 journal lines for one unit (`journalctl -u`).
-    ServiceLogs { unit: String },
+    ServiceLogs {
+        unit: String,
+    },
     /// Starts a stopped unit. Write -- a real mutation, but not
     /// irreversible (stopping it again undoes it), so it doesn't require
     /// the explicit confirmation a `Destructive` operation does.
-    StartService { unit: String },
+    StartService {
+        unit: String,
+    },
     /// Stops a running unit. Destructive: whatever the unit was providing
     /// becomes unavailable immediately, so the control plane requires
     /// explicit confirmation before ever dispatching this.
-    StopService { unit: String },
+    StopService {
+        unit: String,
+    },
     /// Restarts a unit. Destructive for the same reason as `StopService`
     /// -- a brief outage is guaranteed, and if the unit is what's carrying
     /// the connection used to manage this host (e.g. `sshd`), restarting
     /// it can cut that connection.
-    RestartService { unit: String },
+    RestartService {
+        unit: String,
+    },
     /// Enables a unit to start automatically at boot, without touching
     /// whether it's running right now. Write -- additive, not disruptive.
-    EnableService { unit: String },
+    EnableService {
+        unit: String,
+    },
     /// Disables a unit from starting automatically at boot, without
     /// touching whether it's running right now. Write, not Destructive --
     /// the currently-running instance (if any) is unaffected.
-    DisableService { unit: String },
+    DisableService {
+        unit: String,
+    },
     /// Warning-or-worse journal entries from the *previous* boot
     /// (`journalctl -b -1 -p err`) -- the direct "why did it go down last
     /// time" query, the natural first read after an unexpected restart.
@@ -268,7 +303,9 @@ pub enum AgentOperation {
     /// I/O error that caused the read-only remount is still present, so
     /// the control plane requires explicit confirmation before ever
     /// dispatching this.
-    RemountReadWrite { target: String },
+    RemountReadWrite {
+        target: String,
+    },
     /// CPU model, core/thread counts, and clock speeds (`lscpu`).
     CpuInfo,
     /// PCI-attached hardware (GPUs, NICs, storage/RAID controllers, ...)
@@ -288,16 +325,22 @@ pub enum AgentOperation {
     /// warnings, ...), not a simple success/failure signal, so a non-zero
     /// exit reporting a real finding is exactly the useful case here, not
     /// an error.
-    DiskHealth { device: String },
+    DiskHealth {
+        device: String,
+    },
     /// Every container, running or stopped (`docker ps -a` /
     /// `podman ps -a` -- whichever runtime is present; their CLI syntax
     /// is identical for every op in this arsenal).
     ListContainers,
     /// The last 100 log lines for one container (`... logs --tail 100`).
-    ContainerLogs { container: String },
+    ContainerLogs {
+        container: String,
+    },
     /// Full inspection detail for one container -- config, mounts,
     /// network settings, restart policy (`... inspect`).
-    ContainerInspect { container: String },
+    ContainerInspect {
+        container: String,
+    },
     /// Every image present on the host (`... images`).
     ListImages,
     /// Runtime-level status: storage driver, container/image counts,
@@ -306,20 +349,28 @@ pub enum AgentOperation {
     /// Starts a stopped container. Write -- a real mutation, but not
     /// irreversible (stopping it again undoes it), so it doesn't require
     /// the explicit confirmation a `Destructive` operation does.
-    StartContainer { container: String },
+    StartContainer {
+        container: String,
+    },
     /// Stops a running container. Destructive: whatever the container was
     /// providing becomes unavailable immediately, so the control plane
     /// requires explicit confirmation before ever dispatching this.
-    StopContainer { container: String },
+    StopContainer {
+        container: String,
+    },
     /// Restarts a container. Destructive for the same reason as
     /// `StopContainer` -- a brief outage is guaranteed.
-    RestartContainer { container: String },
+    RestartContainer {
+        container: String,
+    },
     /// Deletes a container entirely (`... rm`, without `-f`, so a
     /// currently-running container is refused rather than force-killed).
     /// Destructive and irreversible -- the container's own writable layer
     /// and state are gone, though named volumes survive -- so the control
     /// plane requires explicit confirmation before ever dispatching this.
-    RemoveContainer { container: String },
+    RemoveContainer {
+        container: String,
+    },
     /// Every process on the host, as a PID-ordered tree
     /// (`ps -ef --forest`) -- the complete picture, unlike Mortiscope's
     /// `TopProcessesByCpu`/`TopProcessesByMemory` (top 15 by resource
@@ -328,19 +379,27 @@ pub enum AgentOperation {
     /// Full detail for one process -- user, state, resource usage,
     /// start time, and complete (untruncated) command line
     /// (`ps -p <pid> -o ... -ww`).
-    ProcessDetail { pid: u32 },
+    ProcessDetail {
+        pid: u32,
+    },
     /// Adjusts a running process's scheduling priority
     /// (`renice -n <priority> -p <pid>`, range -20 to 19). Write -- a
     /// real mutation, but reversible (renice again) and not disruptive on
     /// its own, so it doesn't require the explicit confirmation a
     /// `Destructive` operation does.
-    RenicePriority { pid: u32, priority: i32 },
+    RenicePriority {
+        pid: u32,
+        priority: i32,
+    },
     /// Sends a signal to a process (`kill -s <SIGNAL> <pid>`). Destructive
     /// regardless of which signal: any signal sent to a process is an
     /// intentional interruption of whatever it's doing, so the control
     /// plane requires explicit confirmation before ever dispatching this
     /// -- there's no "softer" signal choice that bypasses that gate.
-    SendSignal { pid: u32, signal: String },
+    SendSignal {
+        pid: u32,
+        signal: String,
+    },
     /// Disk usage of the standard cleanup-relevant locations -- `/tmp`,
     /// `/var/tmp`, and the systemd core dump directory (`du -sh`) --
     /// visibility into what's actually consuming space before deciding
@@ -361,7 +420,9 @@ pub enum AgentOperation {
     /// recursive-delete primitive. Destructive and irreversible: deleted
     /// files are gone, so the control plane requires explicit
     /// confirmation before ever dispatching this.
-    ClearTmpFiles { older_than_days: u32 },
+    ClearTmpFiles {
+        older_than_days: u32,
+    },
     /// Deletes every file under the systemd core dump directory
     /// (`/var/lib/systemd/coredump`), unconditionally -- distinct from
     /// `coredumpctl vacuum`'s own size/age-based retention policy, which
@@ -396,75 +457,111 @@ pub enum AgentOperation {
     /// 0-200). Write, not Destructive: a runtime-only sysctl change that
     /// doesn't persist across reboot and is trivially undone by setting
     /// it back.
-    SetSwappiness { value: u32 },
+    SetSwappiness {
+        value: u32,
+    },
     /// Sets a block device's I/O scheduler by writing the scheduler name
     /// to its sysfs queue file (`tee /sys/block/<device>/queue/scheduler`,
     /// fed via stdin since there's no shell here to do the `>` redirection
     /// this file conventionally takes). Write, not Destructive: purely a
     /// runtime queuing-policy change, reversible by writing a different
     /// name back.
-    SetIoScheduler { device: String, scheduler: String },
+    SetIoScheduler {
+        device: String,
+        scheduler: String,
+    },
     /// Every local/NSS-resolved account (`getent passwd`).
     ListUsers,
     /// Every local/NSS-resolved group and its members (`getent group`).
     ListGroups,
     /// UID, primary GID, and every supplementary group for one account
     /// (`id <username>`).
-    UserDetail { username: String },
+    UserDetail {
+        username: String,
+    },
     /// Creates a new local account with a home directory
     /// (`useradd -m -c <comment> <username>`). The account has no
     /// password set (locked, per `useradd`'s own default) until someone
     /// assigns one directly on the host. Write -- additive, undone by
     /// `DeleteUser`.
-    CreateUser { username: String, comment: String },
+    CreateUser {
+        username: String,
+        comment: String,
+    },
     /// Creates a new local group (`groupadd <group>`). Write, additive.
-    CreateGroup { group: String },
+    CreateGroup {
+        group: String,
+    },
     /// Adds an account to a supplementary group
     /// (`usermod -aG <group> <username>`). Write -- additive, reversible
     /// via `RemoveUserFromGroup`.
-    AddUserToGroup { username: String, group: String },
+    AddUserToGroup {
+        username: String,
+        group: String,
+    },
     /// Removes an account from a supplementary group
     /// (`gpasswd -d <username> <group>`). Write, not Destructive: the
     /// account and group both still exist, only the membership changes,
     /// and it's trivially reversed by adding them back.
-    RemoveUserFromGroup { username: String, group: String },
+    RemoveUserFromGroup {
+        username: String,
+        group: String,
+    },
     /// Locks an account, disabling password login without deleting
     /// anything (`usermod -L <username>`). Write, not Destructive:
     /// reversible via `UnlockUserAccount`. Refuses `"root"` -- locking
     /// the one universally-critical account is never the intended
     /// target.
-    LockUserAccount { username: String },
+    LockUserAccount {
+        username: String,
+    },
     /// Reverses `LockUserAccount` (`usermod -U <username>`). Write.
-    UnlockUserAccount { username: String },
+    UnlockUserAccount {
+        username: String,
+    },
     /// Deletes a local account (`userdel [-r] <username>`), optionally
     /// removing its home directory too. Destructive and irreversible --
     /// the control plane requires explicit confirmation before ever
     /// dispatching this. Refuses `"root"`.
-    DeleteUser { username: String, remove_home: bool },
+    DeleteUser {
+        username: String,
+        remove_home: bool,
+    },
     /// Deletes a local group (`groupdel <group>`). Destructive and
     /// irreversible for the same reason as `DeleteUser`. Refuses
     /// `"root"`.
-    DeleteGroup { group: String },
+    DeleteGroup {
+        group: String,
+    },
     /// Immediate-subdirectory disk usage under `path`
     /// (`du -h --max-depth=1 <path>`) -- the classic "what's eating this
     /// directory" traversal, one level deep.
-    DirectoryUsageBreakdown { path: String },
+    DirectoryUsageBreakdown {
+        path: String,
+    },
     /// Files at or under `path` larger than `min_size_mb` megabytes
     /// (`find <path> -xdev -type f -size +<N>M`). `-xdev` keeps the
     /// search from wandering into other mounted filesystems under
     /// `path`, so scanning `/` doesn't also walk every remote mount.
-    FindLargeFiles { path: String, min_size_mb: u32 },
+    FindLargeFiles {
+        path: String,
+        min_size_mb: u32,
+    },
     /// Read-only filesystem consistency check (`fsck -n <device>`) --
     /// reports problems without fixing anything, so unlike
     /// `FilesystemRepair` this is safe to run even on a mounted
     /// filesystem.
-    FilesystemCheckDryRun { device: String },
+    FilesystemCheckDryRun {
+        device: String,
+    },
     /// Discards unused blocks on a mounted filesystem so the underlying
     /// SSD/storage can reclaim them (`fstrim -v <mountpoint>`) --
     /// routine, low-risk maintenance (the same operation most distros
     /// already run on a timer). Write, not Destructive: it never removes
     /// anything a filesystem still considers live.
-    TrimFilesystem { mountpoint: String },
+    TrimFilesystem {
+        mountpoint: String,
+    },
     /// Runs `fsck`'s actual repair mode (`fsck -y <device>`, auto-answer
     /// yes to every fix). Destructive and genuinely dangerous if
     /// misused: the agent refuses outright if `device` is currently
@@ -474,16 +571,22 @@ pub enum AgentOperation {
     /// live is a well-known way to cause the exact corruption this
     /// operation exists to fix. The control plane requires explicit
     /// confirmation before ever dispatching this regardless.
-    FilesystemRepair { device: String },
+    FilesystemRepair {
+        device: String,
+    },
     /// Every installed package, from whichever of apt/dnf/yum/pacman/
     /// zypper the agent detects on its host (same "detect the tool
     /// present, don't assume one" approach as the firewall backends).
     ListInstalledPackages,
     /// Searches the package manager's repo metadata for `query`.
-    SearchPackage { query: String },
+    SearchPackage {
+        query: String,
+    },
     /// Detailed info (version, description, dependencies, ...) for one
     /// package, whether installed or just available in a repo.
-    PackageInfo { package: String },
+    PackageInfo {
+        package: String,
+    },
     /// Packages with an available upgrade. Some backends (`dnf`/`yum`
     /// `check-update`) use a non-zero exit specifically to mean "updates
     /// are available," not "the check failed" -- handled as a normal
@@ -496,22 +599,30 @@ pub enum AgentOperation {
     RefreshPackageIndex,
     /// Installs a package (pulling in dependencies as the backend
     /// decides). Write -- additive, undone by `RemovePackage`.
-    InstallPackage { package: String },
+    InstallPackage {
+        package: String,
+    },
     /// Upgrades one specific package to the latest version the refreshed
     /// index knows about, without touching any other package. Write, not
     /// Destructive: updates code in place, doesn't delete data, and can
     /// be undone by installing an older version directly if needed.
-    UpgradePackage { package: String },
+    UpgradePackage {
+        package: String,
+    },
     /// Removes an installed package (without purging its configuration
     /// files, where the backend distinguishes the two). Destructive:
     /// removing a package can break whatever depended on it, and
     /// reinstalling doesn't necessarily restore prior state exactly, so
     /// the control plane requires explicit confirmation before ever
     /// dispatching this.
-    RemovePackage { package: String },
+    RemovePackage {
+        package: String,
+    },
     /// A disk's partition table (`parted <device> print`) -- MBR/GPT,
     /// partition list, sizes, types.
-    PartitionTable { device: String },
+    PartitionTable {
+        device: String,
+    },
     /// LVM physical volumes, volume groups, and logical volumes
     /// (`pvs`/`vgs`/`lvs`), combined into one report.
     LvmSummary,
@@ -521,7 +632,10 @@ pub enum AgentOperation {
     /// Mounts an existing filesystem (`mount <device> <target>`). Write,
     /// not Destructive: doesn't create or destroy anything, and is
     /// reversible via `UnmountFilesystem`.
-    MountFilesystem { device: String, target: String },
+    MountFilesystem {
+        device: String,
+        target: String,
+    },
     /// Grows an LVM logical volume by `size` (e.g. `"10G"`)
     /// (`lvextend -L +<size> <lv_path>`). Write, not Destructive: only
     /// adds space (fails cleanly if the volume group doesn't have enough
@@ -530,13 +644,18 @@ pub enum AgentOperation {
     /// `xfs_growfs`, ...), which this tool deliberately doesn't attempt,
     /// since picking the wrong filesystem-specific tool automatically is
     /// itself a real risk.
-    ExtendLogicalVolume { lv_path: String, size: String },
+    ExtendLogicalVolume {
+        lv_path: String,
+        size: String,
+    },
     /// Unmounts a filesystem (`umount <target>`). Destructive: whatever
     /// was using that mount loses access immediately, the same reasoning
     /// `StopService`/`StopContainer` document -- the data itself is
     /// untouched, but the control plane requires explicit confirmation
     /// before ever dispatching this regardless.
-    UnmountFilesystem { target: String },
+    UnmountFilesystem {
+        target: String,
+    },
     /// Creates a new partition (`parted -s <device> mkpart primary
     /// <start> <end>`, e.g. start `"0%"` end `"50%"`). Destructive and
     /// irreversible, and gated behind the admin-configured "high-risk
@@ -569,11 +688,15 @@ pub enum AgentOperation {
     /// without touching the data on its member devices -- reassembling
     /// it later is possible, but not automatic, so this is still
     /// Destructive and high-risk-gated rather than assumed safe.
-    StopRaidArray { array_name: String },
+    StopRaidArray {
+        array_name: String,
+    },
     /// Initializes a device as an LVM physical volume (`pvcreate
     /// <device>`), wiping any existing filesystem signature on it.
     /// Destructive, irreversible, and high-risk-gated.
-    CreatePhysicalVolume { device: String },
+    CreatePhysicalVolume {
+        device: String,
+    },
     /// Creates an LVM volume group from one or more physical volumes
     /// (`vgcreate <name> <physical_volumes...>`). Destructive
     /// (consumes the listed PVs into the new VG) and high-risk-gated.
@@ -594,14 +717,20 @@ pub enum AgentOperation {
     },
     /// Removes a logical volume and its data (`lvremove -f <lv_path>`).
     /// Destructive, irreversible, and high-risk-gated.
-    RemoveLogicalVolume { lv_path: String },
+    RemoveLogicalVolume {
+        lv_path: String,
+    },
     /// Removes a volume group (`vgremove -f <name>`) -- refused by `vgremove`
     /// itself if it still contains logical volumes. Destructive,
     /// irreversible, and high-risk-gated.
-    RemoveVolumeGroup { name: String },
+    RemoveVolumeGroup {
+        name: String,
+    },
     /// Removes a device's LVM physical volume metadata (`pvremove -f
     /// <device>`). Destructive, irreversible, and high-risk-gated.
-    RemovePhysicalVolume { device: String },
+    RemovePhysicalVolume {
+        device: String,
+    },
     /// Creates a filesystem on a device (`mkfs.<fstype> -F <device>`),
     /// destroying whatever was there before. The single most dangerous
     /// operation this platform can dispatch -- unlike `FilesystemRepair`
@@ -609,7 +738,61 @@ pub enum AgentOperation {
     /// `device` here instantly and unconditionally destroys everything
     /// on it with no partial-safety case at all. Destructive,
     /// irreversible, and high-risk-gated.
-    CreateFilesystem { device: String, fstype: String },
+    CreateFilesystem {
+        device: String,
+        fstype: String,
+    },
+    /// Configuration management ("Grimoire"), deliberately narrow:
+    /// everything here reads or writes exactly one of two files this
+    /// tool exclusively owns -- `/etc/sysctl.d/99-abyssal-arsenal.conf`
+    /// (persistent sysctl overrides) and `/etc/cron.d/abyssal-arsenal`
+    /// (scheduled tasks) -- never an arbitrary or pre-existing system
+    /// file. Editing a shared file like `/etc/hosts` in place risks
+    /// corrupting it through a string-manipulation bug; a dedicated
+    /// drop-in file this tool always fully controls and always renders
+    /// from scratch can't have that failure mode.
+    ViewManagedSysctl,
+    ViewManagedCronJobs,
+    /// Idempotently sets `key = value` in the managed sysctl file
+    /// (creating it if needed) and applies it immediately
+    /// (`sysctl -p <file>`). Write -- a real mutation, but narrowly
+    /// scoped to one key in one tool-owned file, reversible via
+    /// `RemovePersistentSysctlKey`.
+    SetPersistentSysctl {
+        key: String,
+        value: String,
+    },
+    /// Removes one key from the managed sysctl file (the file itself,
+    /// and every other key in it, is untouched). Write, not Destructive:
+    /// narrow and reversible by setting it again.
+    RemovePersistentSysctlKey {
+        key: String,
+    },
+    /// Wipes the entire managed sysctl file, reverting every persistent
+    /// override this tool has set back to distro defaults at once.
+    /// Destructive: broader impact than removing a single key.
+    ClearManagedSysctl,
+    /// Idempotently adds or updates one named scheduled task in the
+    /// managed cron.d file (adding it if `job_name` doesn't exist yet,
+    /// replacing it if it does). Write -- narrowly scoped to one job in
+    /// one tool-owned file.
+    SetCronJob {
+        job_name: String,
+        schedule: String,
+        run_as_user: String,
+        command: String,
+    },
+    /// Removes one named scheduled task from the managed cron.d file.
+    /// Destructive: stops whatever recurring behavior that job
+    /// provided, the same reasoning `StopService`/`StopContainer`
+    /// document for interrupting something ongoing.
+    RemoveCronJob {
+        job_name: String,
+    },
+    /// Wipes the entire managed cron.d file, removing every scheduled
+    /// task this tool has set at once. Destructive: broader impact than
+    /// removing a single job.
+    ClearManagedCronJobs,
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -988,6 +1171,35 @@ impl fmt::Debug for AgentOperation {
                 .field("device", device)
                 .field("fstype", fstype)
                 .finish(),
+            AgentOperation::ViewManagedSysctl => write!(f, "ViewManagedSysctl"),
+            AgentOperation::ViewManagedCronJobs => write!(f, "ViewManagedCronJobs"),
+            AgentOperation::SetPersistentSysctl { key, value } => f
+                .debug_struct("SetPersistentSysctl")
+                .field("key", key)
+                .field("value", value)
+                .finish(),
+            AgentOperation::RemovePersistentSysctlKey { key } => f
+                .debug_struct("RemovePersistentSysctlKey")
+                .field("key", key)
+                .finish(),
+            AgentOperation::ClearManagedSysctl => write!(f, "ClearManagedSysctl"),
+            AgentOperation::SetCronJob {
+                job_name,
+                schedule,
+                run_as_user,
+                command,
+            } => f
+                .debug_struct("SetCronJob")
+                .field("job_name", job_name)
+                .field("schedule", schedule)
+                .field("run_as_user", run_as_user)
+                .field("command", command)
+                .finish(),
+            AgentOperation::RemoveCronJob { job_name } => f
+                .debug_struct("RemoveCronJob")
+                .field("job_name", job_name)
+                .finish(),
+            AgentOperation::ClearManagedCronJobs => write!(f, "ClearManagedCronJobs"),
         }
     }
 }
@@ -1356,6 +1568,59 @@ pub fn is_valid_raid_level(level: &str) -> bool {
 pub fn is_valid_fstype(fstype: &str) -> bool {
     const ALLOWED: &[&str] = &["ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "f2fs"];
     ALLOWED.contains(&fstype)
+}
+
+/// A sysctl key (e.g. `"vm.swappiness"`, `"net/ipv4/ip_forward"` -- both
+/// `.` and `/` separators are valid sysctl syntax). Letters, digits,
+/// `.`, `/`, `_`, `-` only, never a leading `-`.
+pub fn is_valid_sysctl_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 200
+        && !key.starts_with('-')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '_' | '-'))
+}
+
+/// A sysctl value. Permissive (values are numbers, strings, or even
+/// space-separated lists depending on the key), but no control
+/// characters -- this becomes one line of a config file, so a newline
+/// here would let the value smuggle in a second, unintended line.
+pub fn is_valid_sysctl_value(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 200 && value.chars().all(|c| !c.is_control())
+}
+
+/// A cron schedule -- either a `@nickname` (`@reboot`, `@daily`, ...) or
+/// a permissive character set covering real 5-field cron expressions
+/// (digits, `*`, `/`, `,`, `-`, and the month/weekday name abbreviations
+/// some cron implementations accept). Not a full grammar check --
+/// consistent with every other validator here, the goal is rejecting
+/// injection and garbage input, not verifying the schedule is
+/// semantically sensible.
+pub fn is_valid_cron_schedule(schedule: &str) -> bool {
+    if schedule.is_empty() || schedule.len() > 100 {
+        return false;
+    }
+    if let Some(rest) = schedule.strip_prefix('@') {
+        const NICKNAMES: &[&str] = &[
+            "reboot", "yearly", "annually", "monthly", "weekly", "daily", "hourly",
+        ];
+        return NICKNAMES.contains(&rest);
+    }
+    schedule
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '*' | '/' | ',' | '-' | ' '))
+}
+
+/// The command field of a managed cron job. Deliberately permissive --
+/// cron invokes this through a shell on purpose, so shell metacharacters
+/// (pipes, semicolons, quotes) are normal and expected here, not an
+/// injection risk the way they would be in an argument passed directly
+/// to a non-shell subprocess. The one real risk is a newline smuggling
+/// in an extra, unintended cron.d line, so control characters are the
+/// only thing this actually excludes.
+pub fn is_valid_cron_command(command: &str) -> bool {
+    !command.is_empty() && command.len() <= 500 && command.chars().all(|c| !c.is_control())
 }
 
 /// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
@@ -1819,5 +2084,58 @@ mod tests {
         assert!(!is_valid_fstype(""));
         assert!(!is_valid_fstype("ntfs"));
         assert!(!is_valid_fstype("ext4; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_reasonable_sysctl_keys() {
+        assert!(is_valid_sysctl_key("vm.swappiness"));
+        assert!(is_valid_sysctl_key("net/ipv4/ip_forward"));
+    }
+
+    #[test]
+    fn rejects_malformed_sysctl_keys() {
+        assert!(!is_valid_sysctl_key(""));
+        assert!(!is_valid_sysctl_key("-x"));
+        assert!(!is_valid_sysctl_key("vm.swappiness; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_reasonable_sysctl_values() {
+        assert!(is_valid_sysctl_value("60"));
+        assert!(is_valid_sysctl_value("1 2 3"));
+    }
+
+    #[test]
+    fn rejects_malformed_sysctl_values() {
+        assert!(!is_valid_sysctl_value(""));
+        assert!(!is_valid_sysctl_value("bad\nvalue"));
+    }
+
+    #[test]
+    fn accepts_reasonable_cron_schedules() {
+        assert!(is_valid_cron_schedule("@daily"));
+        assert!(is_valid_cron_schedule("* * * * *"));
+        assert!(is_valid_cron_schedule("0 3 * * MON"));
+    }
+
+    #[test]
+    fn rejects_malformed_cron_schedules() {
+        assert!(!is_valid_cron_schedule(""));
+        assert!(!is_valid_cron_schedule("@bogus"));
+        assert!(!is_valid_cron_schedule("* * * * *; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_reasonable_cron_commands() {
+        assert!(is_valid_cron_command("/usr/bin/backup.sh --full"));
+        assert!(is_valid_cron_command(
+            "echo hi | mail -s report admin@example.com"
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_cron_commands() {
+        assert!(!is_valid_cron_command(""));
+        assert!(!is_valid_cron_command("echo hi\nrm -rf /"));
     }
 }

@@ -433,6 +433,34 @@ pub struct MortiscopeHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct GrimoireHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "grimoire.html")]
+pub struct GrimoireTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<GrimoireHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "grimoire_host.html")]
+pub struct GrimoireHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `systems.manage` -- gates the Write/Destructive section, distinct
+    /// from the `systems.view` the read operations use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct OssuaryHostRow {
     pub id: String,
     pub name: String,

@@ -4,6 +4,7 @@ mod defleshing;
 mod elevation;
 mod enroll;
 mod firewall;
+mod grimoire;
 mod incarnation;
 mod init_system;
 mod mortiscope;

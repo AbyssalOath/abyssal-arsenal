@@ -9,6 +9,7 @@ pub mod catacomb;
 pub mod cystoolbox;
 pub mod dashboard;
 pub mod defleshing;
+pub mod grimoire;
 pub mod hosts;
 pub mod incarnation;
 pub mod login;

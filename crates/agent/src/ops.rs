@@ -4,9 +4,9 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    apothecary, catacomb, defleshing, firewall, incarnation, mortiscope, necropolis, necropsy,
-    network, obituary, ossuary, parish, postmortem, process::run_command, reanimation, reliquary,
-    resurrection, vivisection,
+    apothecary, catacomb, defleshing, firewall, grimoire, incarnation, mortiscope, necropolis,
+    necropsy, network, obituary, ossuary, parish, postmortem, process::run_command, reanimation,
+    reliquary, resurrection, vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -277,6 +277,25 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::CreateFilesystem { device, fstype } => {
             ossuary::create_filesystem(device, fstype, elevation).await
         }
+        AgentOperation::ViewManagedSysctl => grimoire::view_managed_sysctl(elevation).await,
+        AgentOperation::ViewManagedCronJobs => grimoire::view_managed_cron_jobs(elevation).await,
+        AgentOperation::SetPersistentSysctl { key, value } => {
+            grimoire::set_persistent_sysctl(key, value, elevation).await
+        }
+        AgentOperation::RemovePersistentSysctlKey { key } => {
+            grimoire::remove_persistent_sysctl_key(key, elevation).await
+        }
+        AgentOperation::ClearManagedSysctl => grimoire::clear_managed_sysctl(elevation).await,
+        AgentOperation::SetCronJob {
+            job_name,
+            schedule,
+            run_as_user,
+            command,
+        } => grimoire::set_cron_job(job_name, schedule, run_as_user, command, elevation).await,
+        AgentOperation::RemoveCronJob { job_name } => {
+            grimoire::remove_cron_job(job_name, elevation).await
+        }
+        AgentOperation::ClearManagedCronJobs => grimoire::clear_managed_cron_jobs(elevation).await,
     }
 }
 
