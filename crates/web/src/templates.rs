@@ -573,6 +573,34 @@ pub struct PanopticonTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct CryptkeeperHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "cryptkeeper.html")]
+pub struct CryptkeeperTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<CryptkeeperHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "cryptkeeper_host.html")]
+pub struct CryptkeeperHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `security.manage` -- gates the Write/Destructive sections,
+    /// distinct from the `security.view` the read operations use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct ApothecaryHostRow {
     pub id: String,
     pub name: String,

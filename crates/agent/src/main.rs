@@ -1,5 +1,6 @@
 mod apothecary;
 mod catacomb;
+mod cryptkeeper;
 mod defleshing;
 mod elevation;
 mod enroll;

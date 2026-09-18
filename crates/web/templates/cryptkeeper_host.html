@@ -1,0 +1,160 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Cryptkeeper — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Cryptkeeper — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/cryptkeeper">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/ssh-host-keys">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("elevate") %} SSH Host Keys</button>
+    </form>
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/authorized-keys">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="ak-username">Username</label>
+      <input type="text" id="ak-username" name="username" placeholder="e.g. root" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="ak-password">Sudo password (if needed)</label>
+      <input type="password" id="ak-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("elevate") %} Authorized Keys</button>
+    </form>
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/tls-certificates">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("role") %} TLS Certificates</button>
+    </form>
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/certificate-detail">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="cert-path">Certificate path</label>
+      <input type="text" id="cert-path" name="path" placeholder="e.g. /etc/ssl/certs/foo.pem" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="cert-password">Sudo password (if needed)</label>
+      <input type="password" id="cert-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("role") %} Certificate Detail</button>
+    </form>
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/permission-scan">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Scan Sensitive File Permissions</button>
+    </form>
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/view-file">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="view-path">File path</label>
+      <input type="text" id="view-path" name="path" placeholder="e.g. /etc/myapp/.env" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="view-password">Sudo password (if needed)</label>
+      <input type="password" id="view-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} View File&hellip; (shows plaintext)</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/generate-keypair">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="gen-type">Key type</label>
+      <select id="gen-type" name="key_type">
+        <option value="ed25519">ed25519</option>
+        <option value="rsa">rsa</option>
+        <option value="ecdsa">ecdsa</option>
+      </select>
+      <label for="gen-comment">Comment</label>
+      <input type="text" id="gen-comment" name="comment" placeholder="e.g. deploy@ci">
+      <label for="gen-path">Output path</label>
+      <input type="text" id="gen-path" name="path" placeholder="e.g. /root/.ssh/id_deploy" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="gen-password">Sudo password (if needed)</label>
+      <input type="password" id="gen-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Generate SSH Keypair</button>
+    </form>
+    <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/fix-permissions">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="fix-path">File path</label>
+      <input type="text" id="fix-path" name="path" placeholder="e.g. /root/.ssh/id_rsa" required>
+      <label for="fix-mode">New mode</label>
+      <select id="fix-mode" name="mode">
+        <option value="600">600</option>
+        <option value="400">400</option>
+        <option value="640">640</option>
+        <option value="700">700</option>
+      </select>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="fix-password">Sudo password (if needed)</label>
+      <input type="password" id="fix-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Fix Permissions</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Both of these revoke access or delete key material permanently. Run "SSH Host Keys" or
+    "Authorized Keys" above first to get the exact fingerprint or path to target.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/cryptkeeper/{{ host_id }}/remove-authorized-key/confirm">
+      <label for="rak-username">Username</label>
+      <input type="text" id="rak-username" name="username" placeholder="e.g. root" required>
+      <label for="rak-fingerprint">Fingerprint</label>
+      <input type="text" id="rak-fingerprint" name="fingerprint" placeholder="e.g. SHA256:abcd...==" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Remove Authorized Key&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/cryptkeeper/{{ host_id }}/delete-ssh-keypair/confirm">
+      <label for="dsk-path">Private key path</label>
+      <input type="text" id="dsk-path" name="value" placeholder="e.g. /root/.ssh/id_old" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Delete SSH Keypair&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

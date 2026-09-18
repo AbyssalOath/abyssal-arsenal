@@ -4,9 +4,9 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    apothecary, catacomb, defleshing, firewall, grimoire, incarnation, inquest, mortiscope,
-    necropolis, necropsy, network, obituary, ossuary, parish, postmortem, process::run_command,
-    reanimation, reliquary, resurrection, vivisection,
+    apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, incarnation, inquest,
+    mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem,
+    process::run_command, reanimation, reliquary, resurrection, vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -320,6 +320,35 @@ pub async fn run(
         }
         AgentOperation::DeisolateHost => inquest::deisolate_host(elevation).await,
         AgentOperation::IsolateHost => inquest::isolate_host(control_plane_host, elevation).await,
+        AgentOperation::ListSshHostKeys => cryptkeeper::list_ssh_host_keys(elevation).await,
+        AgentOperation::ListSshAuthorizedKeys { username } => {
+            cryptkeeper::list_ssh_authorized_keys(username, elevation).await
+        }
+        AgentOperation::ListTlsCertificates => cryptkeeper::list_tls_certificates(elevation).await,
+        AgentOperation::CertificateDetail { path } => {
+            cryptkeeper::certificate_detail(path, elevation).await
+        }
+        AgentOperation::ScanSensitiveFilePermissions => {
+            cryptkeeper::scan_sensitive_file_permissions(elevation).await
+        }
+        AgentOperation::ViewSensitiveFile { path } => {
+            cryptkeeper::view_sensitive_file(path, elevation).await
+        }
+        AgentOperation::GenerateSshKeypair {
+            key_type,
+            comment,
+            path,
+        } => cryptkeeper::generate_ssh_keypair(key_type, comment, path, elevation).await,
+        AgentOperation::FixFilePermissions { path, mode } => {
+            cryptkeeper::fix_file_permissions(path, mode, elevation).await
+        }
+        AgentOperation::RemoveAuthorizedKey {
+            username,
+            fingerprint,
+        } => cryptkeeper::remove_authorized_key(username, fingerprint, elevation).await,
+        AgentOperation::DeleteSshKeypair { path } => {
+            cryptkeeper::delete_ssh_keypair(path, elevation).await
+        }
     }
 }
 

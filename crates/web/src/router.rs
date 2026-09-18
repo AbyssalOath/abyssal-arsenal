@@ -923,6 +923,59 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/inquest/:host_id/isolate",
             post(routes::inquest::isolate_host),
         )
+        .route("/arsenals/cryptkeeper", get(routes::cryptkeeper::show))
+        .route(
+            "/arsenals/cryptkeeper/:host_id",
+            get(routes::cryptkeeper::show_host),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/ssh-host-keys",
+            post(routes::cryptkeeper::list_ssh_host_keys),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/authorized-keys",
+            post(routes::cryptkeeper::list_ssh_authorized_keys),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/tls-certificates",
+            post(routes::cryptkeeper::list_tls_certificates),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/certificate-detail",
+            post(routes::cryptkeeper::certificate_detail),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/permission-scan",
+            post(routes::cryptkeeper::scan_sensitive_file_permissions),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/view-file",
+            post(routes::cryptkeeper::view_sensitive_file),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/generate-keypair",
+            post(routes::cryptkeeper::generate_ssh_keypair),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/fix-permissions",
+            post(routes::cryptkeeper::fix_file_permissions),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/remove-authorized-key/confirm",
+            get(routes::cryptkeeper::remove_authorized_key_confirm),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/remove-authorized-key",
+            post(routes::cryptkeeper::remove_authorized_key),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/delete-ssh-keypair/confirm",
+            get(routes::cryptkeeper::delete_ssh_keypair_confirm),
+        )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/delete-ssh-keypair",
+            post(routes::cryptkeeper::delete_ssh_keypair),
+        )
         .route("/arsenals/panopticon", get(routes::panopticon::show))
         .route(
             "/arsenals/panopticon/scan/confirm",

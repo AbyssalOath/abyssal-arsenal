@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -871,6 +871,94 @@ pub enum AgentOperation {
     /// the normal confirmation, exactly mirroring Ossuary's high-risk
     /// storage gate.
     IsolateHost,
+    /// Secrets, credentials, certificates, keys, and sensitive
+    /// configuration on the managed host ("Cryptkeeper"). Distinct from
+    /// Parish (Linux account/group administration): Parish manages *who*
+    /// exists, Cryptkeeper manages *what proves who they are* and *what
+    /// they can prove it to* -- SSH keys, TLS certificates, and the
+    /// files that hold other secrets. The control plane deliberately
+    /// does see plaintext here (unlike a zero-knowledge password
+    /// manager) -- it's the trusted administrator surface for hosts it
+    /// already fully manages, not an untrusted party.
+    ///
+    /// Every discovered host SSH keypair's fingerprint (never the raw
+    /// key material) plus a permission-safety note on each private key.
+    ListSshHostKeys,
+    /// A user's `~/.ssh/authorized_keys`, fingerprinted per entry (via
+    /// `ssh-keygen -lf`, which accepts a whole authorized_keys-format
+    /// file) rather than shown as raw key blobs -- enough to audit who
+    /// can log in as that user without dumping key material that's
+    /// awkward to eyeball anyway.
+    ListSshAuthorizedKeys {
+        username: String,
+    },
+    /// Every certificate found under this host's common certificate
+    /// locations, with subject and expiry -- the fast "what's expiring
+    /// soon" view. Certificates are public by nature, so this reads
+    /// freely; only a private key alongside one is sensitive (see
+    /// `ScanSensitiveFilePermissions`).
+    ListTlsCertificates,
+    /// The full parsed detail (`openssl x509 -text`) of one specific
+    /// certificate file.
+    CertificateDetail {
+        path: String,
+    },
+    /// Finds private keys, `authorized_keys` files, and similar
+    /// credential material under common locations (`/etc/ssh`,
+    /// `/etc/ssl/private`, home directories' `.ssh`) that are readable
+    /// or writable by group or other -- the single most common real-world
+    /// credential-exposure mistake, and the thing this operation exists
+    /// to catch.
+    ScanSensitiveFilePermissions,
+    /// Reads one specific file the admin names explicitly, in full,
+    /// including whatever secret material it contains -- deliberately
+    /// not an automatic crawler that scrapes every config file on the
+    /// host for anything that looks like a credential; the admin must
+    /// already know (from `ScanSensitiveFilePermissions` or otherwise)
+    /// which file they mean to look at.
+    ViewSensitiveFile {
+        path: String,
+    },
+    /// Generates a new SSH keypair at an admin-chosen path with no
+    /// passphrase (the common case for a new deploy/service key --
+    /// nothing here supports an interactive passphrase prompt). Write:
+    /// creates a new file, doesn't touch anything existing. Refuses to
+    /// overwrite a path that's already in use.
+    GenerateSshKeypair {
+        key_type: String,
+        comment: String,
+        path: String,
+    },
+    /// Tightens a file's permission bits to one of a small fixed set of
+    /// safe modes -- never an arbitrary chmod target, since this
+    /// operation exists specifically to fix exposures
+    /// `ScanSensitiveFilePermissions` finds, not to be a general
+    /// permission-management primitive. Write: always makes a file
+    /// *more* restrictive, which is safe and easily reversed by an
+    /// admin who actually needed the looser mode.
+    FixFilePermissions {
+        path: String,
+        mode: String,
+    },
+    /// Removes one `authorized_keys` entry matched by its exact
+    /// fingerprint (never by comment, which isn't reliably unique) --
+    /// revokes whatever access that key granted. Destructive: this is
+    /// an access-revocation action, and the entry isn't recoverable
+    /// from this operation alone once removed.
+    RemoveAuthorizedKey {
+        username: String,
+        fingerprint: String,
+    },
+    /// Permanently deletes an SSH keypair (both the private key and its
+    /// `.pub` counterpart, if present) at an admin-chosen path.
+    /// Destructive and irreversible -- deliberately not restricted to
+    /// non-system paths, since revoking a compromised key is exactly
+    /// the kind of thing this needs to do even for a host key under
+    /// `/etc/ssh`; the type-to-confirm step is the safeguard, not a
+    /// path allow-list.
+    DeleteSshKeypair {
+        path: String,
+    },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -1303,6 +1391,50 @@ impl fmt::Debug for AgentOperation {
                 .finish(),
             AgentOperation::DeisolateHost => write!(f, "DeisolateHost"),
             AgentOperation::IsolateHost => write!(f, "IsolateHost"),
+            AgentOperation::ListSshHostKeys => write!(f, "ListSshHostKeys"),
+            AgentOperation::ListSshAuthorizedKeys { username } => f
+                .debug_struct("ListSshAuthorizedKeys")
+                .field("username", username)
+                .finish(),
+            AgentOperation::ListTlsCertificates => write!(f, "ListTlsCertificates"),
+            AgentOperation::CertificateDetail { path } => f
+                .debug_struct("CertificateDetail")
+                .field("path", path)
+                .finish(),
+            AgentOperation::ScanSensitiveFilePermissions => {
+                write!(f, "ScanSensitiveFilePermissions")
+            }
+            AgentOperation::ViewSensitiveFile { path } => f
+                .debug_struct("ViewSensitiveFile")
+                .field("path", path)
+                .finish(),
+            AgentOperation::GenerateSshKeypair {
+                key_type,
+                comment,
+                path,
+            } => f
+                .debug_struct("GenerateSshKeypair")
+                .field("key_type", key_type)
+                .field("comment", comment)
+                .field("path", path)
+                .finish(),
+            AgentOperation::FixFilePermissions { path, mode } => f
+                .debug_struct("FixFilePermissions")
+                .field("path", path)
+                .field("mode", mode)
+                .finish(),
+            AgentOperation::RemoveAuthorizedKey {
+                username,
+                fingerprint,
+            } => f
+                .debug_struct("RemoveAuthorizedKey")
+                .field("username", username)
+                .field("fingerprint", fingerprint)
+                .finish(),
+            AgentOperation::DeleteSshKeypair { path } => f
+                .debug_struct("DeleteSshKeypair")
+                .field("path", path)
+                .finish(),
         }
     }
 }
@@ -1763,6 +1895,37 @@ pub fn is_valid_quarantine_filename(filename: &str) -> bool {
         && filename.chars().all(|c| !c.is_control())
 }
 
+/// An SSH key algorithm for `GenerateSshKeypair`, checked against a fixed
+/// allow-list of algorithms `ssh-keygen -t` actually supports and that
+/// are still reasonable to generate today -- deliberately excludes `dsa`
+/// (deprecated, disabled by default in modern OpenSSH).
+pub fn is_valid_ssh_key_type(key_type: &str) -> bool {
+    matches!(key_type, "rsa" | "ed25519" | "ecdsa")
+}
+
+/// An SSH key fingerprint as `ssh-keygen -lf` prints it, e.g.
+/// `"SHA256:abcd...=="` or the legacy colon-separated MD5 hex form --
+/// used to match one `RemoveAuthorizedKey` line unambiguously (a key's
+/// comment isn't reliably unique, so matching on that would risk
+/// removing the wrong entry).
+pub fn is_valid_ssh_fingerprint(fingerprint: &str) -> bool {
+    !fingerprint.is_empty()
+        && fingerprint.len() <= 100
+        && fingerprint
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '+' | '/' | '='))
+}
+
+/// A target permission mode for `FixFilePermissions` -- a fixed set of
+/// safe, *more restrictive* modes only, never an arbitrary chmod target.
+/// This operation exists to fix the exact exposures
+/// `ScanSensitiveFilePermissions` finds (group/other readable or
+/// writable secrets), not to be a general permission-management
+/// primitive, so nothing here can ever loosen a file's permissions.
+pub fn is_valid_tightened_permission_mode(mode: &str) -> bool {
+    matches!(mode, "600" | "400" | "640" | "700")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2050,6 +2213,51 @@ mod tests {
         assert!(!is_valid_quarantine_filename("../../etc/passwd"));
         assert!(!is_valid_quarantine_filename("some/path"));
         assert!(!is_valid_quarantine_filename("has\ncontrol"));
+    }
+
+    #[test]
+    fn accepts_supported_ssh_key_types() {
+        assert!(is_valid_ssh_key_type("rsa"));
+        assert!(is_valid_ssh_key_type("ed25519"));
+        assert!(is_valid_ssh_key_type("ecdsa"));
+    }
+
+    #[test]
+    fn rejects_unsupported_ssh_key_types() {
+        assert!(!is_valid_ssh_key_type(""));
+        assert!(!is_valid_ssh_key_type("dsa"));
+        assert!(!is_valid_ssh_key_type("rsa; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_reasonable_ssh_fingerprints() {
+        assert!(is_valid_ssh_fingerprint("SHA256:abcd1234EFGH5678+/=="));
+        assert!(is_valid_ssh_fingerprint(
+            "MD5:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+        ));
+    }
+
+    #[test]
+    fn rejects_unsafe_ssh_fingerprints() {
+        assert!(!is_valid_ssh_fingerprint(""));
+        assert!(!is_valid_ssh_fingerprint("SHA256:abcd; rm -rf /"));
+        assert!(!is_valid_ssh_fingerprint(&"a".repeat(101)));
+    }
+
+    #[test]
+    fn accepts_tightened_permission_modes() {
+        assert!(is_valid_tightened_permission_mode("600"));
+        assert!(is_valid_tightened_permission_mode("400"));
+        assert!(is_valid_tightened_permission_mode("640"));
+        assert!(is_valid_tightened_permission_mode("700"));
+    }
+
+    #[test]
+    fn rejects_loosening_or_invalid_permission_modes() {
+        assert!(!is_valid_tightened_permission_mode(""));
+        assert!(!is_valid_tightened_permission_mode("777"));
+        assert!(!is_valid_tightened_permission_mode("644"));
+        assert!(!is_valid_tightened_permission_mode("0600"));
     }
 
     #[test]
