@@ -74,7 +74,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
+    ca-certificates curl nmap \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /app --shell /usr/sbin/nologin abyssal
 

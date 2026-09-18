@@ -1,0 +1,97 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Panopticon — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — Network Visibility{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Runs from the control plane itself, not a managed host's agent -- discovery
+    reaches whatever network this container (or process, if run directly) can
+    itself see. Behind Docker's default bridge network, that's the Docker
+    bridge, not your physical LAN; use host networking (or run the binary
+    directly) to scan your real network.
+  </p>
+
+  {% if let Some(label) = result_label %}
+  <details class="results-panel" open style="margin-top:0;">
+    <summary>{{ label }}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+  </details>
+  {% endif %}
+
+  {% if can_scan %}
+  <form method="get" action="/arsenals/panopticon/scan/confirm" style="margin-top:14px;">
+    <label for="scan-target">Target (IP, CIDR range, or hostname)</label>
+    <input type="text" id="scan-target" name="target" placeholder="e.g. 192.168.1.0/24" required>
+    <label for="scan-ports">Ports (optional)</label>
+    <input type="text" id="scan-ports" name="ports" placeholder="e.g. 22,80,443 or 1-1024">
+    <button type="submit" class="btn-danger">{% call macros::icon("scan") %} Run Discovery Scan&hellip;</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">{% call macros::icon("route") %} Topology (by /24)</h3>
+  {% if subnets.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No devices in the inventory yet -- run a discovery scan.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Subnet</th><th>Devices</th><th>Managed</th></tr></thead>
+    <tbody>
+      {% for s in subnets %}
+      <tr>
+        <td>{{ s.subnet }}</td>
+        <td>{{ s.device_count }}</td>
+        <td>{{ s.managed_count }} / {{ s.device_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">{% call macros::icon("network") %} Device Inventory</h3>
+  {% if devices.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No devices discovered yet -- run a discovery scan.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>IP address</th><th>MAC</th><th>Hostname</th><th>Open ports</th>
+        <th>Status</th><th>First seen</th><th>Last seen</th>
+        {% if can_manage %}<th>Actions</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in devices %}
+      <tr>
+        <td>{{ d.ip_address }}</td>
+        <td>{% if let Some(mac) = d.mac_address %}{{ mac }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if let Some(h) = d.hostname %}{{ h }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if let Some(p) = d.open_ports %}{{ p }}{% else %}&mdash;{% endif %}</td>
+        <td>
+          {% if let Some(name) = d.managed_host_name %}<span class="badge badge-success">Managed ({{ name }})</span>
+          {% else %}<span class="badge badge-muted">Unmanaged</span>{% endif %}
+        </td>
+        <td>{{ d.first_seen_at }}</td>
+        <td>{{ d.last_seen_at }}</td>
+        {% if can_manage %}
+        <td class="actions">
+          <a class="btn btn-danger" href="/arsenals/panopticon/devices/{{ d.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

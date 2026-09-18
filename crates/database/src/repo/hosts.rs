@@ -12,6 +12,7 @@ struct HostRow {
     credential_hash: String,
     enrolled_at: NaiveDateTime,
     last_seen_at: Option<NaiveDateTime>,
+    last_seen_ip: Option<String>,
     revoked_at: Option<NaiveDateTime>,
 }
 
@@ -27,6 +28,7 @@ impl From<HostRow> for Host {
             credential_hash: row.credential_hash,
             enrolled_at: utc(row.enrolled_at),
             last_seen_at: row.last_seen_at.map(utc),
+            last_seen_ip: row.last_seen_ip,
             revoked_at: row.revoked_at.map(utc),
         }
     }
@@ -76,6 +78,21 @@ pub async fn touch_last_seen(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
         .bind(id.to_string())
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// Like `touch_last_seen`, but also records the connecting address --
+/// called once at WebSocket upgrade time (see `routes/agent.rs`), not on
+/// every subsequent heartbeat/pong, since the address is constant for the
+/// life of that connection.
+pub async fn touch_last_seen_with_ip(pool: &DbPool, id: Uuid, ip: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE hosts SET last_seen_at = CURRENT_TIMESTAMP(6), last_seen_ip = ? WHERE id = ?",
+    )
+    .bind(ip)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

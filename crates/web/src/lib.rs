@@ -3,6 +3,7 @@ pub mod csrf;
 pub mod error;
 pub mod extract;
 mod middleware;
+mod panopticon_ops;
 pub mod router;
 pub mod routes;
 pub mod state;

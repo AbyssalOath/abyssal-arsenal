@@ -21,6 +21,7 @@ pub mod necropolis;
 pub mod necropsy;
 pub mod obituary;
 pub mod ossuary;
+pub mod panopticon;
 pub mod parish;
 pub mod postmortem;
 pub mod reanimation;

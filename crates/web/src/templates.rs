@@ -529,6 +529,50 @@ pub struct InquestHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct NetworkDeviceRow {
+    pub id: String,
+    pub ip_address: String,
+    pub mac_address: Option<String>,
+    pub hostname: Option<String>,
+    pub open_ports: Option<String>,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    /// `Some(host.name)` when this device's IP matches a currently
+    /// enrolled host's last-known connecting address (`Host::last_seen_ip`)
+    /// -- a best-effort correlation, not a guarantee (a host's LAN address
+    /// can change, and this is only ever as fresh as that host's last
+    /// WebSocket reconnect).
+    pub managed_host_name: Option<String>,
+}
+
+/// One row of Panopticon's topology view -- devices grouped by inferred
+/// IPv4 /24 (the common case for a LAN) or bucketed together under
+/// `"other"` for anything else (IPv6, or an address this simple grouping
+/// can't parse). Deliberately not real L2/switch topology -- see the
+/// `arsenal-panopticon` crate's doc comment for why that's out of scope
+/// without SNMP/LLDP access this platform doesn't have.
+pub struct SubnetGroup {
+    pub subnet: String,
+    pub device_count: usize,
+    pub managed_count: usize,
+}
+
+#[derive(Template)]
+#[template(path = "panopticon.html")]
+pub struct PanopticonTemplate {
+    pub base: BaseCtx,
+    /// `network.scan` -- gates the discovery-scan form, distinct from the
+    /// `network.view` the inventory/topology views use.
+    pub can_scan: bool,
+    /// `network.manage` -- gates removing a device from the inventory.
+    pub can_manage: bool,
+    pub devices: Vec<NetworkDeviceRow>,
+    pub subnets: Vec<SubnetGroup>,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct ApothecaryHostRow {
     pub id: String,
     pub name: String,

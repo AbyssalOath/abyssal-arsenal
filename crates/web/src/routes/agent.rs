@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use abyssal_agent_protocol::{AgentMessage, ServerMessage};
@@ -6,7 +7,7 @@ use abyssal_core::secret::{generate_token, hash_token};
 use abyssal_core::Host;
 use abyssal_database::repo;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -79,12 +80,13 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
 pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     AgentAuth {
         host,
         protocol_version,
     }: AgentAuth,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, host, protocol_version))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, host, protocol_version, addr))
 }
 
 async fn handle_socket(
@@ -92,6 +94,7 @@ async fn handle_socket(
     state: AppState,
     host: Host,
     protocol_version: Option<u32>,
+    addr: SocketAddr,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(16);
     state.hosts.register(host.id, tx, protocol_version);
@@ -105,8 +108,10 @@ async fn handle_socket(
         );
     }
     tracing::info!(host_id = %host.id, name = %host.name, "agent connected");
-    if let Err(e) = repo::hosts::touch_last_seen(&state.pool, host.id).await {
-        tracing::warn!(error = %e, "failed to record host connection time");
+    if let Err(e) =
+        repo::hosts::touch_last_seen_with_ip(&state.pool, host.id, &addr.ip().to_string()).await
+    {
+        tracing::warn!(error = %e, "failed to record host connection time/address");
     }
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));

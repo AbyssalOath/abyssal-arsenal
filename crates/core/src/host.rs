@@ -13,6 +13,14 @@ pub struct Host {
     pub credential_hash: String,
     pub enrolled_at: DateTime<Utc>,
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// The remote address the agent's WebSocket connected from, captured
+    /// once at `ws_upgrade` time (not refreshed on every heartbeat/pong --
+    /// see `crates/web/src/routes/agent.rs`). Best-effort: behind a reverse
+    /// proxy this is the proxy's address, not the host's real one, same
+    /// caveat every other `ConnectInfo`-derived IP in this app already has.
+    /// Used by Panopticon to correlate a discovered network device against
+    /// a known managed host.
+    pub last_seen_ip: Option<String>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
 

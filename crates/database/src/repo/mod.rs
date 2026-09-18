@@ -2,6 +2,7 @@ pub mod audit;
 pub mod host_enrollment_tokens;
 pub mod hosts;
 pub mod modules;
+pub mod network_devices;
 pub mod roles;
 pub mod sessions;
 pub mod settings;

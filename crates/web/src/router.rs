@@ -923,6 +923,20 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/inquest/:host_id/isolate",
             post(routes::inquest::isolate_host),
         )
+        .route("/arsenals/panopticon", get(routes::panopticon::show))
+        .route(
+            "/arsenals/panopticon/scan/confirm",
+            get(routes::panopticon::scan_confirm),
+        )
+        .route("/arsenals/panopticon/scan", post(routes::panopticon::scan))
+        .route(
+            "/arsenals/panopticon/devices/:id/remove/confirm",
+            get(routes::panopticon::remove_device_confirm),
+        )
+        .route(
+            "/arsenals/panopticon/devices/:id/remove",
+            post(routes::panopticon::remove_device),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))
