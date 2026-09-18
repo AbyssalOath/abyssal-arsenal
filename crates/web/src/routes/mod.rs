@@ -6,6 +6,7 @@ pub mod audit;
 pub mod cadavault;
 pub mod cystoolbox;
 pub mod dashboard;
+pub mod defleshing;
 pub mod hosts;
 pub mod incarnation;
 pub mod login;

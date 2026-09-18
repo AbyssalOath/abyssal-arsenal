@@ -4,8 +4,8 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary, postmortem,
-    process::run_command, reanimation, reliquary, resurrection,
+    defleshing, firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary,
+    postmortem, process::run_command, reanimation, reliquary, resurrection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -144,6 +144,14 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::SendSignal { pid, signal } => {
             reanimation::send_signal(pid, signal, elevation).await
         }
+        AgentOperation::CleanupTargetsSummary => {
+            defleshing::cleanup_targets_summary(elevation).await
+        }
+        AgentOperation::ForceLogRotation => defleshing::force_log_rotation(elevation).await,
+        AgentOperation::ClearTmpFiles { older_than_days } => {
+            defleshing::clear_tmp_files(older_than_days, elevation).await
+        }
+        AgentOperation::ClearCoreDumps => defleshing::clear_core_dumps(elevation).await,
     }
 }
 

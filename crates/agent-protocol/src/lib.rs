@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -341,6 +341,35 @@ pub enum AgentOperation {
     /// plane requires explicit confirmation before ever dispatching this
     /// -- there's no "softer" signal choice that bypasses that gate.
     SendSignal { pid: u32, signal: String },
+    /// Disk usage of the standard cleanup-relevant locations -- `/tmp`,
+    /// `/var/tmp`, and the systemd core dump directory (`du -sh`) --
+    /// visibility into what's actually consuming space before deciding
+    /// to clean any of it. Paths that don't exist on this host (e.g. no
+    /// systemd-coredump) are skipped, not treated as a failure.
+    CleanupTargetsSummary,
+    /// Forces `logrotate` to run immediately against its configured
+    /// rules (`logrotate -f /etc/logrotate.conf`), rather than waiting
+    /// for its own cron/timer schedule. Write, not Destructive: this
+    /// triggers logrotate's own configured rotation/retention behavior,
+    /// it doesn't itself choose what gets deleted.
+    ForceLogRotation,
+    /// Deletes files under the fixed `/tmp` and `/var/tmp` locations
+    /// whose data hasn't been modified in more than `older_than_days`
+    /// days (`find /tmp /var/tmp -type f -mtime +N -delete`). Fixed,
+    /// hardcoded paths only -- never an admin-supplied directory, since
+    /// accepting an arbitrary path here would turn this into a general
+    /// recursive-delete primitive. Destructive and irreversible: deleted
+    /// files are gone, so the control plane requires explicit
+    /// confirmation before ever dispatching this.
+    ClearTmpFiles { older_than_days: u32 },
+    /// Deletes every file under the systemd core dump directory
+    /// (`/var/lib/systemd/coredump`), unconditionally -- distinct from
+    /// `coredumpctl vacuum`'s own size/age-based retention policy, which
+    /// may not free anything at all if nothing currently exceeds it.
+    /// Destructive and irreversible: a later investigation may need a
+    /// dump this removes (the same reasoning Obituary's journal vacuum
+    /// documents), so the control plane requires explicit confirmation.
+    ClearCoreDumps,
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -525,6 +554,13 @@ impl fmt::Debug for AgentOperation {
                 .field("pid", pid)
                 .field("signal", signal)
                 .finish(),
+            AgentOperation::CleanupTargetsSummary => write!(f, "CleanupTargetsSummary"),
+            AgentOperation::ForceLogRotation => write!(f, "ForceLogRotation"),
+            AgentOperation::ClearTmpFiles { older_than_days } => f
+                .debug_struct("ClearTmpFiles")
+                .field("older_than_days", older_than_days)
+                .finish(),
+            AgentOperation::ClearCoreDumps => write!(f, "ClearCoreDumps"),
         }
     }
 }
@@ -755,6 +791,14 @@ pub fn is_valid_pid(pid: u32) -> bool {
 /// to 19 (lowest).
 pub fn is_valid_nice_priority(priority: i32) -> bool {
     (-20..=19).contains(&priority)
+}
+
+/// A `find -mtime +N` day threshold for `ClearTmpFiles`. Bounded well
+/// below `u32`'s range -- there's no legitimate reason to ask for
+/// anything close to that, and an absurd value is more likely a mistake
+/// than intent.
+pub fn is_valid_cleanup_days(days: u32) -> bool {
+    (1..=3650).contains(&days)
 }
 
 /// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
@@ -1029,5 +1073,18 @@ mod tests {
         assert!(!is_valid_signal_name(""));
         assert!(!is_valid_signal_name("SEGV"));
         assert!(!is_valid_signal_name("9; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_reasonable_cleanup_days() {
+        assert!(is_valid_cleanup_days(1));
+        assert!(is_valid_cleanup_days(30));
+        assert!(is_valid_cleanup_days(3650));
+    }
+
+    #[test]
+    fn rejects_out_of_range_cleanup_days() {
+        assert!(!is_valid_cleanup_days(0));
+        assert!(!is_valid_cleanup_days(3651));
     }
 }

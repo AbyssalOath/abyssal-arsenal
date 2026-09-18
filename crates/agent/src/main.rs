@@ -1,3 +1,4 @@
+mod defleshing;
 mod elevation;
 mod enroll;
 mod firewall;

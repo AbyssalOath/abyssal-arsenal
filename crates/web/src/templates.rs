@@ -432,6 +432,34 @@ pub struct MortiscopeHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct DefleshingHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "defleshing.html")]
+pub struct DefleshingTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<DefleshingHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "defleshing_host.html")]
+pub struct DefleshingHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `systems.manage` -- gates the Write/Destructive cleanup section,
+    /// distinct from the `systems.view` the read operation uses.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct ReanimationHostRow {
     pub id: String,
     pub name: String,

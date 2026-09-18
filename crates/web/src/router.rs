@@ -510,6 +510,35 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/reanimation/:host_id/signal",
             post(routes::reanimation::send_signal),
         )
+        .route("/arsenals/defleshing", get(routes::defleshing::show))
+        .route(
+            "/arsenals/defleshing/:host_id",
+            get(routes::defleshing::show_host),
+        )
+        .route(
+            "/arsenals/defleshing/:host_id/summary",
+            post(routes::defleshing::cleanup_targets_summary),
+        )
+        .route(
+            "/arsenals/defleshing/:host_id/rotate-logs",
+            post(routes::defleshing::force_log_rotation),
+        )
+        .route(
+            "/arsenals/defleshing/:host_id/clear-tmp/confirm",
+            get(routes::defleshing::clear_tmp_confirm),
+        )
+        .route(
+            "/arsenals/defleshing/:host_id/clear-tmp",
+            post(routes::defleshing::clear_tmp_files),
+        )
+        .route(
+            "/arsenals/defleshing/:host_id/clear-core-dumps/confirm",
+            get(routes::defleshing::clear_core_dumps_confirm),
+        )
+        .route(
+            "/arsenals/defleshing/:host_id/clear-core-dumps",
+            post(routes::defleshing::clear_core_dumps),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))
