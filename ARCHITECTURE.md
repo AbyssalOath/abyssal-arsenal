@@ -205,11 +205,14 @@ named backends worth their own enum and file the way firewalld/ufw/nftables
 
 1. An admin generates a short-lived (15 minute), single-use enrollment
    token from `/admin/hosts` (requires `hosts.manage`).
-2. The operator runs `abyssal-agent run --control-plane-url ...
-   --enrollment-token ...` on the target host. The agent `POST`s the token
-   to `/api/hosts/enroll` -- this endpoint is authenticated purely by the
-   token, not a browser session, and is intentionally outside
-   `CurrentUser`/CSRF.
+2. The operator runs `abyssal-agent` on the target host (with no arguments,
+   it interactively prompts for the control plane URL and the token, then
+   installs and enables a systemd service; `abyssal-agent run
+   --control-plane-url ... --enrollment-token ...` is the same enrollment
+   without the prompts or the service setup, for scripted installs). The
+   agent `POST`s the token to `/api/hosts/enroll` -- this endpoint is
+   authenticated purely by the token, not a browser session, and is
+   intentionally outside `CurrentUser`/CSRF.
 3. The control plane creates a `Host` row, generates a long-lived opaque
    credential (same generate/hash pattern as sessions), and returns it once.
    The agent persists it locally (`/etc/abyssal-agent/credentials.json` by

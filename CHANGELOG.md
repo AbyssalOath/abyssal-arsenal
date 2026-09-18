@@ -70,6 +70,16 @@ for what that means for cloning and updating.
   broad permission like `systems.view` also ended up seeing the same
   large pile
   of unrelated arsenal tiles on the dashboard.
+- **`abyssal-agent install`**: an interactive setup command, and the
+  default when the binary is run with no arguments at all -- prompts for
+  the control plane URL and the enrollment token (skipping the token
+  prompt entirely if credentials already exist), enrolls the host, then
+  writes `/etc/systemd/system/abyssal-agent.service` and runs `systemctl
+  daemon-reload` / `enable --now` itself, so a fresh install needs no
+  hand-authored unit file. Both values can still be passed as flags for
+  non-interactive/scripted installs (Ansible, cloud-init, ...); a
+  non-systemd host enrolls and is told to run `abyssal-agent run`
+  directly instead of failing.
 
 ### Fixed
 
@@ -79,6 +89,20 @@ for what that means for cloning and updating.
   build outright, not just at runtime. Caught by actually building the
   image, not just `cargo build` locally, and fixed with one more `COPY`
   alongside the existing `crates`/`migrations` copies.
+- `abyssal-agent run --enrollment-token <token>` failed with "unexpected
+  argument" whenever a generated token happened to start with `-`
+  (roughly a 1-in-64 chance -- tokens are base64url, which uses `-` as a
+  real alphabet character, not just an artifact of some tokens). clap was
+  reading the leading `-` as the start of a new flag rather than as part
+  of the token's value. Both `--enrollment-token` flags (`run` and the
+  new `install`) now set `allow_hyphen_values`, which was the actual
+  fix -- quoting the value or using `--flag=value` does not reliably
+  route around this in clap's default parsing.
+- The release workflow's packaged `abyssal-arsenal`/`abyssal-agent`
+  binaries weren't guaranteed to be executable after extraction,
+  depending on the CI runner's umask at the `cp` step -- `chmod +x` is
+  now explicit in the packaging script rather than assumed from the
+  build output's own permissions.
 
 ## [0.1.0] - 2026-09-18
 

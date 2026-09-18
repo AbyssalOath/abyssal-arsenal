@@ -108,7 +108,15 @@ agent protocol:
    container. Kill the agent process and confirm it flips to "offline";
    restart it without a token and confirm it reconnects using its
    persisted credential. Revoke the host and confirm the agent's reconnect
-   attempts start failing with 403.
+   attempts start failing with 403. Since generated tokens are base64url
+   and can start with `-`, regenerate a few until one does and confirm
+   `--enrollment-token` still parses it correctly (a real, previously
+   shipped regression -- clap otherwise reads the leading `-` as a flag).
+   Separately, run bare `abyssal-agent` (no arguments) against a real
+   control plane and confirm the interactive `install` prompts work and
+   the host enrolls; on a systemd host, confirm it also writes and enables
+   `abyssal-agent.service` and that `systemctl status abyssal-agent` shows
+   it running.
 7. **Audit trail**: confirm `HOST_ENROLLED`, `SYSTEM_COMMAND_EXECUTED`, and
    `HOST_REVOKED` all appear in `/admin/audit` with the right actor and
    timestamp.

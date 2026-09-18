@@ -102,8 +102,13 @@ Docker Compose. Once it's running:
 2. Public self-registration stays disabled by default; toggle it later from
    `/admin/settings` if you want it.
 3. To manage a Linux host, go to `/admin/hosts`, generate an enrollment
-   token, and run `abyssal-agent` on that host with it (see
-   [`crates/agent/README.md`](crates/agent/README.md)).
+   token, then download `abyssal-agent` from the
+   [latest release](https://github.com/AbyssalOath/abyssal-arsenal/releases/latest)
+   onto that host and run `sudo ./abyssal-agent` -- with no arguments it
+   prompts for the control plane URL and the token, then enrolls and
+   installs itself as a systemd service in one step. See
+   [`crates/agent/README.md`](crates/agent/README.md) for the full
+   walkthrough and non-interactive/scripted install options.
 
 The dashboard shows this build's version at all times and checks GitHub for
 a newer tagged release every few hours; if one exists, the notice turns into

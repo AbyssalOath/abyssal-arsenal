@@ -6,60 +6,94 @@ executes a fixed, versioned whitelist of operations locally
 (`abyssal-agent-protocol::AgentOperation`) -- it never accepts an arbitrary
 command from the wire.
 
-## Building and installing
-
-There's no published package yet, so `abyssal-agent` isn't just already on
-`PATH` -- you need to build and place it there yourself, on the target host,
-from a clone of this repo. Two ways, and it matters which one you pick:
-
-- **System-wide (recommended, needed for the systemd setup below and for
-  the default `/etc/abyssal-agent/credentials.json` path, both of which
-  need root):**
-
-  ```bash
-  cargo build --release -p abyssal-agent
-  sudo install -m 755 target/release/abyssal-agent /usr/local/bin/abyssal-agent
-  ```
-
-  `/usr/local/bin` is on `sudo`'s own restricted `secure_path`, so
-  `sudo abyssal-agent ...` finds it.
-
-- **User-local, for quick testing without root:**
-
-  ```bash
-  cargo install --path crates/agent
-  ```
-
-  This installs to `~/.cargo/bin/abyssal-agent`, which is on *your* shell's
-  `PATH` but almost certainly **not** on `sudo`'s -- `sudo`'s `secure_path`
-  is a fixed list that ignores the invoking user's `PATH` entirely, home
-  directories included. `sudo abyssal-agent ...` will fail with `command not
-  found` even though it runs fine unprivileged. If you use this route,
-  either run unprivileged with `--credentials-file` pointing somewhere you
-  own (see below -- no root needed at all), or invoke it by full path when
-  you do need `sudo`: `sudo ~/.cargo/bin/abyssal-agent ...`.
-
-## Enrolling a host
+## Quick install (recommended)
 
 1. In the control plane's web UI, go to `/admin/hosts` and generate an
    enrollment token (valid 15 minutes, single-use).
-2. On the target host, run:
+2. On the target host, download and extract the
+   [latest release](https://github.com/AbyssalOath/abyssal-arsenal/releases/latest)
+   (`abyssal-agent-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`):
 
    ```bash
-   abyssal-agent run \
+   curl -LO https://github.com/AbyssalOath/abyssal-arsenal/releases/latest/download/abyssal-agent-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+   tar -xzf abyssal-agent-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+   cd abyssal-agent-vX.Y.Z-x86_64-unknown-linux-gnu
+   ```
+
+   The binary is already executable inside the archive; if your download
+   method stripped that (some browsers and archive tools do), just
+   `chmod +x abyssal-agent` before the next step.
+3. Run it with root and follow the prompts:
+
+   ```bash
+   sudo ./abyssal-agent
+   ```
+
+   With no arguments at all, `abyssal-agent` runs its interactive `install`
+   command: it asks for the control plane URL and the enrollment token,
+   enrolls the host, then writes and enables a systemd service for itself
+   (`systemctl enable --now abyssal-agent`) so it survives a reboot without
+   you having to hand-author a unit file. That's the whole install --
+   nothing else to configure.
+
+   Prefer a non-interactive/scripted install instead (Ansible, cloud-init,
+   ...)? Pass the same two values as flags and it skips the prompts:
+
+   ```bash
+   sudo ./abyssal-agent install \
      --control-plane-url https://your-control-plane.example.com \
      --enrollment-token <token>
    ```
 
-   This enrolls the host (storing a long-lived credential at
-   `/etc/abyssal-agent/credentials.json` by default -- needs root to create
-   that directory; override with `--credentials-file` to use an
-   unprivileged path instead, e.g. `~/.abyssal-agent/credentials.json` for
-   local testing) and then connects and serves commands. On subsequent
-   runs, drop `--enrollment-token`; the stored credential is reused
-   automatically.
+   Re-running `install` on an already-enrolled host skips straight to the
+   service setup (useful if you need to repair or recreate the systemd
+   unit without re-enrolling). On a non-systemd host (Alpine/OpenRC,
+   Void/runit, ...), it enrolls and tells you to run `abyssal-agent run`
+   directly under whatever supervisor you're using instead -- there's no
+   first-class support for every alternative init system yet.
 
-## Running it as a systemd service
+Once it's running, `systemctl status abyssal-agent` shows its state, and it
+reconnects automatically with exponential backoff if the control plane is
+unreachable. If its credential is ever revoked from `/admin/hosts`, it keeps
+retrying (and failing) rather than crash -- re-run `install` with a fresh
+token to restore access.
+
+## Building from source instead
+
+No local release binary for your architecture, or you're working on the
+agent itself? Build and install it manually:
+
+```bash
+cargo build --release -p abyssal-agent
+sudo install -m 755 target/release/abyssal-agent /usr/local/bin/abyssal-agent
+sudo abyssal-agent
+```
+
+`/usr/local/bin` is on `sudo`'s own restricted `secure_path`, so
+`sudo abyssal-agent` finds it there. `cargo install --path crates/agent`
+also works for quick, unprivileged local testing (installs to
+`~/.cargo/bin`, **not** on `sudo`'s `secure_path` -- either run it
+unprivileged with `--credentials-file` pointing somewhere you own, or
+invoke it by full path when you do need `sudo`).
+
+## Manual setup (no interactive install)
+
+Everything the `install` command above does, by hand -- useful for
+understanding what it's actually doing, or if you'd rather manage the
+systemd unit yourself:
+
+```bash
+abyssal-agent run \
+  --control-plane-url https://your-control-plane.example.com \
+  --enrollment-token <token>
+```
+
+This enrolls the host (storing a long-lived credential at
+`/etc/abyssal-agent/credentials.json` by default -- needs root to create
+that directory; override with `--credentials-file` to use an unprivileged
+path instead, e.g. `~/.abyssal-agent/credentials.json` for local testing)
+and then connects and serves commands. On subsequent runs, drop
+`--enrollment-token`; the stored credential is reused automatically.
 
 ```ini
 # /etc/systemd/system/abyssal-agent.service
@@ -85,11 +119,6 @@ the unit's first start and remove it afterwards), then:
 sudo systemctl daemon-reload
 sudo systemctl enable --now abyssal-agent
 ```
-
-The agent reconnects automatically with exponential backoff if the control
-plane is unreachable, and if its credential is ever revoked from
-`/admin/hosts`, it will keep retrying (and failing) rather than crash --
-re-enroll it with a fresh token to restore access.
 
 ## Why it runs as root (usually)
 

@@ -55,12 +55,18 @@ jobs:
           mkdir -p "$server_stage"
           cp target/release/abyssal-arsenal "$server_stage/"
           cp README.md LICENSE .env.example "$server_stage/"
+          # `cp` doesn't reliably carry the executable bit through a CI
+          # runner's umask -- set it explicitly rather than relying on the
+          # copy, so every download extracts already-runnable, no manual
+          # `chmod +x` needed.
+          chmod +x "$server_stage/abyssal-arsenal"
           tar -czf "${server_stage}.tar.gz" "$server_stage"
 
           agent_stage="abyssal-agent-${version}-x86_64-unknown-linux-gnu"
           mkdir -p "$agent_stage"
           cp target/release/abyssal-agent "$agent_stage/"
           cp crates/agent/README.md LICENSE "$agent_stage/"
+          chmod +x "$agent_stage/abyssal-agent"
           tar -czf "${agent_stage}.tar.gz" "$agent_stage"
 
           {
