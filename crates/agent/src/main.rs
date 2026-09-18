@@ -12,6 +12,7 @@ mod necropsy;
 mod network;
 mod obituary;
 mod ops;
+mod ossuary;
 mod parish;
 mod postmortem;
 mod process;

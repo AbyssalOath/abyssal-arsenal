@@ -5,7 +5,7 @@ use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
     apothecary, catacomb, defleshing, firewall, incarnation, mortiscope, necropolis, necropsy,
-    network, obituary, parish, postmortem, process::run_command, reanimation, reliquary,
+    network, obituary, ossuary, parish, postmortem, process::run_command, reanimation, reliquary,
     resurrection, vivisection,
 };
 
@@ -223,6 +223,59 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         }
         AgentOperation::RemovePackage { package } => {
             apothecary::remove_package(package, elevation).await
+        }
+        AgentOperation::PartitionTable { device } => {
+            ossuary::partition_table(device, elevation).await
+        }
+        AgentOperation::LvmSummary => ossuary::lvm_summary(elevation).await,
+        AgentOperation::RaidStatus => ossuary::raid_status(elevation).await,
+        AgentOperation::MountFilesystem { device, target } => {
+            ossuary::mount_filesystem(device, target, elevation).await
+        }
+        AgentOperation::ExtendLogicalVolume { lv_path, size } => {
+            ossuary::extend_logical_volume(lv_path, size, elevation).await
+        }
+        AgentOperation::UnmountFilesystem { target } => {
+            ossuary::unmount_filesystem(target, elevation).await
+        }
+        AgentOperation::CreatePartition { device, start, end } => {
+            ossuary::create_partition(device, start, end, elevation).await
+        }
+        AgentOperation::DeletePartition {
+            device,
+            partition_number,
+        } => ossuary::delete_partition(device, partition_number, elevation).await,
+        AgentOperation::CreateRaidArray {
+            array_name,
+            level,
+            devices,
+        } => ossuary::create_raid_array(array_name, level, devices, elevation).await,
+        AgentOperation::StopRaidArray { array_name } => {
+            ossuary::stop_raid_array(array_name, elevation).await
+        }
+        AgentOperation::CreatePhysicalVolume { device } => {
+            ossuary::create_physical_volume(device, elevation).await
+        }
+        AgentOperation::CreateVolumeGroup {
+            name,
+            physical_volumes,
+        } => ossuary::create_volume_group(name, physical_volumes, elevation).await,
+        AgentOperation::CreateLogicalVolume {
+            vg_name,
+            lv_name,
+            size,
+        } => ossuary::create_logical_volume(vg_name, lv_name, size, elevation).await,
+        AgentOperation::RemoveLogicalVolume { lv_path } => {
+            ossuary::remove_logical_volume(lv_path, elevation).await
+        }
+        AgentOperation::RemoveVolumeGroup { name } => {
+            ossuary::remove_volume_group(name, elevation).await
+        }
+        AgentOperation::RemovePhysicalVolume { device } => {
+            ossuary::remove_physical_volume(device, elevation).await
+        }
+        AgentOperation::CreateFilesystem { device, fstype } => {
+            ossuary::create_filesystem(device, fstype, elevation).await
         }
     }
 }

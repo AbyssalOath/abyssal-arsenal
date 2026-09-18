@@ -1,0 +1,223 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Ossuary — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Ossuary — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/ossuary">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/ossuary/{{ host_id }}/partition-table">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="pt-device">Device</label>
+      <input type="text" id="pt-device" name="device" placeholder="e.g. /dev/sda" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="pt-password">Sudo password (if needed)</label>
+      <input type="password" id="pt-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Partition Table</button>
+    </form>
+    <form method="post" action="/arsenals/ossuary/{{ host_id }}/lvm-summary">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} LVM Summary</button>
+    </form>
+    <form method="post" action="/arsenals/ossuary/{{ host_id }}/raid-status">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} RAID Status</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/ossuary/{{ host_id }}/mount">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="mount-device">Device</label>
+      <input type="text" id="mount-device" name="device" placeholder="e.g. /dev/sdb1" required>
+      <label for="mount-target">Mount at</label>
+      <input type="text" id="mount-target" name="target" placeholder="e.g. /mnt/data" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="mount-password">Sudo password (if needed)</label>
+      <input type="password" id="mount-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Mount</button>
+    </form>
+    <form method="post" action="/arsenals/ossuary/{{ host_id }}/extend-lv">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="extend-lv-path">Logical volume path</label>
+      <input type="text" id="extend-lv-path" name="lv_path" placeholder="e.g. /dev/vg0/data" required>
+      <label for="extend-lv-size">Grow by</label>
+      <input type="text" id="extend-lv-size" name="size" placeholder="e.g. 10G" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="extend-lv-password">Sudo password (if needed)</label>
+      <input type="password" id="extend-lv-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Extend Logical Volume</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Unmounting cuts off access to whatever's using that mount immediately. The data itself is untouched.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/unmount/confirm">
+      <label for="unmount-target">Mount target</label>
+      <input type="text" id="unmount-target" name="value" placeholder="e.g. /mnt/data" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Unmount&hellip;</button>
+    </form>
+  </div>
+</div>
+
+<div class="card kind-destructive">
+  <h3 style="margin-top:0;">{% call macros::icon("danger") %} High-Risk Storage Operations</h3>
+  {% if high_risk_ops_enabled %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    Partition, RAID, and LVM create/remove, and creating a filesystem. A wrong device path in
+    any of these can destroy a disk instantly and irrecoverably -- double-check every field
+    before confirming.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/create-partition/confirm">
+      <label for="cp-device">Device</label>
+      <input type="text" id="cp-device" name="device" placeholder="e.g. /dev/sdb" required>
+      <label for="cp-start">Start</label>
+      <input type="text" id="cp-start" name="start" placeholder="e.g. 0%" required>
+      <label for="cp-end">End</label>
+      <input type="text" id="cp-end" name="end" placeholder="e.g. 100%" required>
+      <button type="submit" class="btn-danger">Create Partition&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/delete-partition/confirm">
+      <label for="dp-device">Device</label>
+      <input type="text" id="dp-device" name="device" placeholder="e.g. /dev/sdb" required>
+      <label for="dp-number">Partition number</label>
+      <input type="number" id="dp-number" name="partition_number" min="1" max="128" required>
+      <button type="submit" class="btn-danger">Delete Partition&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/create-raid/confirm">
+      <label for="cr-name">Array name</label>
+      <input type="text" id="cr-name" name="array_name" placeholder="e.g. /dev/md0" required>
+      <label for="cr-level">RAID level</label>
+      <select id="cr-level" name="level">
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+        <option value="10">10</option>
+        <option value="linear">linear</option>
+      </select>
+      <label for="cr-devices">Devices (comma-separated)</label>
+      <input type="text" id="cr-devices" name="devices" placeholder="e.g. /dev/sdb,/dev/sdc" required>
+      <button type="submit" class="btn-danger">Create RAID Array&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/stop-raid/confirm">
+      <label for="sr-name">Array name</label>
+      <input type="text" id="sr-name" name="value" placeholder="e.g. /dev/md0" required>
+      <button type="submit" class="btn-danger">Stop RAID Array&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/create-pv/confirm">
+      <label for="cpv-device">Device</label>
+      <input type="text" id="cpv-device" name="value" placeholder="e.g. /dev/sdb1" required>
+      <button type="submit" class="btn-danger">Create Physical Volume&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/remove-pv/confirm">
+      <label for="rpv-device">Device</label>
+      <input type="text" id="rpv-device" name="value" placeholder="e.g. /dev/sdb1" required>
+      <button type="submit" class="btn-danger">Remove Physical Volume&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/create-vg/confirm">
+      <label for="cvg-name">Volume group name</label>
+      <input type="text" id="cvg-name" name="name" placeholder="e.g. vg0" required>
+      <label for="cvg-pvs">Physical volumes (comma-separated)</label>
+      <input type="text" id="cvg-pvs" name="physical_volumes" placeholder="e.g. /dev/sdb1" required>
+      <button type="submit" class="btn-danger">Create Volume Group&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/remove-vg/confirm">
+      <label for="rvg-name">Volume group name</label>
+      <input type="text" id="rvg-name" name="value" placeholder="e.g. vg0" required>
+      <button type="submit" class="btn-danger">Remove Volume Group&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/create-lv/confirm">
+      <label for="clv-vg">Volume group</label>
+      <input type="text" id="clv-vg" name="vg_name" placeholder="e.g. vg0" required>
+      <label for="clv-name">Logical volume name</label>
+      <input type="text" id="clv-name" name="lv_name" placeholder="e.g. data" required>
+      <label for="clv-size">Size</label>
+      <input type="text" id="clv-size" name="size" placeholder="e.g. 10G" required>
+      <button type="submit" class="btn-danger">Create Logical Volume&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/remove-lv/confirm">
+      <label for="rlv-path">Logical volume path</label>
+      <input type="text" id="rlv-path" name="value" placeholder="e.g. /dev/vg0/data" required>
+      <button type="submit" class="btn-danger">Remove Logical Volume&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/ossuary/{{ host_id }}/mkfs/confirm">
+      <label for="mkfs-device">Device</label>
+      <input type="text" id="mkfs-device" name="device" placeholder="e.g. /dev/sdb1" required>
+      <label for="mkfs-type">Filesystem</label>
+      <select id="mkfs-type" name="fstype">
+        <option value="ext4">ext4</option>
+        <option value="ext3">ext3</option>
+        <option value="ext2">ext2</option>
+        <option value="xfs">xfs</option>
+        <option value="btrfs">btrfs</option>
+        <option value="vfat">vfat</option>
+        <option value="f2fs">f2fs</option>
+      </select>
+      <button type="submit" class="btn-danger">Create Filesystem&hellip;</button>
+    </form>
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    Disabled. An admin must enable "High-risk storage operations" on the
+    <a href="/admin/settings">Settings</a> page before any of these can be dispatched -- a
+    deliberate second layer of confirmation on top of the type-to-confirm each one still
+    requires individually.
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

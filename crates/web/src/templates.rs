@@ -242,6 +242,7 @@ pub struct SettingsTemplate {
     pub base: BaseCtx,
     pub public_registration_enabled: bool,
     pub apotheosis_elevation_window_minutes: u32,
+    pub high_risk_storage_ops_enabled: bool,
     pub message: Option<String>,
 }
 
@@ -425,6 +426,39 @@ pub struct MortiscopeHostTemplate {
     pub base: BaseCtx,
     pub host_id: String,
     pub host_name: String,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
+pub struct OssuaryHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "ossuary.html")]
+pub struct OssuaryTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<OssuaryHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "ossuary_host.html")]
+pub struct OssuaryHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `storage.manage` -- gates the Write/Destructive sections,
+    /// distinct from the `storage.view` the read operations use.
+    pub can_manage: bool,
+    /// The admin-configured "high-risk storage operations" setting
+    /// (Settings page) -- distinct from `can_manage`, gates only the
+    /// partition/RAID/LVM-create/mkfs section even when the caller has
+    /// `storage.manage`.
+    pub high_risk_ops_enabled: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
     pub result_label: Option<String>,

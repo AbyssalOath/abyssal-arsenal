@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -509,6 +509,107 @@ pub enum AgentOperation {
     /// the control plane requires explicit confirmation before ever
     /// dispatching this.
     RemovePackage { package: String },
+    /// A disk's partition table (`parted <device> print`) -- MBR/GPT,
+    /// partition list, sizes, types.
+    PartitionTable { device: String },
+    /// LVM physical volumes, volume groups, and logical volumes
+    /// (`pvs`/`vgs`/`lvs`), combined into one report.
+    LvmSummary,
+    /// Current software RAID array status (`cat /proc/mdstat`) -- which
+    /// arrays exist, their state, and rebuild/resync progress if any.
+    RaidStatus,
+    /// Mounts an existing filesystem (`mount <device> <target>`). Write,
+    /// not Destructive: doesn't create or destroy anything, and is
+    /// reversible via `UnmountFilesystem`.
+    MountFilesystem { device: String, target: String },
+    /// Grows an LVM logical volume by `size` (e.g. `"10G"`)
+    /// (`lvextend -L +<size> <lv_path>`). Write, not Destructive: only
+    /// adds space (fails cleanly if the volume group doesn't have enough
+    /// free), never removes anything. Grows the block device only -- the
+    /// filesystem on top still needs its own resize (`resize2fs`,
+    /// `xfs_growfs`, ...), which this tool deliberately doesn't attempt,
+    /// since picking the wrong filesystem-specific tool automatically is
+    /// itself a real risk.
+    ExtendLogicalVolume { lv_path: String, size: String },
+    /// Unmounts a filesystem (`umount <target>`). Destructive: whatever
+    /// was using that mount loses access immediately, the same reasoning
+    /// `StopService`/`StopContainer` document -- the data itself is
+    /// untouched, but the control plane requires explicit confirmation
+    /// before ever dispatching this regardless.
+    UnmountFilesystem { target: String },
+    /// Creates a new partition (`parted -s <device> mkpart primary
+    /// <start> <end>`, e.g. start `"0%"` end `"50%"`). Destructive and
+    /// irreversible, and gated behind the admin-configured "high-risk
+    /// storage operations" setting on top of the normal confirmation --
+    /// a wrong `device` here can corrupt or destroy an entire disk's
+    /// existing layout.
+    CreatePartition {
+        device: String,
+        start: String,
+        end: String,
+    },
+    /// Deletes a partition (`parted -s <device> rm <partition_number>`).
+    /// Destructive, irreversible, and high-risk-gated for the same
+    /// reason as `CreatePartition`.
+    DeletePartition {
+        device: String,
+        partition_number: u32,
+    },
+    /// Creates a new software RAID array (`mdadm --create <array_name>
+    /// --level=<level> --raid-devices=<N> <devices...>`), consuming every
+    /// device listed. Destructive, irreversible, and high-risk-gated --
+    /// listing the wrong device destroys its existing contents the
+    /// moment the array is created.
+    CreateRaidArray {
+        array_name: String,
+        level: String,
+        devices: Vec<String>,
+    },
+    /// Stops (deactivates) a RAID array (`mdadm --stop <array_name>`)
+    /// without touching the data on its member devices -- reassembling
+    /// it later is possible, but not automatic, so this is still
+    /// Destructive and high-risk-gated rather than assumed safe.
+    StopRaidArray { array_name: String },
+    /// Initializes a device as an LVM physical volume (`pvcreate
+    /// <device>`), wiping any existing filesystem signature on it.
+    /// Destructive, irreversible, and high-risk-gated.
+    CreatePhysicalVolume { device: String },
+    /// Creates an LVM volume group from one or more physical volumes
+    /// (`vgcreate <name> <physical_volumes...>`). Destructive
+    /// (consumes the listed PVs into the new VG) and high-risk-gated.
+    CreateVolumeGroup {
+        name: String,
+        physical_volumes: Vec<String>,
+    },
+    /// Creates a new logical volume within an existing volume group
+    /// (`lvcreate -n <lv_name> -L <size> <vg_name>`). Destructive and
+    /// high-risk-gated along with the rest of LVM's create/remove
+    /// surface, even though its own blast radius (new space carved from
+    /// already-free VG capacity) is narrower than `CreatePhysicalVolume`
+    /// or `CreateVolumeGroup`.
+    CreateLogicalVolume {
+        vg_name: String,
+        lv_name: String,
+        size: String,
+    },
+    /// Removes a logical volume and its data (`lvremove -f <lv_path>`).
+    /// Destructive, irreversible, and high-risk-gated.
+    RemoveLogicalVolume { lv_path: String },
+    /// Removes a volume group (`vgremove -f <name>`) -- refused by `vgremove`
+    /// itself if it still contains logical volumes. Destructive,
+    /// irreversible, and high-risk-gated.
+    RemoveVolumeGroup { name: String },
+    /// Removes a device's LVM physical volume metadata (`pvremove -f
+    /// <device>`). Destructive, irreversible, and high-risk-gated.
+    RemovePhysicalVolume { device: String },
+    /// Creates a filesystem on a device (`mkfs.<fstype> -F <device>`),
+    /// destroying whatever was there before. The single most dangerous
+    /// operation this platform can dispatch -- unlike `FilesystemRepair`
+    /// (Catacomb), which can at worst do nothing useful, a wrong
+    /// `device` here instantly and unconditionally destroys everything
+    /// on it with no partial-safety case at all. Destructive,
+    /// irreversible, and high-risk-gated.
+    CreateFilesystem { device: String, fstype: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -799,6 +900,93 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::RemovePackage { package } => f
                 .debug_struct("RemovePackage")
                 .field("package", package)
+                .finish(),
+            AgentOperation::PartitionTable { device } => f
+                .debug_struct("PartitionTable")
+                .field("device", device)
+                .finish(),
+            AgentOperation::LvmSummary => write!(f, "LvmSummary"),
+            AgentOperation::RaidStatus => write!(f, "RaidStatus"),
+            AgentOperation::MountFilesystem { device, target } => f
+                .debug_struct("MountFilesystem")
+                .field("device", device)
+                .field("target", target)
+                .finish(),
+            AgentOperation::ExtendLogicalVolume { lv_path, size } => f
+                .debug_struct("ExtendLogicalVolume")
+                .field("lv_path", lv_path)
+                .field("size", size)
+                .finish(),
+            AgentOperation::UnmountFilesystem { target } => f
+                .debug_struct("UnmountFilesystem")
+                .field("target", target)
+                .finish(),
+            AgentOperation::CreatePartition { device, start, end } => f
+                .debug_struct("CreatePartition")
+                .field("device", device)
+                .field("start", start)
+                .field("end", end)
+                .finish(),
+            AgentOperation::DeletePartition {
+                device,
+                partition_number,
+            } => f
+                .debug_struct("DeletePartition")
+                .field("device", device)
+                .field("partition_number", partition_number)
+                .finish(),
+            AgentOperation::CreateRaidArray {
+                array_name,
+                level,
+                devices,
+            } => f
+                .debug_struct("CreateRaidArray")
+                .field("array_name", array_name)
+                .field("level", level)
+                .field("devices", devices)
+                .finish(),
+            AgentOperation::StopRaidArray { array_name } => f
+                .debug_struct("StopRaidArray")
+                .field("array_name", array_name)
+                .finish(),
+            AgentOperation::CreatePhysicalVolume { device } => f
+                .debug_struct("CreatePhysicalVolume")
+                .field("device", device)
+                .finish(),
+            AgentOperation::CreateVolumeGroup {
+                name,
+                physical_volumes,
+            } => f
+                .debug_struct("CreateVolumeGroup")
+                .field("name", name)
+                .field("physical_volumes", physical_volumes)
+                .finish(),
+            AgentOperation::CreateLogicalVolume {
+                vg_name,
+                lv_name,
+                size,
+            } => f
+                .debug_struct("CreateLogicalVolume")
+                .field("vg_name", vg_name)
+                .field("lv_name", lv_name)
+                .field("size", size)
+                .finish(),
+            AgentOperation::RemoveLogicalVolume { lv_path } => f
+                .debug_struct("RemoveLogicalVolume")
+                .field("lv_path", lv_path)
+                .finish(),
+            AgentOperation::RemoveVolumeGroup { name } => f
+                .debug_struct("RemoveVolumeGroup")
+                .field("name", name)
+                .finish(),
+            AgentOperation::RemovePhysicalVolume { device } => f
+                .debug_struct("RemovePhysicalVolume")
+                .field("device", device)
+                .finish(),
+            AgentOperation::CreateFilesystem { device, fstype } => f
+                .debug_struct("CreateFilesystem")
+                .field("device", device)
+                .field("fstype", fstype)
                 .finish(),
         }
     }
@@ -1132,6 +1320,42 @@ pub fn is_valid_search_query(query: &str) -> bool {
         && query.len() <= 200
         && !query.starts_with('-')
         && query.chars().all(|c| !c.is_control())
+}
+
+/// A `parted` start/end position (e.g. `"0%"`, `"100%"`, `"1MiB"`,
+/// `"500.5GiB"`). Permissive on unit spelling (parted accepts several),
+/// but digits/`.`/`%`/letters only, and never a leading `-` -- the
+/// argument-injection defense every validator here shares.
+pub fn is_valid_partition_position(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 16
+        && !value.starts_with('-')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '%'))
+}
+
+/// A partition number for `parted rm`/`mkpart` -- 1-128 covers every
+/// real partition table this tool will ever meet (GPT alone caps out at
+/// 128 by convention).
+pub fn is_valid_partition_number(number: u32) -> bool {
+    (1..=128).contains(&number)
+}
+
+/// An `mdadm --level` value, checked against the RAID levels mdadm
+/// actually implements.
+pub fn is_valid_raid_level(level: &str) -> bool {
+    const ALLOWED: &[&str] = &["linear", "0", "1", "4", "5", "6", "10"];
+    ALLOWED.contains(&level)
+}
+
+/// A filesystem type for `mkfs.<fstype>`, checked against a fixed
+/// allow-list of filesystems this platform actually knows how to expect
+/// -- an unrecognized type fails clearly here rather than trying to run
+/// a `mkfs.<anything>` that may not even exist.
+pub fn is_valid_fstype(fstype: &str) -> bool {
+    const ALLOWED: &[&str] = &["ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "f2fs"];
+    ALLOWED.contains(&fstype)
 }
 
 /// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
@@ -1539,5 +1763,61 @@ mod tests {
         assert!(!is_valid_search_query("-y"));
         assert!(!is_valid_search_query("bad\ncontrol"));
         assert!(!is_valid_search_query(&"a".repeat(201)));
+    }
+
+    #[test]
+    fn accepts_reasonable_partition_positions() {
+        assert!(is_valid_partition_position("0%"));
+        assert!(is_valid_partition_position("100%"));
+        assert!(is_valid_partition_position("1MiB"));
+        assert!(is_valid_partition_position("500.5GiB"));
+    }
+
+    #[test]
+    fn rejects_malformed_partition_positions() {
+        assert!(!is_valid_partition_position(""));
+        assert!(!is_valid_partition_position("-1"));
+        assert!(!is_valid_partition_position("50%; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_reasonable_partition_numbers() {
+        assert!(is_valid_partition_number(1));
+        assert!(is_valid_partition_number(128));
+    }
+
+    #[test]
+    fn rejects_out_of_range_partition_numbers() {
+        assert!(!is_valid_partition_number(0));
+        assert!(!is_valid_partition_number(129));
+    }
+
+    #[test]
+    fn accepts_allowed_raid_levels() {
+        assert!(is_valid_raid_level("0"));
+        assert!(is_valid_raid_level("5"));
+        assert!(is_valid_raid_level("10"));
+        assert!(is_valid_raid_level("linear"));
+    }
+
+    #[test]
+    fn rejects_disallowed_raid_levels() {
+        assert!(!is_valid_raid_level(""));
+        assert!(!is_valid_raid_level("2"));
+        assert!(!is_valid_raid_level("9"));
+    }
+
+    #[test]
+    fn accepts_allowed_fstypes() {
+        assert!(is_valid_fstype("ext4"));
+        assert!(is_valid_fstype("xfs"));
+        assert!(is_valid_fstype("btrfs"));
+    }
+
+    #[test]
+    fn rejects_disallowed_fstypes() {
+        assert!(!is_valid_fstype(""));
+        assert!(!is_valid_fstype("ntfs"));
+        assert!(!is_valid_fstype("ext4; rm -rf /"));
     }
 }

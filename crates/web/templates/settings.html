@@ -45,6 +45,28 @@
       <button type="submit" class="btn-warning">Save</button>
     </form>
   </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">{% call macros::icon("danger") %} High-risk storage operations</h2>
+    <p style="color:var(--text-muted);">
+      Gates Ossuary's most dangerous operations -- partition table create/delete, RAID array
+      create/stop, LVM physical volume/volume group/logical volume create and remove, and
+      creating a filesystem. A single wrong device path in any of these can destroy a disk
+      instantly and irrecoverably. Off by default; this is a second, deliberate layer on top of
+      (not instead of) the type-to-confirm each of those operations still requires individually.
+    </p>
+    <form method="post" action="/admin/settings/high-risk-storage-ops">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <p>Currently:
+        {% if high_risk_storage_ops_enabled %}<span class="badge badge-danger">Enabled</span>
+        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+      </p>
+      <input type="hidden" name="enabled" value="{% if high_risk_storage_ops_enabled %}false{% else %}true{% endif %}">
+      <button type="submit" class="{% if high_risk_storage_ops_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
+        {% if high_risk_storage_ops_enabled %}Disable high-risk storage operations{% else %}Enable high-risk storage operations{% endif %}
+      </button>
+    </form>
+  </div>
 </div>
 
 {% endblock %}
