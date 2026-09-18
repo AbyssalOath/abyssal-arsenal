@@ -15,7 +15,7 @@ use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{
     ActivityRow, BaseCtx, DashboardTemplate, FleetHealthCtx, HostAttentionRow, LastBackupRow,
-    ModuleGroup, ModuleTile,
+    ModuleGroup, ModuleTile, UpdateNoticeCtx,
 };
 use crate::theme;
 
@@ -141,12 +141,34 @@ pub async fn show(
         Vec::new()
     };
 
+    let update_status = state.update_status.read().await.clone();
+    let update_available = update_status.update_available();
+    let update_notice = UpdateNoticeCtx {
+        current_version: update_status.current_version,
+        latest_version: if update_available {
+            update_status
+                .latest_version
+                .as_deref()
+                .map(|v| v.trim_start_matches('v').to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        },
+        release_url: if update_available {
+            update_status.release_url.unwrap_or_default()
+        } else {
+            String::new()
+        },
+        update_available,
+    };
+
     let tpl = DashboardTemplate {
         base,
         search_query: q.q,
         pinned,
         groups,
         fleet_health,
+        update_notice,
         recent_activity,
     };
     let jar = match new_cookie {

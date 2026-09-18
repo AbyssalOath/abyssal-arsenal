@@ -311,21 +311,27 @@ side and unchanged regardless of where it's triggered from:
   just generally recommended -- see [SECURITY.md](SECURITY.md).
 
 **Where elevation is triggered from, and how it's surfaced in the UI**
-(this part changed after the mechanism above was first built -- `/admin/hosts`
-no longer has any elevate/de-escalate controls of its own):
+(this part changed twice after the mechanism above was first built --
+`/admin/hosts` no longer has any elevate/de-escalate controls of its own,
+and neither does any individual action form):
 
 - Every arsenal that dispatches host operations (all except Panopticon,
   which is control-plane-only) follows a host-picker -> per-host page
   navigation
   (`/arsenals/<name>` lists connected hosts; `/arsenals/<name>/<host_id>`
   is where operations actually run, one host at a time -- matching how
-  elevation is itself scoped per host, not per arsenal). Every action form
-  on that page carries an optional sudo password field, shown only while
-  the host isn't already believed elevated. Submitting a password elevates
-  first (`crate::common::maybe_elevate`) and, only on success, proceeds to
-  dispatch the operation the admin actually wanted, in the same request --
-  no separate confirmation step. A destructive action's own confirmation
-  page (Reboot, Enable Firewall) carries the same optional field.
+  elevation is itself scoped per host, not per arsenal).
+- Elevating is a single, dedicated control near the top of a host's page --
+  one "Elevate this host" form, shown only while the host isn't already
+  believed elevated -- rather than a password field duplicated onto every
+  individual action form. Submitting it posts to that arsenal's own
+  `POST /arsenals/<name>/:host_id/elevate` route, which calls
+  `crate::common::maybe_elevate` and re-renders the same host page. Every
+  other action form on the page (read, write, or destructive) no longer
+  carries a password field or threads one through
+  `run_read_op`/`run_write_op`/`run_destructive_op` -- elevating is a
+  deliberate first step, not bundled into whichever action happens to be
+  clicked first.
 - The control plane keeps its own lightweight, best-effort mirror of which
   hosts are currently believed elevated (`abyssal_hosts::ElevationTracker`,
   `AppState.elevation`) purely so the UI can show status without an agent
@@ -333,9 +339,9 @@ no longer has any elevate/de-escalate controls of its own):
   the agent's own `ElevationState` is what actually gates privileged
   commands. The mirror can drift (e.g. the agent's window lapses without
   the control plane finding out); the practical effect of drift is just
-  that the sudo password field might not reappear immediately after a
-  stale-positive entry, not that anything unauthorized runs -- a failed
-  dispatch defensively clears the entry either way.
+  that the "Elevate this host" control might not reappear immediately
+  after a stale-positive entry, not that anything unauthorized runs -- a
+  failed dispatch defensively clears the entry either way.
 - A "Apotheosis" item in the top nav (visible only with `hosts.elevate`)
   pulses red whenever the tracker believes at least one host is elevated,
   and opens a panel listing every such host with its remaining time and a
@@ -375,8 +381,8 @@ might be.
 ## Background tasks
 
 Everything in the control plane is otherwise request-driven -- nothing
-runs unless a browser or an agent connection causes it to. Two
-exceptions, both `tokio::spawn`'d fixed-interval loops started once at
+runs unless a browser or an agent connection causes it to. Four
+exceptions, all `tokio::spawn`'d fixed-interval loops started once at
 startup (`crates/app/src/main.rs`), following the same shape: no
 `AuthContext` to check permissions against, since nothing initiated the
 work, so each bypasses the request-oriented `Executor` entirely and
@@ -398,6 +404,48 @@ talks to the lower-level primitive underneath it directly.
   through `HostConnectionRegistry::dispatch` (bypassing
   `execute_on_host()`), then runs the same persist-and-correlate pipeline
   the on-demand scan route uses.
+- **Dashboard health sweep** (`abyssal_web::spawn_health_sweep`, every 5
+  minutes): dispatches `AgentOperation::FailedServices` (Mortiscope) to
+  every connected host directly through `HostConnectionRegistry::dispatch`
+  and upserts one row per host into `host_health_snapshots` (parsing
+  `systemctl --failed`'s own trailing summary line for a failed-unit
+  count, rather than counting rows, since that's robust to both the
+  header row and the "no systemd on this host" message a non-systemd host
+  returns instead). The dashboard's "hosts needing attention" reads this
+  table instead of dispatching to every agent on every page load; a host
+  is flagged when the sweep found failed units or couldn't reach it at
+  all.
+- **Update check sweep** (`abyssal_web::spawn_update_check_sweep`, every 6
+  hours, plus once immediately on startup): the one background task that
+  talks outbound to the internet rather than to a managed host -- a plain
+  `GET` against GitHub's releases API (no auth token, no data sent beyond
+  a fixed `User-Agent`), cached in `AppState.update_status`
+  (`Arc<RwLock<UpdateStatus>>`) for the dashboard to read. Best-effort and
+  read-only: a failed check (offline, rate-limited, self-hosted with no
+  egress allowed) just leaves the last-known status in place -- see
+  "Version tracking and update notice" below.
+
+## Version tracking and update notice
+
+`VERSION` at the repository root is the single source of truth for this
+build's version -- `install.sh`, the release workflow, and the running
+binary itself all read from it rather than each keeping a separate copy
+in sync by hand. `crates/web/src/update_check.rs` embeds its contents at
+compile time (`include_str!`) as `CURRENT_VERSION`, so the running binary
+always knows its own version without a runtime file read.
+
+The update check sweep (see "Background tasks" above) compares this
+against the `tag_name` of GitHub's `/releases/latest` API response using a
+plain `(major, minor, patch)` tuple comparison -- no `semver` crate
+dependency, since release tags are always plain `vX.Y.Z` with no
+pre-release suffixes to parse. The dashboard (`crates/web/templates/
+dashboard.html`) shows the result as a small notice at the top of the
+page: the current version alone, in muted styling, when no newer release
+is known; or a red, pulsing, clickable notice (current version -> latest
+version, linking to the release page) once one is. The arrow is written
+as the HTML numeric entity `&#8594;`, not a literal Unicode character, so
+it can never render as mojibake regardless of how the template file
+itself gets edited or transferred.
 
 ## Web layer
 
@@ -413,9 +461,36 @@ talks to the lower-level primitive underneath it directly.
 - Security headers (CSP, `X-Frame-Options`, `X-Content-Type-Options`,
   `Referrer-Policy`) are applied to every response via middleware.
 
+### Global host context
+
+A cookie-based host switcher (`abyssal_selected_host`, the same plain
+per-browser-preference pattern as the existing theme cookie -- see
+`crates/web/src/host_context.rs`) sits in the top nav on every
+authenticated page and stays selected across arsenals. Selecting a host
+posts to `/host-context/select`, which redirects back to wherever the
+switcher was submitted from using the browser's own `Referer` header
+(path and query only, scheme and host discarded, so a spoofed or
+cross-origin `Referer` can only send the redirect back into the app
+itself) -- deliberately not a hidden `redirect_to` field threaded through
+every page. This is purely a UI convenience, never a security boundary:
+every arsenal action still validates the host it's given from the URL
+path, not from this cookie.
+
+Every per-host arsenal's landing route (`/arsenals/<name>`) gained one
+guard: if a host is selected and still connected, it redirects straight
+to `/arsenals/<name>/<host_id>` instead of rendering the host-picker
+list, falling back to the picker if the selected host is offline or
+nothing is selected. Rendering the switcher itself (the connected-host
+list and which one is selected) needed the full host list on every
+authenticated page, not just per-host arsenal pages, so `BaseCtx::build`
+became async and gained a `pool`/`hosts` dependency -- a larger blast
+radius than the switcher's own UI (every one of the ~80 call sites across
+the codebase that build a page's chrome), but unavoidable since the
+switcher has to render everywhere, not just on arsenal pages.
+
 ## Data model
 
-Five migrations so far:
+Seven migrations so far:
 
 - `0001_init.sql` -- `users`, `roles`, `permissions`, `role_permissions`,
   `user_roles`, `sessions`, `audit_log`, `settings`, `modules`.
@@ -431,6 +506,13 @@ Five migrations so far:
   correlation findings, deduplicated by a content hash over host +
   source + raw line so re-scanning the same log tail window is a
   harmless no-op).
+- `0006_pinned_modules.sql` -- `user_pinned_modules`, a per-user favorites
+  list for the dashboard's arsenal grid (see "Web UI overhaul" in
+  [CHANGELOG.md](CHANGELOG.md)).
+- `0007_dashboard_health_and_backups.sql` -- `host_health_snapshots` (the
+  dashboard health sweep's per-host results, one row per host, upserted
+  every tick) and `backup_records` (one row per backup Reliquary creates,
+  so the dashboard can show fleet-wide backup status cheaply).
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time
@@ -478,3 +560,10 @@ model, not oversights:
   agent deployment is handled by Apotheosis (see "Host enrollment and the
   agent protocol" above); running the agent as root permanently remains a
   valid alternative deployment choice.
+- The control plane makes exactly one kind of outbound internet call: the
+  update check sweep's plain `GET` against GitHub's releases API (see
+  "Version tracking and update notice" above). A fully air-gapped
+  deployment simply never gets a successful check -- the dashboard falls
+  back to showing the current version alone, nothing else in the app
+  depends on it, and there's no other outbound network dependency
+  anywhere in the control plane.

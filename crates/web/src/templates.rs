@@ -221,6 +221,18 @@ pub struct FleetHealthCtx {
     pub last_backup: Option<LastBackupRow>,
 }
 
+/// The dashboard's version notice: this build's own version always shown,
+/// plus a newer release's version and link once `update_check` has
+/// confirmed one exists.
+pub struct UpdateNoticeCtx {
+    pub current_version: String,
+    /// Empty until `update_available` is true, at which point both this and
+    /// `release_url` are guaranteed non-empty.
+    pub latest_version: String,
+    pub release_url: String,
+    pub update_available: bool,
+}
+
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 pub struct DashboardTemplate {
@@ -229,6 +241,7 @@ pub struct DashboardTemplate {
     pub pinned: Vec<ModuleTile>,
     pub groups: Vec<ModuleGroup>,
     pub fleet_health: FleetHealthCtx,
+    pub update_notice: UpdateNoticeCtx,
     pub recent_activity: Vec<ActivityRow>,
 }
 

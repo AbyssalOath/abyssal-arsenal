@@ -37,3 +37,4 @@ anyhow.workspace = true
 zeroize.workspace = true
 form_urlencoded.workspace = true
 async-trait.workspace = true
+reqwest.workspace = true

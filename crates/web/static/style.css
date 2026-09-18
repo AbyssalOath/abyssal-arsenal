@@ -460,6 +460,34 @@ button:disabled:hover, .btn:disabled:hover {
   50% { box-shadow: 0 0 24px 6px rgba(179, 18, 42, 0.7); }
 }
 
+.update-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 16px;
+  border-radius: 8px;
+  margin-bottom: var(--space-4);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  text-decoration: none;
+}
+
+.update-notice-alert {
+  color: var(--danger);
+  border-color: var(--danger);
+  font-weight: 600;
+  animation: update-notice-pulse 2s ease-in-out infinite;
+}
+.update-notice-alert:hover { color: var(--danger); }
+.update-notice-alert .icon { color: var(--danger); }
+
+@keyframes update-notice-pulse {
+  0%, 100% { box-shadow: 0 0 6px 0 color-mix(in srgb, var(--danger) 35%, transparent); }
+  50% { box-shadow: 0 0 22px 5px color-mix(in srgb, var(--danger) 75%, transparent); }
+}
+
 .dashboard-search {
   display: flex;
   align-items: center;

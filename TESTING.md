@@ -56,6 +56,12 @@ cargo clippy --workspace --all-targets -- -D warnings
   treated as not-elevated, checking status refreshes the window, and a
   per-elevation configured timeout is what's actually checked rather than
   a hardcoded default.
+- **`crates/web`**: the dashboard health sweep's `systemctl --failed`
+  output parsing (counts failed units from the trailing summary line,
+  handles a clean host and a non-systemd host's informational message
+  correctly) and the update check's version comparison (parses `vX.Y.Z`
+  and bare `X.Y.Z`, rejects malformed input, and only reports an update
+  available when a strictly newer version has actually been confirmed).
 
 ## What isn't covered yet
 
@@ -106,6 +112,17 @@ agent protocol:
 7. **Audit trail**: confirm `HOST_ENROLLED`, `SYSTEM_COMMAND_EXECUTED`, and
    `HOST_REVOKED` all appear in `/admin/audit` with the right actor and
    timestamp.
+8. **Dashboard and global host context**: with a host connected, selecting
+   it from the top-nav switcher and then visiting any per-host arsenal
+   redirects straight to that host's page instead of showing the picker;
+   selecting "All hosts" restores the picker. The Fleet Health card shows
+   the right host count/online count, and "Recent activity" shows
+   summarized entries (e.g. "Rebooted -- <host>") rather than a raw
+   `SYSTEM_COMMAND_EXECUTED` row, with routine reads absent from the list
+   but still present in the full `/admin/audit` log. The version notice at
+   the top shows the current version; confirm it correctly turns into a
+   pulsing, linked "update available" notice when `VERSION` is set below
+   the latest tagged GitHub release (restore it afterward).
 
 **Per-arsenal capability verification.** Every arsenal capability in this
 project was live-verified against a real enrolled agent before being

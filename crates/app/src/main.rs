@@ -46,11 +46,15 @@ async fn main() -> anyhow::Result<()> {
         hosts: Arc::new(HostConnectionRegistry::new()),
         executor: Arc::new(executor),
         elevation: Arc::new(ElevationTracker::new()),
+        update_status: Arc::new(tokio::sync::RwLock::new(
+            abyssal_web::update_check::UpdateStatus::current(),
+        )),
     };
 
     spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());
     abyssal_web::spawn_thanatos_sweep(state.clone());
     abyssal_web::spawn_health_sweep(state.clone());
+    abyssal_web::spawn_update_check_sweep(state.clone());
 
     let app = abyssal_web::build(state);
 

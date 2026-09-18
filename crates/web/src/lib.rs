@@ -12,8 +12,10 @@ pub mod state;
 pub mod templates;
 mod thanatos_ops;
 pub mod theme;
+pub mod update_check;
 
 pub use health_ops::spawn_health_sweep;
 pub use router::build;
 pub use state::{AppState, WebConfig};
 pub use thanatos_ops::spawn_thanatos_sweep;
+pub use update_check::spawn_update_check_sweep;

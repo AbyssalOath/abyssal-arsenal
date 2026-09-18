@@ -2,8 +2,12 @@
 
 ## Supported versions
 
-Abyssal Arsenal is pre-1.0 and has not made a tagged release yet. Only the
-`main` branch is supported; there is no backport policy at this stage.
+Abyssal Arsenal is pre-1.0. Only the most recent tagged release and the
+`main` branch are supported; there is no backport policy at this stage.
+See [README.md](README.md#releases-and-branches) for what a tagged release
+versus `main` means. If you are running an older tagged release, please
+upgrade to the latest one before reporting an issue that may already be
+fixed.
 
 ## Reporting a vulnerability
 
@@ -75,6 +79,14 @@ The design principles this codebase follows are documented in
 - **No secrets committed to source control.** `.env` and anything deriving
   from `.env.example` is gitignored; `install.sh` generates strong random
   secrets rather than shipping defaults.
+- **The only outbound internet call the control plane makes** is a plain,
+  unauthenticated `GET` against GitHub's public releases API, on a fixed
+  6-hour interval, to check whether a newer tagged release exists. No
+  request body, no credentials, no telemetry about this deployment is
+  sent. A failed or blocked check (air-gapped deployments included) just
+  leaves the dashboard showing the current version alone -- nothing else
+  in the app depends on it. See "Version tracking and update notice" in
+  [ARCHITECTURE.md](ARCHITECTURE.md).
 - **A second, deliberate gate for operations worse than "destructive."**
   A handful of operations are categorically worse than the normal
   Destructive tier's type-to-confirm was designed for -- a single wrong

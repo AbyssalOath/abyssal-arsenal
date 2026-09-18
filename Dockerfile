@@ -63,6 +63,10 @@ RUN for crate in core database auth rbac audit notifications execution hosts mod
 
 COPY crates crates
 COPY migrations migrations
+# crates/web/src/update_check.rs embeds this at compile time
+# (include_str!("../../../VERSION")) -- without it, the real build below
+# fails outright, not just at runtime.
+COPY VERSION VERSION
 # Force cargo to see the real source as newer than the dummy files it
 # already compiled above, so a rebuild after a code change only recompiles
 # what actually changed, not every dependency.

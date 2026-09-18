@@ -1,6 +1,7 @@
 # Abyssal Arsenal
 
 [![CI](https://github.com/AbyssalOath/abyssal-arsenal/actions/workflows/ci.yml/badge.svg)](https://github.com/AbyssalOath/abyssal-arsenal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/AbyssalOath/abyssal-arsenal)](https://github.com/AbyssalOath/abyssal-arsenal/releases/latest)
 
 A self-hosted IT/sysadmin operations platform for Linux environments, written
 in Rust. Individual administrative capabilities ("arsenals" -- networking,
@@ -87,6 +88,7 @@ each one's capabilities.
 ```bash
 git clone https://github.com/AbyssalOath/abyssal-arsenal.git
 cd abyssal-arsenal
+git checkout v0.1.0   # pin to the latest stable release; omit to run main
 ./install.sh
 ```
 
@@ -102,6 +104,30 @@ Docker Compose. Once it's running:
 3. To manage a Linux host, go to `/admin/hosts`, generate an enrollment
    token, and run `abyssal-agent` on that host with it (see
    [`crates/agent/README.md`](crates/agent/README.md)).
+
+The dashboard shows this build's version at all times and checks GitHub for
+a newer tagged release every few hours; if one exists, the notice turns into
+a linked, pulsing alert pointing at the release page.
+
+## Releases and branches
+
+- **`main`** is the active development branch. It moves fast and is where
+  every change lands first -- clone or pull it if you want to build from
+  source, contribute, or track development closely. It is not guaranteed to
+  be at a stable checkpoint at any given commit.
+- **Tagged releases** (`vX.Y.Z`, e.g. `v0.1.0`) are stable checkpoints cut
+  from `main` at a point considered good enough to run. Each tag has a
+  matching [GitHub release](https://github.com/AbyssalOath/abyssal-arsenal/releases)
+  with prebuilt `abyssal-arsenal` (control-plane) and `abyssal-agent`
+  binaries attached, and a matching container image published to GHCR (see
+  `.github/workflows/release.yml` and `docker-publish.yml`).
+- **For a production or otherwise long-lived deployment**, check out the
+  latest tag (`git checkout v0.1.0`) rather than tracking `main`. Pull `main`
+  only if you specifically want unreleased changes and accept the
+  reduced stability that comes with it.
+- **`VERSION`** at the repository root is the single source of truth for
+  which release a given checkout is; the dashboard's update notice compares
+  it against GitHub's latest release automatically.
 
 ## Development
 

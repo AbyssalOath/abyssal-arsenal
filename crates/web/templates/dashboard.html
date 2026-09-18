@@ -4,6 +4,17 @@
 {% block heading %}Dashboard{% endblock %}
 {% block content %}
 
+{% if update_notice.update_available %}
+<a href="{{ update_notice.release_url }}" class="update-notice update-notice-alert" target="_blank" rel="noopener noreferrer">
+  {% call macros::icon("warning") %}
+  <span>Update available: v{{ update_notice.current_version }} &#8594; v{{ update_notice.latest_version }}</span>
+</a>
+{% else %}
+<div class="update-notice">
+  <span>Abyssal Arsenal v{{ update_notice.current_version }}</span>
+</div>
+{% endif %}
+
 {% if base.can_hosts_view %}
 <div class="card">
   <h2>Fleet health</h2>

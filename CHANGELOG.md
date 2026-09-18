@@ -3,11 +3,36 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project intends to follow [Semantic Versioning](https://semver.org/)
-once it makes its first tagged release. Nothing has been tagged yet -- the
-project is pre-release, so everything so far lives under "Unreleased".
+and this project follows [Semantic Versioning](https://semver.org/). The
+`main` branch is the active development line; tagged releases (`vX.Y.Z`) are
+the stable checkpoints built from it. See [README.md](README.md#releases-and-branches)
+for what that means for cloning and updating.
 
 ## [Unreleased]
+
+### Added
+
+- **Version tracking and update notice**: a `VERSION` file at the repository
+  root is now the single source of truth for this build's version, embedded
+  into the control-plane binary at compile time. A new background sweep
+  (`abyssal_web::spawn_update_check_sweep`) checks GitHub's releases API
+  every 6 hours (and once immediately on startup) for a newer tagged release
+  and caches the result in memory -- read-only, best-effort, never blocks
+  startup or any request if GitHub is unreachable. The dashboard shows a
+  small notice: the current version alone when up to date, or a red,
+  pulsing, clickable notice (current version -> latest version, linking to
+  the release) once a newer one is confirmed.
+
+### Fixed
+
+- `Dockerfile` never copied the new root-level `VERSION` file into the
+  build stage, so `crates/web/src/update_check.rs`'s
+  `include_str!("../../../VERSION")` would have failed the real Docker
+  build outright, not just at runtime. Caught by actually building the
+  image, not just `cargo build` locally, and fixed with one more `COPY`
+  alongside the existing `crates`/`migrations` copies.
+
+## [0.1.0] - 2026-09-18
 
 ### Added
 
@@ -315,6 +340,54 @@ project is pre-release, so everything so far lives under "Unreleased".
   platform doesn't have. Viewing the inventory and topology is
   `network.view`; removing a stale device from the inventory
   (`network.manage`) is Destructive, type-to-confirm on the IP.
+- **Web UI overhaul**: a full pass on navigation and workflow across all 23
+  arsenals, done in seven phases from least to most intensive.
+  - **Account menu**: the top-nav dropdown shrank to identity and a link to
+    a new `/account` page, which now holds the theme toggle and timezone
+    selector that used to clutter the dropdown itself.
+  - **Settings page**: rebuilt as a uniform list of rows (label, one-line
+    description with a "learn more" expand, control aligned right) grouped
+    into Access & Registration, Elevation & Risk Controls, and Monitoring &
+    Alerts, replacing the previous inconsistently-sized cards.
+  - **Consistency pass**: the `.kind-read`/`.kind-write`/`.kind-destructive`
+    card border markers (defined in CSS but under-applied) now appear
+    consistently across every arsenal's host page, and stray redundant
+    inline styles were removed in favor of the existing spacing scale.
+  - **One elevation control per host page**: previously, every action form
+    on a host's page carried its own optional sudo-password field --
+    Cystoolbox's page alone had four. Elevating is now a single, explicit
+    "Elevate this host" control near the top of the page, shown only while
+    not elevated; every other action form no longer carries a password
+    field of its own. `Executor::execute_on_host()` and the per-arsenal
+    `run_read_op`/`run_write_op`/`run_destructive_op` helpers no longer
+    thread a password through every action, since elevation always happens
+    through the one dedicated route first.
+  - **Arsenal navigation**: the dashboard's module grid is now grouped by
+    category (Operate, Observe, Defend, Preserve/Recover) into collapsible
+    sections, with a server-side search box (`?q=`) and a new pin/unpin
+    feature (`user_pinned_modules` table) that surfaces favorited arsenals
+    in their own row above the grouped sections.
+  - **Global host context**: a persistent host switcher in the top nav
+    (`abyssal_selected_host` cookie, the same pattern as the existing theme
+    cookie) that stays selected across arsenals. Every per-host arsenal's
+    landing page now redirects straight to the selected host's page instead
+    of showing the picker, falling back to the picker if the selected host
+    is offline or nothing is selected.
+  - **Dashboard redesign**: the permanent "Active tasks" placeholder is
+    replaced with a real Fleet Health overview (host count/online-offline,
+    open Thanatos alerts, hosts an unattended health sweep has flagged, and
+    the most recent Reliquary backup). A new `AgentOperation::label()`
+    gives every operation a human-readable phrase (e.g. `Reboot` ->
+    "Rebooted"), which the audit trail now records alongside a
+    Read/Write/Destructive kind tag; "Recent activity" uses this to show
+    summarized entries like "Rebooted -- WEB-01" instead of a raw
+    `SYSTEM_COMMAND_EXECUTED` row, and filters out routine reads entirely.
+    A new background sweep (`abyssal_web::spawn_health_sweep`, the third
+    task of its kind) polls `FailedServices` on every connected host every
+    5 minutes and persists one snapshot row per host
+    (`host_health_snapshots`); Reliquary now records every backup it
+    creates (`backup_records`) so the dashboard can show fleet-wide backup
+    status without dispatching to every agent on every page load.
 
 ### Fixed
 

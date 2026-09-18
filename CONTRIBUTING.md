@@ -150,6 +150,39 @@ database required since the persistence layer uses runtime-checked queries.
 - Reference the relevant section of [ARCHITECTURE.md](ARCHITECTURE.md) in
   your PR description if you're changing something structural, so
   reviewers know whether that document needs updating too.
+- Pull requests target `main`. See "Release process" below for how `main`
+  becomes a tagged release; day-to-day contributions don't need to think
+  about that step.
+
+## Release process
+
+This section is for maintainers cutting a release, not something a
+regular contributor needs to do. `main` is the continuously-developed
+branch; a release is a deliberate checkpoint cut from it (see
+[README.md](README.md#releases-and-branches) for what that distinction
+means for users).
+
+1. Decide the next version following [Semantic Versioning](https://semver.org/)
+   against what actually changed in `CHANGELOG.md`'s "Unreleased" section.
+2. Update the `VERSION` file at the repository root and
+   `workspace.package.version` in the root `Cargo.toml` to the new version
+   -- both should always agree; `VERSION` is what the running binary and
+   the dashboard's update check read, `Cargo.toml`'s version is what
+   `cargo` itself reports.
+3. In `CHANGELOG.md`, rename "## [Unreleased]" to
+   "## [X.Y.Z] - YYYY-MM-DD" and add a fresh, empty "## [Unreleased]"
+   above it.
+4. Commit these as a single "Release vX.Y.Z" commit on `main`.
+5. Tag it and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+6. `.github/workflows/release.yml` and `docker-publish.yml` both trigger
+   off the tag push: the former builds and packages `abyssal-arsenal` and
+   `abyssal-agent` binaries and creates the GitHub release (with
+   auto-generated release notes) the tag points at; the latter builds and
+   pushes the matching control-plane image to GHCR. Neither depends on
+   the other, and both only ever proceed past their own test run.
+7. The dashboard's update check (every 6 hours, or immediately on a
+   restart) picks up the new release automatically on every deployment
+   still running an older tagged version -- nothing else needs doing.
 
 ## License of contributions
 

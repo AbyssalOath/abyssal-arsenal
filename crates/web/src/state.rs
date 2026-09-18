@@ -7,6 +7,9 @@ use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
 use abyssal_notifications::NotificationDispatcher;
 use chrono::Duration;
+use tokio::sync::RwLock;
+
+use crate::update_check::UpdateStatus;
 
 pub struct WebConfig {
     pub session_cookie_name: String,
@@ -30,4 +33,8 @@ pub struct AppState {
     /// elevated -- see `abyssal_hosts::ElevationTracker` for why this isn't
     /// itself a security boundary.
     pub elevation: Arc<ElevationTracker>,
+    /// This build's version and, once the periodic check has run at least
+    /// once, the latest tagged release GitHub reports -- see
+    /// `crate::update_check`.
+    pub update_status: Arc<RwLock<UpdateStatus>>,
 }
