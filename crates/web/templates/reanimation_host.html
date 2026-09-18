@@ -1,0 +1,107 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Reanimation — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Reanimation — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/reanimation">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/reanimation/{{ host_id }}/list">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} List Processes</button>
+    </form>
+    <form method="post" action="/arsenals/reanimation/{{ host_id }}/detail">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="detail-pid">PID</label>
+      <input type="number" id="detail-pid" name="pid" placeholder="e.g. 1234" min="2" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="detail-password">Sudo password (if needed)</label>
+      <input type="password" id="detail-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Process Detail</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/reanimation/{{ host_id }}/renice">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="renice-pid">PID</label>
+      <input type="number" id="renice-pid" name="pid" placeholder="e.g. 1234" min="2" required>
+      <label for="renice-priority">Priority (-20 highest .. 19 lowest)</label>
+      <input type="number" id="renice-priority" name="priority" min="-20" max="19" value="0" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="renice-password">Sudo password (if needed)</label>
+      <input type="password" id="renice-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Renice</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Any signal is an intentional interruption of whatever the process is doing.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/reanimation/{{ host_id }}/signal/confirm">
+      <label for="signal-pid">PID</label>
+      <input type="number" id="signal-pid" name="pid" placeholder="e.g. 1234" min="2" required>
+      <label for="signal-name">Signal</label>
+      <select id="signal-name" name="signal">
+        <option value="TERM">TERM (graceful stop)</option>
+        <option value="HUP">HUP (reload/hangup)</option>
+        <option value="INT">INT (interrupt)</option>
+        <option value="QUIT">QUIT (quit + core dump)</option>
+        <option value="USR1">USR1</option>
+        <option value="USR2">USR2</option>
+        <option value="STOP">STOP (suspend)</option>
+        <option value="CONT">CONT (resume)</option>
+        <option value="KILL">KILL (force, uncatchable)</option>
+      </select>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Send Signal&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

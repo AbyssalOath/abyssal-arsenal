@@ -432,6 +432,34 @@ pub struct MortiscopeHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct ReanimationHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "reanimation.html")]
+pub struct ReanimationTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<ReanimationHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "reanimation_host.html")]
+pub struct ReanimationHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `systems.manage` -- gates the Write/Destructive process-control
+    /// section, distinct from the `systems.view` the read operations use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct NecropolisHostRow {
     pub id: String,
     pub name: String,

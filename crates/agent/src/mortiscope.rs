@@ -10,20 +10,7 @@ use abyssal_agent_protocol::{CommandOutcome, OperationOutput};
 
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
-
-/// Keeps only the first `n` lines of `output.stdout`, noting how many more
-/// were dropped. `ps` has no built-in "just the top N" flag and this app
-/// never pipes through `head` (no shell in between), so truncating here is
-/// the equivalent.
-fn truncate_lines(output: OperationOutput, n: usize) -> OperationOutput {
-    let total = output.stdout.lines().count();
-    if total <= n {
-        return output;
-    }
-    let mut stdout: String = output.stdout.lines().take(n).collect::<Vec<_>>().join("\n");
-    stdout.push_str(&format!("\n... and {} more", total - n));
-    OperationOutput { stdout, ..output }
-}
+use crate::process::truncate_lines;
 
 pub async fn load_average(elevation: &ElevationState) -> CommandOutcome {
     match elevation.run("uptime", &[]).await {

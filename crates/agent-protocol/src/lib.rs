@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -320,6 +320,27 @@ pub enum AgentOperation {
     /// and state are gone, though named volumes survive -- so the control
     /// plane requires explicit confirmation before ever dispatching this.
     RemoveContainer { container: String },
+    /// Every process on the host, as a PID-ordered tree
+    /// (`ps -ef --forest`) -- the complete picture, unlike Mortiscope's
+    /// `TopProcessesByCpu`/`TopProcessesByMemory` (top 15 by resource
+    /// usage only).
+    ListProcesses,
+    /// Full detail for one process -- user, state, resource usage,
+    /// start time, and complete (untruncated) command line
+    /// (`ps -p <pid> -o ... -ww`).
+    ProcessDetail { pid: u32 },
+    /// Adjusts a running process's scheduling priority
+    /// (`renice -n <priority> -p <pid>`, range -20 to 19). Write -- a
+    /// real mutation, but reversible (renice again) and not disruptive on
+    /// its own, so it doesn't require the explicit confirmation a
+    /// `Destructive` operation does.
+    RenicePriority { pid: u32, priority: i32 },
+    /// Sends a signal to a process (`kill -s <SIGNAL> <pid>`). Destructive
+    /// regardless of which signal: any signal sent to a process is an
+    /// intentional interruption of whatever it's doing, so the control
+    /// plane requires explicit confirmation before ever dispatching this
+    /// -- there's no "softer" signal choice that bypasses that gate.
+    SendSignal { pid: u32, signal: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -489,6 +510,20 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::RemoveContainer { container } => f
                 .debug_struct("RemoveContainer")
                 .field("container", container)
+                .finish(),
+            AgentOperation::ListProcesses => write!(f, "ListProcesses"),
+            AgentOperation::ProcessDetail { pid } => {
+                f.debug_struct("ProcessDetail").field("pid", pid).finish()
+            }
+            AgentOperation::RenicePriority { pid, priority } => f
+                .debug_struct("RenicePriority")
+                .field("pid", pid)
+                .field("priority", priority)
+                .finish(),
+            AgentOperation::SendSignal { pid, signal } => f
+                .debug_struct("SendSignal")
+                .field("pid", pid)
+                .field("signal", signal)
                 .finish(),
         }
     }
@@ -705,6 +740,35 @@ pub fn is_valid_container_ref(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// A process ID safe to renice or signal. Excludes 0 (not a real PID) and
+/// 1 (init/PID 1 -- signaling or renicing it is either a no-op guarded by
+/// the kernel or catastrophic, never something this tool should attempt).
+/// The agent additionally refuses its own PID at the point it knows it
+/// (protocol-level validation alone can't know that).
+pub fn is_valid_pid(pid: u32) -> bool {
+    pid > 1
+}
+
+/// A `nice` priority value, standard Linux range -20 (highest priority)
+/// to 19 (lowest).
+pub fn is_valid_nice_priority(priority: i32) -> bool {
+    (-20..=19).contains(&priority)
+}
+
+/// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
+/// rather than passed through unvalidated -- not for argument-injection
+/// safety (this never touches a shell), but so a typo or bogus value
+/// fails clearly here instead of producing a confusing error from `kill`
+/// itself. Case-insensitive; the `SIG` prefix is optional either way.
+pub fn is_valid_signal_name(signal: &str) -> bool {
+    const ALLOWED: &[&str] = &[
+        "TERM", "KILL", "HUP", "INT", "QUIT", "USR1", "USR2", "STOP", "CONT",
+    ];
+    let normalized = signal.to_ascii_uppercase();
+    let normalized = normalized.strip_prefix("SIG").unwrap_or(&normalized);
+    ALLOWED.contains(&normalized)
 }
 
 #[cfg(test)]
@@ -926,5 +990,44 @@ mod tests {
         assert!(!is_valid_container_ref("web; rm -rf /"));
         assert!(!is_valid_container_ref("web 1"));
         assert!(!is_valid_container_ref(&"a".repeat(256)));
+    }
+
+    #[test]
+    fn accepts_reasonable_pids() {
+        assert!(is_valid_pid(2));
+        assert!(is_valid_pid(123456));
+    }
+
+    #[test]
+    fn rejects_protected_pids() {
+        assert!(!is_valid_pid(0));
+        assert!(!is_valid_pid(1));
+    }
+
+    #[test]
+    fn accepts_reasonable_nice_priorities() {
+        assert!(is_valid_nice_priority(-20));
+        assert!(is_valid_nice_priority(0));
+        assert!(is_valid_nice_priority(19));
+    }
+
+    #[test]
+    fn rejects_out_of_range_nice_priorities() {
+        assert!(!is_valid_nice_priority(-21));
+        assert!(!is_valid_nice_priority(20));
+    }
+
+    #[test]
+    fn accepts_allowed_signal_names() {
+        assert!(is_valid_signal_name("TERM"));
+        assert!(is_valid_signal_name("sigkill"));
+        assert!(is_valid_signal_name("Hup"));
+    }
+
+    #[test]
+    fn rejects_disallowed_signal_names() {
+        assert!(!is_valid_signal_name(""));
+        assert!(!is_valid_signal_name("SEGV"));
+        assert!(!is_valid_signal_name("9; rm -rf /"));
     }
 }

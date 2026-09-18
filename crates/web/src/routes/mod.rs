@@ -16,6 +16,7 @@ pub mod necropolis;
 pub mod necropsy;
 pub mod obituary;
 pub mod postmortem;
+pub mod reanimation;
 pub mod register;
 pub mod reliquary;
 pub mod resurrection;

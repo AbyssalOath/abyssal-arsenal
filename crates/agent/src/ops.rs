@@ -5,7 +5,7 @@ use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
     firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary, postmortem,
-    process::run_command, reliquary, resurrection,
+    process::run_command, reanimation, reliquary, resurrection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -135,6 +135,14 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         }
         AgentOperation::RemoveContainer { container } => {
             necropolis::remove_container(container, elevation).await
+        }
+        AgentOperation::ListProcesses => reanimation::list_processes(elevation).await,
+        AgentOperation::ProcessDetail { pid } => reanimation::process_detail(pid, elevation).await,
+        AgentOperation::RenicePriority { pid, priority } => {
+            reanimation::renice_priority(pid, priority, elevation).await
+        }
+        AgentOperation::SendSignal { pid, signal } => {
+            reanimation::send_signal(pid, signal, elevation).await
         }
     }
 }

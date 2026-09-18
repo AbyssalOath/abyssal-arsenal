@@ -485,6 +485,31 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/necropolis/:host_id/remove",
             post(routes::necropolis::remove_container),
         )
+        .route("/arsenals/reanimation", get(routes::reanimation::show))
+        .route(
+            "/arsenals/reanimation/:host_id",
+            get(routes::reanimation::show_host),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/list",
+            post(routes::reanimation::list_processes),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/detail",
+            post(routes::reanimation::process_detail),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/renice",
+            post(routes::reanimation::renice_priority),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/signal/confirm",
+            get(routes::reanimation::signal_confirm),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/signal",
+            post(routes::reanimation::send_signal),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

@@ -11,6 +11,7 @@ mod obituary;
 mod ops;
 mod postmortem;
 mod process;
+mod reanimation;
 mod reliquary;
 mod resurrection;
 mod transport;
