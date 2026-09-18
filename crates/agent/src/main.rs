@@ -1,3 +1,4 @@
+mod apothecary;
 mod catacomb;
 mod defleshing;
 mod elevation;

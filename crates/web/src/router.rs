@@ -651,6 +651,47 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/catacomb/:host_id/repair",
             post(routes::catacomb::filesystem_repair),
         )
+        .route("/arsenals/apothecary", get(routes::apothecary::show))
+        .route(
+            "/arsenals/apothecary/:host_id",
+            get(routes::apothecary::show_host),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/list",
+            post(routes::apothecary::list_installed_packages),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/upgradable",
+            post(routes::apothecary::list_upgradable),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/search",
+            post(routes::apothecary::search_package),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/info",
+            post(routes::apothecary::package_info),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/refresh",
+            post(routes::apothecary::refresh_package_index),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/install",
+            post(routes::apothecary::install_package),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/upgrade",
+            post(routes::apothecary::upgrade_package),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/remove/confirm",
+            get(routes::apothecary::remove_package_confirm),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/remove",
+            post(routes::apothecary::remove_package),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

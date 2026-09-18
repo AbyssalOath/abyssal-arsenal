@@ -4,9 +4,9 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    catacomb, defleshing, firewall, incarnation, mortiscope, necropolis, necropsy, network,
-    obituary, parish, postmortem, process::run_command, reanimation, reliquary, resurrection,
-    vivisection,
+    apothecary, catacomb, defleshing, firewall, incarnation, mortiscope, necropolis, necropsy,
+    network, obituary, parish, postmortem, process::run_command, reanimation, reliquary,
+    resurrection, vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -203,6 +203,26 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         }
         AgentOperation::FilesystemRepair { device } => {
             catacomb::filesystem_repair(device, elevation).await
+        }
+        AgentOperation::ListInstalledPackages => {
+            apothecary::list_installed_packages(elevation).await
+        }
+        AgentOperation::SearchPackage { query } => {
+            apothecary::search_package(query, elevation).await
+        }
+        AgentOperation::PackageInfo { package } => {
+            apothecary::package_info(package, elevation).await
+        }
+        AgentOperation::ListUpgradable => apothecary::list_upgradable(elevation).await,
+        AgentOperation::RefreshPackageIndex => apothecary::refresh_package_index(elevation).await,
+        AgentOperation::InstallPackage { package } => {
+            apothecary::install_package(package, elevation).await
+        }
+        AgentOperation::UpgradePackage { package } => {
+            apothecary::upgrade_package(package, elevation).await
+        }
+        AgentOperation::RemovePackage { package } => {
+            apothecary::remove_package(package, elevation).await
         }
     }
 }

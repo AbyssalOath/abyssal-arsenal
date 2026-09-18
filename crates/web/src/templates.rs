@@ -432,6 +432,34 @@ pub struct MortiscopeHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct ApothecaryHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "apothecary.html")]
+pub struct ApothecaryTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<ApothecaryHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "apothecary_host.html")]
+pub struct ApothecaryHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `systems.manage` -- gates the Write/Destructive section, distinct
+    /// from the `systems.view` the read operations use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct CatacombHostRow {
     pub id: String,
     pub name: String,

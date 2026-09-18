@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -475,6 +475,40 @@ pub enum AgentOperation {
     /// operation exists to fix. The control plane requires explicit
     /// confirmation before ever dispatching this regardless.
     FilesystemRepair { device: String },
+    /// Every installed package, from whichever of apt/dnf/yum/pacman/
+    /// zypper the agent detects on its host (same "detect the tool
+    /// present, don't assume one" approach as the firewall backends).
+    ListInstalledPackages,
+    /// Searches the package manager's repo metadata for `query`.
+    SearchPackage { query: String },
+    /// Detailed info (version, description, dependencies, ...) for one
+    /// package, whether installed or just available in a repo.
+    PackageInfo { package: String },
+    /// Packages with an available upgrade. Some backends (`dnf`/`yum`
+    /// `check-update`) use a non-zero exit specifically to mean "updates
+    /// are available," not "the check failed" -- handled as a normal
+    /// result, not an error.
+    ListUpgradable,
+    /// Refreshes the package manager's local repo metadata cache
+    /// (`apt-get update` / `dnf makecache` / ...). Write -- doesn't
+    /// install, remove, or change any package, just the cache used to
+    /// decide what's available.
+    RefreshPackageIndex,
+    /// Installs a package (pulling in dependencies as the backend
+    /// decides). Write -- additive, undone by `RemovePackage`.
+    InstallPackage { package: String },
+    /// Upgrades one specific package to the latest version the refreshed
+    /// index knows about, without touching any other package. Write, not
+    /// Destructive: updates code in place, doesn't delete data, and can
+    /// be undone by installing an older version directly if needed.
+    UpgradePackage { package: String },
+    /// Removes an installed package (without purging its configuration
+    /// files, where the backend distinguishes the two). Destructive:
+    /// removing a package can break whatever depended on it, and
+    /// reinstalling doesn't necessarily restore prior state exactly, so
+    /// the control plane requires explicit confirmation before ever
+    /// dispatching this.
+    RemovePackage { package: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -742,6 +776,29 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::FilesystemRepair { device } => f
                 .debug_struct("FilesystemRepair")
                 .field("device", device)
+                .finish(),
+            AgentOperation::ListInstalledPackages => write!(f, "ListInstalledPackages"),
+            AgentOperation::SearchPackage { query } => f
+                .debug_struct("SearchPackage")
+                .field("query", query)
+                .finish(),
+            AgentOperation::PackageInfo { package } => f
+                .debug_struct("PackageInfo")
+                .field("package", package)
+                .finish(),
+            AgentOperation::ListUpgradable => write!(f, "ListUpgradable"),
+            AgentOperation::RefreshPackageIndex => write!(f, "RefreshPackageIndex"),
+            AgentOperation::InstallPackage { package } => f
+                .debug_struct("InstallPackage")
+                .field("package", package)
+                .finish(),
+            AgentOperation::UpgradePackage { package } => f
+                .debug_struct("UpgradePackage")
+                .field("package", package)
+                .finish(),
+            AgentOperation::RemovePackage { package } => f
+                .debug_struct("RemovePackage")
+                .field("package", package)
                 .finish(),
         }
     }
@@ -1051,6 +1108,30 @@ pub fn is_valid_gecos_comment(comment: &str) -> bool {
 /// value sane (0 would match everything, which isn't "large files").
 pub fn is_valid_size_mb(mb: u32) -> bool {
     (1..=1_000_000).contains(&mb)
+}
+
+/// A package name/spec across the package-manager backends Apothecary
+/// supports -- permissive enough for real names (rpm epochs like
+/// `pkg-1:2.3-4`, pacman's `repo/pkgname` syntax) while still refusing a
+/// leading `-` (the argument-injection defense every validator here
+/// shares) and control characters.
+pub fn is_valid_package_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('-')
+        && name.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | ':' | '@' | '/')
+        })
+}
+
+/// A package search query. Permissive on content (real search terms
+/// contain spaces), but a leading `-` could be mistaken for a flag, and
+/// control characters have no business in a search string.
+pub fn is_valid_search_query(query: &str) -> bool {
+    !query.is_empty()
+        && query.len() <= 200
+        && !query.starts_with('-')
+        && query.chars().all(|c| !c.is_control())
 }
 
 /// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
@@ -1428,5 +1509,35 @@ mod tests {
     fn rejects_out_of_range_size_mb() {
         assert!(!is_valid_size_mb(0));
         assert!(!is_valid_size_mb(1_000_001));
+    }
+
+    #[test]
+    fn accepts_reasonable_package_names() {
+        assert!(is_valid_package_name("nginx"));
+        assert!(is_valid_package_name("nginx-1:2.3-4"));
+        assert!(is_valid_package_name("extra/nginx"));
+        assert!(is_valid_package_name("lib_foo++"));
+    }
+
+    #[test]
+    fn rejects_malformed_package_names() {
+        assert!(!is_valid_package_name(""));
+        assert!(!is_valid_package_name("-y"));
+        assert!(!is_valid_package_name("nginx; rm -rf /"));
+        assert!(!is_valid_package_name(&"a".repeat(201)));
+    }
+
+    #[test]
+    fn accepts_reasonable_search_queries() {
+        assert!(is_valid_search_query("web server"));
+        assert!(is_valid_search_query("nginx"));
+    }
+
+    #[test]
+    fn rejects_malformed_search_queries() {
+        assert!(!is_valid_search_query(""));
+        assert!(!is_valid_search_query("-y"));
+        assert!(!is_valid_search_query("bad\ncontrol"));
+        assert!(!is_valid_search_query(&"a".repeat(201)));
     }
 }

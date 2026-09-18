@@ -1,6 +1,7 @@
 pub mod account;
 pub mod agent;
 pub mod api;
+pub mod apothecary;
 pub mod arsenals;
 pub mod audit;
 pub mod cadavault;

@@ -1,0 +1,128 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Apothecary — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Apothecary — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/apothecary">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Works with whichever of apt/dnf/yum/pacman/zypper is present on the host.</p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/apothecary/{{ host_id }}/list">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} List Installed</button>
+    </form>
+    <form method="post" action="/arsenals/apothecary/{{ host_id }}/upgradable">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} List Upgradable</button>
+    </form>
+    <form method="post" action="/arsenals/apothecary/{{ host_id }}/search">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="search-query">Search query</label>
+      <input type="text" id="search-query" name="query" placeholder="e.g. nginx" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="search-password">Sudo password (if needed)</label>
+      <input type="password" id="search-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Search</button>
+    </form>
+    <form method="post" action="/arsenals/apothecary/{{ host_id }}/info">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="info-package">Package</label>
+      <input type="text" id="info-package" name="package" placeholder="e.g. nginx" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="info-password">Sudo password (if needed)</label>
+      <input type="password" id="info-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Package Info</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/apothecary/{{ host_id }}/refresh">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Refresh Package Index</button>
+    </form>
+    <form method="post" action="/arsenals/apothecary/{{ host_id }}/install">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="install-package">Package</label>
+      <input type="text" id="install-package" name="package" placeholder="e.g. nginx" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="install-password">Sudo password (if needed)</label>
+      <input type="password" id="install-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Install Package</button>
+    </form>
+    <form method="post" action="/arsenals/apothecary/{{ host_id }}/upgrade">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="upgrade-package">Package</label>
+      <input type="text" id="upgrade-package" name="package" placeholder="e.g. nginx" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="upgrade-password">Sudo password (if needed)</label>
+      <input type="password" id="upgrade-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Upgrade Package</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Removing a package can break whatever depends on it.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/apothecary/{{ host_id }}/remove/confirm">
+      <label for="remove-package">Package</label>
+      <input type="text" id="remove-package" name="package" placeholder="e.g. nginx" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Remove Package&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
