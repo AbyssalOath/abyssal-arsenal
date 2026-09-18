@@ -75,6 +75,32 @@ The design principles this codebase follows are documented in
 - **No secrets committed to source control.** `.env` and anything deriving
   from `.env.example` is gitignored; `install.sh` generates strong random
   secrets rather than shipping defaults.
+- **A second, deliberate gate for operations worse than "destructive."**
+  A handful of operations are categorically worse than the normal
+  Destructive tier's type-to-confirm was designed for -- a single wrong
+  input destroys a disk (Ossuary's partition/RAID/LVM-create, `mkfs`) or
+  severs a host's own manageability with no remote fix (Inquest's full
+  host network isolation). These sit behind a dedicated, off-by-default
+  admin setting, re-checked at every entry point that leads to
+  dispatching them, on top of (never instead of) the usual confirmation.
+  The same pattern gates Thanatos's unattended background monitoring
+  sweep, for a different reason: it's not one destructive action, it's
+  an automated task that reads and persists security-log content across
+  the whole fleet on its own. See "The second-gate pattern for
+  catastrophic-risk operations" in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **The control plane is a trusted party on hosts it manages, by
+  design.** Cryptkeeper's file viewer and Thanatos's classified security
+  events deliberately do show real plaintext content from a managed
+  host -- secrets, log lines, whatever's actually there. This is not an
+  oversight or a gap relative to a zero-knowledge design: an admin
+  operating Abyssal Arsenal already has full administrative control over
+  every host it manages, so the control plane seeing what's on those
+  hosts is the expected trust boundary, not something to defend against.
+  What *is* still defended: Cryptkeeper never crawls a filesystem
+  looking for secrets on its own (`ViewSensitiveFile` only ever reads a
+  path the admin names explicitly), and SSH key material is fingerprinted
+  rather than shown raw wherever a fingerprint says the same thing more
+  safely.
 - **Sudo elevation ("Apotheosis") never persists the password.** A sudo
   password submitted alongside any host-dispatched arsenal action
   (permission `hosts.elevate`, Super Admin only by default) is validated

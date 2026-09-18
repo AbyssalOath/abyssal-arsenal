@@ -67,21 +67,57 @@ fails any of them will not be merged as-is.
 
 ## Adding a new arsenal capability
 
-Arsenals are currently mostly metadata-only placeholder pages (see
-[CHANGELOG.md](CHANGELOG.md) for current status). To give one a real,
-host-affecting capability:
+All 23 arsenals have real capabilities today (see
+[CHANGELOG.md](CHANGELOG.md) for what each one does); adding a new
+operation to an existing one, or extending its scope, follows the same
+pattern every one of them was built with. For a host-affecting
+capability (the common case -- everything except Panopticon, which is
+control-plane-only, see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
-1. Add a variant to `AgentOperation` in `crates/agent-protocol/src/lib.rs`.
-2. Implement it in `crates/agent/src/ops.rs`. Keep it read-only unless
-   there's a specific, reviewed reason not to, and if it can be
-   destructive, make sure the caller has to explicitly confirm (see
-   `OperationKind::Destructive` in `crates/execution`).
-3. Wire a route in the relevant arsenal's admin page (or a new one) that
+1. Add a variant to `AgentOperation` in `crates/agent-protocol/src/lib.rs`,
+   with a doc comment explaining what it does and why it's the risk tier
+   it is. Bump `PROTOCOL_VERSION` -- any change here needs it.
+2. If the operation takes any value from the wire, add a validator
+   function in `crates/agent-protocol/src/lib.rs` (with tests) rather
+   than validating only on one side -- the agent is the actual execution
+   boundary and should never trust a value just because the control
+   plane already checked it. Reuse an existing validator if a suitable
+   one already exists (`is_valid_absolute_path`, `is_valid_account_name`,
+   and so on) instead of writing a near-duplicate.
+3. Implement it in the arsenal's own `crates/agent/src/<name>.rs` module
+   and wire it into the match in `crates/agent/src/ops.rs`. Keep it
+   read-only unless there's a specific, reviewed reason not to; if it can
+   be destructive, make sure the caller has to explicitly confirm (see
+   `OperationKind::Destructive` in `crates/execution`). If it needs a
+   command with more than one common Linux implementation (a firewall
+   backend, an init system, a package manager), detect what's actually
+   present rather than assuming one -- see `crates/agent/src/firewall.rs`
+   and `crates/agent/src/init_system.rs` for the established pattern, and
+   ARCHITECTURE.md's "Controlled execution" section for the reasoning.
+4. Wire a route in the relevant arsenal's admin page (or a new one) that
    calls `Executor::execute_on_host()` with the right `Permission` and
-   `OperationKind`.
-4. If it needs a new permission, add it to `Permission` in
+   `OperationKind`. Prefer an existing permission over adding a new one
+   (`crates/core/src/permission.rs`) unless the capability is genuinely a
+   different responsibility from anything that permission already gates.
+5. If the operation is categorically worse than a normal Destructive
+   action -- a wrong input could destroy something instantly or sever a
+   host's own manageability with no remote fix -- give it a second,
+   off-by-default admin setting on top of (never instead of) the usual
+   confirmation, following Ossuary's/Inquest's pattern. See "The
+   second-gate pattern for catastrophic-risk operations" in
+   [ARCHITECTURE.md](ARCHITECTURE.md).
+6. If it needs a new permission, add it to `Permission` in
    `crates/core/src/permission.rs` and seed it for the roles that should
    have it in `crates/database/src/seed.rs`.
+7. Live-verify it against a real enrolled agent before considering it
+   done -- see "Per-arsenal capability verification" in
+   [TESTING.md](TESTING.md).
+
+A control-plane-only capability (work the control plane does about its
+own environment, not on a specific managed host -- Panopticon is the
+only current example) uses `Executor::execute()` and the `Operation`
+trait instead of steps 1-4 above; see ARCHITECTURE.md's "Controlled
+execution" section for how that path differs.
 
 ## Adding a new arsenal (module) from scratch
 

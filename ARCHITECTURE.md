@@ -122,26 +122,31 @@ across the control-plane / agent boundary except through
   only ever iterate the registry -- adding a new arsenal crate means adding
   one line to `crates/app/src/arsenals.rs` and the workspace manifest,
   nothing else.
-- Most arsenals currently exist as permission-gated metadata pages only.
-  See [CHANGELOG.md](CHANGELOG.md) for which ones have real capabilities
-  wired up.
+- All 23 arsenals have real capabilities wired up. See
+  [CHANGELOG.md](CHANGELOG.md) for what each one actually does.
 
-**Control-plane arsenals vs. host-agent arsenals.** Every arsenal built so
-far (Cystoolbox, Cadavault, Necrolink, Postmortem, Reliquary, Mortiscope,
-Incarnation, ...) dispatches its real work to a specific enrolled host via
+**Control-plane arsenals vs. host-agent arsenals.** Most arsenals
+(Cystoolbox, Cadavault, Necrolink, Postmortem, Reliquary, Mortiscope,
+Incarnation, Parish, Catacomb, Apothecary, Ossuary, Grimoire, Inquest,
+Cryptkeeper, ...) dispatch their real work to a specific enrolled host via
 `execute_on_host()` -- the arsenal's page always starts with picking a
 host. Panopticon (`crates/arsenals/panopticon`, network visibility and
-device discovery) is the first arsenal that is a **control-plane arsenal**
-by design: it runs directly against the control plane's own network stack
-via `execute()`, not against any one host's agent. This is a deliberate
-boundary, not a gap to fill in later -- network discovery finds devices
-that may never have an agent installed on them at all, so there's no host
-to dispatch to in the first place. See "Controlled execution" below for
-what `execute()` vs. `execute_on_host()` each mean concretely; a future
-arsenal only belongs in the host-agent camp if its work is inherently
-per-host (something to run *on* a specific machine), and in the
+device discovery) is a **control-plane arsenal**: it runs directly
+against the control plane's own network stack via `execute()`, not
+against any one host's agent. This is a deliberate boundary, not a gap to
+fill in later -- network discovery finds devices that may never have an
+agent installed on them at all, so there's no host to dispatch to in the
+first place. Thanatos (`crates/arsenals/thanatos`) is a **hybrid**: its
+per-scan operation (`ScanSecurityEvents`) is an ordinary host-agent
+dispatch, but the control plane additionally persists every result,
+correlates them across time, and runs its own unattended background
+sweep -- see "Background tasks" below. See "Controlled execution" below
+for what `execute()` vs. `execute_on_host()` each mean concretely; a
+future arsenal belongs in the host-agent camp if its work is inherently
+per-host (something to run *on* a specific machine), in the
 control-plane camp if it's work the control plane does about its
-environment at large.
+environment at large, and in the hybrid camp if it's per-host work whose
+*results* the control plane also needs to reason about over time.
 
 ## Controlled execution
 
@@ -309,8 +314,9 @@ side and unchanged regardless of where it's triggered from:
 (this part changed after the mechanism above was first built -- `/admin/hosts`
 no longer has any elevate/de-escalate controls of its own):
 
-- Each arsenal that dispatches host operations (`cystoolbox`, `cadavault`)
-  follows a host-picker -> per-host page navigation
+- Every arsenal that dispatches host operations (all except Panopticon,
+  which is control-plane-only) follows a host-picker -> per-host page
+  navigation
   (`/arsenals/<name>` lists connected hosts; `/arsenals/<name>/<host_id>`
   is where operations actually run, one host at a time -- matching how
   elevation is itself scoped per host, not per arsenal). Every action form
@@ -336,6 +342,63 @@ no longer has any elevate/de-escalate controls of its own):
   De-escalate button -- a status/control surface, not itself where
   elevation happens.
 
+## The second-gate pattern for catastrophic-risk operations
+
+Every Destructive operation already requires the caller to explicitly set
+`confirm: true` and, in the web UI, type the exact target back
+(`ConfirmTemplate`'s `type_to_confirm`). A handful of operations are
+categorically worse than that tier was designed for -- not "this changes
+something and should be double-checked," but "a single wrong input here
+destroys or disconnects something with no remote way to undo it." For
+those, a Destructive confirmation alone isn't enough: an admin has to
+have deliberately decided, in advance and separately from any one
+action, that this class of operation is allowed to run at all.
+
+The pattern: a dedicated, off-by-default setting
+(`abyssal_core::settings`, e.g. `ossuary.high_risk_storage_ops_enabled`,
+`inquest.host_isolation_enabled`), checked fresh at *every* entry point
+that leads to dispatching the operation -- both the GET confirm-page
+route and the POST dispatch route, never assumed from an earlier check --
+on top of (never instead of) the type-to-confirm the operation still
+requires individually. Three operations use it so far: Ossuary's
+partition/RAID/LVM-create and `mkfs` (a wrong device path destroys a
+disk instantly), Inquest's full host network isolation (a wrong edge
+case severs the agent's own manageability with no remote fix), and
+Thanatos's background monitoring sweep (a different kind of risk -- not
+one destructive action, but an unattended task that reads and persists
+security-log content across the whole fleet on its own, which an admin
+should have to consciously opt into). A future operation belongs behind
+this pattern if getting it wrong once, unattended or with a typo, would
+be worse than what the existing Destructive tier already assumes it
+might be.
+
+## Background tasks
+
+Everything in the control plane is otherwise request-driven -- nothing
+runs unless a browser or an agent connection causes it to. Two
+exceptions, both `tokio::spawn`'d fixed-interval loops started once at
+startup (`crates/app/src/main.rs`), following the same shape: no
+`AuthContext` to check permissions against, since nothing initiated the
+work, so each bypasses the request-oriented `Executor` entirely and
+talks to the lower-level primitive underneath it directly.
+
+- **Elevation expiry sweep** (`spawn_elevation_expiry_sweep`, every 60s):
+  `ElevationTracker::is_elevated`/`snapshot` already evict lapsed entries
+  lazily, only when something happens to look -- fine for UI correctness,
+  but it means a natural expiry with nothing else touching that host
+  would otherwise never get an audit record at all. This loop is the one
+  active, unconditional check, writing a `HostElevationExpired` audit
+  event per lapsed entry it finds.
+- **Thanatos sweep** (`abyssal_web::spawn_thanatos_sweep`, every 60s):
+  checked first against `thanatos.monitoring_enabled` (see "The
+  second-gate pattern" above) -- does nothing on a tick where it's off,
+  re-checked fresh every tick so toggling the setting takes effect on the
+  next tick, not after a restart. When on, dispatches
+  `AgentOperation::ScanSecurityEvents` to every connected host directly
+  through `HostConnectionRegistry::dispatch` (bypassing
+  `execute_on_host()`), then runs the same persist-and-correlate pipeline
+  the on-demand scan route uses.
+
 ## Web layer
 
 - Server-rendered HTML via Askama, no separate JavaScript build pipeline.
@@ -352,11 +415,22 @@ no longer has any elevate/de-escalate controls of its own):
 
 ## Data model
 
-Two migrations so far:
+Five migrations so far:
 
 - `0001_init.sql` -- `users`, `roles`, `permissions`, `role_permissions`,
   `user_roles`, `sessions`, `audit_log`, `settings`, `modules`.
 - `0002_hosts.sql` -- `hosts`, `host_enrollment_tokens`.
+- `0003_user_timezone.sql` -- adds `users.timezone`, so every timestamp in
+  the app renders from each user's own point of view rather than a fixed
+  server timezone.
+- `0004_panopticon.sql` -- `panopticon_devices` (the discovered-device
+  inventory) and `hosts.last_seen_ip` (the connecting agent's address,
+  captured once at WebSocket upgrade time, used to correlate a discovered
+  device against a known managed host).
+- `0005_thanatos.sql` -- `thanatos_events` (classified security events and
+  correlation findings, deduplicated by a content hash over host +
+  source + raw line so re-scanning the same log tail window is a
+  harmless no-op).
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time
@@ -374,6 +448,12 @@ maintained offline query cache.
 - `install.sh` generates secrets and asks only what it can't infer. See
   [CONTRIBUTING.md](CONTRIBUTING.md) for local development instead of the
   full Compose stack.
+- `nmap` is included in the runtime image for Panopticon's discovery
+  scans, which run unprivileged (`-sT`, no raw sockets needed) from
+  wherever the control-plane process itself runs. Behind Docker's default
+  bridge network, that's the Docker bridge, not the physical LAN --
+  reaching a real network needs host networking, or running the binary
+  directly outside Docker.
 
 ## Known limitations
 
@@ -383,11 +463,16 @@ model, not oversights:
 - `LoginLimiter` and `HostConnectionRegistry` are both in-memory and
   process-local. A multi-instance control plane would need both backed by
   shared state instead.
-- SSO/OIDC, additional notification providers (Telegram, Slack, Teams,
-  Discord), and 19 of the 22 arsenals' real capabilities beyond metadata are
-  not implemented yet (only `cystoolbox`, `cadavault`, and `necrolink` have
-  real operations so far) --
-  see [CHANGELOG.md](CHANGELOG.md) for current status.
+- SSO/OIDC and additional notification providers (Telegram, Slack, Teams,
+  Discord) are not implemented yet -- see [CHANGELOG.md](CHANGELOG.md) for
+  current status. All 23 arsenals have real capabilities.
+- Thanatos is deliberately a pull-based, on-demand/periodic-sweep
+  telemetry collector, not a continuous push-based EDR agent -- no eBPF,
+  no live event stream, no offset-tracked log tailing (re-scanning the
+  same window is expected and deduplicated, not prevented). A real
+  push-based transport and endpoint telemetry are a documented later
+  phase, not an oversight -- see the Thanatos entry in
+  [CHANGELOG.md](CHANGELOG.md).
 - The agent does not sandbox or rate-limit operations beyond the fixed
   `AgentOperation` whitelist. Privilege escalation for an unprivileged
   agent deployment is handled by Apotheosis (see "Host enrollment and the

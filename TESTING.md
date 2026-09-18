@@ -27,7 +27,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## What's covered today
 
 - **`crates/core`**: permission key round-tripping (`Permission::as_key` /
-  `from_key`), opaque token generation and hashing.
+  `from_key`), opaque token generation and hashing, and `Severity`
+  (Thanatos) ordering/round-tripping plus its event-hash function being
+  deterministic while still distinguishing host and source.
 - **`crates/auth`**: Argon2id password hashing round-trips and produces
   unique salts; session token uniqueness and deterministic hashing; the
   login rate limiter's lock/clear behavior.
@@ -43,6 +45,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 - **`crates/hosts`**: `HostConnectionRegistry` dispatch behavior -- fails
   fast when a host isn't connected, times out when a host doesn't respond,
   and correctly resolves a dispatch when a response does arrive.
+- **`crates/agent-protocol`**: the largest single suite -- every
+  wire-value validator used on both the control plane and the agent
+  (hostnames, paths, account names, device paths, port specs, SSH key
+  types/fingerprints, permission modes, and so on), each checked for both
+  reasonable input it must accept and malformed/injection-shaped input it
+  must reject.
+- **`crates/agent`**: `ElevationState`'s sliding idle-window behavior --
+  not elevated by default, de-escalating clears it, an expired window is
+  treated as not-elevated, checking status refreshes the window, and a
+  per-elevation configured timeout is what's actually checked rather than
+  a hardcoded default.
 
 ## What isn't covered yet
 
@@ -93,6 +106,19 @@ agent protocol:
 7. **Audit trail**: confirm `HOST_ENROLLED`, `SYSTEM_COMMAND_EXECUTED`, and
    `HOST_REVOKED` all appear in `/admin/audit` with the right actor and
    timestamp.
+
+**Per-arsenal capability verification.** Every arsenal capability in this
+project was live-verified against a real enrolled agent before being
+considered done, following the same discipline: a fresh disposable
+MariaDB container, a real `abyssal-agent` process (not a mock), every
+Read/Write/Destructive operation exercised through the actual web UI, and
+the test environment fully torn down afterward. For anything genuinely
+destructive or irreversible, the verification confirms the real dispatch
+reaches the real command and fails cleanly (most often on privilege,
+since the test agent runs unprivileged) rather than actually executing
+it against a real shared machine -- never fabricate or skip this step by
+reasoning about the code alone. Apply the same discipline to any new
+capability: real agent, real dispatch, real (but safe) target.
 
 ## Adding tests for new logic
 

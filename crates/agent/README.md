@@ -94,8 +94,18 @@ re-enroll it with a fresh token to restore access.
 ## Why it runs as root (usually)
 
 Most real sysadmin operations (disk, network, service management, ...)
-need root. The agent itself doesn't elevate privileges on your behalf beyond
-however it's started -- running it as root, or via `sudo`-scoped operations
-in a future revision, is a deployment decision, not something this binary
-does implicitly today. The whitelist of what it will run at all
-(`AgentOperation`) is the actual safety boundary, not the user it runs as.
+need root. Two ways to give the agent that access:
+
+- **Run it as root permanently** (the systemd unit above does this).
+  Simple, and the whitelist of what it will run at all
+  (`AgentOperation`) is the actual safety boundary either way, not the
+  user it runs as.
+- **Run it unprivileged and elevate on demand ("Apotheosis")**: an admin
+  with the `hosts.elevate` permission can elevate a connected host from
+  its arsenal page in the control-plane web UI by submitting a sudo
+  password. The agent validates it via `sudo -S -v` (the same mechanism
+  interactive `sudo` already uses) and starts a sliding idle window
+  during which privileged operations run as `sudo -n` instead of failing
+  outright; the password itself is never persisted anywhere on either
+  side. See "Apotheosis: time-boxed sudo elevation" in
+  [ARCHITECTURE.md](../../ARCHITECTURE.md) for the full mechanism.

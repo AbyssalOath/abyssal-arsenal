@@ -27,6 +27,61 @@ authenticated WebSocket:
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 
+## Arsenals
+
+All 23 arsenals are fully implemented -- each gated by its own
+permission(s) and, where the blast radius warrants it, a second layer of
+admin opt-in on top of the usual confirmation. Grouped by function:
+
+**Operate**
+
+| Arsenal | Covers |
+| --- | --- |
+| Apothecary | Linux package management (apt/dnf/yum/pacman/zypper, auto-detected) |
+| Cystoolbox | General Linux administration and misc sysadmin utilities |
+| Defleshing | System cleanup and routine maintenance |
+| Grimoire | Configuration management and repeatable system configuration |
+| Incarnation | Application and service deployment/provisioning |
+| Necrolink | Network interfaces, routes, DNS, sockets, connectivity diagnostics |
+| Necropolis | Container and container-runtime administration |
+| Parish | User, group, account, and access management |
+| Reanimation | Process and service management |
+
+**Observe**
+
+| Arsenal | Covers |
+| --- | --- |
+| Mortiscope | System health and resource monitoring |
+| Necropsy | Hardware inspection and diagnostics |
+| Obituary | Historical logging and audit record management |
+| Panopticon | Network discovery, device inventory, and topology mapping -- runs from the control plane itself, not a host agent |
+| Vivisection | Performance analysis, profiling, and system tuning |
+
+**Defend**
+
+| Arsenal | Covers |
+| --- | --- |
+| Cadavault | Security configuration, hardening, and defensive operations |
+| Cryptkeeper | Secrets, credentials, certificates, keys, sensitive configuration |
+| Inquest | Incident containment and remediation (IP blocklisting, file quarantine, full host isolation) |
+| Postmortem | Forensic examination after failures or suspected compromise |
+| Thanatos | Security telemetry collection, threat detection, event correlation, and alerting |
+
+**Preserve / Recover**
+
+| Arsenal | Covers |
+| --- | --- |
+| Catacomb | Filesystem inspection, maintenance, and repair |
+| Ossuary | Disk, partition, LVM, RAID, and storage management |
+| Reliquary | Backup creation, verification, and restoration |
+| Resurrection | Disaster recovery and restoration of failed systems |
+
+Plus Apotheosis, time-boxed sudo elevation for managed hosts (not an
+arsenal of its own -- a cross-cutting mechanism every host-dispatched
+arsenal above can use). See [ARCHITECTURE.md](ARCHITECTURE.md) for how an
+arsenal is wired up and [CHANGELOG.md](CHANGELOG.md) for the detail behind
+each one's capabilities.
+
 ## Quickstart
 
 ```bash
@@ -76,10 +131,9 @@ today and [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
   binary.
 - `crates/agent` -- the standalone binary that runs on managed hosts.
 - `crates/arsenals/*` -- one crate per administrative domain (`cystoolbox`,
-  `cadavault`, `necrolink`, ...). See [ARCHITECTURE.md](ARCHITECTURE.md) for
-  what each one covers; most are currently registered with the platform but
-  not yet implemented beyond metadata -- that's ongoing work, not an
-  oversight. See [CHANGELOG.md](CHANGELOG.md) for what's actually landed.
+  `cadavault`, `necrolink`, ...). See the "Arsenals" section above for the
+  full list and [CHANGELOG.md](CHANGELOG.md) for the detail behind what
+  each one actually does.
 
 ## Documentation
 

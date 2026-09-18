@@ -24,13 +24,15 @@ project is pre-release, so everything so far lives under "Unreleased".
   `AuditAction` catalog covering login/logout, user and role management,
   module toggles, configuration changes, and executed commands. The
   `/admin/audit` page provides filtering, pagination, and CSV export.
-- **Module system**: an `Arsenal` trait and `ModuleRegistry` covering all 21
-  planned arsenals (`cystoolbox`, `cadavault`, `necrolink`, `postmortem`,
+- **Module system**: an `Arsenal` trait and `ModuleRegistry` covering all 23
+  arsenals (`cystoolbox`, `cadavault`, `necrolink`, `postmortem`,
   `reliquary`, `mortiscope`, `incarnation`, `resurrection`, `necropsy`,
   `necropolis`, `obituary`, `reanimation`, `ossuary`, `catacomb`, `parish`,
   `apothecary`, `grimoire`, `cryptkeeper`, `defleshing`, `vivisection`,
-  `inquest`). Each is registered with real metadata and permission gating;
-  most currently render a placeholder page pending real capabilities.
+  `inquest`, `thanatos`, `panopticon`). Each is registered with real
+  metadata, permission gating, and -- as of this changelog -- real
+  capabilities; see the individual arsenal entries below for what each one
+  actually does.
 - **Controlled execution layer**: an `Operation` trait and `Executor` with
   permission checks, timeouts, cooperative cancellation, and mandatory audit
   records for every attempt, plus an explicit confirmation requirement for
@@ -89,6 +91,102 @@ project is pre-release, so everything so far lives under "Unreleased".
   address, IPv4 CIDR, or hostname; explicitly rejects anything starting
   with `-`) on both the control plane and the agent, matching the
   hostname/port validation pattern from the first two arsenals.
+- **Parish arsenal**: Linux user, group, and account administration on a
+  managed host (`/arsenals/parish`) -- listing users and groups, viewing a
+  single account's detail (`id`) as read-only operations
+  (`host_users.view`); creating a user or group, and adding/removing group
+  membership, as Write operations (`host_users.manage`, no confirmation
+  required); locking and unlocking an account as Write operations; and
+  deleting a user or group as Destructive operations requiring
+  confirmation. Deliberately gated by new, dedicated
+  `host_users.view`/`host_users.manage` permissions rather than reusing
+  the control plane's own `users.*` permissions -- managing who can log
+  into Abyssal Arsenal itself and managing real OS accounts on the
+  servers it administers are different responsibilities that were never
+  meant to imply each other. The `root` account is hard-refused for lock
+  and delete operations regardless of caller permissions, a check the
+  agent enforces itself rather than trusting the control plane alone.
+- **Catacomb arsenal**: filesystem inspection, maintenance, and repair on
+  a managed host (`/arsenals/catacomb`) -- directory usage breakdown and
+  finding files above a size threshold as read-only operations
+  (`storage.view`); a filesystem check dry run and trimming a mounted
+  filesystem (`fstrim`) as Write operations; and a real filesystem repair
+  (`fsck -y`) as a Destructive operation requiring confirmation, with a
+  mandatory mount-state check refusing to run against a currently-mounted
+  device (repairing a live filesystem risks corrupting it further). Fixed
+  a real bug found during live verification: `fsck`'s exit code is a
+  bitmask of outcomes (clean, errors corrected, reboot needed, errors
+  left uncorrected, ...), not a simple success/failure signal, so a naive
+  "non-zero means failure" check misreported a successful repair as
+  having failed.
+- **Apothecary arsenal**: Linux package management on a managed host
+  (`/arsenals/apothecary`), auto-detecting whichever of apt/dnf/yum/
+  pacman/zypper is actually present rather than assuming one -- listing
+  installed packages, searching the package index, viewing a single
+  package's detail, and listing upgradable packages as read-only
+  operations (`systems.view`); refreshing the package index and
+  installing/upgrading a package as Write operations (`systems.manage`);
+  and removing a package as a Destructive operation requiring
+  confirmation. Fixed a real dnf5 compatibility bug found during live
+  verification on a real Fedora host: `dnf list installed` (the classic
+  dnf4 positional-keyword syntax) is parsed by dnf5 as a literal search
+  for a package named "installed," silently returning no results instead
+  of the real installed-package list -- fixed by switching to
+  `dnf list --installed`, valid on both dnf4 and dnf5.
+- **Ossuary arsenal**: disk, partition, LVM, RAID, volume, mount, and
+  storage management on a managed host (`/arsenals/ossuary`). A
+  conservative tier (partition table/LVM/RAID summaries, mounting and
+  unmounting, extending a logical volume) is available by default, same
+  as every other arsenal. A high-risk tier -- partition table create/
+  delete, RAID array create/stop, LVM physical/volume-group/logical-
+  volume create and remove, and creating a filesystem (`mkfs`) -- is
+  gated behind a new admin-configurable Settings toggle
+  (`ossuary.high_risk_storage_ops_enabled`), off by default, checked at
+  every entry point that leads to dispatching one of these operations, in
+  addition to (never instead of) the type-to-confirm each one still
+  requires individually. This is the first use of that "second gate"
+  pattern in the platform: for operations whose blast radius is
+  categorically worse than a normal Destructive action (a single wrong
+  device path can destroy a disk instantly and irrecoverably), requiring
+  confirmation alone isn't enough -- an admin has to have deliberately
+  decided, in advance and separately from any one action, that this
+  class of operation is allowed to run at all.
+- **Grimoire arsenal**: configuration management and repeatable system
+  configuration on a managed host (`/arsenals/grimoire`) -- two tool-
+  owned drop-in files, `/etc/sysctl.d/99-abyssal-arsenal.conf` and
+  `/etc/cron.d/abyssal-arsenal`, deliberately never an arbitrary or
+  pre-existing shared file (editing something like `/etc/hosts` in place
+  risks corrupting it through a string-manipulation bug; a dedicated
+  file this tool always fully owns and re-renders from scratch cannot
+  have that failure mode). Viewing either managed file is a read-only
+  operation (`systems.view`); setting or removing a single sysctl key or
+  cron job is a Write operation (`systems.manage`); clearing an entire
+  managed file is a Destructive operation, type-to-confirm on the
+  hostname (there's no single named target for "delete everything this
+  tool manages," matching the same pattern Obituary's journal vacuum and
+  Defleshing's clear-tmp use).
+- **Inquest arsenal**: active incident containment and remediation on a
+  managed host (`/arsenals/inquest`) -- listing blocked IPs, isolation
+  status, and quarantined files as read-only operations
+  (`incidents.view`); blocking/unblocking a specific remote IP and
+  quarantining/restoring a file as Write operations (`incidents.respond`,
+  auto-detecting nftables vs. iptables); permanently deleting a
+  quarantined file as a Destructive operation; and full host network
+  isolation (block all traffic except the control plane's own
+  connection) as the platform's highest-severity Destructive operation,
+  gated behind a second, admin-opt-in Settings toggle
+  (`inquest.host_isolation_enabled`, off by default) mirroring Ossuary's
+  high-risk pattern, since a wrong edge case (NAT, a DNS-based
+  control-plane address, a multi-homed host) can sever the agent's own
+  manageability with no remote way to undo it. Isolation is built as a
+  single atomic `nft -f`/`iptables-restore` transaction specifically to
+  avoid a real race: a chain's drop policy takes effect the instant it's
+  created, so applying it and its control-plane-accept exception as
+  separate sequential commands would open a window where the agent's own
+  connection has nothing accepting it. Quarantined files are renamed to
+  encode their own restore path (`<timestamp>__<percent-encoded original
+  path>`), so restoring one never depends on an admin-retyped, and
+  therefore arbitrary, destination path.
 - **Apotheosis**: time-boxed sudo elevation for managed hosts, modeled on
   Cockpit's "Administrative access" toggle. An admin with the new
   `hosts.elevate` permission (Super Admin only by default) can elevate a
@@ -117,12 +215,60 @@ project is pre-release, so everything so far lives under "Unreleased".
   what you do once it's already offline/decommissioned) -- it shows a
   copy-paste uninstall command instead, the same UX as the enrollment
   command.
-- **Thanatos arsenal** (metadata-only stub, 22nd arsenal): security
-  telemetry collection, threat detection, event correlation, endpoint
-  monitoring, and security alerting -- a SIEM/EDR capability, gated by
-  `security.view` like Cadavault. No real operations yet, matching the
-  other 20 stub arsenals; real capabilities are planned to build on an
-  existing separate SIEM/EDR project.
+- **Cryptkeeper arsenal**: secrets, credentials, certificates, keys, and
+  sensitive configuration on a managed host (`/arsenals/cryptkeeper`) --
+  listing SSH host keys and a user's authorized_keys (always fingerprinted
+  via `ssh-keygen -lf`, never showing raw key material), discovering TLS
+  certificates and viewing one's full detail, and scanning common
+  locations for insecurely-permissioned private keys/authorized_keys
+  files, all as read-only operations (`security.view`); generating a new
+  SSH keypair and tightening a file's permissions to one of a fixed safe
+  set (600/400/640/700, never loosening) as Write operations
+  (`security.manage`); and removing one authorized_keys entry by its
+  exact fingerprint, or permanently deleting an SSH keypair, as
+  Destructive operations requiring confirmation. `ViewSensitiveFile`
+  deliberately only ever reads a path the admin names explicitly --
+  never an automatic crawler scraping the whole filesystem for anything
+  that looks like a secret -- and its result does show real plaintext
+  content, a deliberate design choice: the control plane is the trusted
+  administrator surface for hosts it already fully manages, not an
+  untrusted party, unlike a zero-knowledge password manager.
+- **Thanatos arsenal**: security telemetry collection, threat detection,
+  event correlation, endpoint monitoring, and security alerting
+  (`/arsenals/thanatos`). Tails a managed host's security-relevant logs
+  (`/var/log/auth.log` or `/var/log/secure`, falling back to `journalctl`
+  for `sshd`/`sudo`/`su`/`systemd-logind` on hosts with neither) and
+  classifies each line against a fixed, ordered rule table into a
+  severity (Low/Medium/High) and a label, as a read-only, on-demand
+  operation (`security.view`). The control plane persists every
+  classified event (deduplicated by content hash, so re-scanning the
+  same tail window is a harmless no-op) and runs a correlation check --
+  5 or more High-severity events for one host within 5 minutes raises a
+  `Critical` finding, cooldown-limited to one alert per host per window
+  -- which is also pushed out through the existing notification
+  infrastructure to an admin-configured recipient list
+  (`thanatos.alert_recipients`) when one's set. A new unattended,
+  fixed-interval background sweep (`abyssal_web::spawn_thanatos_sweep`,
+  the second task of its kind after the elevation-expiry sweep) runs
+  this same scan-and-correlate pipeline across every connected host on
+  its own, gated behind an off-by-default Settings toggle
+  (`thanatos.monitoring_enabled`) since it's meaningfully different in
+  kind from Ossuary's/Inquest's high-risk gates -- it doesn't guard
+  against one catastrophic action, it guards against an admin being
+  surprised that something is reading and storing security-log content
+  across their whole fleet automatically; manual, admin-triggered scans
+  are unaffected by the setting either way. Deliberately scoped short of
+  a full push-based EDR agent (no eBPF, no continuous telemetry stream)
+  -- that's a genuinely different order of complexity (a new toolchain,
+  a transport the current pull-based agent protocol doesn't have, a
+  persisted correlation-rule engine) planned as a later phase, not
+  something folded into this pass. Fixed a real bug found during live
+  verification: the journal fallback's initial `journalctl -u sudo`
+  silently returned nothing, since `sudo` is a one-off child process,
+  not a systemd unit -- its PAM messages (including the "authentication
+  failure" line the rule table matches on) are tagged with a syslog
+  identifier instead, needing `journalctl -t sudo`, a genuinely
+  different flag.
 - **Password policy**: local account passwords now require at least 15
   characters, an uppercase letter, a lowercase letter, a number, and a
   special character, enforced server-side (`abyssal_auth::password::
@@ -137,7 +283,8 @@ project is pre-release, so everything so far lives under "Unreleased".
   `Referrer-Policy`) applied to every response.
 - **Notifications**: a `NotificationProvider` trait and dispatcher with a
   working SMTP provider; additional channels are a documented extension
-  point, not stubbed-out placeholders.
+  point, not stubbed-out placeholders. Thanatos's correlation alerts are
+  the first real caller of the dispatcher (see the Thanatos entry above).
 - **Deployment tooling**: multi-stage `Dockerfile` with dependency-layer
   caching across the full workspace, `docker-compose.yml` (MariaDB + app,
   optional Caddy reverse-proxy profile), an interactive `install.sh`, and
@@ -146,18 +293,28 @@ project is pre-release, so everything so far lives under "Unreleased".
   `cargo fmt --check`, and a Docker build-validation job on every push/PR;
   separate workflows publish the control-plane image to GHCR and package
   release binaries for both `abyssal-arsenal` and `abyssal-agent`.
-- **Panopticon arsenal** (metadata-only stub, 23rd arsenal): network
-  visibility and access control -- discovery, device identification,
-  MAC/IP inventory, service and OS fingerprinting, topology mapping, NAC
-  visibility, IoT/OT coverage, and network policy enforcement, gated by
-  `network.view`. No real operations yet, matching most of the other stub
-  arsenals, but it's architecturally distinct from all of them: Panopticon
-  is the first **control-plane arsenal** -- its future operations are
-  meant to run directly against the control plane's own network stack via
-  `Executor::execute()`, not dispatched to a host's agent via
-  `execute_on_host()`, since network discovery has to work on devices that
-  may never carry an agent at all. See ARCHITECTURE.md's "Modules
-  (arsenals)" section for the full reasoning.
+- **Panopticon arsenal**: network visibility and access control --
+  discovery, device inventory, and topology mapping across the LAN, run
+  from the control plane itself (`/arsenals/panopticon`), not dispatched
+  to any one host's agent -- network discovery has to work on devices
+  that may never carry an agent at all. The first real use of
+  `Executor::execute()` (the in-process counterpart to
+  `execute_on_host()`, previously scaffolded but never actually called):
+  a discovery scan runs an nmap TCP connect scan directly from the
+  control plane's own process (`network.scan`, Destructive, type-to-
+  confirm on the target, the same "only scan targets you're authorized
+  to scan" posture Necrolink's own network scan already established),
+  parses the results, and upserts each discovered device into a
+  persisted inventory with best-effort MAC correlation from the control
+  plane's own kernel neighbor table. Devices whose IP matches a
+  currently enrolled host's last-known connecting address (a new
+  `hosts.last_seen_ip` column, captured once at WebSocket connect time)
+  show as "Managed"; everything else shows as "Unmanaged." A topology
+  view groups the inventory by inferred /24 subnet -- deliberately not
+  real L2/switch topology, which would need SNMP/LLDP access this
+  platform doesn't have. Viewing the inventory and topology is
+  `network.view`; removing a stale device from the inventory
+  (`network.manage`) is Destructive, type-to-confirm on the IP.
 
 ### Fixed
 
@@ -275,8 +432,13 @@ project is pre-release, so everything so far lives under "Unreleased".
 - `LoginLimiter` and `HostConnectionRegistry` are in-memory and
   process-local; a multi-instance control plane would need both backed by
   shared state.
-- SSO/OIDC, non-SMTP notification providers, and 19 of the 22 arsenals'
-  real capabilities beyond metadata are not implemented yet (only
-  `cystoolbox`, `cadavault`, and `necrolink` have real operations so far).
+- SSO/OIDC and non-SMTP notification providers (Telegram, Slack, Teams,
+  Discord) are not implemented yet; all 23 arsenals now have real
+  capabilities, so this is the remaining gap in the originally-planned
+  scope.
+- Thanatos is a pull-based, on-demand/periodic-sweep telemetry collector,
+  not a continuous push-based EDR agent -- no eBPF, no live event stream.
+  That's a deliberate, documented scope boundary for now (see the
+  Thanatos changelog entry above), not an oversight.
 - No Tauri desktop client yet; `/api/health` and `/api/me` establish the
   API seam it would use.
