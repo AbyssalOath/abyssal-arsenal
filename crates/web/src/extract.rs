@@ -45,6 +45,20 @@ impl FromRequestParts<AppState> for CurrentUser {
             return Err(WebError(AppError::Forbidden));
         }
 
+        // An admin-created account with a still-unused temporary password
+        // can't do anything else until it's changed -- enforced here,
+        // ahead of every protected route, rather than only right after
+        // login, so a lingering session can't bypass it. `/account` (where
+        // the change-password form lives) and its own POST target are the
+        // only paths exempt; every other page just bounces back until this
+        // is resolved.
+        const MUST_CHANGE_PASSWORD_EXEMPT_PATHS: [&str; 2] = ["/account", "/account/password"];
+        if user.must_change_password
+            && !MUST_CHANGE_PASSWORD_EXEMPT_PATHS.contains(&parts.uri.path())
+        {
+            return Err(WebError(AppError::MustChangePassword));
+        }
+
         let ctx = AuthContext::load(&state.pool, user)
             .await
             .map_err(AppError::Internal)?;

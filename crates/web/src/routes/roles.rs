@@ -16,7 +16,9 @@ use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, ConfirmTemplate, PermissionRow, RoleDetail, RolesTemplate};
+use crate::templates::{
+    BaseCtx, ConfirmTemplate, ModuleVisibilityRow, PermissionRow, RoleDetail, RolesTemplate,
+};
 use crate::theme;
 
 pub async fn list(
@@ -38,6 +40,8 @@ pub async fn list(
     )
     .await?;
 
+    let all_modules = state.modules.list(&state.pool).await?;
+
     let mut roles = Vec::new();
     for role in repo::roles::list(&state.pool).await? {
         let granted: HashSet<Permission> = repo::roles::permissions_for_role(&state.pool, role.id)
@@ -51,12 +55,36 @@ pub async fn list(
                 granted: granted.contains(p),
             })
             .collect();
+
+        let customization =
+            repo::role_module_visibility::visibility_for_role(&state.pool, role.id).await?;
+        let visibility_customized = customization.is_some();
+        let module_visibility = all_modules
+            .iter()
+            .filter(|m| m.enabled)
+            .map(|m| {
+                let has_permission = m.view_permissions.is_empty()
+                    || m.view_permissions.iter().any(|p| granted.contains(p));
+                let visible = match &customization {
+                    Some(set) => set.contains(m.key),
+                    None => has_permission,
+                };
+                ModuleVisibilityRow {
+                    key: m.key,
+                    display_name: m.display_name,
+                    visible,
+                }
+            })
+            .collect();
+
         roles.push(RoleDetail {
             id: role.id.to_string(),
             name: role.name,
             description: role.description,
             is_system: role.is_system,
             permissions,
+            module_visibility,
+            visibility_customized,
         });
     }
 
@@ -202,6 +230,54 @@ pub async fn apply_permissions(
                 username: &ctx.user.username,
             })
             .resource(&role.name),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/roles").into_response())
+}
+
+/// Saves a role's dashboard-visibility customization -- a single step, no
+/// confirm page, unlike permissions above: unlike a permission change,
+/// getting this "wrong" never grants or revokes actual access, only which
+/// arsenals a role's members see on the dashboard (still bounded by
+/// permissions either way), so it doesn't carry the same risk. Manually
+/// parses the raw body for the same reason `update_permissions` does --
+/// see its doc comment.
+pub async fn update_visibility(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    body: Bytes,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::RolesManage)?;
+
+    let mut csrf_token = String::new();
+    let mut module_keys = Vec::new();
+    for (key, value) in form_urlencoded::parse(&body) {
+        match key.as_ref() {
+            "csrf_token" => csrf_token = value.into_owned(),
+            "modules" => module_keys.push(value.into_owned()),
+            _ => {}
+        }
+    }
+    require_csrf(&jar, &csrf_token)?;
+
+    let role = repo::roles::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    repo::role_module_visibility::set_visible_modules(&state.pool, id, &module_keys).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::RoleChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&role.name)
+            .metadata(serde_json::json!({ "dashboard_visibility_modules": module_keys })),
     )
     .await?;
 

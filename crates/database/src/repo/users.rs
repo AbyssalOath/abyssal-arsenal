@@ -92,6 +92,14 @@ pub async fn find_by_username(pool: &DbPool, username: &str) -> anyhow::Result<O
     Ok(row.map(Into::into))
 }
 
+pub async fn find_by_email(pool: &DbPool, email: &str) -> anyhow::Result<Option<User>> {
+    let row: Option<UserRow> = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(Into::into))
+}
+
 pub async fn list(pool: &DbPool) -> anyhow::Result<Vec<User>> {
     let rows: Vec<UserRow> = sqlx::query_as("SELECT * FROM users ORDER BY created_at ASC")
         .fetch_all(pool)

@@ -16,6 +16,13 @@ pub enum AppError {
     #[error("permission denied")]
     Forbidden,
 
+    /// The authenticated user has `must_change_password` set (an admin
+    /// created their account with a temporary password) and hasn't changed
+    /// it yet. Distinct from `Forbidden`: the caller is who they say they
+    /// are, they just can't do anything else until this is resolved.
+    #[error("password change required")]
+    MustChangePassword,
+
     #[error("invalid request: {0}")]
     Validation(String),
 

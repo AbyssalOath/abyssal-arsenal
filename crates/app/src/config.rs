@@ -9,6 +9,14 @@ pub struct Config {
     pub smtp_username: Option<String>,
     pub smtp_password: Option<String>,
     pub smtp_from: Option<String>,
+    /// Base URL this control plane is reachable at (e.g.
+    /// `https://arsenal.example.com`), used only to build a clickable link
+    /// in outgoing emails (currently just the password-reset email).
+    /// Deliberately not inferred from a request's `Host` header -- that's
+    /// attacker-controllable and this is a security-sensitive link, so an
+    /// admin has to set it explicitly. Without it, the reset email still
+    /// includes the raw token itself for the recipient to paste in.
+    pub public_url: Option<String>,
 }
 
 fn env_opt(key: &str) -> Option<String> {
@@ -36,6 +44,7 @@ impl Config {
             smtp_username: env_opt("SMTP_USERNAME"),
             smtp_password: env_opt("SMTP_PASSWORD"),
             smtp_from: env_opt("SMTP_FROM"),
+            public_url: env_opt("PUBLIC_URL").map(|v| v.trim_end_matches('/').to_string()),
         })
     }
 }

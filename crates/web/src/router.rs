@@ -25,9 +25,20 @@ pub fn build(state: AppState) -> Router {
             "/register",
             get(routes::register::show).post(routes::register::submit),
         )
+        .route(
+            "/forgot-password",
+            get(routes::password_reset::show_forgot_password)
+                .post(routes::password_reset::submit_forgot_password),
+        )
+        .route(
+            "/reset-password",
+            get(routes::password_reset::show_reset_password)
+                .post(routes::password_reset::submit_reset_password),
+        )
         .route("/theme", post(routes::theme::set))
         .route("/account", get(routes::account::show))
         .route("/account/timezone", post(routes::account::set_timezone))
+        .route("/account/password", post(routes::account::change_password))
         .route("/modules/:key/pin", post(routes::dashboard::pin))
         .route("/modules/:key/unpin", post(routes::dashboard::unpin))
         .route("/host-context/select", post(routes::host_context::select))
@@ -61,6 +72,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/admin/roles/:id/permissions/apply",
             post(routes::roles::apply_permissions),
+        )
+        .route(
+            "/admin/roles/:id/visibility",
+            post(routes::roles::update_visibility),
         )
         .route("/admin/audit", get(routes::audit::list))
         .route("/admin/audit/export", get(routes::audit::export))

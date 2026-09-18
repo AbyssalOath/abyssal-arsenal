@@ -25,6 +25,7 @@ pub mod obituary;
 pub mod ossuary;
 pub mod panopticon;
 pub mod parish;
+pub mod password_reset;
 pub mod postmortem;
 pub mod reanimation;
 pub mod register;

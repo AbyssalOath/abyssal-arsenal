@@ -22,6 +22,54 @@ for what that means for cloning and updating.
   small notice: the current version alone when up to date, or a red,
   pulsing, clickable notice (current version -> latest version, linking to
   the release) once a newer one is confirmed.
+- **Self-service password change**: a new "Password" card on `/account`
+  (current password, new password, confirmation) available to any logged-in
+  user, wired onto the `must_change_password` flag and `repo::users::
+  update_password` that already existed but were never enforced or exposed
+  anywhere. `CurrentUser` now redirects to `/account` from every other page
+  while `must_change_password` is set (an admin-created account with an
+  unused temporary password), not just right after login, so a lingering
+  session can't skip it; `/account` and its own POST target are the only
+  exempt paths. Records a `PASSWORD_CHANGED` audit event on success.
+- **Welcome email on user creation**: creating a user from `/admin/users`
+  now emails them their username and temporary password (and that they'll
+  be required to change it at first login) through whatever notification
+  provider is configured, reusing the same `NotificationDispatcher` Thanatos
+  alerts already go through. A no-op, never a reason to fail user creation
+  itself, when no provider is configured or the account has no email
+  address; the outcome is recorded on the `USER_CREATED` audit event
+  (`welcome_email_sent`) either way.
+- **Forgot password (emailed reset link)**: `/forgot-password` requests a
+  reset by email, `/reset-password` sets a new one -- a single-use,
+  SHA-256-hashed, 1-hour token (new `password_resets` table, same
+  hash-only-at-rest pattern as sessions and host enrollment tokens),
+  emailed as a clickable link when `PUBLIC_URL` is configured, or as a
+  plain code to paste in when it isn't (deliberately not inferred from a
+  request's `Host` header, since that's attacker-controllable and this is
+  a security-sensitive link). Always shows the same "if an account with
+  that email exists..." result regardless of whether it matched anything,
+  so the form can't be used to enumerate registered emails, and caps one
+  reset email per account per 15 minutes so repeated submissions can't be
+  used to spam someone's inbox. A successful reset revokes every active
+  session for that account (same reasoning as disabling a user) and
+  records a `PASSWORD_RESET` audit event; a `PASSWORD_RESET_REQUESTED`
+  event is recorded whenever a real reset email actually goes out.
+- **Role-based dashboard view**: `/admin/roles` gained a "Dashboard
+  arsenals" checkbox group per role, independent of (and always still
+  bounded by) its permission checkboxes above -- checking an arsenal a
+  role has no permission for has no effect, it never grants access on its
+  own. A role with no customization keeps showing every arsenal its
+  permissions already allow (today's exact behavior); customizing one
+  narrows its members' dashboards to exactly the checked set. A user with
+  multiple roles sees the union of what each contributes, and having even
+  one uncustomized role removes the restriction entirely for that user
+  (mirrors how permissions themselves already union across a user's
+  roles, most-permissive-wins, rather than a new paradigm). New
+  `role_module_visibility` table; addresses the gap where two roles with
+  different purposes (e.g. Network Admin and Regular User) sharing a
+  broad permission like `systems.view` also ended up seeing the same
+  large pile
+  of unrelated arsenal tiles on the dashboard.
 
 ### Fixed
 

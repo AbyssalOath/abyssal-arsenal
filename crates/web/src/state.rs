@@ -18,6 +18,10 @@ pub struct WebConfig {
     /// local plain-HTTP development; production deployments must run behind
     /// TLS and keep this on.
     pub cookie_secure: bool,
+    /// Base URL for links in outgoing emails -- see `Config::public_url` in
+    /// `crates/app/src/config.rs` for why this isn't inferred from a
+    /// request instead.
+    pub public_url: Option<String>,
 }
 
 #[derive(Clone)]

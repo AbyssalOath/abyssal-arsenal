@@ -173,6 +173,8 @@ pub async fn create(
     .await?;
     repo::roles::assign_role_to_user(&state.pool, user.id, form.role_id).await?;
 
+    let welcome_email_sent = send_welcome_email(&state, &user, &form.password).await;
+
     abyssal_audit::record(
         &state.pool,
         AuditEvent::new(AuditAction::UserCreated, AuditOutcome::Success)
@@ -180,11 +182,88 @@ pub async fn create(
                 user_id: ctx.user.id,
                 username: &ctx.user.username,
             })
-            .resource(&user.username),
+            .resource(&user.username)
+            .metadata(serde_json::json!({ "welcome_email_sent": welcome_email_sent })),
     )
     .await?;
 
     Ok(Redirect::to("/admin/users").into_response())
+}
+
+fn build_welcome_email(
+    user: &abyssal_core::User,
+    temporary_password: &str,
+) -> abyssal_notifications::NotificationMessage {
+    abyssal_notifications::NotificationMessage {
+        subject: "Your Abyssal Arsenal account has been created".to_string(),
+        body: format!(
+            "Hello {username},\n\n\
+             An administrator has created an Abyssal Arsenal account for you.\n\n\
+             Username: {username}\n\
+             Temporary password: {temporary_password}\n\n\
+             You will be required to set a new password the first time you log in.\n\n\
+             This is an automated message -- please do not reply.",
+            username = user.username,
+        ),
+        severity: abyssal_notifications::Severity::Info,
+        recipients: vec![user.email.clone()],
+    }
+}
+
+/// Emails a newly-created local account its username and temporary
+/// password, if it has an email address and at least one notification
+/// provider is configured -- a no-op either way, never a reason to fail
+/// user creation itself. Returns whether it actually went out, purely for
+/// the audit record; a missing provider and a real send failure both just
+/// result in `false` (the failure case is also logged via `tracing::warn`
+/// by the dispatcher itself), since the admin still has the password to
+/// hand over directly regardless of which one happened.
+async fn send_welcome_email(
+    state: &AppState,
+    user: &abyssal_core::User,
+    temporary_password: &str,
+) -> bool {
+    if user.email.trim().is_empty() {
+        return false;
+    }
+
+    let message = build_welcome_email(user, temporary_password);
+    let results = state.notifications.dispatch(&message).await;
+    !results.is_empty() && results.iter().all(|(_, r)| r.is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use abyssal_core::{AuthProviderKind, User};
+    use chrono::Utc;
+
+    fn test_user(email: &str) -> User {
+        User {
+            id: Uuid::new_v4(),
+            username: "newuser".to_string(),
+            email: email.to_string(),
+            password_hash: None,
+            auth_provider: AuthProviderKind::local(),
+            is_active: true,
+            must_change_password: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_login_at: None,
+            timezone: "UTC".to_string(),
+        }
+    }
+
+    #[test]
+    fn welcome_email_contains_username_and_temp_password() {
+        let user = test_user("newuser@example.com");
+        let message = build_welcome_email(&user, "Temp1234!@#$Pass");
+
+        assert_eq!(message.recipients, vec!["newuser@example.com".to_string()]);
+        assert!(message.body.contains("newuser"));
+        assert!(message.body.contains("Temp1234!@#$Pass"));
+        assert!(message.body.contains("required to set a new password"));
+    }
 }
 
 #[derive(Deserialize)]

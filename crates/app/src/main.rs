@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
             session_cookie_name: config.session_cookie_name.clone(),
             session_ttl: chrono::Duration::hours(config.session_ttl_hours),
             cookie_secure: config.cookie_secure,
+            public_url: config.public_url.clone(),
         }),
         login_limiter: Arc::new(LoginLimiter::default()),
         notifications: Arc::new(build_notifications(&config)),

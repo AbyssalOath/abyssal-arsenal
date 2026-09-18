@@ -21,6 +21,28 @@
     </div>
     <button type="submit" class="btn-warning" style="margin-top:14px;">Review &amp; save permissions</button>
   </form>
+
+  <h3 style="margin-top:20px;">Dashboard arsenals</h3>
+  <p style="color:var(--text-muted);">
+    Which arsenals members of this role see on the dashboard. Never grants
+    access on its own -- an arsenal checked here still only actually shows
+    if the role also has the permission it requires above.
+    {% if !role.visibility_customized %}
+    <span class="badge badge-muted">Not customized -- showing everything permissions currently allow</span>
+    {% endif %}
+  </p>
+  <form method="post" action="/admin/roles/{{ role.id }}/visibility">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div class="action-grid">
+      {% for m in role.module_visibility %}
+      <label style="display:flex; align-items:center; gap:8px; background:var(--surface-raised); padding:8px 10px; border-radius:5px; border:1px solid var(--border); margin-bottom:0;">
+        <input type="checkbox" name="modules" value="{{ m.key }}" {% if m.visible %}checked{% endif %} style="width:auto; margin:0;">
+        {{ m.display_name }}
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn-secondary" style="margin-top:14px;">Save dashboard arsenals</button>
+  </form>
 </div>
 {% endfor %}
 

@@ -60,6 +60,9 @@ pub async fn show(
 
     let pinned_keys = repo::pinned_modules::list_for_user(&state.pool, ctx.user.id).await?;
     let search = q.q.trim().to_lowercase();
+    let role_restriction =
+        repo::role_module_visibility::effective_restriction_for_user(&state.pool, ctx.user.id)
+            .await?;
 
     let visible: Vec<ModuleTile> = state
         .modules
@@ -68,6 +71,10 @@ pub async fn show(
         .into_iter()
         .filter(|m| m.enabled)
         .filter(|m| m.view_permissions.is_empty() || m.view_permissions.iter().any(|p| ctx.has(*p)))
+        .filter(|m| match &role_restriction {
+            Some(allowed) => allowed.contains(m.key),
+            None => true,
+        })
         .filter(|m| {
             search.is_empty()
                 || m.display_name.to_lowercase().contains(&search)

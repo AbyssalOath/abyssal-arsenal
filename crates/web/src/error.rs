@@ -28,10 +28,17 @@ impl IntoResponse for WebError {
         if matches!(self.0, AppError::Unauthenticated) {
             return Redirect::to("/login").into_response();
         }
+        // Same idea as Unauthenticated above: nearly every route behind
+        // `CurrentUser` is a browser page, so send them straight to where
+        // they can actually resolve this instead of a bare 403.
+        if matches!(self.0, AppError::MustChangePassword) {
+            return Redirect::to("/account").into_response();
+        }
 
         let (status, message) = match &self.0 {
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found.".to_string()),
             AppError::Unauthenticated => unreachable!("handled above"),
+            AppError::MustChangePassword => unreachable!("handled above"),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "Permission denied.".to_string()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),

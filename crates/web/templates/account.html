@@ -3,6 +3,31 @@
 {% block heading %}Account{% endblock %}
 {% block content %}
 
+{% if must_change_password %}
+<div class="error-banner">
+  Your account has a temporary password. Set a new one below before you can
+  continue.
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Password</h2>
+  <p style="color:var(--text-muted);">Change the password used to sign in.</p>
+  {% if let Some(err) = password_error %}
+  <div class="error-banner">{{ err }}</div>
+  {% endif %}
+  <form method="post" action="/account/password">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="current-password">Current password</label>
+    <input type="password" id="current-password" name="current_password" autocomplete="current-password" required style="max-width:360px;">
+    <label for="new-password">New password</label>
+    <input type="password" id="new-password" name="new_password" autocomplete="new-password" required style="max-width:360px;">
+    <label for="new-password-confirm">Confirm new password</label>
+    <input type="password" id="new-password-confirm" name="new_password_confirm" autocomplete="new-password" required style="max-width:360px;">
+    <button type="submit" class="btn-warning">Change password</button>
+  </form>
+</div>
+
 <div class="card">
   <h2>Appearance</h2>
   <p style="color:var(--text-muted);">Applies only to your own browser -- other users keep their own choice.</p>

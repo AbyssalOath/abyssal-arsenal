@@ -172,6 +172,29 @@ pub struct LoginTemplate {
     pub registration_enabled: bool,
 }
 
+#[derive(Template)]
+#[template(path = "forgot_password.html")]
+pub struct ForgotPasswordTemplate {
+    pub theme: String,
+    pub csrf_token: String,
+    /// Always the same message regardless of whether the email matched an
+    /// account -- set once the form has been submitted, `None` for the
+    /// initial blank form.
+    pub submitted: bool,
+}
+
+#[derive(Template)]
+#[template(path = "reset_password.html")]
+pub struct ResetPasswordTemplate {
+    pub theme: String,
+    pub csrf_token: String,
+    /// Pre-filled from `?token=` when present, but always a plain editable
+    /// field -- without `PUBLIC_URL` configured, the reset email has no
+    /// link at all, just a code the recipient pastes in here directly.
+    pub token: String,
+    pub error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct ModuleTile {
     pub key: &'static str,
@@ -277,12 +300,27 @@ pub struct PermissionRow {
     pub granted: bool,
 }
 
+/// One arsenal's dashboard-visibility checkbox state for a role, editable
+/// on `/admin/roles` independently of (and always still bounded by) its
+/// permission-based access.
+pub struct ModuleVisibilityRow {
+    pub key: &'static str,
+    pub display_name: &'static str,
+    pub visible: bool,
+}
+
 pub struct RoleDetail {
     pub id: String,
     pub name: String,
     pub description: String,
     pub is_system: bool,
     pub permissions: Vec<PermissionRow>,
+    pub module_visibility: Vec<ModuleVisibilityRow>,
+    /// Whether this role has an explicit dashboard-visibility override.
+    /// When false, `module_visibility` reflects today's plain
+    /// permission-based visibility as a starting point for editing, not a
+    /// saved customization yet.
+    pub visibility_customized: bool,
 }
 
 #[derive(Template)]
@@ -349,6 +387,11 @@ pub struct StyleGuideTemplate {
 #[template(path = "account.html")]
 pub struct AccountTemplate {
     pub base: BaseCtx,
+    /// True while this account still has an admin-set temporary password
+    /// it hasn't changed yet -- shows a banner and is why `CurrentUser`
+    /// keeps redirecting here from every other page until it's resolved.
+    pub must_change_password: bool,
+    pub password_error: Option<String>,
 }
 
 #[derive(Template)]
