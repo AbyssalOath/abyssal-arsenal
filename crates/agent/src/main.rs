@@ -4,6 +4,7 @@ mod firewall;
 mod incarnation;
 mod init_system;
 mod mortiscope;
+mod necropolis;
 mod necropsy;
 mod network;
 mod obituary;

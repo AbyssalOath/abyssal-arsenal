@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -289,6 +289,37 @@ pub enum AgentOperation {
     /// exit reporting a real finding is exactly the useful case here, not
     /// an error.
     DiskHealth { device: String },
+    /// Every container, running or stopped (`docker ps -a` /
+    /// `podman ps -a` -- whichever runtime is present; their CLI syntax
+    /// is identical for every op in this arsenal).
+    ListContainers,
+    /// The last 100 log lines for one container (`... logs --tail 100`).
+    ContainerLogs { container: String },
+    /// Full inspection detail for one container -- config, mounts,
+    /// network settings, restart policy (`... inspect`).
+    ContainerInspect { container: String },
+    /// Every image present on the host (`... images`).
+    ListImages,
+    /// Runtime-level status: storage driver, container/image counts,
+    /// version (`... info`).
+    RuntimeInfo,
+    /// Starts a stopped container. Write -- a real mutation, but not
+    /// irreversible (stopping it again undoes it), so it doesn't require
+    /// the explicit confirmation a `Destructive` operation does.
+    StartContainer { container: String },
+    /// Stops a running container. Destructive: whatever the container was
+    /// providing becomes unavailable immediately, so the control plane
+    /// requires explicit confirmation before ever dispatching this.
+    StopContainer { container: String },
+    /// Restarts a container. Destructive for the same reason as
+    /// `StopContainer` -- a brief outage is guaranteed.
+    RestartContainer { container: String },
+    /// Deletes a container entirely (`... rm`, without `-f`, so a
+    /// currently-running container is refused rather than force-killed).
+    /// Destructive and irreversible -- the container's own writable layer
+    /// and state are gone, though named volumes survive -- so the control
+    /// plane requires explicit confirmation before ever dispatching this.
+    RemoveContainer { container: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -431,6 +462,33 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::DiskHealth { device } => f
                 .debug_struct("DiskHealth")
                 .field("device", device)
+                .finish(),
+            AgentOperation::ListContainers => write!(f, "ListContainers"),
+            AgentOperation::ContainerLogs { container } => f
+                .debug_struct("ContainerLogs")
+                .field("container", container)
+                .finish(),
+            AgentOperation::ContainerInspect { container } => f
+                .debug_struct("ContainerInspect")
+                .field("container", container)
+                .finish(),
+            AgentOperation::ListImages => write!(f, "ListImages"),
+            AgentOperation::RuntimeInfo => write!(f, "RuntimeInfo"),
+            AgentOperation::StartContainer { container } => f
+                .debug_struct("StartContainer")
+                .field("container", container)
+                .finish(),
+            AgentOperation::StopContainer { container } => f
+                .debug_struct("StopContainer")
+                .field("container", container)
+                .finish(),
+            AgentOperation::RestartContainer { container } => f
+                .debug_struct("RestartContainer")
+                .field("container", container)
+                .finish(),
+            AgentOperation::RemoveContainer { container } => f
+                .debug_struct("RemoveContainer")
+                .field("container", container)
                 .finish(),
         }
     }
@@ -633,6 +691,20 @@ pub fn is_valid_unit_name(name: &str) -> bool {
 /// backup source/target paths do would rule out the main case.
 pub fn is_valid_mount_target(path: &str) -> bool {
     path.starts_with('/') && path.len() <= 4096 && path.chars().all(|c| !c.is_control())
+}
+
+/// A container name or ID (Docker/Podman), e.g. `"web-1"` or a hex
+/// container ID. Letters, digits, and the punctuation container names
+/// allow (`-_.`) only, and never starting with `-` -- the
+/// argument-injection defense, same reasoning as every other validator
+/// here: this can never spell out a different flag.
+pub fn is_valid_container_ref(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 #[cfg(test)]
@@ -838,5 +910,21 @@ mod tests {
         assert!(!is_valid_mount_target("relative/path"));
         assert!(!is_valid_mount_target("/etc\nmalicious"));
         assert!(!is_valid_mount_target(&format!("/{}", "a".repeat(4096))));
+    }
+
+    #[test]
+    fn accepts_reasonable_container_refs() {
+        assert!(is_valid_container_ref("web-1"));
+        assert!(is_valid_container_ref("my_app.service"));
+        assert!(is_valid_container_ref("a1b2c3d4e5f6"));
+    }
+
+    #[test]
+    fn rejects_malformed_container_refs() {
+        assert!(!is_valid_container_ref(""));
+        assert!(!is_valid_container_ref("-web"));
+        assert!(!is_valid_container_ref("web; rm -rf /"));
+        assert!(!is_valid_container_ref("web 1"));
+        assert!(!is_valid_container_ref(&"a".repeat(256)));
     }
 }

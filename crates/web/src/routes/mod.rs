@@ -12,6 +12,7 @@ pub mod login;
 pub mod modules;
 pub mod mortiscope;
 pub mod necrolink;
+pub mod necropolis;
 pub mod necropsy;
 pub mod obituary;
 pub mod postmortem;

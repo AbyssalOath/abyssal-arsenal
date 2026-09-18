@@ -4,7 +4,7 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    firewall, incarnation, mortiscope, necropsy, network, obituary, postmortem,
+    firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary, postmortem,
     process::run_command, reliquary, resurrection,
 };
 
@@ -115,6 +115,27 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::BlockDevices => necropsy::block_devices(elevation).await,
         AgentOperation::MemoryHardware => necropsy::memory_hardware(elevation).await,
         AgentOperation::DiskHealth { device } => necropsy::disk_health(device, elevation).await,
+        AgentOperation::ListContainers => necropolis::list_containers(elevation).await,
+        AgentOperation::ContainerLogs { container } => {
+            necropolis::container_logs(container, elevation).await
+        }
+        AgentOperation::ContainerInspect { container } => {
+            necropolis::container_inspect(container, elevation).await
+        }
+        AgentOperation::ListImages => necropolis::list_images(elevation).await,
+        AgentOperation::RuntimeInfo => necropolis::runtime_info(elevation).await,
+        AgentOperation::StartContainer { container } => {
+            necropolis::start_container(container, elevation).await
+        }
+        AgentOperation::StopContainer { container } => {
+            necropolis::stop_container(container, elevation).await
+        }
+        AgentOperation::RestartContainer { container } => {
+            necropolis::restart_container(container, elevation).await
+        }
+        AgentOperation::RemoveContainer { container } => {
+            necropolis::remove_container(container, elevation).await
+        }
     }
 }
 

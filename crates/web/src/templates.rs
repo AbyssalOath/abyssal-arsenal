@@ -432,6 +432,35 @@ pub struct MortiscopeHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct NecropolisHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "necropolis.html")]
+pub struct NecropolisTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<NecropolisHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "necropolis_host.html")]
+pub struct NecropolisHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `containers.manage` -- gates the Write/Destructive lifecycle
+    /// section, distinct from the `containers.view` the read operations
+    /// use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct NecropsyHostRow {
     pub id: String,
     pub name: String,
