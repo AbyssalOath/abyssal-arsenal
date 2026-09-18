@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -959,6 +959,21 @@ pub enum AgentOperation {
     DeleteSshKeypair {
         path: String,
     },
+    /// Security telemetry collection and threat detection ("Thanatos"):
+    /// tails this host's security-relevant logs (`/var/log/auth.log` or
+    /// `/var/log/secure`, whichever exists, falling back to `journalctl`
+    /// for `sshd`/`sudo`/`systemd-logind` on hosts with neither) and
+    /// classifies each line against a fixed, ordered rule table into a
+    /// severity (low/medium/high -- `critical` is reserved for the
+    /// control plane's own correlation findings, never assigned by the
+    /// agent) and a human label. Returns only lines that matched a rule,
+    /// one per line as tab-separated `severity\tlabel\tsource\traw_line`
+    /// -- the control plane persists these for its own event-correlation
+    /// and alerting (see `crates/web/src/thanatos_ops.rs`), which is why
+    /// this needs structured-ish output rather than the free-text
+    /// `OperationOutput` every other read op returns. Read: never
+    /// modifies anything on the host.
+    ScanSecurityEvents,
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -1435,6 +1450,7 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("DeleteSshKeypair")
                 .field("path", path)
                 .finish(),
+            AgentOperation::ScanSecurityEvents => write!(f, "ScanSecurityEvents"),
         }
     }
 }

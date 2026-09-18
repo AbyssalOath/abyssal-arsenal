@@ -26,6 +26,13 @@ pub async fn get_u32(pool: &DbPool, key: &str, default: u32) -> anyhow::Result<u
         .unwrap_or(default))
 }
 
+pub async fn get_string(pool: &DbPool, key: &str, default: &str) -> anyhow::Result<String> {
+    Ok(get(pool, key)
+        .await?
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| default.to_string()))
+}
+
 pub async fn set(
     pool: &DbPool,
     key: &str,

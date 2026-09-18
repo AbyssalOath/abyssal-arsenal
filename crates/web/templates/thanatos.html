@@ -1,0 +1,65 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Thanatos — Abyssal Arsenal{% endblock %}
+{% block heading %}Thanatos — Security Telemetry{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Tails each connected host's security logs, classifies matching lines by severity, and
+    correlates bursts of high-severity activity into alerts. The unattended background sweep
+    (Settings &rarr; Thanatos background monitoring) does this automatically on a fixed interval
+    when enabled; otherwise, run a scan from a host's own page below.
+  </p>
+  <h3 style="margin-top:0;">Last 24h, across the fleet</h3>
+  {% if severity_summary.is_empty() %}
+  <p style="color:var(--text-muted);">No events recorded yet.</p>
+  {% else %}
+  <div class="action-grid">
+    {% for s in severity_summary %}
+    <span class="badge {{ s.badge_class }}">{{ s.label }}: {{ s.count }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">{% call macros::icon("warning") %} Recent Alerts</h3>
+  {% if recent_alerts.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No correlation alerts raised yet.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Host</th><th>Finding</th><th>Detail</th><th>Raised</th></tr></thead>
+    <tbody>
+      {% for a in recent_alerts %}
+      <tr>
+        <td>{{ a.host_name }}</td>
+        <td><span class="badge badge-danger">{{ a.label }}</span></td>
+        <td>{{ a.raw_line }}</td>
+        <td>{{ a.occurred_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% if hosts.is_empty() %}
+<div class="card">
+  <p style="color:var(--text-muted);">
+    No hosts are currently online. Enroll and connect a host from
+    <a href="/admin/hosts">Hosts</a> first.
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">Pick a host to run a scan or view its event history.</p>
+  <div class="actions">
+    {% for h in hosts %}
+    <a class="btn btn-secondary" href="/arsenals/thanatos/{{ h.id }}">{{ h.name }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

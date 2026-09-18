@@ -244,6 +244,8 @@ pub struct SettingsTemplate {
     pub apotheosis_elevation_window_minutes: u32,
     pub high_risk_storage_ops_enabled: bool,
     pub host_isolation_enabled: bool,
+    pub thanatos_monitoring_enabled: bool,
+    pub thanatos_alert_recipients: String,
     pub message: Option<String>,
 }
 
@@ -596,6 +598,56 @@ pub struct CryptkeeperHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
+pub struct ThanatosHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+pub struct SeverityCountRow {
+    pub label: &'static str,
+    pub badge_class: &'static str,
+    pub count: i64,
+}
+
+pub struct SecurityEventRow {
+    pub severity_label: &'static str,
+    pub badge_class: &'static str,
+    pub label: String,
+    pub source: String,
+    pub raw_line: String,
+    pub occurred_at: String,
+}
+
+pub struct AlertRow {
+    pub host_name: String,
+    pub label: String,
+    pub raw_line: String,
+    pub occurred_at: String,
+}
+
+#[derive(Template)]
+#[template(path = "thanatos.html")]
+pub struct ThanatosTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<ThanatosHostRow>,
+    pub severity_summary: Vec<SeverityCountRow>,
+    pub recent_alerts: Vec<AlertRow>,
+}
+
+#[derive(Template)]
+#[template(path = "thanatos_host.html")]
+pub struct ThanatosHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub events: Vec<SecurityEventRow>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,

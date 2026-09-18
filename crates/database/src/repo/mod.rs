@@ -4,6 +4,7 @@ pub mod hosts;
 pub mod modules;
 pub mod network_devices;
 pub mod roles;
+pub mod security_events;
 pub mod sessions;
 pub mod settings;
 pub mod users;

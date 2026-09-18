@@ -87,6 +87,14 @@ pub fn build(state: AppState) -> Router {
             "/admin/settings/host-isolation",
             post(routes::settings::set_host_isolation),
         )
+        .route(
+            "/admin/settings/thanatos-monitoring",
+            post(routes::settings::set_thanatos_monitoring),
+        )
+        .route(
+            "/admin/settings/thanatos-alert-recipients",
+            post(routes::settings::set_thanatos_alert_recipients),
+        )
         .route("/admin/hosts", get(routes::hosts::list))
         .route(
             "/admin/hosts/enroll-token",
@@ -989,6 +997,15 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/devices/:id/remove",
             post(routes::panopticon::remove_device),
+        )
+        .route("/arsenals/thanatos", get(routes::thanatos::show))
+        .route(
+            "/arsenals/thanatos/:host_id",
+            get(routes::thanatos::show_host),
+        )
+        .route(
+            "/arsenals/thanatos/:host_id/scan",
+            post(routes::thanatos::scan),
         )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))

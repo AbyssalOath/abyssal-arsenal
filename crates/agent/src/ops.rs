@@ -6,7 +6,7 @@ use crate::init_system::{self, InitSystem};
 use crate::{
     apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, incarnation, inquest,
     mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem,
-    process::run_command, reanimation, reliquary, resurrection, vivisection,
+    process::run_command, reanimation, reliquary, resurrection, thanatos, vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -349,6 +349,7 @@ pub async fn run(
         AgentOperation::DeleteSshKeypair { path } => {
             cryptkeeper::delete_ssh_keypair(path, elevation).await
         }
+        AgentOperation::ScanSecurityEvents => thanatos::scan_security_events(elevation).await,
     }
 }
 

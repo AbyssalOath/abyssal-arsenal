@@ -2,6 +2,7 @@ use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
     APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES, APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
     HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED, PUBLIC_REGISTRATION_ENABLED,
+    THANATOS_ALERT_RECIPIENTS, THANATOS_MONITORING_ENABLED,
 };
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
@@ -40,6 +41,10 @@ pub async fn show(
         repo::settings::get_bool(&state.pool, HIGH_RISK_STORAGE_OPS_ENABLED, false).await?;
     let host_isolation_enabled =
         repo::settings::get_bool(&state.pool, HOST_ISOLATION_ENABLED, false).await?;
+    let thanatos_monitoring_enabled =
+        repo::settings::get_bool(&state.pool, THANATOS_MONITORING_ENABLED, false).await?;
+    let thanatos_alert_recipients =
+        repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "").await?;
 
     let tpl = SettingsTemplate {
         base,
@@ -47,6 +52,8 @@ pub async fn show(
         apotheosis_elevation_window_minutes,
         high_risk_storage_ops_enabled,
         host_isolation_enabled,
+        thanatos_monitoring_enabled,
+        thanatos_alert_recipients,
         message: None,
     };
     let jar = match new_cookie {
@@ -164,6 +171,103 @@ pub async fn set_host_isolation(
             })
             .resource(HOST_ISOLATION_ENABLED)
             .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ThanatosMonitoringForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_thanatos_monitoring(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosMonitoringForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_MONITORING_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(THANATOS_MONITORING_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+fn validate_recipients(raw: &str) -> Result<String, WebError> {
+    let cleaned: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    for r in &cleaned {
+        if r.len() > 254
+            || !r.contains('@')
+            || r.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(WebError(AppError::Validation(format!(
+                "\"{r}\" doesn't look like a valid email address."
+            ))));
+        }
+    }
+    Ok(cleaned.join(","))
+}
+
+#[derive(Deserialize)]
+pub struct ThanatosAlertRecipientsForm {
+    csrf_token: String,
+    #[serde(default)]
+    recipients: String,
+}
+
+pub async fn set_thanatos_alert_recipients(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosAlertRecipientsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let recipients = validate_recipients(&form.recipients)?;
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_ALERT_RECIPIENTS,
+        serde_json::json!(recipients),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(THANATOS_ALERT_RECIPIENTS),
     )
     .await?;
 

@@ -91,6 +91,44 @@
       </button>
     </form>
   </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">{% call macros::icon("audit") %} Thanatos background monitoring</h2>
+    <p style="color:var(--text-muted);">
+      An unattended, fixed-interval sweep that scans every connected host's security logs,
+      persists what it finds, and can raise correlation alerts on its own -- nobody has to
+      click anything. Off by default: this reads and stores security-log content across your
+      whole fleet automatically once enabled. Manual, admin-triggered scans from the Thanatos
+      page work regardless of this setting; it only controls the unattended sweep.
+    </p>
+    <form method="post" action="/admin/settings/thanatos-monitoring">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <p>Currently:
+        {% if thanatos_monitoring_enabled %}<span class="badge badge-success">Enabled</span>
+        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+      </p>
+      <input type="hidden" name="enabled" value="{% if thanatos_monitoring_enabled %}false{% else %}true{% endif %}">
+      <button type="submit" class="{% if thanatos_monitoring_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+        {% if thanatos_monitoring_enabled %}Disable background monitoring{% else %}Enable background monitoring{% endif %}
+      </button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">{% call macros::icon("audit") %} Thanatos alert recipients</h2>
+    <p style="color:var(--text-muted);">
+      Comma-separated email addresses notified when Thanatos's correlation sweep raises a
+      finding, sent through whatever notification provider is configured (SMTP today, set via
+      environment variables). An alert is still recorded and shown on the Thanatos page even
+      with no recipients set -- this only controls whether it's also actively pushed out.
+    </p>
+    <form method="post" action="/admin/settings/thanatos-alert-recipients">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="thanatos-recipients">Recipients</label>
+      <input type="text" id="thanatos-recipients" name="recipients" value="{{ thanatos_alert_recipients }}" placeholder="e.g. admin@example.com, oncall@example.com">
+      <button type="submit" class="btn-warning">Save</button>
+    </form>
+  </div>
 </div>
 
 {% endblock %}

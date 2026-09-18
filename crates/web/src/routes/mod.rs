@@ -33,6 +33,7 @@ pub mod roles;
 pub mod settings;
 pub mod setup;
 pub mod style_guide;
+pub mod thanatos;
 pub mod theme;
 pub mod users;
 pub mod vivisection;

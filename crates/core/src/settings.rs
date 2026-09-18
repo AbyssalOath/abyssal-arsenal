@@ -28,3 +28,23 @@ pub const HIGH_RISK_STORAGE_OPS_ENABLED: &str = "ossuary.high_risk_storage_ops_e
 /// dispatched at all, on top of (not instead of) the type-to-confirm the
 /// operation still requires individually.
 pub const HOST_ISOLATION_ENABLED: &str = "inquest.host_isolation_enabled";
+
+/// Gates Thanatos's periodic background sweep -- an unattended,
+/// fixed-interval task (see `crates/app/src/main.rs`) that dispatches a
+/// security-log scan to every connected host, persists what it finds, and
+/// can raise correlation alerts entirely on its own with nobody having
+/// clicked anything. Off by default: this is different in kind from
+/// Ossuary's/Inquest's high-risk gates (those guard against a single
+/// catastrophic action; this guards against an admin being surprised that
+/// something is reading and storing security-log content across their
+/// whole fleet automatically). Manual, admin-triggered scans from the
+/// Thanatos page are unaffected by this setting either way -- it only
+/// controls the unattended sweep.
+pub const THANATOS_MONITORING_ENABLED: &str = "thanatos.monitoring_enabled";
+
+/// Comma-separated notification recipient addresses for Thanatos
+/// correlation alerts, routed through whatever notification provider(s)
+/// are configured (SMTP today). Empty by default -- an alert still gets
+/// persisted and shown in the UI either way, this only controls whether
+/// it's also actively pushed out.
+pub const THANATOS_ALERT_RECIPIENTS: &str = "thanatos.alert_recipients";
