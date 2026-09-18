@@ -11,7 +11,7 @@
     (Settings &rarr; Thanatos background monitoring) does this automatically on a fixed interval
     when enabled; otherwise, run a scan from a host's own page below.
   </p>
-  <h3 style="margin-top:0;">Last 24h, across the fleet</h3>
+  <h3>Last 24h, across the fleet</h3>
   {% if severity_summary.is_empty() %}
   <p style="color:var(--text-muted);">No events recorded yet.</p>
   {% else %}
@@ -24,7 +24,7 @@
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0;">{% call macros::icon("warning") %} Recent Alerts</h3>
+  <h3>{% call macros::icon("warning") %} Recent Alerts</h3>
   {% if recent_alerts.is_empty() %}
   <p style="color:var(--text-muted); margin-top:0;">No correlation alerts raised yet.</p>
   {% else %}

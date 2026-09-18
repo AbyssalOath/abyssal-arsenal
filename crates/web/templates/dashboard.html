@@ -1,28 +1,58 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Dashboard — Abyssal Arsenal{% endblock %}
 {% block heading %}Dashboard{% endblock %}
 {% block content %}
 
+{% if base.can_hosts_view %}
 <div class="card">
-  <h2 style="margin-top:0;">Active tasks</h2>
-  <p style="color:var(--text-muted);">No tasks are currently running. The controlled execution layer has no
-  arsenal-triggered operations wired up yet — this panel will populate once one exists, rather than showing
-  placeholder data.</p>
-</div>
+  <h2>Fleet health</h2>
+  <div class="status-strip">
+    <span class="badge badge-muted">{{ fleet_health.host_count }} host{% if fleet_health.host_count != 1 %}s{% endif %}</span>
+    <span class="badge badge-success">{{ fleet_health.online_count }} online</span>
+    {% let offline = fleet_health.host_count - fleet_health.online_count %}
+    {% if offline > 0 %}
+    <span class="badge badge-muted">{{ offline }} offline</span>
+    {% endif %}
+    {% if fleet_health.open_alerts > 0 %}
+    <span class="badge badge-danger">{{ fleet_health.open_alerts }} open Thanatos alert{% if fleet_health.open_alerts != 1 %}s{% endif %} (24h)</span>
+    {% else %}
+    <span class="badge badge-success">No open Thanatos alerts</span>
+    {% endif %}
+  </div>
 
+  {% if !fleet_health.hosts_needing_attention.is_empty() %}
+  <h3>{% call macros::icon("warning") %} Needs attention</h3>
+  <div class="actions">
+    {% for h in fleet_health.hosts_needing_attention %}
+    <span class="badge badge-warning">{{ h.host_name }}: {{ h.reason }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <h3>{% call macros::icon("generate") %} Last backup</h3>
+  {% if let Some(b) = fleet_health.last_backup %}
+  <p style="color:var(--text-muted); margin:0;">{{ b.name }} on {{ b.host_name }} &mdash; {{ b.when }}</p>
+  {% else %}
+  <p style="color:var(--text-muted); margin:0;">No backups recorded yet.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if base.can_audit_view %}
 <div class="card">
-  <h2 style="margin-top:0;">Recent activity</h2>
+  <h2>Recent activity</h2>
   {% if recent_activity.is_empty() %}
   <p style="color:var(--text-muted);">No recent activity.</p>
   {% else %}
   <table>
-    <thead><tr><th>When</th><th>User</th><th>Action</th><th>Result</th></tr></thead>
+    <thead><tr><th>When</th><th>User</th><th>Activity</th><th>Result</th></tr></thead>
     <tbody>
       {% for row in recent_activity %}
       <tr>
         <td>{{ row.occurred_at }}</td>
         <td>{{ row.username }}</td>
-        <td>{{ row.action }}</td>
+        <td>{{ row.summary }}</td>
         <td>
           {% if row.result == "SUCCESS" %}
           <span class="badge badge-success">{{ row.result }}</span>
@@ -36,18 +66,45 @@
   </table>
   {% endif %}
 </div>
+{% endif %}
 
 <div class="card">
-  <h2 style="margin-top:0;">Arsenals</h2>
-  <div class="tile-grid">
-    {% for m in modules %}
-    <a href="/arsenals/{{ m.key }}" class="tile" style="text-decoration:none; color:inherit; display:block;">
-      <div class="category">{{ m.category }}</div>
-      <h3>{{ m.display_name }}</h3>
-      <p>{{ m.description }}</p>
-    </a>
-    {% endfor %}
+  <h2>Arsenals</h2>
+
+  <form method="get" action="/" class="dashboard-search">
+    <label for="dashboard-search-q" class="sr-only">Search arsenals</label>
+    <input type="text" id="dashboard-search-q" name="q" value="{{ search_query }}" placeholder="Search arsenals by name or description&hellip;">
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Search</button>
+    {% if !search_query.is_empty() %}
+    <a href="/" class="btn-secondary">Clear</a>
+    {% endif %}
+  </form>
+
+  {% if pinned.is_empty() && groups.is_empty() %}
+  <p style="color:var(--text-muted);">No arsenals match &ldquo;{{ search_query }}&rdquo;.</p>
+  {% endif %}
+
+  {% if !pinned.is_empty() %}
+  <div class="module-group">
+    <div class="module-group-title">{% call macros::icon("pin") %} Pinned</div>
+    <div class="tile-grid">
+      {% for m in pinned %}
+      {% call macros::module_tile(m, search_query, base.csrf_token) %}
+      {% endfor %}
+    </div>
   </div>
+  {% endif %}
+
+  {% for group in groups %}
+  <details class="module-group" open>
+    <summary>{{ group.category }} <span class="module-group-count">{{ group.tiles.len() }}</span></summary>
+    <div class="tile-grid">
+      {% for m in group.tiles %}
+      {% call macros::module_tile(m, search_query, base.csrf_token) %}
+      {% endfor %}
+    </div>
+  </details>
+  {% endfor %}
 </div>
 
 {% endblock %}

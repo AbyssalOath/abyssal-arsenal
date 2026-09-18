@@ -14,7 +14,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Severity colors</h2>
+  <h2>Severity colors</h2>
   <p style="color:var(--text-muted);">
     Button color communicates what an action <em>does</em>, not which module it's in.
     Applied the same way everywhere: Users, Roles, Hosts, Modules, and every arsenal.
@@ -38,7 +38,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Buttons</h2>
+  <h2>Buttons</h2>
   <p style="color:var(--text-muted);">All four variants share consistent padding, radius, and font-weight, and all define hover, active (press), disabled, and focus-visible states.</p>
   <div class="style-guide-swatch">
     <button type="button">Default</button>
@@ -62,7 +62,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Inputs</h2>
+  <h2>Inputs</h2>
   <p style="color:var(--text-muted);">Recessed background with an inner shadow so inputs read as "fillable," distinct from cards and buttons, with a visible accent-colored focus ring and legible placeholder contrast.</p>
   <div style="max-width:360px;">
     <label for="sg-text">Text input</label>
@@ -75,7 +75,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Badges</h2>
+  <h2>Badges</h2>
   <div class="style-guide-swatch">
     <span class="badge badge-success">Enabled / Online</span>
     <span class="badge badge-danger">Revoked / Failure</span>
@@ -85,7 +85,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Cards, tiles, and layout</h2>
+  <h2>Cards, tiles, and layout</h2>
   <p style="color:var(--text-muted);">
     <code>.card</code> is the standard content container -- this page is made entirely of them.
     <code>.action-grid</code> replaces a long vertical stack of loosely spaced buttons/forms
@@ -101,7 +101,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Results panel</h2>
+  <h2>Results panel</h2>
   <p style="color:var(--text-muted);">
     Every arsenal action that produces output (a check, a lookup, a test run) renders into a
     collapsible <code>&lt;details class="results-panel"&gt;</code> instead of assuming the
@@ -119,7 +119,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Banners</h2>
+  <h2>Banners</h2>
   <div class="info-banner">Informational -- e.g. an enrollment token was generated.</div>
   <div class="success-banner" style="margin-top:10px;">Success -- e.g. a setting was saved.</div>
   <div class="warning-banner" style="margin-top:10px;">Warning -- e.g. this connection isn't running over TLS.</div>
@@ -127,7 +127,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Confirmation patterns</h2>
+  <h2>Confirmation patterns</h2>
   <p style="color:var(--text-muted);">
     Every destructive action requires a dedicated confirm page (never a bare button). Two
     strengths, chosen by how easily the action can be undone:
@@ -150,7 +150,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Elevation status ("Apotheosis")</h2>
+  <h2>Elevation status ("Apotheosis")</h2>
   <p style="color:var(--text-muted);">
     The same <code>.badge-elevated</code> badge appears everywhere a host's elevation state
     is shown: the Hosts list, every host-detail page, and the Apotheosis dropdown in the top
@@ -160,7 +160,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Icons</h2>
+  <h2>Icons</h2>
   <p style="color:var(--text-muted);">
     Inline SVG only (<code>crates/web/templates/_macros.html</code>) -- no icon-font or JS
     dependency. Import with <code>{{ "{% import \"_macros.html\" as macros %}" }}</code> and
@@ -189,7 +189,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Accessibility</h2>
+  <h2>Accessibility</h2>
   <p style="color:var(--text-muted);">
     Every text/background color pair in both themes was checked against the WCAG AA
     thresholds (4.5:1 for normal text, 3:1 for large text and UI components) using the

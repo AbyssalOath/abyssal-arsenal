@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/parish/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -35,40 +44,30 @@
   </details>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Read</h3>
+<div class="card kind-read">
+  <h3>Read</h3>
   <p style="color:var(--text-muted); margin-top:0;">Linux accounts and groups on this host -- not the control plane's own users.</p>
   <div class="action-grid">
     <form method="post" action="/arsenals/parish/{{ host_id }}/users">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("user") %} List Users</button>
     </form>
     <form method="post" action="/arsenals/parish/{{ host_id }}/groups">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("role") %} List Groups</button>
     </form>
     <form method="post" action="/arsenals/parish/{{ host_id }}/user-detail">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="detail-username">Username</label>
       <input type="text" id="detail-username" name="username" placeholder="e.g. deploy" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="detail-password">Sudo password (if needed)</label>
-      <input type="password" id="detail-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("check") %} User Detail</button>
     </form>
   </div>
 </div>
 
 {% if can_manage %}
-<div class="card">
-  <h3 style="margin-top:0;">Write</h3>
+<div class="card kind-write">
+  <h3>Write</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/parish/{{ host_id }}/create-user">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
@@ -76,20 +75,12 @@
       <input type="text" id="create-user-username" name="username" placeholder="e.g. deploy" required>
       <label for="create-user-comment">Comment (optional)</label>
       <input type="text" id="create-user-comment" name="comment" placeholder="e.g. Deploy bot">
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="create-user-password">Sudo password (if needed)</label>
-      <input type="password" id="create-user-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create User</button>
     </form>
     <form method="post" action="/arsenals/parish/{{ host_id }}/create-group">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="create-group-group">Group</label>
       <input type="text" id="create-group-group" name="group" placeholder="e.g. deployers" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="create-group-password">Sudo password (if needed)</label>
-      <input type="password" id="create-group-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create Group</button>
     </form>
     <form method="post" action="/arsenals/parish/{{ host_id }}/add-to-group">
@@ -98,10 +89,6 @@
       <input type="text" id="add-group-username" name="username" placeholder="e.g. deploy" required>
       <label for="add-group-group">Group</label>
       <input type="text" id="add-group-group" name="group" placeholder="e.g. deployers" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="add-group-password">Sudo password (if needed)</label>
-      <input type="password" id="add-group-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("role") %} Add to Group</button>
     </form>
     <form method="post" action="/arsenals/parish/{{ host_id }}/remove-from-group">
@@ -110,37 +97,25 @@
       <input type="text" id="rm-group-username" name="username" placeholder="e.g. deploy" required>
       <label for="rm-group-group">Group</label>
       <input type="text" id="rm-group-group" name="group" placeholder="e.g. deployers" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="rm-group-password">Sudo password (if needed)</label>
-      <input type="password" id="rm-group-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("role") %} Remove from Group</button>
     </form>
     <form method="post" action="/arsenals/parish/{{ host_id }}/lock">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="lock-username">Username</label>
       <input type="text" id="lock-username" name="username" placeholder="e.g. deploy" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="lock-password">Sudo password (if needed)</label>
-      <input type="password" id="lock-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("firewall") %} Lock Account</button>
     </form>
     <form method="post" action="/arsenals/parish/{{ host_id }}/unlock">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="unlock-username">Username</label>
       <input type="text" id="unlock-username" name="username" placeholder="e.g. deploy" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="unlock-password">Sudo password (if needed)</label>
-      <input type="password" id="unlock-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("check") %} Unlock Account</button>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Destructive</h3>
+<div class="card kind-destructive">
+  <h3>Destructive</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Deleting an account or group cannot be undone. The protected <code>root</code> account/group
     can't be touched here.

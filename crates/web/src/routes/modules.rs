@@ -10,6 +10,7 @@ use crate::common::require_csrf;
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, ConfirmTemplate, ModuleRow, ModulesTemplate};
 use crate::theme;
@@ -22,7 +23,16 @@ pub async fn list(
     abyssal_rbac::ensure(&ctx, Permission::ModulesManage)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let modules = state
         .modules
@@ -90,7 +100,16 @@ pub async fn disable_confirm(
 
     let arsenal = state.modules.find(&key).ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let tpl = ConfirmTemplate {
         base,

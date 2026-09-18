@@ -5,7 +5,7 @@
 
 {% for role in roles %}
 <div class="card">
-  <h2 style="margin-top:0;">{{ role.name }}
+  <h2>{{ role.name }}
     {% if role.is_system %}<span class="badge badge-muted">System role</span>{% endif %}
   </h2>
   <p style="color:var(--text-muted);">{{ role.description }}</p>

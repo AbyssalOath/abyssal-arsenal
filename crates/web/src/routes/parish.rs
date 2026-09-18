@@ -6,7 +6,7 @@ use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
 use axum::extract::{Path, Query, State};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
@@ -16,6 +16,7 @@ use crate::common::{maybe_elevate, require_csrf, urlencoding_encode};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, ParishHostRow, ParishHostTemplate, ParishTemplate};
 use crate::theme;
@@ -29,8 +30,23 @@ pub async fn show(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostUsersView)?;
 
+    if let Some(host_id) = host_context::current(&jar) {
+        if state.hosts.is_connected(host_id) {
+            return Ok(Redirect::to(&format!("/arsenals/parish/{host_id}")).into_response());
+        }
+    }
+
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
@@ -65,7 +81,16 @@ async fn render_host(
         .ok_or(AppError::NotFound)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
-    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
 
     let tpl = ParishHostTemplate {
         can_manage: ctx.has(Permission::HostUsersManage),
@@ -99,8 +124,6 @@ pub async fn show_host(
 #[derive(Deserialize)]
 pub struct SimpleForm {
     csrf_token: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 fn validate_account(name: &str, label: &str) -> Result<String, WebError> {
@@ -130,17 +153,11 @@ async fn run_read_op(
     host_id: Uuid,
     operation: AgentOperation,
     label: &str,
-    sudo_password: Option<String>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("{label} -- {}", host.name));
-
-    let tls_warning = match maybe_elevate(state, ctx, host_id, &host.name, sudo_password).await {
-        Ok(warning) => warning.unwrap_or(""),
-        Err(e) => return render_host(state, jar, ctx, host_id, result_label, None, Some(e)).await,
-    };
 
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
@@ -168,7 +185,7 @@ async fn run_read_op(
                 ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -205,7 +222,6 @@ pub async fn list_users(
         host_id,
         AgentOperation::ListUsers,
         "Users",
-        form.sudo_password,
     )
     .await
 }
@@ -226,7 +242,6 @@ pub async fn list_groups(
         host_id,
         AgentOperation::ListGroups,
         "Groups",
-        form.sudo_password,
     )
     .await
 }
@@ -235,8 +250,6 @@ pub async fn list_groups(
 pub struct UsernameForm {
     csrf_token: String,
     username: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn user_detail(
@@ -258,7 +271,6 @@ pub async fn user_detail(
             username: username.clone(),
         },
         &format!("User Detail ({username})"),
-        form.sudo_password,
     )
     .await
 }
@@ -274,17 +286,11 @@ async fn run_write_op(
     host_id: Uuid,
     operation: AgentOperation,
     label: &str,
-    sudo_password: Option<String>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("{label} -- {}", host.name));
-
-    let tls_warning = match maybe_elevate(state, ctx, host_id, &host.name, sudo_password).await {
-        Ok(warning) => warning.unwrap_or(""),
-        Err(e) => return render_host(state, jar, ctx, host_id, result_label, None, Some(e)).await,
-    };
 
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
@@ -312,7 +318,7 @@ async fn run_write_op(
                 ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -339,8 +345,6 @@ pub struct CreateUserForm {
     username: String,
     #[serde(default)]
     comment: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn create_user(
@@ -368,7 +372,6 @@ pub async fn create_user(
             comment: form.comment,
         },
         &format!("Create User ({username})"),
-        form.sudo_password,
     )
     .await
 }
@@ -377,8 +380,6 @@ pub async fn create_user(
 pub struct GroupForm {
     csrf_token: String,
     group: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn create_group(
@@ -400,7 +401,6 @@ pub async fn create_group(
             group: group.clone(),
         },
         &format!("Create Group ({group})"),
-        form.sudo_password,
     )
     .await
 }
@@ -410,8 +410,6 @@ pub struct UserGroupForm {
     csrf_token: String,
     username: String,
     group: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn add_user_to_group(
@@ -435,7 +433,6 @@ pub async fn add_user_to_group(
             group: group.clone(),
         },
         &format!("Add {username} to {group}"),
-        form.sudo_password,
     )
     .await
 }
@@ -461,7 +458,6 @@ pub async fn remove_user_from_group(
             group: group.clone(),
         },
         &format!("Remove {username} from {group}"),
-        form.sudo_password,
     )
     .await
 }
@@ -486,7 +482,6 @@ pub async fn lock_user_account(
             username: username.clone(),
         },
         &format!("Lock Account ({username})"),
-        form.sudo_password,
     )
     .await
 }
@@ -510,7 +505,6 @@ pub async fn unlock_user_account(
             username: username.clone(),
         },
         &format!("Unlock Account ({username})"),
-        form.sudo_password,
     )
     .await
 }
@@ -522,8 +516,6 @@ pub struct ConfirmForm {
     confirm: bool,
     #[serde(default)]
     confirm_text: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -552,14 +544,6 @@ async fn run_destructive_op(
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("{label} -- {}", host.name));
 
-    let tls_warning =
-        match maybe_elevate(state, &ctx, host_id, &host.name, form.sudo_password).await {
-            Ok(warning) => warning.unwrap_or(""),
-            Err(e) => {
-                return render_host(state, &jar, &ctx, host_id, result_label, None, Some(e)).await
-            }
-        };
-
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -586,7 +570,7 @@ async fn run_destructive_op(
                 &ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -629,7 +613,16 @@ pub async fn delete_user_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let escalate_host_id = if base.can_hosts_elevate && !state.elevation.is_elevated(host_id) {
         Some(host_id.to_string())
@@ -717,7 +710,16 @@ pub async fn delete_group_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let escalate_host_id = if base.can_hosts_elevate && !state.elevation.is_elevated(host_id) {
         Some(host_id.to_string())
@@ -774,4 +776,59 @@ pub async fn delete_group(
         form,
     )
     .await
+}
+
+#[derive(Deserialize)]
+pub struct ElevateForm {
+    csrf_token: String,
+    sudo_password: String,
+}
+
+pub async fn elevate(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ElevateForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsElevate)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if form.sudo_password.trim().is_empty() {
+        return Err(WebError(AppError::Validation(
+            "Enter a sudo password to elevate.".into(),
+        )));
+    }
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    match maybe_elevate(&state, &ctx, host_id, &host.name, Some(form.sudo_password)).await {
+        Ok(warning) => {
+            let message = format!("{}Elevated.", warning.unwrap_or(""));
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                Some("Elevate".to_string()),
+                Some(message),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                Some("Elevate".to_string()),
+                None,
+                Some(e),
+            )
+            .await
+        }
+    }
 }

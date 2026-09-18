@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -36,27 +45,18 @@
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0;">Read</h3>
+  <h3>Read</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/system-overview">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("host") %} System Overview</button>
     </form>
     <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/resource-usage">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("settings") %} Resource Usage</button>
     </form>
     <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/logged-in-users">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("user") %} Logged-in Users</button>
     </form>
   </div>
@@ -64,16 +64,12 @@
 
 {% if can_manage %}
 <div class="card">
-  <h3 style="margin-top:0;">Write / Destructive</h3>
+  <h3>Write / Destructive</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/cystoolbox/{{ host_id }}/set-hostname">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="hostname">New hostname</label>
       <input type="text" id="hostname" name="hostname" placeholder="e.g. web-01" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="set-hostname-password">Sudo password (if needed)</label>
-      <input type="password" id="set-hostname-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Set Hostname</button>
     </form>
 

@@ -6,7 +6,7 @@ use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
 use axum::extract::{Path, Query, State};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
@@ -16,6 +16,7 @@ use crate::common::{maybe_elevate, require_csrf, urlencoding_encode};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, NecrolinkHostRow, NecrolinkHostTemplate, NecrolinkTemplate};
 use crate::theme;
@@ -27,8 +28,23 @@ pub async fn show(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
 
+    if let Some(host_id) = host_context::current(&jar) {
+        if state.hosts.is_connected(host_id) {
+            return Ok(Redirect::to(&format!("/arsenals/necrolink/{host_id}")).into_response());
+        }
+    }
+
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
@@ -64,7 +80,16 @@ async fn render_host(
         .ok_or(AppError::NotFound)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
-    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
 
     let tpl = NecrolinkHostTemplate {
         can_manage: ctx.has(Permission::NetworkManage),
@@ -99,8 +124,6 @@ pub async fn show_host(
 #[derive(Deserialize)]
 pub struct SimpleForm {
     csrf_token: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -111,17 +134,11 @@ async fn run_read_op(
     host_id: Uuid,
     operation: AgentOperation,
     label: &str,
-    sudo_password: Option<String>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("{label} -- {}", host.name));
-
-    let tls_warning = match maybe_elevate(state, ctx, host_id, &host.name, sudo_password).await {
-        Ok(warning) => warning.unwrap_or(""),
-        Err(e) => return render_host(state, jar, ctx, host_id, result_label, None, Some(e)).await,
-    };
 
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
@@ -149,7 +166,7 @@ async fn run_read_op(
                 ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -186,7 +203,6 @@ pub async fn network_interfaces(
         host_id,
         AgentOperation::NetworkInterfaces,
         "Network Interfaces",
-        form.sudo_password,
     )
     .await
 }
@@ -207,7 +223,6 @@ pub async fn network_routes(
         host_id,
         AgentOperation::NetworkRoutes,
         "Routes",
-        form.sudo_password,
     )
     .await
 }
@@ -228,7 +243,6 @@ pub async fn dns_config(
         host_id,
         AgentOperation::DnsConfig,
         "DNS Configuration",
-        form.sudo_password,
     )
     .await
 }
@@ -249,7 +263,6 @@ pub async fn active_connections(
         host_id,
         AgentOperation::ActiveConnections,
         "Active Connections",
-        form.sudo_password,
     )
     .await
 }
@@ -258,8 +271,6 @@ pub async fn active_connections(
 pub struct ConnectivityCheckForm {
     csrf_token: String,
     target: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn connectivity_check(
@@ -288,7 +299,6 @@ pub async fn connectivity_check(
             target: target.clone(),
         },
         &format!("Connectivity Check ({target})"),
-        form.sudo_password,
     )
     .await
 }
@@ -297,8 +307,6 @@ pub async fn connectivity_check(
 pub struct InterfaceUpForm {
     csrf_token: String,
     interface: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn interface_up(
@@ -322,14 +330,6 @@ pub async fn interface_up(
         .await?
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("Interface Up ({interface}) -- {}", host.name));
-
-    let tls_warning =
-        match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
-            Ok(warning) => warning.unwrap_or(""),
-            Err(e) => {
-                return render_host(&state, &jar, &ctx, host_id, result_label, None, Some(e)).await
-            }
-        };
 
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
@@ -360,7 +360,7 @@ pub async fn interface_up(
                 &ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -406,7 +406,16 @@ pub async fn interface_down_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let escalate_host_id = if base.can_hosts_elevate && !state.elevation.is_elevated(host_id) {
         Some(host_id.to_string())
@@ -448,8 +457,6 @@ pub struct InterfaceDownForm {
     confirm: bool,
     #[serde(default)]
     confirm_text: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn interface_down(
@@ -482,14 +489,6 @@ pub async fn interface_down(
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("Interface Down ({interface}) -- {}", host.name));
 
-    let tls_warning =
-        match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
-            Ok(warning) => warning.unwrap_or(""),
-            Err(e) => {
-                return render_host(&state, &jar, &ctx, host_id, result_label, None, Some(e)).await
-            }
-        };
-
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -519,7 +518,7 @@ pub async fn interface_down(
                 &ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -575,7 +574,16 @@ pub async fn scan_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let escalate_host_id = if base.can_hosts_elevate && !state.elevation.is_elevated(host_id) {
         Some(host_id.to_string())
@@ -627,8 +635,6 @@ pub struct NetworkScanForm {
     confirm: bool,
     #[serde(default)]
     confirm_text: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn network_scan(
@@ -675,14 +681,6 @@ pub async fn network_scan(
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("Network Scan ({target}) -- {}", host.name));
 
-    let tls_warning =
-        match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
-            Ok(warning) => warning.unwrap_or(""),
-            Err(e) => {
-                return render_host(&state, &jar, &ctx, host_id, result_label, None, Some(e)).await
-            }
-        };
-
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -709,7 +707,7 @@ pub async fn network_scan(
                 &ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -724,6 +722,61 @@ pub async fn network_scan(
                 result_label,
                 None,
                 Some(e.to_string()),
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ElevateForm {
+    csrf_token: String,
+    sudo_password: String,
+}
+
+pub async fn elevate(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ElevateForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsElevate)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if form.sudo_password.trim().is_empty() {
+        return Err(WebError(AppError::Validation(
+            "Enter a sudo password to elevate.".into(),
+        )));
+    }
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    match maybe_elevate(&state, &ctx, host_id, &host.name, Some(form.sudo_password)).await {
+        Ok(warning) => {
+            let message = format!("{}Elevated.", warning.unwrap_or(""));
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                Some("Elevate".to_string()),
+                Some(message),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                Some("Elevate".to_string()),
+                None,
+                Some(e),
             )
             .await
         }

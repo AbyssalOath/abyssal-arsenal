@@ -8,126 +8,187 @@
 <div class="info-banner">{{ m }}</div>
 {% endif %}
 
-<div class="action-grid">
-  <div class="card">
-    <h2 style="margin-top:0;">{% call macros::icon("user") %} Public registration</h2>
-    <p style="color:var(--text-muted);">
-      When enabled, the "Create Account" link appears on the login page and anyone can self-register.
-      Disabled by default after the first administrator is created.
-    </p>
-    <form method="post" action="/admin/settings/registration">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <p>Currently:
-        {% if public_registration_enabled %}<span class="badge badge-success">Enabled</span>
-        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
-      </p>
-      <input type="hidden" name="enabled" value="{% if public_registration_enabled %}false{% else %}true{% endif %}">
-      <button type="submit" class="{% if public_registration_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
-        {% if public_registration_enabled %}Disable registration{% else %}Enable registration{% endif %}
-      </button>
-    </form>
-  </div>
+<div class="settings-section">
+  <h2 class="settings-section-title">Access &amp; Registration</h2>
+  <div class="card settings-list">
 
-  <div class="card">
-    <h2 style="margin-top:0;">{% call macros::icon("elevate") %} Apotheosis elevation window</h2>
-    <p style="color:var(--text-muted);">
-      How long a host stays elevated after a successful sudo password prompt, with no
-      further action needed, before it drops back to unprivileged. Applies to new
-      elevations only -- hosts already elevated keep whatever window was in effect
-      when they were elevated.
-    </p>
-    <form method="post" action="/admin/settings/elevation-window" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <div>
-        <label for="elevation-window-minutes">Minutes (1-1440)</label>
-        <input type="number" id="elevation-window-minutes" name="minutes" min="1" max="1440" value="{{ apotheosis_elevation_window_minutes }}" required style="margin-bottom:0; width:110px;">
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("user") %} Public registration</div>
+        <p class="settings-row-desc">Lets anyone create an account from the login page.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            When enabled, the "Create Account" link appears on the login page and anyone can
+            self-register. Disabled by default after the first administrator is created.
+          </p>
+        </details>
       </div>
-      <button type="submit" class="btn-warning">Save</button>
-    </form>
-  </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if public_registration_enabled %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if public_registration_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/registration">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if public_registration_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if public_registration_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if public_registration_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
 
-  <div class="card">
-    <h2 style="margin-top:0;">{% call macros::icon("danger") %} High-risk storage operations</h2>
-    <p style="color:var(--text-muted);">
-      Gates Ossuary's most dangerous operations -- partition table create/delete, RAID array
-      create/stop, LVM physical volume/volume group/logical volume create and remove, and
-      creating a filesystem. A single wrong device path in any of these can destroy a disk
-      instantly and irrecoverably. Off by default; this is a second, deliberate layer on top of
-      (not instead of) the type-to-confirm each of those operations still requires individually.
-    </p>
-    <form method="post" action="/admin/settings/high-risk-storage-ops">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <p>Currently:
-        {% if high_risk_storage_ops_enabled %}<span class="badge badge-danger">Enabled</span>
-        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
-      </p>
-      <input type="hidden" name="enabled" value="{% if high_risk_storage_ops_enabled %}false{% else %}true{% endif %}">
-      <button type="submit" class="{% if high_risk_storage_ops_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
-        {% if high_risk_storage_ops_enabled %}Disable high-risk storage operations{% else %}Enable high-risk storage operations{% endif %}
-      </button>
-    </form>
   </div>
+</div>
 
-  <div class="card">
-    <h2 style="margin-top:0;">{% call macros::icon("danger") %} Host network isolation</h2>
-    <p style="color:var(--text-muted);">
-      Gates Inquest's full host isolation (blocks all network traffic except the control
-      plane's own connection). Unlike every other destructive operation this platform
-      dispatches, a wrong edge case here (NAT, a DNS-based control-plane address, a
-      multi-homed host) can sever the agent's own connection back to the control plane with
-      no remote way to undo it -- recovery would need physical or console access to the host.
-      Off by default; this is a second, deliberate layer on top of (not instead of) the
-      type-to-confirm the operation still requires.
-    </p>
-    <form method="post" action="/admin/settings/host-isolation">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <p>Currently:
-        {% if host_isolation_enabled %}<span class="badge badge-danger">Enabled</span>
-        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
-      </p>
-      <input type="hidden" name="enabled" value="{% if host_isolation_enabled %}false{% else %}true{% endif %}">
-      <button type="submit" class="{% if host_isolation_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
-        {% if host_isolation_enabled %}Disable host isolation{% else %}Enable host isolation{% endif %}
-      </button>
-    </form>
+<div class="settings-section">
+  <h2 class="settings-section-title">Elevation &amp; Risk Controls</h2>
+  <div class="card settings-list">
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("elevate") %} Apotheosis elevation window</div>
+        <p class="settings-row-desc">How long a host stays elevated after a sudo prompt before dropping back to unprivileged.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Applies to new elevations only -- hosts already elevated keep whatever window was
+            in effect when they were elevated.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/elevation-window" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="elevation-window-minutes" class="sr-only">Minutes</label>
+          <input type="number" id="elevation-window-minutes" name="minutes" min="1" max="1440" value="{{ apotheosis_elevation_window_minutes }}" required>
+          <span class="settings-row-unit">min</span>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("danger") %} High-risk storage operations</div>
+        <p class="settings-row-desc">Gates Ossuary's partition/RAID/LVM-create and mkfs -- a wrong device path here destroys a disk instantly.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Gates Ossuary's most dangerous operations -- partition table create/delete, RAID
+            array create/stop, LVM physical volume/volume group/logical volume create and
+            remove, and creating a filesystem. Off by default; this is a second, deliberate
+            layer on top of (not instead of) the type-to-confirm each of those operations
+            still requires individually.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if high_risk_storage_ops_enabled %}on danger{% endif %}">
+          <span class="toggle-dot"></span>{% if high_risk_storage_ops_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/high-risk-storage-ops">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if high_risk_storage_ops_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if high_risk_storage_ops_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
+            {% if high_risk_storage_ops_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("danger") %} Host network isolation</div>
+        <p class="settings-row-desc">Gates Inquest's full host isolation -- can sever a host's own manageability with no remote fix.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Blocks all network traffic except the control plane's own connection. Unlike every
+            other destructive operation this platform dispatches, a wrong edge case here (NAT,
+            a DNS-based control-plane address, a multi-homed host) can sever the agent's own
+            connection back to the control plane with no remote way to undo it -- recovery
+            would need physical or console access to the host. Off by default; this is a
+            second, deliberate layer on top of (not instead of) the type-to-confirm the
+            operation still requires.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if host_isolation_enabled %}on danger{% endif %}">
+          <span class="toggle-dot"></span>{% if host_isolation_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/host-isolation">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if host_isolation_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if host_isolation_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
+            {% if host_isolation_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
   </div>
+</div>
 
-  <div class="card">
-    <h2 style="margin-top:0;">{% call macros::icon("audit") %} Thanatos background monitoring</h2>
-    <p style="color:var(--text-muted);">
-      An unattended, fixed-interval sweep that scans every connected host's security logs,
-      persists what it finds, and can raise correlation alerts on its own -- nobody has to
-      click anything. Off by default: this reads and stores security-log content across your
-      whole fleet automatically once enabled. Manual, admin-triggered scans from the Thanatos
-      page work regardless of this setting; it only controls the unattended sweep.
-    </p>
-    <form method="post" action="/admin/settings/thanatos-monitoring">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <p>Currently:
-        {% if thanatos_monitoring_enabled %}<span class="badge badge-success">Enabled</span>
-        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
-      </p>
-      <input type="hidden" name="enabled" value="{% if thanatos_monitoring_enabled %}false{% else %}true{% endif %}">
-      <button type="submit" class="{% if thanatos_monitoring_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
-        {% if thanatos_monitoring_enabled %}Disable background monitoring{% else %}Enable background monitoring{% endif %}
-      </button>
-    </form>
-  </div>
+<div class="settings-section">
+  <h2 class="settings-section-title">Monitoring &amp; Alerts</h2>
+  <div class="card settings-list">
 
-  <div class="card">
-    <h2 style="margin-top:0;">{% call macros::icon("audit") %} Thanatos alert recipients</h2>
-    <p style="color:var(--text-muted);">
-      Comma-separated email addresses notified when Thanatos's correlation sweep raises a
-      finding, sent through whatever notification provider is configured (SMTP today, set via
-      environment variables). An alert is still recorded and shown on the Thanatos page even
-      with no recipients set -- this only controls whether it's also actively pushed out.
-    </p>
-    <form method="post" action="/admin/settings/thanatos-alert-recipients">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <label for="thanatos-recipients">Recipients</label>
-      <input type="text" id="thanatos-recipients" name="recipients" value="{{ thanatos_alert_recipients }}" placeholder="e.g. admin@example.com, oncall@example.com">
-      <button type="submit" class="btn-warning">Save</button>
-    </form>
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos background monitoring</div>
+        <p class="settings-row-desc">Unattended sweep that scans every host's security logs and can raise alerts on its own.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            A fixed-interval sweep that scans every connected host's security logs, persists
+            what it finds, and can raise correlation alerts on its own -- nobody has to click
+            anything. Off by default: this reads and stores security-log content across your
+            whole fleet automatically once enabled. Manual, admin-triggered scans from the
+            Thanatos page work regardless of this setting; it only controls the unattended
+            sweep.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if thanatos_monitoring_enabled %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if thanatos_monitoring_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/thanatos-monitoring">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if thanatos_monitoring_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if thanatos_monitoring_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if thanatos_monitoring_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos alert recipients</div>
+        <p class="settings-row-desc">Who gets notified when Thanatos raises a correlation alert.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Comma-separated email addresses, sent through whatever notification provider is
+            configured (SMTP today, set via environment variables). An alert is still recorded
+            and shown on the Thanatos page even with no recipients set -- this only controls
+            whether it's also actively pushed out.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/thanatos-alert-recipients" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="thanatos-recipients" class="sr-only">Recipients</label>
+          <input type="text" id="thanatos-recipients" name="recipients" value="{{ thanatos_alert_recipients }}" placeholder="admin@example.com, oncall@example.com">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
   </div>
 </div>
 

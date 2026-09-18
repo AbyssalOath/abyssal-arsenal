@@ -36,6 +36,25 @@
 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 1 1 3 6.2"/><polyline points="4 18 4 12 10 12"/></svg>
 {% when "generate" %}
 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+{% when "pin" %}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2 6h6l-5 4 2 7-5-4-5 4 2-7-5-4h6z"/></svg>
 {% when _ %}
 {% endmatch %}
+{% endmacro %}
+
+{% macro module_tile(m, search_query, csrf_token) %}
+<div class="tile">
+  <form method="post" action="/modules/{{ m.key }}/{% if m.pinned %}unpin{% else %}pin{% endif %}" class="tile-pin-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="q" value="{{ search_query }}">
+    <button type="submit" class="tile-pin-btn{% if m.pinned %} pinned{% endif %}" title="{% if m.pinned %}Unpin{% else %}Pin{% endif %} {{ m.display_name }}">
+      {% call icon("pin") %}
+    </button>
+  </form>
+  <a href="/arsenals/{{ m.key }}" class="tile-body">
+    <div class="category">{{ m.category }}</div>
+    <h3>{{ m.display_name }}</h3>
+    <p>{{ m.description }}</p>
+  </a>
+</div>
 {% endmacro %}

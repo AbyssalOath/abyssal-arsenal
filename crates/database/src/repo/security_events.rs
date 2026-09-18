@@ -98,6 +98,19 @@ pub async fn list_recent_alerts(pool: &DbPool, limit: i64) -> anyhow::Result<Vec
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
+/// How many correlation alerts have been raised across the fleet in the
+/// last `hours` -- the dashboard's "open Thanatos alerts" count.
+pub async fn count_recent_alerts(pool: &DbPool, hours: i64) -> anyhow::Result<i64> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM thanatos_events \
+         WHERE source = 'correlation' AND occurred_at >= NOW() - INTERVAL ? HOUR",
+    )
+    .bind(hours)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
 /// How many `high`/`critical` events a host has logged (excluding its own
 /// past correlation findings, which shouldn't feed back into triggering
 /// new ones) in the last `minutes` -- the threshold check a correlation

@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -35,66 +44,45 @@
   </details>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Read</h3>
+<div class="card kind-read">
+  <h3>Read</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/ssh-host-keys">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("elevate") %} SSH Host Keys</button>
     </form>
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/authorized-keys">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="ak-username">Username</label>
       <input type="text" id="ak-username" name="username" placeholder="e.g. root" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="ak-password">Sudo password (if needed)</label>
-      <input type="password" id="ak-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("elevate") %} Authorized Keys</button>
     </form>
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/tls-certificates">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("role") %} TLS Certificates</button>
     </form>
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/certificate-detail">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="cert-path">Certificate path</label>
       <input type="text" id="cert-path" name="path" placeholder="e.g. /etc/ssl/certs/foo.pem" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="cert-password">Sudo password (if needed)</label>
-      <input type="password" id="cert-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("role") %} Certificate Detail</button>
     </form>
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/permission-scan">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Scan Sensitive File Permissions</button>
     </form>
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/view-file">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="view-path">File path</label>
       <input type="text" id="view-path" name="path" placeholder="e.g. /etc/myapp/.env" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="view-password">Sudo password (if needed)</label>
-      <input type="password" id="view-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} View File&hellip; (shows plaintext)</button>
     </form>
   </div>
 </div>
 
 {% if can_manage %}
-<div class="card">
-  <h3 style="margin-top:0;">Write</h3>
+<div class="card kind-write">
+  <h3>Write</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/generate-keypair">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
@@ -108,10 +96,6 @@
       <input type="text" id="gen-comment" name="comment" placeholder="e.g. deploy@ci">
       <label for="gen-path">Output path</label>
       <input type="text" id="gen-path" name="path" placeholder="e.g. /root/.ssh/id_deploy" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="gen-password">Sudo password (if needed)</label>
-      <input type="password" id="gen-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Generate SSH Keypair</button>
     </form>
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/fix-permissions">
@@ -125,17 +109,13 @@
         <option value="640">640</option>
         <option value="700">700</option>
       </select>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="fix-password">Sudo password (if needed)</label>
-      <input type="password" id="fix-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Fix Permissions</button>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Destructive</h3>
+<div class="card kind-destructive">
+  <h3>Destructive</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Both of these revoke access or delete key material permanently. Run "SSH Host Keys" or
     "Authorized Keys" above first to get the exact fingerprint or path to target.

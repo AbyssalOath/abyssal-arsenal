@@ -1,7 +1,9 @@
 use abyssal_core::Permission;
-use abyssal_hosts::ElevationTracker;
+use abyssal_database::{repo, DbPool};
+use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_rbac::AuthContext;
 use askama::Template;
+use uuid::Uuid;
 
 /// One host the nav's Apotheosis panel shows as currently (believed)
 /// elevated, with a human-readable remaining time.
@@ -18,6 +20,15 @@ pub struct ElevatedHostView {
 #[derive(Clone)]
 pub struct TimezoneOption {
     pub name: &'static str,
+    pub selected: bool,
+}
+
+/// One connected, active host offered by the global host switcher in the
+/// top nav.
+#[derive(Clone)]
+pub struct HostOption {
+    pub id: String,
+    pub name: String,
     pub selected: bool,
 }
 
@@ -45,15 +56,24 @@ pub struct BaseCtx {
     /// timestamp in the app from their point of view.
     pub timezone: String,
     pub available_timezones: Vec<TimezoneOption>,
+    /// Name of the globally selected host (`host_context::current`), for a
+    /// "Host: <name>" style label -- `None` means "All hosts".
+    pub selected_host_name: Option<String>,
+    /// Every connected, active host, for the top-nav switcher `<select>`.
+    pub available_hosts: Vec<HostOption>,
 }
 
 impl BaseCtx {
-    pub fn build(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn build(
         ctx: &AuthContext,
         theme: &str,
         csrf_token: &str,
         elevation: &ElevationTracker,
-    ) -> Self {
+        hosts: &HostConnectionRegistry,
+        pool: &DbPool,
+        selected_host_id: Option<Uuid>,
+    ) -> anyhow::Result<Self> {
         let snapshot = elevation.snapshot();
         let elevated_hosts = snapshot
             .into_iter()
@@ -75,7 +95,24 @@ impl BaseCtx {
             })
             .collect();
 
-        Self {
+        let mut selected_host_name = None;
+        let mut available_hosts = Vec::new();
+        for host in repo::hosts::list(pool).await? {
+            if !host.is_active() || !hosts.is_connected(host.id) {
+                continue;
+            }
+            let selected = Some(host.id) == selected_host_id;
+            if selected {
+                selected_host_name = Some(host.name.clone());
+            }
+            available_hosts.push(HostOption {
+                id: host.id.to_string(),
+                name: host.name,
+                selected,
+            });
+        }
+
+        Ok(Self {
             username: ctx.user.username.clone(),
             theme: theme.to_string(),
             csrf_token: csrf_token.to_string(),
@@ -90,7 +127,9 @@ impl BaseCtx {
             elevated_hosts,
             timezone: ctx.user.timezone.clone(),
             available_timezones,
-        }
+            selected_host_name,
+            available_hosts,
+        })
     }
 }
 
@@ -133,25 +172,63 @@ pub struct LoginTemplate {
     pub registration_enabled: bool,
 }
 
+#[derive(Clone)]
 pub struct ModuleTile {
     pub key: &'static str,
     pub display_name: &'static str,
     pub description: &'static str,
     pub category: String,
+    pub pinned: bool,
+}
+
+/// One `ModuleCategory` section of the dashboard's grouped tile grid.
+/// Never holds a pinned tile -- those render once, in the "Pinned" row.
+pub struct ModuleGroup {
+    pub category: String,
+    pub tiles: Vec<ModuleTile>,
 }
 
 pub struct ActivityRow {
     pub occurred_at: String,
     pub username: String,
-    pub action: String,
+    /// A single human-readable phrase combining the operation and what it
+    /// acted on (e.g. `"Rebooted — WEB-01"`), rather than a raw audit
+    /// action key and a separate resource column.
+    pub summary: String,
     pub result: String,
+}
+
+/// One host `host_health_snapshots` flags as needing attention.
+pub struct HostAttentionRow {
+    pub host_name: String,
+    pub reason: String,
+}
+
+/// The single most recent Reliquary backup across the fleet.
+pub struct LastBackupRow {
+    pub host_name: String,
+    pub name: String,
+    pub when: String,
+}
+
+/// The dashboard's fleet-health overview -- replaces the old permanent
+/// "Active tasks" placeholder with real, cheaply-queried aggregates.
+pub struct FleetHealthCtx {
+    pub host_count: usize,
+    pub online_count: usize,
+    pub open_alerts: i64,
+    pub hosts_needing_attention: Vec<HostAttentionRow>,
+    pub last_backup: Option<LastBackupRow>,
 }
 
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 pub struct DashboardTemplate {
     pub base: BaseCtx,
-    pub modules: Vec<ModuleTile>,
+    pub search_query: String,
+    pub pinned: Vec<ModuleTile>,
+    pub groups: Vec<ModuleGroup>,
+    pub fleet_health: FleetHealthCtx,
     pub recent_activity: Vec<ActivityRow>,
 }
 
@@ -252,6 +329,12 @@ pub struct SettingsTemplate {
 #[derive(Template)]
 #[template(path = "style_guide.html")]
 pub struct StyleGuideTemplate {
+    pub base: BaseCtx,
+}
+
+#[derive(Template)]
+#[template(path = "account.html")]
+pub struct AccountTemplate {
     pub base: BaseCtx,
 }
 

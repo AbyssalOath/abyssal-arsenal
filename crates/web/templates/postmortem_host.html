@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/postmortem/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -35,62 +44,44 @@
   </details>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Boot &amp; Crash Forensics</h3>
+<div class="card kind-read">
+  <h3>Boot &amp; Crash Forensics</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/postmortem/{{ host_id }}/boot-history">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("reboot") %} Boot History</button>
     </form>
     <form method="post" action="/arsenals/postmortem/{{ host_id }}/kernel-ring-buffer">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Kernel Ring Buffer</button>
     </form>
     <form method="post" action="/arsenals/postmortem/{{ host_id }}/oom-kills">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} OOM-Kill Events</button>
     </form>
     <form method="post" action="/arsenals/postmortem/{{ host_id }}/core-dumps">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Core Dumps</button>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Log &amp; Access Forensics</h3>
+<div class="card kind-read">
+  <h3>Log &amp; Access Forensics</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/postmortem/{{ host_id }}/journal-errors">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} System Journal Errors</button>
     </form>
     <form method="post" action="/arsenals/postmortem/{{ host_id }}/failed-logins">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Failed Login Attempts</button>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">File Integrity</h3>
+<div class="card kind-read">
+  <h3>File Integrity</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Lists files under <code>/etc</code>, <code>/bin</code>, <code>/sbin</code>, <code>/usr/bin</code>,
     <code>/usr/sbin</code>, <code>/usr/local/bin</code>, and <code>/usr/local/sbin</code> modified within
@@ -102,12 +93,6 @@
       <label for="modified-hours">Lookback window (hours)</label>
       <input type="number" id="modified-hours" name="hours" min="1" max="720" value="24" required style="margin-bottom:0; width:110px;">
     </div>
-    {% if !elevated && base.can_hosts_elevate %}
-    <div>
-      <label for="modified-password">Sudo password (if needed)</label>
-      <input type="password" id="modified-password" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
-    </div>
-    {% endif %}
     <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Check</button>
   </form>
 </div>

@@ -976,6 +976,196 @@ pub enum AgentOperation {
     ScanSecurityEvents,
 }
 
+impl AgentOperation {
+    /// A short, human-readable past-tense description for the audit trail
+    /// and the dashboard's "recent activity" feed (e.g. `"Rebooted"`,
+    /// `"Created backup: nightly"`). Every mutating (Write/Destructive)
+    /// variant gets a specific, hand-written phrase, since those are the
+    /// ones the activity feed actually surfaces. Read-only variants fall
+    /// back to a label auto-derived from the variant's own name (reusing
+    /// the same name `Debug` already prints, which is why `Debug` redacts
+    /// `Elevate`'s password rather than this needing its own redaction) --
+    /// they're filtered out of the trimmed feed as noise, but still get a
+    /// real label for the raw audit record and any future full-detail view.
+    pub fn label(&self) -> String {
+        match self {
+            AgentOperation::SetHostname { hostname } => format!("Set hostname to {hostname}"),
+            AgentOperation::Reboot => "Rebooted".to_string(),
+            AgentOperation::FirewallAllowPort { port, protocol } => {
+                format!("Allowed port {port}/{protocol}")
+            }
+            AgentOperation::FirewallEnable => "Enabled firewall".to_string(),
+            AgentOperation::Elevate { .. } => "Elevated privileges".to_string(),
+            AgentOperation::Deescalate => "De-escalated privileges".to_string(),
+            AgentOperation::InterfaceSetState { interface, up } => {
+                format!(
+                    "Set interface {interface} {}",
+                    if *up { "up" } else { "down" }
+                )
+            }
+            AgentOperation::NetworkScan { target, .. } => {
+                format!("Ran network scan against {target}")
+            }
+            AgentOperation::VacuumJournalBySize { size } => format!("Vacuumed journal to {size}"),
+            AgentOperation::VacuumJournalByTime { duration } => {
+                format!("Vacuumed journal older than {duration}")
+            }
+            AgentOperation::CreateBackup { name, .. } => format!("Created backup: {name}"),
+            AgentOperation::RestoreBackup { filename, .. } => format!("Restored backup {filename}"),
+            AgentOperation::StartService { unit } => format!("Started service {unit}"),
+            AgentOperation::StopService { unit } => format!("Stopped service {unit}"),
+            AgentOperation::RestartService { unit } => format!("Restarted service {unit}"),
+            AgentOperation::EnableService { unit } => format!("Enabled service {unit}"),
+            AgentOperation::DisableService { unit } => format!("Disabled service {unit}"),
+            AgentOperation::ReloadSystemdDaemon => "Reloaded systemd daemon".to_string(),
+            AgentOperation::ResetFailedUnits => "Reset failed systemd units".to_string(),
+            AgentOperation::RemountReadWrite { target } => format!("Remounted {target} read-write"),
+            AgentOperation::StartContainer { container } => {
+                format!("Started container {container}")
+            }
+            AgentOperation::StopContainer { container } => format!("Stopped container {container}"),
+            AgentOperation::RestartContainer { container } => {
+                format!("Restarted container {container}")
+            }
+            AgentOperation::RemoveContainer { container } => {
+                format!("Removed container {container}")
+            }
+            AgentOperation::RenicePriority { pid, priority } => {
+                format!("Reniced PID {pid} to priority {priority}")
+            }
+            AgentOperation::SendSignal { pid, signal } => format!("Sent {signal} to PID {pid}"),
+            AgentOperation::ForceLogRotation => "Forced log rotation".to_string(),
+            AgentOperation::ClearTmpFiles { older_than_days } => {
+                format!("Cleared temp files older than {older_than_days}d")
+            }
+            AgentOperation::ClearCoreDumps => "Cleared core dumps".to_string(),
+            AgentOperation::SetSwappiness { value } => format!("Set swappiness to {value}"),
+            AgentOperation::SetIoScheduler { device, scheduler } => {
+                format!("Set I/O scheduler on {device} to {scheduler}")
+            }
+            AgentOperation::CreateUser { username, .. } => format!("Created user {username}"),
+            AgentOperation::CreateGroup { group } => format!("Created group {group}"),
+            AgentOperation::AddUserToGroup { username, group } => {
+                format!("Added {username} to group {group}")
+            }
+            AgentOperation::RemoveUserFromGroup { username, group } => {
+                format!("Removed {username} from group {group}")
+            }
+            AgentOperation::LockUserAccount { username } => format!("Locked user {username}"),
+            AgentOperation::UnlockUserAccount { username } => format!("Unlocked user {username}"),
+            AgentOperation::DeleteUser { username, .. } => format!("Deleted user {username}"),
+            AgentOperation::DeleteGroup { group } => format!("Deleted group {group}"),
+            AgentOperation::TrimFilesystem { mountpoint } => {
+                format!("Trimmed filesystem at {mountpoint}")
+            }
+            AgentOperation::FilesystemRepair { device } => {
+                format!("Repaired filesystem on {device}")
+            }
+            AgentOperation::InstallPackage { package } => format!("Installed package {package}"),
+            AgentOperation::UpgradePackage { package } => format!("Upgraded package {package}"),
+            AgentOperation::RemovePackage { package } => format!("Removed package {package}"),
+            AgentOperation::RefreshPackageIndex => "Refreshed package index".to_string(),
+            AgentOperation::MountFilesystem { device, target } => {
+                format!("Mounted {device} at {target}")
+            }
+            AgentOperation::UnmountFilesystem { target } => format!("Unmounted {target}"),
+            AgentOperation::ExtendLogicalVolume { lv_path, size } => {
+                format!("Extended logical volume {lv_path} by {size}")
+            }
+            AgentOperation::CreatePartition { device, .. } => {
+                format!("Created partition on {device}")
+            }
+            AgentOperation::DeletePartition {
+                device,
+                partition_number,
+            } => format!("Deleted partition {partition_number} on {device}"),
+            AgentOperation::CreateRaidArray { array_name, .. } => {
+                format!("Created RAID array {array_name}")
+            }
+            AgentOperation::StopRaidArray { array_name } => {
+                format!("Stopped RAID array {array_name}")
+            }
+            AgentOperation::CreatePhysicalVolume { device } => {
+                format!("Created physical volume {device}")
+            }
+            AgentOperation::CreateVolumeGroup { name, .. } => {
+                format!("Created volume group {name}")
+            }
+            AgentOperation::CreateLogicalVolume {
+                vg_name, lv_name, ..
+            } => format!("Created logical volume {lv_name} in {vg_name}"),
+            AgentOperation::RemoveLogicalVolume { lv_path } => {
+                format!("Removed logical volume {lv_path}")
+            }
+            AgentOperation::RemoveVolumeGroup { name } => format!("Removed volume group {name}"),
+            AgentOperation::RemovePhysicalVolume { device } => {
+                format!("Removed physical volume {device}")
+            }
+            AgentOperation::CreateFilesystem { device, fstype } => {
+                format!("Created {fstype} filesystem on {device}")
+            }
+            AgentOperation::SetPersistentSysctl { key, value } => {
+                format!("Set sysctl {key} = {value}")
+            }
+            AgentOperation::RemovePersistentSysctlKey { key } => {
+                format!("Removed sysctl key {key}")
+            }
+            AgentOperation::ClearManagedSysctl => {
+                "Cleared all managed sysctl overrides".to_string()
+            }
+            AgentOperation::SetCronJob { job_name, .. } => format!("Set cron job {job_name}"),
+            AgentOperation::RemoveCronJob { job_name } => format!("Removed cron job {job_name}"),
+            AgentOperation::ClearManagedCronJobs => "Cleared all managed cron jobs".to_string(),
+            AgentOperation::BlockRemoteIp { ip } => format!("Blocked IP {ip}"),
+            AgentOperation::UnblockRemoteIp { ip } => format!("Unblocked IP {ip}"),
+            AgentOperation::QuarantineFile { path } => format!("Quarantined file {path}"),
+            AgentOperation::RestoreQuarantinedFile {
+                quarantine_filename,
+            } => format!("Restored quarantined file {quarantine_filename}"),
+            AgentOperation::DeleteQuarantinedFile { filename } => {
+                format!("Deleted quarantined file {filename}")
+            }
+            AgentOperation::DeisolateHost => "Removed host isolation".to_string(),
+            AgentOperation::IsolateHost => "Isolated host".to_string(),
+            AgentOperation::GenerateSshKeypair { key_type, path, .. } => {
+                format!("Generated {key_type} SSH keypair at {path}")
+            }
+            AgentOperation::FixFilePermissions { path, mode } => {
+                format!("Fixed permissions on {path} ({mode})")
+            }
+            AgentOperation::RemoveAuthorizedKey { username, .. } => {
+                format!("Removed authorized key for {username}")
+            }
+            AgentOperation::DeleteSshKeypair { path } => format!("Deleted SSH keypair {path}"),
+            other => humanize_variant_name(&variant_debug_name(other)),
+        }
+    }
+}
+
+/// The bare variant name from `AgentOperation`'s own redacting `Debug` impl
+/// below (e.g. `"RecentlyModifiedFiles { hours: 24 }"` -> `"RecentlyModifiedFiles"`),
+/// reused rather than duplicated so a fallback label can never accidentally
+/// include a field `Debug` deliberately redacts.
+fn variant_debug_name(op: &AgentOperation) -> String {
+    let full = format!("{op:?}");
+    full.split(['{', ' ']).next().unwrap_or(&full).to_string()
+}
+
+/// `"RecentlyModifiedFiles"` -> `"Recently Modified Files"`: inserts a space
+/// before every uppercase letter that follows a lowercase letter or digit.
+fn humanize_variant_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_lower_or_digit = false;
+    for c in name.chars() {
+        if c.is_uppercase() && prev_lower_or_digit {
+            out.push(' ');
+        }
+        out.push(c);
+        prev_lower_or_digit = c.is_lowercase() || c.is_ascii_digit();
+    }
+    out
+}
+
 /// Hand-written rather than derived so a value carrying a real sudo password
 /// (`Elevate`) can never have that password land in a log line just because
 /// something somewhere formatted an operation with `{:?}` -- this is a

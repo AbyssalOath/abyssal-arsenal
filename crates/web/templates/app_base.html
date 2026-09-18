@@ -13,6 +13,17 @@
       <div class="topnav-brand">Abyssal Arsenal</div>
       <nav class="topnav-links">
         <a href="/">Dashboard</a>
+        <form method="post" action="/host-context/select" class="host-switcher">
+          <label for="host-switcher-select" class="sr-only">Selected host</label>
+          <select id="host-switcher-select" name="host_id" class="host-switcher-select">
+            <option value="">All hosts</option>
+            {% for h in base.available_hosts %}
+            <option value="{{ h.id }}" {% if h.selected %}selected{% endif %}>{{ h.name }}</option>
+            {% endfor %}
+          </select>
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <button type="submit" class="btn-secondary host-switcher-btn">Switch</button>
+        </form>
         {% if base.can_users_view %}<a href="/admin/users">{% call macros::icon("user") %} Users</a>{% endif %}
         {% if base.can_roles_manage %}<a href="/admin/roles">{% call macros::icon("role") %} Roles</a>{% endif %}
         {% if base.can_hosts_view %}<a href="/admin/hosts">{% call macros::icon("host") %} Hosts</a>{% endif %}
@@ -43,27 +54,11 @@
       {% endif %}
       <details class="user-menu">
         <summary>Signed in as <strong>{{ base.username }}</strong></summary>
-        <div class="user-menu-panel" style="min-width:220px;">
-          <form method="post" action="/theme">
+        <div class="user-menu-panel">
+          <a href="/account" class="user-menu-link">{% call macros::icon("settings") %} Account</a>
+          <form method="post" action="/logout">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <input type="hidden" name="theme" value="{% if base.theme == "dark" %}light{% else %}dark{% endif %}">
-            <button type="submit" class="btn-secondary" style="width:100%;">
-              {% if base.theme == "dark" %}Switch to light{% else %}Switch to dark{% endif %}
-            </button>
-          </form>
-          <form method="post" action="/account/timezone" style="margin-top:8px;">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <label for="timezone-select" style="font-size:0.78rem;">Timezone</label>
-            <select id="timezone-select" name="timezone" style="width:100%; margin-bottom:8px;">
-              {% for tz in base.available_timezones %}
-              <option value="{{ tz.name }}" {% if tz.selected %}selected{% endif %}>{{ tz.name }}</option>
-              {% endfor %}
-            </select>
-            <button type="submit" class="btn-secondary" style="width:100%;">Save timezone</button>
-          </form>
-          <form method="post" action="/logout" style="margin-top:8px;">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <button type="submit" class="btn-secondary" style="width:100%;">Log out</button>
+            <button type="submit" class="user-menu-link">Log out</button>
           </form>
         </div>
       </details>

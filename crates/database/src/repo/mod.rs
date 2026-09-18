@@ -1,8 +1,11 @@
 pub mod audit;
+pub mod backup_records;
 pub mod host_enrollment_tokens;
+pub mod host_health;
 pub mod hosts;
 pub mod modules;
 pub mod network_devices;
+pub mod pinned_modules;
 pub mod roles;
 pub mod security_events;
 pub mod sessions;

@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/necrolink/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -35,45 +44,29 @@
   </details>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Read</h3>
+<div class="card kind-read">
+  <h3>Read</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/necrolink/{{ host_id }}/interfaces">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("network") %} Network Interfaces</button>
     </form>
     <form method="post" action="/arsenals/necrolink/{{ host_id }}/routes">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("route") %} Routes</button>
     </form>
     <form method="post" action="/arsenals/necrolink/{{ host_id }}/dns">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("dns") %} DNS Configuration</button>
     </form>
     <form method="post" action="/arsenals/necrolink/{{ host_id }}/connections">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("socket") %} Active Connections</button>
     </form>
     <form method="post" action="/arsenals/necrolink/{{ host_id }}/connectivity-check">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="check-target">Connectivity check (ping + DNS lookup)</label>
       <input type="text" id="check-target" name="target" placeholder="e.g. 8.8.8.8 or example.com" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="check-password">Sudo password (if needed)</label>
-      <input type="password" id="check-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Check</button>
     </form>
   </div>
@@ -81,16 +74,12 @@
 
 {% if can_manage %}
 <div class="card">
-  <h3 style="margin-top:0;">Write / Destructive</h3>
+  <h3>Write / Destructive</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/necrolink/{{ host_id }}/interface/up">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="iface-up">Bring interface up</label>
       <input type="text" id="iface-up" name="interface" placeholder="e.g. eth0" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="iface-up-password">Sudo password (if needed)</label>
-      <input type="password" id="iface-up-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("network") %} Bring Up</button>
     </form>
 
@@ -104,8 +93,8 @@
 {% endif %}
 
 {% if can_scan %}
-<div class="card">
-  <h3 style="margin-top:0;">{% call macros::icon("scan") %} Network Scan</h3>
+<div class="card kind-destructive">
+  <h3>{% call macros::icon("scan") %} Network Scan</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Runs an nmap TCP connect scan from this host against a target you specify. Sends real
     network traffic -- only scan targets you're authorized to scan.

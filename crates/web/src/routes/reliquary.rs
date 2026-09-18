@@ -6,7 +6,7 @@ use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
 use axum::extract::{Path, Query, State};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
@@ -16,6 +16,7 @@ use crate::common::{maybe_elevate, require_csrf, urlencoding_encode};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, ReliquaryHostRow, ReliquaryHostTemplate, ReliquaryTemplate};
 use crate::theme;
@@ -29,8 +30,23 @@ pub async fn show(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::BackupsView)?;
 
+    if let Some(host_id) = host_context::current(&jar) {
+        if state.hosts.is_connected(host_id) {
+            return Ok(Redirect::to(&format!("/arsenals/reliquary/{host_id}")).into_response());
+        }
+    }
+
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
@@ -65,7 +81,16 @@ async fn render_host(
         .ok_or(AppError::NotFound)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
-    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
 
     let tpl = ReliquaryHostTemplate {
         can_create: ctx.has(Permission::BackupsCreate),
@@ -100,8 +125,6 @@ pub async fn show_host(
 #[derive(Deserialize)]
 pub struct SimpleForm {
     csrf_token: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 /// Shared dispatch, same shape as every other arsenal's `run_read_op` --
@@ -115,17 +138,11 @@ async fn run_read_op(
     host_id: Uuid,
     operation: AgentOperation,
     label: &str,
-    sudo_password: Option<String>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("{label} -- {}", host.name));
-
-    let tls_warning = match maybe_elevate(state, ctx, host_id, &host.name, sudo_password).await {
-        Ok(warning) => warning.unwrap_or(""),
-        Err(e) => return render_host(state, jar, ctx, host_id, result_label, None, Some(e)).await,
-    };
 
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
@@ -153,7 +170,7 @@ async fn run_read_op(
                 ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -190,7 +207,6 @@ pub async fn list_backups(
         host_id,
         AgentOperation::ListBackups,
         "Backups",
-        form.sudo_password,
     )
     .await
 }
@@ -199,8 +215,6 @@ pub async fn list_backups(
 pub struct VerifyBackupForm {
     csrf_token: String,
     filename: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn verify_backup(
@@ -230,7 +244,6 @@ pub async fn verify_backup(
             filename: filename.clone(),
         },
         &format!("Verify Backup ({filename})"),
-        form.sudo_password,
     )
     .await
 }
@@ -240,8 +253,6 @@ pub struct CreateBackupForm {
     csrf_token: String,
     source_path: String,
     name: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn create_backup(
@@ -272,14 +283,6 @@ pub async fn create_backup(
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("Create Backup ({name}) -- {}", host.name));
 
-    let tls_warning =
-        match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
-            Ok(warning) => warning.unwrap_or(""),
-            Err(e) => {
-                return render_host(&state, &jar, &ctx, host_id, result_label, None, Some(e)).await
-            }
-        };
-
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -288,7 +291,10 @@ pub async fn create_backup(
             &state.hosts,
             host_id,
             &host.name,
-            AgentOperation::CreateBackup { source_path, name },
+            AgentOperation::CreateBackup {
+                source_path: source_path.clone(),
+                name: name.clone(),
+            },
             Permission::BackupsCreate,
             OperationKind::Write,
             false,
@@ -300,13 +306,24 @@ pub async fn create_backup(
 
     match result {
         Ok(output) => {
+            if let Err(e) = repo::backup_records::record(
+                &state.pool,
+                host_id,
+                &name,
+                &source_path,
+                Some(ctx.user.id),
+            )
+            .await
+            {
+                tracing::error!(error = %e, "failed to persist backup record");
+            }
             render_host(
                 &state,
                 &jar,
                 &ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -359,7 +376,16 @@ pub async fn restore_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let escalate_host_id = if base.can_hosts_elevate && !state.elevation.is_elevated(host_id) {
         Some(host_id.to_string())
@@ -402,8 +428,6 @@ pub struct RestoreForm {
     confirm: bool,
     #[serde(default)]
     confirm_text: String,
-    #[serde(default)]
-    sudo_password: Option<String>,
 }
 
 pub async fn restore_backup(
@@ -445,14 +469,6 @@ pub async fn restore_backup(
         host.name
     ));
 
-    let tls_warning =
-        match maybe_elevate(&state, &ctx, host_id, &host.name, form.sudo_password).await {
-            Ok(warning) => warning.unwrap_or(""),
-            Err(e) => {
-                return render_host(&state, &jar, &ctx, host_id, result_label, None, Some(e)).await
-            }
-        };
-
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -482,7 +498,7 @@ pub async fn restore_backup(
                 &ctx,
                 host_id,
                 result_label,
-                Some(format!("{tls_warning}{}", output.stdout)),
+                Some(output.stdout),
                 None,
             )
             .await
@@ -497,6 +513,61 @@ pub async fn restore_backup(
                 result_label,
                 None,
                 Some(e.to_string()),
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ElevateForm {
+    csrf_token: String,
+    sudo_password: String,
+}
+
+pub async fn elevate(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ElevateForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsElevate)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if form.sudo_password.trim().is_empty() {
+        return Err(WebError(AppError::Validation(
+            "Enter a sudo password to elevate.".into(),
+        )));
+    }
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    match maybe_elevate(&state, &ctx, host_id, &host.name, Some(form.sudo_password)).await {
+        Ok(warning) => {
+            let message = format!("{}Elevated.", warning.unwrap_or(""));
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                Some("Elevate".to_string()),
+                Some(message),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                Some("Elevate".to_string()),
+                None,
+                Some(e),
             )
             .await
         }

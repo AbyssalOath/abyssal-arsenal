@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/inquest/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -35,89 +44,61 @@
   </details>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Read</h3>
+<div class="card kind-read">
+  <h3>Read</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/inquest/{{ host_id }}/blocked-ips">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} Blocked IPs</button>
     </form>
     <form method="post" action="/arsenals/inquest/{{ host_id }}/isolation-status">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Isolation Status</button>
     </form>
     <form method="post" action="/arsenals/inquest/{{ host_id }}/quarantined-files">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Quarantined Files</button>
     </form>
   </div>
 </div>
 
 {% if can_manage %}
-<div class="card">
-  <h3 style="margin-top:0;">Write</h3>
+<div class="card kind-write">
+  <h3>Write</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/inquest/{{ host_id }}/block-ip">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="block-ip">Remote IP</label>
       <input type="text" id="block-ip" name="ip" placeholder="e.g. 203.0.113.42" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="block-ip-password">Sudo password (if needed)</label>
-      <input type="password" id="block-ip-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("danger") %} Block IP</button>
     </form>
     <form method="post" action="/arsenals/inquest/{{ host_id }}/unblock-ip">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="unblock-ip">Remote IP</label>
       <input type="text" id="unblock-ip" name="ip" placeholder="e.g. 203.0.113.42" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="unblock-ip-password">Sudo password (if needed)</label>
-      <input type="password" id="unblock-ip-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("check") %} Unblock IP</button>
     </form>
     <form method="post" action="/arsenals/inquest/{{ host_id }}/quarantine">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="quarantine-path">File path</label>
       <input type="text" id="quarantine-path" name="path" placeholder="e.g. /tmp/suspicious.sh" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="quarantine-password">Sudo password (if needed)</label>
-      <input type="password" id="quarantine-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("danger") %} Quarantine File</button>
     </form>
     <form method="post" action="/arsenals/inquest/{{ host_id }}/restore-quarantined">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="restore-filename">Quarantine filename</label>
       <input type="text" id="restore-filename" name="quarantine_filename" placeholder="from Quarantined Files above" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="restore-password">Sudo password (if needed)</label>
-      <input type="password" id="restore-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Restore File</button>
     </form>
     <form method="post" action="/arsenals/inquest/{{ host_id }}/deisolate">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("check") %} De-isolate Host</button>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Destructive</h3>
+<div class="card kind-destructive">
+  <h3>Destructive</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Deleting a quarantined file is permanent -- it can no longer be restored afterward.
   </p>
@@ -131,7 +112,7 @@
 </div>
 
 <div class="card kind-destructive">
-  <h3 style="margin-top:0;">{% call macros::icon("danger") %} Full Host Isolation</h3>
+  <h3>{% call macros::icon("danger") %} Full Host Isolation</h3>
   {% if host_isolation_enabled %}
   <p style="color:var(--text-muted); margin-top:0;">
     Blocks ALL network traffic on this host except loopback, already-established connections,

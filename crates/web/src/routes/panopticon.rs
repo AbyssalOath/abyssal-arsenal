@@ -17,6 +17,7 @@ use crate::common::{require_csrf, urlencoding_encode};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::panopticon_ops::DiscoveryScanOperation;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, NetworkDeviceRow, PanopticonTemplate, SubnetGroup};
@@ -44,7 +45,16 @@ async fn render(
     result_error: Option<String>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
-    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
 
     let hosts = repo::hosts::list(&state.pool).await?;
     let mut managed_by_ip: HashMap<String, String> = HashMap::new();
@@ -164,7 +174,16 @@ pub async fn scan_confirm(
     let (target, ports) = validate_scan_query(&q)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let mut action_url = format!(
         "/arsenals/panopticon/scan?target={}",
@@ -272,7 +291,16 @@ pub async fn remove_device_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let tpl = crate::templates::ConfirmTemplate {
         base,

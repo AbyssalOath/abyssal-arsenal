@@ -19,6 +19,7 @@ use crate::common::require_csrf;
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, HostRow, HostsTemplate};
 use crate::theme;
@@ -47,7 +48,16 @@ async fn render(
     action_error: Option<String>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
-    let base = BaseCtx::build(ctx, &theme::current(jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
 
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
@@ -217,7 +227,16 @@ pub async fn revoke_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let tpl = crate::templates::ConfirmTemplate {
         base,
@@ -293,7 +312,16 @@ pub async fn remove_confirm(
         .await?
         .ok_or(AppError::NotFound)?;
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let tpl = crate::templates::ConfirmTemplate {
         base,

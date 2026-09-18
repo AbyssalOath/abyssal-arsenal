@@ -121,12 +121,15 @@ impl Executor {
         elevated: bool,
     ) -> Result<OperationOutput, ExecutionError> {
         let op_kind = HostOpKind::from(&operation);
+        let op_label = operation.label();
 
         if !ctx.has(required_permission) {
             self.audit_host_op(
                 ctx,
                 host_label,
                 op_kind,
+                &op_label,
+                kind,
                 elevated,
                 AuditOutcome::Failure,
                 source_ip,
@@ -141,6 +144,8 @@ impl Executor {
                 ctx,
                 host_label,
                 op_kind,
+                &op_label,
+                kind,
                 elevated,
                 AuditOutcome::Failure,
                 source_ip,
@@ -168,6 +173,8 @@ impl Executor {
                     ctx,
                     host_label,
                     op_kind,
+                    &op_label,
+                    kind,
                     elevated,
                     AuditOutcome::Success,
                     source_ip,
@@ -180,6 +187,8 @@ impl Executor {
                     ctx,
                     host_label,
                     op_kind,
+                    &op_label,
+                    kind,
                     elevated,
                     AuditOutcome::Failure,
                     source_ip,
@@ -220,11 +229,14 @@ impl Executor {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn audit_host_op(
         &self,
         ctx: &AuthContext,
         resource: &str,
         op_kind: HostOpKind,
+        op_label: &str,
+        kind: OperationKind,
         elevated: bool,
         outcome: AuditOutcome,
         source_ip: Option<&str>,
@@ -237,13 +249,21 @@ impl Executor {
             (HostOpKind::Other, _) => AuditAction::SystemCommandExecuted,
         };
 
+        let kind_key = match kind {
+            OperationKind::Read => "read",
+            OperationKind::Write => "write",
+            OperationKind::Destructive => "destructive",
+        };
+
         let event = AuditEvent::new(action, outcome)
             .actor(Actor {
                 user_id: ctx.user.id,
                 username: &ctx.user.username,
             })
             .resource(resource)
-            .metadata(serde_json::json!({ "detail": detail, "elevated": elevated }));
+            .metadata(
+                serde_json::json!({ "detail": detail, "elevated": elevated, "operation": op_label, "kind": kind_key }),
+            );
 
         let event = if let Some(ip) = source_ip {
             event.source_ip(ip)

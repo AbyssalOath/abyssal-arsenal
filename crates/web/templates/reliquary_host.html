@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/reliquary/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -35,35 +44,28 @@
   </details>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Read</h3>
+<div class="card kind-read">
+  <h3>Read</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Backups live under <code>/var/backups/abyssal-arsenal</code> on this host.
   </p>
   <div class="action-grid">
     <form method="post" action="/arsenals/reliquary/{{ host_id }}/list">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} List Backups</button>
     </form>
     <form method="post" action="/arsenals/reliquary/{{ host_id }}/verify">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="verify-filename">Backup filename</label>
       <input type="text" id="verify-filename" name="filename" placeholder="e.g. mydata-1758138245.tar.gz" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="verify-password">Sudo password (if needed)</label>
-      <input type="password" id="verify-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Verify Backup</button>
     </form>
   </div>
 </div>
 
 {% if can_create %}
-<div class="card">
-  <h3 style="margin-top:0;">Write</h3>
+<div class="card kind-write">
+  <h3>Write</h3>
   <form method="post" action="/arsenals/reliquary/{{ host_id }}/create" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:720px;">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <div>
@@ -74,20 +76,14 @@
       <label for="create-name">Backup name</label>
       <input type="text" id="create-name" name="name" placeholder="e.g. etc-config" required style="margin-bottom:0;">
     </div>
-    {% if !elevated && base.can_hosts_elevate %}
-    <div>
-      <label for="create-password">Sudo password (if needed)</label>
-      <input type="password" id="create-password" name="sudo_password" autocomplete="off" style="margin-bottom:0;">
-    </div>
-    {% endif %}
     <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create Backup</button>
   </form>
 </div>
 {% endif %}
 
 {% if can_restore %}
-<div class="card">
-  <h3 style="margin-top:0;">Destructive</h3>
+<div class="card kind-destructive">
+  <h3>Destructive</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Extracts a backup over an existing directory, overwriting any files already there with the
     same names. This cannot be undone.

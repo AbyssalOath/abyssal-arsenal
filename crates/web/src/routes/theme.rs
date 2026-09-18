@@ -25,5 +25,5 @@ pub async fn set(jar: CookieJar, Form(form): Form<ThemeForm>) -> Result<Response
         .path("/")
         .build();
     let jar = jar.add(cookie);
-    Ok((jar, Redirect::to("/")).into_response())
+    Ok((jar, Redirect::to("/account")).into_response())
 }

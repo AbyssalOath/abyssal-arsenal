@@ -37,7 +37,7 @@
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0;">{% call macros::icon("route") %} Topology (by /24)</h3>
+  <h3>{% call macros::icon("route") %} Topology (by /24)</h3>
   {% if subnets.is_empty() %}
   <p style="color:var(--text-muted); margin-top:0;">No devices in the inventory yet -- run a discovery scan.</p>
   {% else %}
@@ -57,7 +57,7 @@
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0;">{% call macros::icon("network") %} Device Inventory</h3>
+  <h3>{% call macros::icon("network") %} Device Inventory</h3>
   {% if devices.is_empty() %}
   <p style="color:var(--text-muted); margin-top:0;">No devices discovered yet -- run a discovery scan.</p>
   {% else %}

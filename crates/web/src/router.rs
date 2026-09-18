@@ -26,7 +26,11 @@ pub fn build(state: AppState) -> Router {
             get(routes::register::show).post(routes::register::submit),
         )
         .route("/theme", post(routes::theme::set))
+        .route("/account", get(routes::account::show))
         .route("/account/timezone", post(routes::account::set_timezone))
+        .route("/modules/:key/pin", post(routes::dashboard::pin))
+        .route("/modules/:key/unpin", post(routes::dashboard::unpin))
+        .route("/host-context/select", post(routes::host_context::select))
         .route("/style-guide", get(routes::style_guide::show))
         .route("/admin/users", get(routes::users::list))
         .route("/admin/users/create", post(routes::users::create))
@@ -147,6 +151,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/cystoolbox/:host_id/reboot",
             post(routes::cystoolbox::reboot),
         )
+        .route(
+            "/arsenals/cystoolbox/:host_id/elevate",
+            post(routes::cystoolbox::elevate),
+        )
         .route("/arsenals/cadavault", get(routes::cadavault::show))
         .route(
             "/arsenals/cadavault/:host_id",
@@ -175,6 +183,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/cadavault/:host_id/firewall-enable",
             post(routes::cadavault::enable_firewall),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/elevate",
+            post(routes::cadavault::elevate),
         )
         .route("/arsenals/necrolink", get(routes::necrolink::show))
         .route(
@@ -221,6 +233,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/necrolink/:host_id/scan",
             post(routes::necrolink::network_scan),
         )
+        .route(
+            "/arsenals/necrolink/:host_id/elevate",
+            post(routes::necrolink::elevate),
+        )
         .route("/arsenals/postmortem", get(routes::postmortem::show))
         .route(
             "/arsenals/postmortem/:host_id",
@@ -253,6 +269,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/postmortem/:host_id/modified-files",
             post(routes::postmortem::recently_modified_files),
+        )
+        .route(
+            "/arsenals/postmortem/:host_id/elevate",
+            post(routes::postmortem::elevate),
         )
         .route("/arsenals/obituary", get(routes::obituary::show))
         .route(
@@ -291,6 +311,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/obituary/:host_id/vacuum-time",
             post(routes::obituary::vacuum_by_time),
         )
+        .route(
+            "/arsenals/obituary/:host_id/elevate",
+            post(routes::obituary::elevate),
+        )
         .route("/arsenals/reliquary", get(routes::reliquary::show))
         .route(
             "/arsenals/reliquary/:host_id",
@@ -315,6 +339,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/reliquary/:host_id/restore",
             post(routes::reliquary::restore_backup),
+        )
+        .route(
+            "/arsenals/reliquary/:host_id/elevate",
+            post(routes::reliquary::elevate),
         )
         .route("/arsenals/mortiscope", get(routes::mortiscope::show))
         .route(
@@ -344,6 +372,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/mortiscope/:host_id/failed-services",
             post(routes::mortiscope::failed_services),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/elevate",
+            post(routes::mortiscope::elevate),
         )
         .route("/arsenals/incarnation", get(routes::incarnation::show))
         .route(
@@ -390,6 +422,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/incarnation/:host_id/restart",
             post(routes::incarnation::restart_service),
         )
+        .route(
+            "/arsenals/incarnation/:host_id/elevate",
+            post(routes::incarnation::elevate),
+        )
         .route("/arsenals/resurrection", get(routes::resurrection::show))
         .route(
             "/arsenals/resurrection/:host_id",
@@ -423,6 +459,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/resurrection/:host_id/remount",
             post(routes::resurrection::remount_read_write),
         )
+        .route(
+            "/arsenals/resurrection/:host_id/elevate",
+            post(routes::resurrection::elevate),
+        )
         .route("/arsenals/necropsy", get(routes::necropsy::show))
         .route(
             "/arsenals/necropsy/:host_id",
@@ -447,6 +487,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/necropsy/:host_id/disk-health",
             post(routes::necropsy::disk_health),
+        )
+        .route(
+            "/arsenals/necropsy/:host_id/elevate",
+            post(routes::necropsy::elevate),
         )
         .route("/arsenals/necropolis", get(routes::necropolis::show))
         .route(
@@ -501,6 +545,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/necropolis/:host_id/remove",
             post(routes::necropolis::remove_container),
         )
+        .route(
+            "/arsenals/necropolis/:host_id/elevate",
+            post(routes::necropolis::elevate),
+        )
         .route("/arsenals/reanimation", get(routes::reanimation::show))
         .route(
             "/arsenals/reanimation/:host_id",
@@ -525,6 +573,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/reanimation/:host_id/signal",
             post(routes::reanimation::send_signal),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/elevate",
+            post(routes::reanimation::elevate),
         )
         .route("/arsenals/defleshing", get(routes::defleshing::show))
         .route(
@@ -555,6 +607,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/defleshing/:host_id/clear-core-dumps",
             post(routes::defleshing::clear_core_dumps),
         )
+        .route(
+            "/arsenals/defleshing/:host_id/elevate",
+            post(routes::defleshing::elevate),
+        )
         .route("/arsenals/vivisection", get(routes::vivisection::show))
         .route(
             "/arsenals/vivisection/:host_id",
@@ -583,6 +639,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/vivisection/:host_id/io-scheduler",
             post(routes::vivisection::set_io_scheduler),
+        )
+        .route(
+            "/arsenals/vivisection/:host_id/elevate",
+            post(routes::vivisection::elevate),
         )
         .route("/arsenals/parish", get(routes::parish::show))
         .route("/arsenals/parish/:host_id", get(routes::parish::show_host))
@@ -638,6 +698,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/parish/:host_id/delete-group",
             post(routes::parish::delete_group),
         )
+        .route(
+            "/arsenals/parish/:host_id/elevate",
+            post(routes::parish::elevate),
+        )
         .route("/arsenals/catacomb", get(routes::catacomb::show))
         .route(
             "/arsenals/catacomb/:host_id",
@@ -666,6 +730,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/catacomb/:host_id/repair",
             post(routes::catacomb::filesystem_repair),
+        )
+        .route(
+            "/arsenals/catacomb/:host_id/elevate",
+            post(routes::catacomb::elevate),
         )
         .route("/arsenals/apothecary", get(routes::apothecary::show))
         .route(
@@ -707,6 +775,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/apothecary/:host_id/remove",
             post(routes::apothecary::remove_package),
+        )
+        .route(
+            "/arsenals/apothecary/:host_id/elevate",
+            post(routes::apothecary::elevate),
         )
         .route("/arsenals/ossuary", get(routes::ossuary::show))
         .route(
@@ -829,6 +901,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/ossuary/:host_id/mkfs",
             post(routes::ossuary::create_filesystem),
         )
+        .route(
+            "/arsenals/ossuary/:host_id/elevate",
+            post(routes::ossuary::elevate),
+        )
         .route("/arsenals/grimoire", get(routes::grimoire::show))
         .route(
             "/arsenals/grimoire/:host_id",
@@ -877,6 +953,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/grimoire/:host_id/clear-cron",
             post(routes::grimoire::clear_managed_cron_jobs),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/elevate",
+            post(routes::grimoire::elevate),
         )
         .route("/arsenals/inquest", get(routes::inquest::show))
         .route(
@@ -931,6 +1011,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/inquest/:host_id/isolate",
             post(routes::inquest::isolate_host),
         )
+        .route(
+            "/arsenals/inquest/:host_id/elevate",
+            post(routes::inquest::elevate),
+        )
         .route("/arsenals/cryptkeeper", get(routes::cryptkeeper::show))
         .route(
             "/arsenals/cryptkeeper/:host_id",
@@ -984,6 +1068,10 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/cryptkeeper/:host_id/delete-ssh-keypair",
             post(routes::cryptkeeper::delete_ssh_keypair),
         )
+        .route(
+            "/arsenals/cryptkeeper/:host_id/elevate",
+            post(routes::cryptkeeper::elevate),
+        )
         .route("/arsenals/panopticon", get(routes::panopticon::show))
         .route(
             "/arsenals/panopticon/scan/confirm",
@@ -1006,6 +1094,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/thanatos/:host_id/scan",
             post(routes::thanatos::scan),
+        )
+        .route(
+            "/arsenals/thanatos/:host_id/elevate",
+            post(routes::thanatos::elevate),
         )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))

@@ -16,6 +16,7 @@ use crate::common::require_csrf;
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, SettingsTemplate};
 use crate::theme;
@@ -28,7 +29,16 @@ pub async fn show(
     abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
     let public_registration_enabled =
         repo::settings::get_bool(&state.pool, PUBLIC_REGISTRATION_ENABLED, false).await?;
     let apotheosis_elevation_window_minutes = repo::settings::get_u32(

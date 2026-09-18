@@ -6,6 +6,7 @@ use axum_extra::extract::cookie::CookieJar;
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{ArsenalDetailTemplate, BaseCtx};
 use crate::theme;
@@ -29,7 +30,16 @@ pub async fn show(
     }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let tpl = ArsenalDetailTemplate {
         base,

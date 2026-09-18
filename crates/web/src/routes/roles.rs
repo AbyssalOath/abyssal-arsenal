@@ -14,6 +14,7 @@ use crate::common::require_csrf;
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
+use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{BaseCtx, ConfirmTemplate, PermissionRow, RoleDetail, RolesTemplate};
 use crate::theme;
@@ -26,7 +27,16 @@ pub async fn list(
     abyssal_rbac::ensure(&ctx, Permission::RolesManage)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
 
     let mut roles = Vec::new();
     for role in repo::roles::list(&state.pool).await? {
@@ -108,7 +118,16 @@ pub async fn update_permissions(
     let removed = current.difference(&requested).count();
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
-    let base = BaseCtx::build(&ctx, &theme::current(&jar), &csrf_token, &state.elevation);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
     // The confirm page carries the entire selection forward as one opaque
     // JSON-encoded hidden field rather than repeated hidden inputs, for the
     // exact same reason the initial submission needed manual parsing above

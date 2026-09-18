@@ -13,6 +13,15 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/necropolis/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -35,73 +44,52 @@
   </details>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Read</h3>
+<div class="card kind-read">
+  <h3>Read</h3>
   <p style="color:var(--text-muted); margin-top:0;">Works with whichever of Docker or Podman is present on the host.</p>
   <div class="action-grid">
     <form method="post" action="/arsenals/necropolis/{{ host_id }}/list">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} List Containers</button>
     </form>
     <form method="post" action="/arsenals/necropolis/{{ host_id }}/images">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("route") %} List Images</button>
     </form>
     <form method="post" action="/arsenals/necropolis/{{ host_id }}/info">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      {% if !elevated && base.can_hosts_elevate %}
-      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("settings") %} Runtime Info</button>
     </form>
     <form method="post" action="/arsenals/necropolis/{{ host_id }}/logs">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="logs-container">Container</label>
       <input type="text" id="logs-container" name="container" placeholder="e.g. web-1" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="logs-password">Sudo password (if needed)</label>
-      <input type="password" id="logs-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Container Logs</button>
     </form>
     <form method="post" action="/arsenals/necropolis/{{ host_id }}/inspect">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="inspect-container">Container</label>
       <input type="text" id="inspect-container" name="container" placeholder="e.g. web-1" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="inspect-password">Sudo password (if needed)</label>
-      <input type="password" id="inspect-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Container Inspect</button>
     </form>
   </div>
 </div>
 
 {% if can_manage %}
-<div class="card">
-  <h3 style="margin-top:0;">Write</h3>
+<div class="card kind-write">
+  <h3>Write</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/necropolis/{{ host_id }}/start">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="start-container">Container</label>
       <input type="text" id="start-container" name="container" placeholder="e.g. web-1" required>
-      {% if !elevated && base.can_hosts_elevate %}
-      <label for="start-password">Sudo password (if needed)</label>
-      <input type="password" id="start-password" name="sudo_password" autocomplete="off">
-      {% endif %}
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Start</button>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <h3 style="margin-top:0;">Destructive</h3>
+<div class="card kind-destructive">
+  <h3>Destructive</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Stopping or restarting a container interrupts whatever it provides. Removing one
     deletes its own writable layer and state permanently -- named volumes survive.
