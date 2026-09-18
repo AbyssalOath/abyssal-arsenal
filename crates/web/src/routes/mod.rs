@@ -27,3 +27,4 @@ pub mod setup;
 pub mod style_guide;
 pub mod theme;
 pub mod users;
+pub mod vivisection;

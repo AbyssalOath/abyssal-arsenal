@@ -1,0 +1,111 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Vivisection — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Vivisection — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/vivisection">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <p style="color:var(--text-muted); margin-top:0;">"VM Statistics" samples over ~3 seconds -- the others are instant.</p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/vivisection/{{ host_id }}/vmstat">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("reboot") %} VM Statistics</button>
+    </form>
+    <form method="post" action="/arsenals/vivisection/{{ host_id }}/interrupts">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Interrupt Statistics</button>
+    </form>
+    <form method="post" action="/arsenals/vivisection/{{ host_id }}/cpu-governor">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} CPU Governor Status</button>
+    </form>
+    <form method="post" action="/arsenals/vivisection/{{ host_id }}/tuning-params">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("settings") %} Tuning Parameters</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Runtime-only changes -- neither persists across a reboot, and both are trivially undone by setting a different value back.
+  </p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/vivisection/{{ host_id }}/swappiness">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="swappiness-value">Swappiness (0-200)</label>
+      <input type="number" id="swappiness-value" name="value" min="0" max="200" value="60" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="swappiness-password">Sudo password (if needed)</label>
+      <input type="password" id="swappiness-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Set Swappiness</button>
+    </form>
+    <form method="post" action="/arsenals/vivisection/{{ host_id }}/io-scheduler">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="ioscheduler-device">Device</label>
+      <input type="text" id="ioscheduler-device" name="device" placeholder="e.g. sda" required>
+      <label for="ioscheduler-scheduler">Scheduler</label>
+      <select id="ioscheduler-scheduler" name="scheduler">
+        <option value="mq-deadline">mq-deadline</option>
+        <option value="kyber">kyber</option>
+        <option value="bfq">bfq</option>
+        <option value="none">none</option>
+      </select>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="ioscheduler-password">Sudo password (if needed)</label>
+      <input type="password" id="ioscheduler-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Set I/O Scheduler</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

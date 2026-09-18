@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -370,6 +370,40 @@ pub enum AgentOperation {
     /// dump this removes (the same reasoning Obituary's journal vacuum
     /// documents), so the control plane requires explicit confirmation.
     ClearCoreDumps,
+    /// Sampled system activity -- procs, memory, swap, I/O, system, and
+    /// CPU columns across a few one-second samples (`vmstat 1 3`).
+    /// Distinct from Mortiscope's `DiskIoStats` (`vmstat -d`, a static
+    /// one-shot per-device counter dump): this is the classic
+    /// over-time activity sample used to catch momentary CPU/memory
+    /// pressure or context-switch storms.
+    VmStatistics,
+    /// Per-CPU interrupt counts by IRQ and device (`cat /proc/interrupts`)
+    /// -- an IRQ storm on one core is a common, otherwise-invisible cause
+    /// of a host that "feels slow."
+    InterruptStatistics,
+    /// The active CPU frequency-scaling governor and current/min/max
+    /// clock speed, read from cpu0's cpufreq sysfs files as a
+    /// representative sample (the governor is normally uniform across
+    /// cores). Not available on hosts with no active cpufreq scaling
+    /// (common in VMs/containers reporting a fixed frequency) -- that's
+    /// a normal result here, not an error.
+    CpuGovernorStatus,
+    /// Current values of the `vm.*` sysctls this arsenal can tune
+    /// (`sysctl vm.swappiness vm.dirty_ratio vm.dirty_background_ratio`)
+    /// -- read-side visibility into the same knobs `SetSwappiness` turns.
+    TuningParametersStatus,
+    /// Sets `vm.swappiness` at runtime (`sysctl -w vm.swappiness=<value>`,
+    /// 0-200). Write, not Destructive: a runtime-only sysctl change that
+    /// doesn't persist across reboot and is trivially undone by setting
+    /// it back.
+    SetSwappiness { value: u32 },
+    /// Sets a block device's I/O scheduler by writing the scheduler name
+    /// to its sysfs queue file (`tee /sys/block/<device>/queue/scheduler`,
+    /// fed via stdin since there's no shell here to do the `>` redirection
+    /// this file conventionally takes). Write, not Destructive: purely a
+    /// runtime queuing-policy change, reversible by writing a different
+    /// name back.
+    SetIoScheduler { device: String, scheduler: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -561,6 +595,19 @@ impl fmt::Debug for AgentOperation {
                 .field("older_than_days", older_than_days)
                 .finish(),
             AgentOperation::ClearCoreDumps => write!(f, "ClearCoreDumps"),
+            AgentOperation::VmStatistics => write!(f, "VmStatistics"),
+            AgentOperation::InterruptStatistics => write!(f, "InterruptStatistics"),
+            AgentOperation::CpuGovernorStatus => write!(f, "CpuGovernorStatus"),
+            AgentOperation::TuningParametersStatus => write!(f, "TuningParametersStatus"),
+            AgentOperation::SetSwappiness { value } => f
+                .debug_struct("SetSwappiness")
+                .field("value", value)
+                .finish(),
+            AgentOperation::SetIoScheduler { device, scheduler } => f
+                .debug_struct("SetIoScheduler")
+                .field("device", device)
+                .field("scheduler", scheduler)
+                .finish(),
         }
     }
 }
@@ -799,6 +846,35 @@ pub fn is_valid_nice_priority(priority: i32) -> bool {
 /// than intent.
 pub fn is_valid_cleanup_days(days: u32) -> bool {
     (1..=3650).contains(&days)
+}
+
+/// A `vm.swappiness` value. The kernel documents 0-200 as the valid
+/// range (100 used to be treated as the practical ceiling, but modern
+/// kernels accept up to 200).
+pub fn is_valid_swappiness(value: u32) -> bool {
+    value <= 200
+}
+
+/// A block device's short name under `/sys/block/`, e.g. `"sda"`,
+/// `"nvme0n1"`, `"dm-0"`. Letters, digits, and `-` only, and never
+/// starting with `-` -- this also doubles as the traversal defense for
+/// `SetIoScheduler`, since excluding `/` and `.` means the resulting
+/// `/sys/block/<device>/queue/scheduler` path can never point outside
+/// that fixed directory.
+pub fn is_valid_block_device_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && !name.starts_with('-')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// An I/O scheduler name for `SetIoScheduler`, checked against a fixed
+/// allow-list of schedulers the Linux block layer actually ships --
+/// same reasoning as `is_valid_signal_name`: a typo fails clearly here
+/// instead of producing a confusing kernel error.
+pub fn is_valid_io_scheduler(name: &str) -> bool {
+    const ALLOWED: &[&str] = &["mq-deadline", "kyber", "bfq", "none", "deadline", "noop"];
+    ALLOWED.contains(&name)
 }
 
 /// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
@@ -1086,5 +1162,45 @@ mod tests {
     fn rejects_out_of_range_cleanup_days() {
         assert!(!is_valid_cleanup_days(0));
         assert!(!is_valid_cleanup_days(3651));
+    }
+
+    #[test]
+    fn accepts_reasonable_swappiness() {
+        assert!(is_valid_swappiness(0));
+        assert!(is_valid_swappiness(60));
+        assert!(is_valid_swappiness(200));
+    }
+
+    #[test]
+    fn rejects_out_of_range_swappiness() {
+        assert!(!is_valid_swappiness(201));
+    }
+
+    #[test]
+    fn accepts_reasonable_block_device_names() {
+        assert!(is_valid_block_device_name("sda"));
+        assert!(is_valid_block_device_name("nvme0n1"));
+        assert!(is_valid_block_device_name("dm-0"));
+    }
+
+    #[test]
+    fn rejects_malformed_block_device_names() {
+        assert!(!is_valid_block_device_name(""));
+        assert!(!is_valid_block_device_name("-sda"));
+        assert!(!is_valid_block_device_name("sda/../../etc"));
+        assert!(!is_valid_block_device_name(&"a".repeat(33)));
+    }
+
+    #[test]
+    fn accepts_allowed_io_schedulers() {
+        assert!(is_valid_io_scheduler("mq-deadline"));
+        assert!(is_valid_io_scheduler("bfq"));
+        assert!(is_valid_io_scheduler("none"));
+    }
+
+    #[test]
+    fn rejects_disallowed_io_schedulers() {
+        assert!(!is_valid_io_scheduler(""));
+        assert!(!is_valid_io_scheduler("totally-made-up"));
     }
 }

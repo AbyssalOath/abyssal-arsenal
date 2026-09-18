@@ -16,6 +16,7 @@ mod reanimation;
 mod reliquary;
 mod resurrection;
 mod transport;
+mod vivisection;
 
 use std::path::PathBuf;
 use std::time::Duration;

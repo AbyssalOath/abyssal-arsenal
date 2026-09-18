@@ -5,7 +5,7 @@ use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
     defleshing, firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary,
-    postmortem, process::run_command, reanimation, reliquary, resurrection,
+    postmortem, process::run_command, reanimation, reliquary, resurrection, vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -152,6 +152,18 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
             defleshing::clear_tmp_files(older_than_days, elevation).await
         }
         AgentOperation::ClearCoreDumps => defleshing::clear_core_dumps(elevation).await,
+        AgentOperation::VmStatistics => vivisection::vm_statistics(elevation).await,
+        AgentOperation::InterruptStatistics => vivisection::interrupt_statistics(elevation).await,
+        AgentOperation::CpuGovernorStatus => vivisection::cpu_governor_status(elevation).await,
+        AgentOperation::TuningParametersStatus => {
+            vivisection::tuning_parameters_status(elevation).await
+        }
+        AgentOperation::SetSwappiness { value } => {
+            vivisection::set_swappiness(value, elevation).await
+        }
+        AgentOperation::SetIoScheduler { device, scheduler } => {
+            vivisection::set_io_scheduler(device, scheduler, elevation).await
+        }
     }
 }
 

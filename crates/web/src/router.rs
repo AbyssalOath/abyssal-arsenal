@@ -539,6 +539,35 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/defleshing/:host_id/clear-core-dumps",
             post(routes::defleshing::clear_core_dumps),
         )
+        .route("/arsenals/vivisection", get(routes::vivisection::show))
+        .route(
+            "/arsenals/vivisection/:host_id",
+            get(routes::vivisection::show_host),
+        )
+        .route(
+            "/arsenals/vivisection/:host_id/vmstat",
+            post(routes::vivisection::vm_statistics),
+        )
+        .route(
+            "/arsenals/vivisection/:host_id/interrupts",
+            post(routes::vivisection::interrupt_statistics),
+        )
+        .route(
+            "/arsenals/vivisection/:host_id/cpu-governor",
+            post(routes::vivisection::cpu_governor_status),
+        )
+        .route(
+            "/arsenals/vivisection/:host_id/tuning-params",
+            post(routes::vivisection::tuning_parameters_status),
+        )
+        .route(
+            "/arsenals/vivisection/:host_id/swappiness",
+            post(routes::vivisection::set_swappiness),
+        )
+        .route(
+            "/arsenals/vivisection/:host_id/io-scheduler",
+            post(routes::vivisection::set_io_scheduler),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))
