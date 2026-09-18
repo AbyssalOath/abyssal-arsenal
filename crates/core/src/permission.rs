@@ -4,6 +4,14 @@ use std::fmt;
 /// these — there is no hard-coded "admin boolean" anywhere in the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Permission {
+    /// These four gate the control plane's *own* login accounts
+    /// (`/admin/users`) -- who can sign in to this application. Deliberately
+    /// separate from `HostUsersView`/`HostUsersManage` below, which gate
+    /// Parish's Linux account/group administration *on managed hosts*.
+    /// Granting one was never meant to imply the other: someone who
+    /// manages who can log into this control plane shouldn't automatically
+    /// be able to create real OS accounts on the servers it manages, or
+    /// vice versa.
     UsersView,
     UsersCreate,
     UsersModify,
@@ -11,6 +19,17 @@ pub enum Permission {
 
     SystemsView,
     SystemsManage,
+
+    /// User, group, and account administration *on a managed host*
+    /// (Parish) -- distinct from `UsersView`/`UsersCreate`/`UsersModify`/
+    /// `UsersDelete` above, which gate the control plane's own login
+    /// accounts. A single View/Manage pair rather than the finer
+    /// View/Create/Modify/Delete split those use: Parish's Manage-gated
+    /// operations don't have meaningfully different risk tiers the way
+    /// the control plane's own user lifecycle does (creating a login vs.
+    /// deleting one), so the extra granularity wouldn't buy anything real.
+    HostUsersView,
+    HostUsersManage,
 
     NetworkView,
     NetworkManage,
@@ -64,6 +83,9 @@ impl Permission {
             Permission::SystemsView => "systems.view",
             Permission::SystemsManage => "systems.manage",
 
+            Permission::HostUsersView => "host_users.view",
+            Permission::HostUsersManage => "host_users.manage",
+
             Permission::NetworkView => "network.view",
             Permission::NetworkManage => "network.manage",
             Permission::NetworkScan => "network.scan",
@@ -111,6 +133,8 @@ impl Permission {
         Permission::UsersDelete,
         Permission::SystemsView,
         Permission::SystemsManage,
+        Permission::HostUsersView,
+        Permission::HostUsersManage,
         Permission::NetworkView,
         Permission::NetworkManage,
         Permission::NetworkScan,

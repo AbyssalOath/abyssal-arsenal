@@ -1,7 +1,11 @@
 use abyssal_core::{ModuleCategory, Permission};
 use abyssal_modules::Arsenal;
 
-/// User, group, account, permission, and access management.
+/// User, group, account, permission, and access management -- on managed
+/// hosts (Linux accounts/groups via `useradd`/`usermod`/`groupadd`/...),
+/// not the control plane's own login accounts (that's `/admin/users`,
+/// gated by the separate `UsersView`/`UsersCreate`/`UsersModify`/
+/// `UsersDelete` permissions).
 pub struct ParishArsenal;
 
 impl Arsenal for ParishArsenal {
@@ -22,6 +26,6 @@ impl Arsenal for ParishArsenal {
     }
 
     fn view_permissions(&self) -> &'static [Permission] {
-        &[Permission::UsersView]
+        &[Permission::HostUsersView]
     }
 }

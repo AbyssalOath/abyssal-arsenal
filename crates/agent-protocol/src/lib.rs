@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -404,6 +404,47 @@ pub enum AgentOperation {
     /// runtime queuing-policy change, reversible by writing a different
     /// name back.
     SetIoScheduler { device: String, scheduler: String },
+    /// Every local/NSS-resolved account (`getent passwd`).
+    ListUsers,
+    /// Every local/NSS-resolved group and its members (`getent group`).
+    ListGroups,
+    /// UID, primary GID, and every supplementary group for one account
+    /// (`id <username>`).
+    UserDetail { username: String },
+    /// Creates a new local account with a home directory
+    /// (`useradd -m -c <comment> <username>`). The account has no
+    /// password set (locked, per `useradd`'s own default) until someone
+    /// assigns one directly on the host. Write -- additive, undone by
+    /// `DeleteUser`.
+    CreateUser { username: String, comment: String },
+    /// Creates a new local group (`groupadd <group>`). Write, additive.
+    CreateGroup { group: String },
+    /// Adds an account to a supplementary group
+    /// (`usermod -aG <group> <username>`). Write -- additive, reversible
+    /// via `RemoveUserFromGroup`.
+    AddUserToGroup { username: String, group: String },
+    /// Removes an account from a supplementary group
+    /// (`gpasswd -d <username> <group>`). Write, not Destructive: the
+    /// account and group both still exist, only the membership changes,
+    /// and it's trivially reversed by adding them back.
+    RemoveUserFromGroup { username: String, group: String },
+    /// Locks an account, disabling password login without deleting
+    /// anything (`usermod -L <username>`). Write, not Destructive:
+    /// reversible via `UnlockUserAccount`. Refuses `"root"` -- locking
+    /// the one universally-critical account is never the intended
+    /// target.
+    LockUserAccount { username: String },
+    /// Reverses `LockUserAccount` (`usermod -U <username>`). Write.
+    UnlockUserAccount { username: String },
+    /// Deletes a local account (`userdel [-r] <username>`), optionally
+    /// removing its home directory too. Destructive and irreversible --
+    /// the control plane requires explicit confirmation before ever
+    /// dispatching this. Refuses `"root"`.
+    DeleteUser { username: String, remove_home: bool },
+    /// Deletes a local group (`groupdel <group>`). Destructive and
+    /// irreversible for the same reason as `DeleteUser`. Refuses
+    /// `"root"`.
+    DeleteGroup { group: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -608,6 +649,49 @@ impl fmt::Debug for AgentOperation {
                 .field("device", device)
                 .field("scheduler", scheduler)
                 .finish(),
+            AgentOperation::ListUsers => write!(f, "ListUsers"),
+            AgentOperation::ListGroups => write!(f, "ListGroups"),
+            AgentOperation::UserDetail { username } => f
+                .debug_struct("UserDetail")
+                .field("username", username)
+                .finish(),
+            AgentOperation::CreateUser { username, comment } => f
+                .debug_struct("CreateUser")
+                .field("username", username)
+                .field("comment", comment)
+                .finish(),
+            AgentOperation::CreateGroup { group } => {
+                f.debug_struct("CreateGroup").field("group", group).finish()
+            }
+            AgentOperation::AddUserToGroup { username, group } => f
+                .debug_struct("AddUserToGroup")
+                .field("username", username)
+                .field("group", group)
+                .finish(),
+            AgentOperation::RemoveUserFromGroup { username, group } => f
+                .debug_struct("RemoveUserFromGroup")
+                .field("username", username)
+                .field("group", group)
+                .finish(),
+            AgentOperation::LockUserAccount { username } => f
+                .debug_struct("LockUserAccount")
+                .field("username", username)
+                .finish(),
+            AgentOperation::UnlockUserAccount { username } => f
+                .debug_struct("UnlockUserAccount")
+                .field("username", username)
+                .finish(),
+            AgentOperation::DeleteUser {
+                username,
+                remove_home,
+            } => f
+                .debug_struct("DeleteUser")
+                .field("username", username)
+                .field("remove_home", remove_home)
+                .finish(),
+            AgentOperation::DeleteGroup { group } => {
+                f.debug_struct("DeleteGroup").field("group", group).finish()
+            }
         }
     }
 }
@@ -875,6 +959,40 @@ pub fn is_valid_block_device_name(name: &str) -> bool {
 pub fn is_valid_io_scheduler(name: &str) -> bool {
     const ALLOWED: &[&str] = &["mq-deadline", "kyber", "bfq", "none", "deadline", "noop"];
     ALLOWED.contains(&name)
+}
+
+/// A Linux username or group name (Parish uses the same rule for both --
+/// the POSIX syntax is identical). Must start with a lowercase letter or
+/// underscore, then only lowercase letters, digits, underscore, or
+/// hyphen, capped at 32 characters -- the conventional Linux
+/// `NAME_REGEX`/`useradd` limits, and (as with every validator here) a
+/// leading character that could never be mistaken for a flag.
+pub fn is_valid_account_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 32 {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_lowercase() || first == '_')
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
+}
+
+/// The one Linux account/group name this tool refuses to lock, delete, or
+/// otherwise touch destructively, regardless of what the caller asks for.
+/// There's no portable way to know every distro's other "don't touch
+/// this" names (wheel, sudo, and similar vary), but `root` is universal.
+pub fn is_protected_account_name(name: &str) -> bool {
+    name == "root"
+}
+
+/// A GECOS/comment field for `useradd -c`. Permissive on content (real
+/// comments contain spaces and punctuation), but a leading `-` could be
+/// mistaken for a flag by `useradd` itself, and control characters have
+/// no business in a comment field.
+pub fn is_valid_gecos_comment(comment: &str) -> bool {
+    !comment.starts_with('-') && comment.len() <= 200 && comment.chars().all(|c| !c.is_control())
 }
 
 /// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
@@ -1202,5 +1320,42 @@ mod tests {
     fn rejects_disallowed_io_schedulers() {
         assert!(!is_valid_io_scheduler(""));
         assert!(!is_valid_io_scheduler("totally-made-up"));
+    }
+
+    #[test]
+    fn accepts_reasonable_account_names() {
+        assert!(is_valid_account_name("deploy"));
+        assert!(is_valid_account_name("web-svc"));
+        assert!(is_valid_account_name("_daemon"));
+        assert!(is_valid_account_name("user123"));
+    }
+
+    #[test]
+    fn rejects_malformed_account_names() {
+        assert!(!is_valid_account_name(""));
+        assert!(!is_valid_account_name("-flag"));
+        assert!(!is_valid_account_name("Deploy"));
+        assert!(!is_valid_account_name("9start"));
+        assert!(!is_valid_account_name("has space"));
+        assert!(!is_valid_account_name(&"a".repeat(33)));
+    }
+
+    #[test]
+    fn protects_root_account_name() {
+        assert!(is_protected_account_name("root"));
+        assert!(!is_protected_account_name("deploy"));
+    }
+
+    #[test]
+    fn accepts_reasonable_gecos_comments() {
+        assert!(is_valid_gecos_comment(""));
+        assert!(is_valid_gecos_comment("Deploy Bot, Ops Team"));
+    }
+
+    #[test]
+    fn rejects_malformed_gecos_comments() {
+        assert!(!is_valid_gecos_comment("-x"));
+        assert!(!is_valid_gecos_comment("bad\ncomment"));
+        assert!(!is_valid_gecos_comment(&"a".repeat(201)));
     }
 }

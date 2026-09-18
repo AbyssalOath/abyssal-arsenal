@@ -1,0 +1,167 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Parish — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Parish — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/parish">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Linux accounts and groups on this host -- not the control plane's own users.</p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/parish/{{ host_id }}/users">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("user") %} List Users</button>
+    </form>
+    <form method="post" action="/arsenals/parish/{{ host_id }}/groups">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      {% if !elevated && base.can_hosts_elevate %}
+      <input type="password" name="sudo_password" placeholder="sudo password (if needed)" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("role") %} List Groups</button>
+    </form>
+    <form method="post" action="/arsenals/parish/{{ host_id }}/user-detail">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="detail-username">Username</label>
+      <input type="text" id="detail-username" name="username" placeholder="e.g. deploy" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="detail-password">Sudo password (if needed)</label>
+      <input type="password" id="detail-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} User Detail</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/parish/{{ host_id }}/create-user">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="create-user-username">Username</label>
+      <input type="text" id="create-user-username" name="username" placeholder="e.g. deploy" required>
+      <label for="create-user-comment">Comment (optional)</label>
+      <input type="text" id="create-user-comment" name="comment" placeholder="e.g. Deploy bot">
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="create-user-password">Sudo password (if needed)</label>
+      <input type="password" id="create-user-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create User</button>
+    </form>
+    <form method="post" action="/arsenals/parish/{{ host_id }}/create-group">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="create-group-group">Group</label>
+      <input type="text" id="create-group-group" name="group" placeholder="e.g. deployers" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="create-group-password">Sudo password (if needed)</label>
+      <input type="password" id="create-group-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create Group</button>
+    </form>
+    <form method="post" action="/arsenals/parish/{{ host_id }}/add-to-group">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="add-group-username">Username</label>
+      <input type="text" id="add-group-username" name="username" placeholder="e.g. deploy" required>
+      <label for="add-group-group">Group</label>
+      <input type="text" id="add-group-group" name="group" placeholder="e.g. deployers" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="add-group-password">Sudo password (if needed)</label>
+      <input type="password" id="add-group-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("role") %} Add to Group</button>
+    </form>
+    <form method="post" action="/arsenals/parish/{{ host_id }}/remove-from-group">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="rm-group-username">Username</label>
+      <input type="text" id="rm-group-username" name="username" placeholder="e.g. deploy" required>
+      <label for="rm-group-group">Group</label>
+      <input type="text" id="rm-group-group" name="group" placeholder="e.g. deployers" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="rm-group-password">Sudo password (if needed)</label>
+      <input type="password" id="rm-group-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("role") %} Remove from Group</button>
+    </form>
+    <form method="post" action="/arsenals/parish/{{ host_id }}/lock">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="lock-username">Username</label>
+      <input type="text" id="lock-username" name="username" placeholder="e.g. deploy" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="lock-password">Sudo password (if needed)</label>
+      <input type="password" id="lock-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("firewall") %} Lock Account</button>
+    </form>
+    <form method="post" action="/arsenals/parish/{{ host_id }}/unlock">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="unlock-username">Username</label>
+      <input type="text" id="unlock-username" name="username" placeholder="e.g. deploy" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="unlock-password">Sudo password (if needed)</label>
+      <input type="password" id="unlock-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("check") %} Unlock Account</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Deleting an account or group cannot be undone. The protected <code>root</code> account/group
+    can't be touched here.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/parish/{{ host_id }}/delete-user/confirm">
+      <label for="delete-user-username">Username</label>
+      <input type="text" id="delete-user-username" name="username" placeholder="e.g. deploy" required>
+      <label style="display:flex; align-items:center; gap:6px; font-weight:normal;">
+        <input type="checkbox" name="remove_home" value="true" style="width:auto;">
+        Also remove home directory
+      </label>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Delete User&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/parish/{{ host_id }}/delete-group/confirm">
+      <label for="delete-group-group">Group</label>
+      <input type="text" id="delete-group-group" name="group" placeholder="e.g. deployers" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Delete Group&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

@@ -568,6 +568,60 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/vivisection/:host_id/io-scheduler",
             post(routes::vivisection::set_io_scheduler),
         )
+        .route("/arsenals/parish", get(routes::parish::show))
+        .route("/arsenals/parish/:host_id", get(routes::parish::show_host))
+        .route(
+            "/arsenals/parish/:host_id/users",
+            post(routes::parish::list_users),
+        )
+        .route(
+            "/arsenals/parish/:host_id/groups",
+            post(routes::parish::list_groups),
+        )
+        .route(
+            "/arsenals/parish/:host_id/user-detail",
+            post(routes::parish::user_detail),
+        )
+        .route(
+            "/arsenals/parish/:host_id/create-user",
+            post(routes::parish::create_user),
+        )
+        .route(
+            "/arsenals/parish/:host_id/create-group",
+            post(routes::parish::create_group),
+        )
+        .route(
+            "/arsenals/parish/:host_id/add-to-group",
+            post(routes::parish::add_user_to_group),
+        )
+        .route(
+            "/arsenals/parish/:host_id/remove-from-group",
+            post(routes::parish::remove_user_from_group),
+        )
+        .route(
+            "/arsenals/parish/:host_id/lock",
+            post(routes::parish::lock_user_account),
+        )
+        .route(
+            "/arsenals/parish/:host_id/unlock",
+            post(routes::parish::unlock_user_account),
+        )
+        .route(
+            "/arsenals/parish/:host_id/delete-user/confirm",
+            get(routes::parish::delete_user_confirm),
+        )
+        .route(
+            "/arsenals/parish/:host_id/delete-user",
+            post(routes::parish::delete_user),
+        )
+        .route(
+            "/arsenals/parish/:host_id/delete-group/confirm",
+            get(routes::parish::delete_group_confirm),
+        )
+        .route(
+            "/arsenals/parish/:host_id/delete-group",
+            post(routes::parish::delete_group),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

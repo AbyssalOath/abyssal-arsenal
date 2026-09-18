@@ -31,6 +31,8 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::UsersView,
             Permission::SystemsView,
             Permission::SystemsManage,
+            Permission::HostUsersView,
+            Permission::HostUsersManage,
             Permission::StorageView,
             Permission::StorageManage,
             Permission::ContainersView,

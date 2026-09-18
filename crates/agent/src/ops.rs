@@ -4,7 +4,7 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    defleshing, firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary,
+    defleshing, firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary, parish,
     postmortem, process::run_command, reanimation, reliquary, resurrection, vivisection,
 };
 
@@ -164,6 +164,30 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
         AgentOperation::SetIoScheduler { device, scheduler } => {
             vivisection::set_io_scheduler(device, scheduler, elevation).await
         }
+        AgentOperation::ListUsers => parish::list_users(elevation).await,
+        AgentOperation::ListGroups => parish::list_groups(elevation).await,
+        AgentOperation::UserDetail { username } => parish::user_detail(username, elevation).await,
+        AgentOperation::CreateUser { username, comment } => {
+            parish::create_user(username, comment, elevation).await
+        }
+        AgentOperation::CreateGroup { group } => parish::create_group(group, elevation).await,
+        AgentOperation::AddUserToGroup { username, group } => {
+            parish::add_user_to_group(username, group, elevation).await
+        }
+        AgentOperation::RemoveUserFromGroup { username, group } => {
+            parish::remove_user_from_group(username, group, elevation).await
+        }
+        AgentOperation::LockUserAccount { username } => {
+            parish::lock_user_account(username, elevation).await
+        }
+        AgentOperation::UnlockUserAccount { username } => {
+            parish::unlock_user_account(username, elevation).await
+        }
+        AgentOperation::DeleteUser {
+            username,
+            remove_home,
+        } => parish::delete_user(username, remove_home, elevation).await,
+        AgentOperation::DeleteGroup { group } => parish::delete_group(group, elevation).await,
     }
 }
 
