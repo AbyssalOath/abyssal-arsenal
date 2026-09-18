@@ -31,6 +31,13 @@ pub async fn connect_and_serve(
         .authority()
         .ok_or_else(|| anyhow::anyhow!("invalid websocket URL: missing host"))?
         .as_str();
+    // Host only (no port) -- threaded down to `IsolateHost` so it can
+    // allow-list exactly the control plane's own address, never an
+    // admin-supplied one.
+    let control_plane_host = uri
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("invalid websocket URL: missing host"))?
+        .to_string();
 
     let request = Request::builder()
         .uri(ws_url)
@@ -52,7 +59,7 @@ pub async fn connect_and_serve(
         match message? {
             Message::Text(text) => {
                 let server_msg: ServerMessage = serde_json::from_str(&text)?;
-                let response = handle(server_msg, elevation).await;
+                let response = handle(server_msg, elevation, &control_plane_host).await;
                 let payload = serde_json::to_string(&response)?;
                 sink.send(Message::Text(payload)).await?;
             }
@@ -67,14 +74,18 @@ pub async fn connect_and_serve(
     Ok(())
 }
 
-async fn handle(message: ServerMessage, elevation: &ElevationState) -> AgentMessage {
+async fn handle(
+    message: ServerMessage,
+    elevation: &ElevationState,
+    control_plane_host: &str,
+) -> AgentMessage {
     match message {
         ServerMessage::Ping => AgentMessage::Pong,
         ServerMessage::Command {
             request_id,
             operation,
         } => {
-            let outcome = crate::ops::run(operation, elevation).await;
+            let outcome = crate::ops::run(operation, elevation, control_plane_host).await;
             AgentMessage::Response {
                 request_id,
                 outcome,

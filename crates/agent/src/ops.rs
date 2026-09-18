@@ -4,16 +4,26 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    apothecary, catacomb, defleshing, firewall, grimoire, incarnation, mortiscope, necropolis,
-    necropsy, network, obituary, ossuary, parish, postmortem, process::run_command, reanimation,
-    reliquary, resurrection, vivisection,
+    apothecary, catacomb, defleshing, firewall, grimoire, incarnation, inquest, mortiscope,
+    necropolis, necropsy, network, obituary, ossuary, parish, postmortem, process::run_command,
+    reanimation, reliquary, resurrection, vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
 /// adding a variant to the shared protocol crate *and* a branch here; there
 /// is no path from a wire message to running something outside this list.
-pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> CommandOutcome {
+///
+/// `control_plane_host` is the agent's own control-plane hostname/IP (no
+/// port), resolved once in `transport::connect_and_serve` -- the only
+/// consumer is `AgentOperation::IsolateHost`, which needs it to allow-list
+/// exactly the control plane's own address rather than trust one supplied
+/// over the wire.
+pub async fn run(
+    operation: AgentOperation,
+    elevation: &ElevationState,
+    control_plane_host: &str,
+) -> CommandOutcome {
     match operation {
         AgentOperation::Ping => CommandOutcome::Ok(OperationOutput {
             stdout: "pong".to_string(),
@@ -296,6 +306,20 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
             grimoire::remove_cron_job(job_name, elevation).await
         }
         AgentOperation::ClearManagedCronJobs => grimoire::clear_managed_cron_jobs(elevation).await,
+        AgentOperation::ListBlockedIps => inquest::list_blocked_ips(elevation).await,
+        AgentOperation::IsolationStatus => inquest::isolation_status(elevation).await,
+        AgentOperation::ListQuarantinedFiles => inquest::list_quarantined_files(elevation).await,
+        AgentOperation::BlockRemoteIp { ip } => inquest::block_remote_ip(ip, elevation).await,
+        AgentOperation::UnblockRemoteIp { ip } => inquest::unblock_remote_ip(ip, elevation).await,
+        AgentOperation::QuarantineFile { path } => inquest::quarantine_file(path, elevation).await,
+        AgentOperation::RestoreQuarantinedFile {
+            quarantine_filename,
+        } => inquest::restore_quarantined_file(quarantine_filename, elevation).await,
+        AgentOperation::DeleteQuarantinedFile { filename } => {
+            inquest::delete_quarantined_file(filename, elevation).await
+        }
+        AgentOperation::DeisolateHost => inquest::deisolate_host(elevation).await,
+        AgentOperation::IsolateHost => inquest::isolate_host(control_plane_host, elevation).await,
     }
 }
 

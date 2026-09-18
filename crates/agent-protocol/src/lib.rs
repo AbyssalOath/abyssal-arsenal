@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -793,6 +793,84 @@ pub enum AgentOperation {
     /// task this tool has set at once. Destructive: broader impact than
     /// removing a single job.
     ClearManagedCronJobs,
+    /// Active incident response ("Inquest"): containment (blocking a
+    /// specific remote IP, or -- gated, see `IsolateHost` -- isolating
+    /// the whole host) and remediation (quarantining a suspicious file
+    /// rather than deleting it outright, preserving it for later
+    /// analysis). Distinct from Postmortem (passive, read-only
+    /// forensics): this arsenal actually *does* something about an
+    /// incident in progress.
+    ListBlockedIps,
+    /// Whether full host isolation (see `IsolateHost`) is currently
+    /// active on this host, and if so, how it was applied (nftables
+    /// table present, or iptables policy/tagged rules present).
+    IsolationStatus,
+    /// Every currently quarantined file, with the original path each was
+    /// moved from.
+    ListQuarantinedFiles,
+    /// Blocks a specific remote IP address at the firewall level (both
+    /// directions), via whichever of nftables/iptables the agent
+    /// detects. Write -- narrow and reversible via `UnblockRemoteIp`,
+    /// and never touches the agent's own connection to the control
+    /// plane (unlike `IsolateHost`, this targets one specific address,
+    /// not "everything except an allow-list").
+    BlockRemoteIp {
+        ip: String,
+    },
+    /// Reverses `BlockRemoteIp`. Write, not Destructive: narrow and
+    /// reversible by blocking it again.
+    UnblockRemoteIp {
+        ip: String,
+    },
+    /// Moves a file to a fixed, tool-owned quarantine directory,
+    /// preserving it rather than deleting it -- the classic incident-
+    /// response "get this off the host without destroying evidence"
+    /// action. The quarantined filename itself encodes where the file
+    /// came from, so restoring it later never depends on an
+    /// admin-retyped (and therefore arbitrary, error-prone) path. Write:
+    /// relocates a file, doesn't destroy it, reversible via
+    /// `RestoreQuarantinedFile`.
+    QuarantineFile {
+        path: String,
+    },
+    /// Moves a quarantined file back to exactly the path it was
+    /// quarantined from (decoded from the quarantine filename itself,
+    /// never an admin-supplied path -- the same reasoning Grimoire's
+    /// drop-in-file-only design documents: accepting an arbitrary
+    /// restore *destination* would turn this into a general
+    /// arbitrary-file-write primitive). Write, for the false-positive
+    /// case.
+    RestoreQuarantinedFile {
+        quarantine_filename: String,
+    },
+    /// Permanently deletes a quarantined file (confirmed malicious, no
+    /// longer needed as evidence). Destructive and irreversible.
+    DeleteQuarantinedFile {
+        filename: String,
+    },
+    /// Reverses `IsolateHost` -- removes whichever isolation mechanism
+    /// (nftables table or iptables policy/tagged rules) is currently
+    /// applied, restoring normal connectivity. Write, not Destructive,
+    /// and deliberately *not* gated behind the high-risk isolation
+    /// setting: undoing isolation should never have more friction than
+    /// applying it did. Idempotent and safe to run even if the host
+    /// isn't currently isolated.
+    DeisolateHost,
+    /// Blocks all network traffic on this host except the connection
+    /// back to the control plane (auto-resolved from the agent's own
+    /// `--control-plane-url`) and loopback -- full containment for a
+    /// host actively participating in an incident (data exfiltration,
+    /// lateral movement). The single most dangerous operation this
+    /// platform can dispatch in a different way than Ossuary's `mkfs`:
+    /// where `mkfs` can only harm the device it targets, a wrong edge
+    /// case here (NAT, a DNS-based control-plane address, a multi-homed
+    /// host) can sever the agent's own manageability with **no remote
+    /// way to undo it** -- recovery needs physical or console access.
+    /// Destructive, irreversible-without-console-access, and gated
+    /// behind the admin-configured "host isolation" setting on top of
+    /// the normal confirmation, exactly mirroring Ossuary's high-risk
+    /// storage gate.
+    IsolateHost,
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -1200,6 +1278,31 @@ impl fmt::Debug for AgentOperation {
                 .field("job_name", job_name)
                 .finish(),
             AgentOperation::ClearManagedCronJobs => write!(f, "ClearManagedCronJobs"),
+            AgentOperation::ListBlockedIps => write!(f, "ListBlockedIps"),
+            AgentOperation::IsolationStatus => write!(f, "IsolationStatus"),
+            AgentOperation::ListQuarantinedFiles => write!(f, "ListQuarantinedFiles"),
+            AgentOperation::BlockRemoteIp { ip } => {
+                f.debug_struct("BlockRemoteIp").field("ip", ip).finish()
+            }
+            AgentOperation::UnblockRemoteIp { ip } => {
+                f.debug_struct("UnblockRemoteIp").field("ip", ip).finish()
+            }
+            AgentOperation::QuarantineFile { path } => f
+                .debug_struct("QuarantineFile")
+                .field("path", path)
+                .finish(),
+            AgentOperation::RestoreQuarantinedFile {
+                quarantine_filename,
+            } => f
+                .debug_struct("RestoreQuarantinedFile")
+                .field("quarantine_filename", quarantine_filename)
+                .finish(),
+            AgentOperation::DeleteQuarantinedFile { filename } => f
+                .debug_struct("DeleteQuarantinedFile")
+                .field("filename", filename)
+                .finish(),
+            AgentOperation::DeisolateHost => write!(f, "DeisolateHost"),
+            AgentOperation::IsolateHost => write!(f, "IsolateHost"),
         }
     }
 }
@@ -1637,6 +1740,29 @@ pub fn is_valid_signal_name(signal: &str) -> bool {
     ALLOWED.contains(&normalized)
 }
 
+/// A remote IP address for Inquest's blocklist/isolation operations.
+/// Delegates entirely to `std::net::IpAddr`'s own parser (accepts both
+/// IPv4 and IPv6) rather than a hand-rolled character check, since the
+/// only property that matters here is "this is a real, unambiguous IP
+/// address" -- exactly what the standard parser already guarantees.
+pub fn is_valid_ip_address(ip: &str) -> bool {
+    ip.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// A quarantine filename as produced by `QuarantineFile` and consumed by
+/// `RestoreQuarantinedFile`/`DeleteQuarantinedFile` --
+/// `<unix_ts>__<percent-encoded original path>`. Never accepts a path
+/// separator or a `..` segment: this filename is joined directly onto the
+/// quarantine directory, so allowing either would turn a quarantine
+/// restore/delete into an arbitrary-file read/write primitive.
+pub fn is_valid_quarantine_filename(filename: &str) -> bool {
+    !filename.is_empty()
+        && filename.len() <= 4096
+        && !filename.contains('/')
+        && !filename.contains("..")
+        && filename.chars().all(|c| !c.is_control())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1895,6 +2021,35 @@ mod tests {
         assert!(!is_valid_signal_name(""));
         assert!(!is_valid_signal_name("SEGV"));
         assert!(!is_valid_signal_name("9; rm -rf /"));
+    }
+
+    #[test]
+    fn accepts_valid_ip_addresses() {
+        assert!(is_valid_ip_address("203.0.113.42"));
+        assert!(is_valid_ip_address("::1"));
+        assert!(is_valid_ip_address("2001:db8::1"));
+    }
+
+    #[test]
+    fn rejects_invalid_ip_addresses() {
+        assert!(!is_valid_ip_address(""));
+        assert!(!is_valid_ip_address("not-an-ip"));
+        assert!(!is_valid_ip_address("203.0.113.42; rm -rf /"));
+        assert!(!is_valid_ip_address("999.999.999.999"));
+    }
+
+    #[test]
+    fn accepts_reasonable_quarantine_filenames() {
+        assert!(is_valid_quarantine_filename("1737072000__%2Fetc%2Fevil.sh"));
+        assert!(is_valid_quarantine_filename("1737072000__plainfile"));
+    }
+
+    #[test]
+    fn rejects_unsafe_quarantine_filenames() {
+        assert!(!is_valid_quarantine_filename(""));
+        assert!(!is_valid_quarantine_filename("../../etc/passwd"));
+        assert!(!is_valid_quarantine_filename("some/path"));
+        assert!(!is_valid_quarantine_filename("has\ncontrol"));
     }
 
     #[test]

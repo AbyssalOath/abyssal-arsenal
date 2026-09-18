@@ -12,6 +12,7 @@ pub mod defleshing;
 pub mod grimoire;
 pub mod hosts;
 pub mod incarnation;
+pub mod inquest;
 pub mod login;
 pub mod modules;
 pub mod mortiscope;

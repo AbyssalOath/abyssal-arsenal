@@ -16,3 +16,15 @@ pub const APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES: u32 = 20;
 /// dispatched at all, on top of (not instead of) the normal Destructive
 /// type-to-confirm gate each one still requires individually.
 pub const HIGH_RISK_STORAGE_OPS_ENABLED: &str = "ossuary.high_risk_storage_ops_enabled";
+
+/// Gates Inquest's full host network isolation (blocks all traffic
+/// except the control plane's own connection). Off by default: unlike
+/// every other Destructive operation this platform dispatches, a wrong
+/// edge case here (NAT, a DNS-based control-plane address that resolves
+/// differently later, a multi-homed host) can sever the agent's own
+/// connection back to the control plane with no remote way to undo it --
+/// recovery would need physical or console access to the host. An admin
+/// has to deliberately turn this on (Settings page) before it can be
+/// dispatched at all, on top of (not instead of) the type-to-confirm the
+/// operation still requires individually.
+pub const HOST_ISOLATION_ENABLED: &str = "inquest.host_isolation_enabled";

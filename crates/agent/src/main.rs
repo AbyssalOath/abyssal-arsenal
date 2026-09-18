@@ -7,6 +7,7 @@ mod firewall;
 mod grimoire;
 mod incarnation;
 mod init_system;
+mod inquest;
 mod mortiscope;
 mod necropolis;
 mod necropsy;

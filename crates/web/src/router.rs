@@ -83,6 +83,10 @@ pub fn build(state: AppState) -> Router {
             "/admin/settings/high-risk-storage-ops",
             post(routes::settings::set_high_risk_storage_ops),
         )
+        .route(
+            "/admin/settings/host-isolation",
+            post(routes::settings::set_host_isolation),
+        )
         .route("/admin/hosts", get(routes::hosts::list))
         .route(
             "/admin/hosts/enroll-token",
@@ -865,6 +869,59 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/grimoire/:host_id/clear-cron",
             post(routes::grimoire::clear_managed_cron_jobs),
+        )
+        .route("/arsenals/inquest", get(routes::inquest::show))
+        .route(
+            "/arsenals/inquest/:host_id",
+            get(routes::inquest::show_host),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/blocked-ips",
+            post(routes::inquest::list_blocked_ips),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/isolation-status",
+            post(routes::inquest::isolation_status),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/quarantined-files",
+            post(routes::inquest::list_quarantined_files),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/block-ip",
+            post(routes::inquest::block_remote_ip),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/unblock-ip",
+            post(routes::inquest::unblock_remote_ip),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/quarantine",
+            post(routes::inquest::quarantine_file),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/restore-quarantined",
+            post(routes::inquest::restore_quarantined_file),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/deisolate",
+            post(routes::inquest::deisolate_host),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/delete-quarantined/confirm",
+            get(routes::inquest::delete_quarantined_file_confirm),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/delete-quarantined",
+            post(routes::inquest::delete_quarantined_file),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/isolate/confirm",
+            get(routes::inquest::isolate_host_confirm),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/isolate",
+            post(routes::inquest::isolate_host),
         )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))

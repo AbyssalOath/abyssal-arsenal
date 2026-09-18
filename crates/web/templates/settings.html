@@ -67,6 +67,30 @@
       </button>
     </form>
   </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">{% call macros::icon("danger") %} Host network isolation</h2>
+    <p style="color:var(--text-muted);">
+      Gates Inquest's full host isolation (blocks all network traffic except the control
+      plane's own connection). Unlike every other destructive operation this platform
+      dispatches, a wrong edge case here (NAT, a DNS-based control-plane address, a
+      multi-homed host) can sever the agent's own connection back to the control plane with
+      no remote way to undo it -- recovery would need physical or console access to the host.
+      Off by default; this is a second, deliberate layer on top of (not instead of) the
+      type-to-confirm the operation still requires.
+    </p>
+    <form method="post" action="/admin/settings/host-isolation">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <p>Currently:
+        {% if host_isolation_enabled %}<span class="badge badge-danger">Enabled</span>
+        {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+      </p>
+      <input type="hidden" name="enabled" value="{% if host_isolation_enabled %}false{% else %}true{% endif %}">
+      <button type="submit" class="{% if host_isolation_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
+        {% if host_isolation_enabled %}Disable host isolation{% else %}Enable host isolation{% endif %}
+      </button>
+    </form>
+  </div>
 </div>
 
 {% endblock %}

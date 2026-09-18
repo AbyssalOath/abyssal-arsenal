@@ -243,6 +243,7 @@ pub struct SettingsTemplate {
     pub public_registration_enabled: bool,
     pub apotheosis_elevation_window_minutes: u32,
     pub high_risk_storage_ops_enabled: bool,
+    pub host_isolation_enabled: bool,
     pub message: Option<String>,
 }
 
@@ -487,6 +488,40 @@ pub struct OssuaryHostTemplate {
     /// partition/RAID/LVM-create/mkfs section even when the caller has
     /// `storage.manage`.
     pub high_risk_ops_enabled: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
+pub struct InquestHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "inquest.html")]
+pub struct InquestTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<InquestHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "inquest_host.html")]
+pub struct InquestHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `incidents.respond` -- gates the Write/Destructive sections,
+    /// distinct from the `incidents.view` the read operations use.
+    pub can_manage: bool,
+    /// The admin-configured "host network isolation" setting (Settings
+    /// page) -- distinct from `can_manage`, gates only `IsolateHost`
+    /// even when the caller has `incidents.respond`. `DeisolateHost`
+    /// stays ungated: undoing isolation should never be harder than
+    /// applying it.
+    pub host_isolation_enabled: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
     pub result_label: Option<String>,

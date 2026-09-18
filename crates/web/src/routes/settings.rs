@@ -1,7 +1,7 @@
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
     APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES, APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
-    HIGH_RISK_STORAGE_OPS_ENABLED, PUBLIC_REGISTRATION_ENABLED,
+    HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED, PUBLIC_REGISTRATION_ENABLED,
 };
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
@@ -38,12 +38,15 @@ pub async fn show(
     .await?;
     let high_risk_storage_ops_enabled =
         repo::settings::get_bool(&state.pool, HIGH_RISK_STORAGE_OPS_ENABLED, false).await?;
+    let host_isolation_enabled =
+        repo::settings::get_bool(&state.pool, HOST_ISOLATION_ENABLED, false).await?;
 
     let tpl = SettingsTemplate {
         base,
         public_registration_enabled,
         apotheosis_elevation_window_minutes,
         high_risk_storage_ops_enabled,
+        host_isolation_enabled,
         message: None,
     };
     let jar = match new_cookie {
@@ -122,6 +125,44 @@ pub async fn set_high_risk_storage_ops(
                 username: &ctx.user.username,
             })
             .resource(HIGH_RISK_STORAGE_OPS_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct HostIsolationForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_host_isolation(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<HostIsolationForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        HOST_ISOLATION_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(HOST_ISOLATION_ENABLED)
             .metadata(serde_json::json!({ "enabled": form.enabled })),
     )
     .await?;
