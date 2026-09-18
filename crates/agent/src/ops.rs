@@ -4,8 +4,9 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    defleshing, firewall, incarnation, mortiscope, necropolis, necropsy, network, obituary, parish,
-    postmortem, process::run_command, reanimation, reliquary, resurrection, vivisection,
+    catacomb, defleshing, firewall, incarnation, mortiscope, necropolis, necropsy, network,
+    obituary, parish, postmortem, process::run_command, reanimation, reliquary, resurrection,
+    vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -188,6 +189,21 @@ pub async fn run(operation: AgentOperation, elevation: &ElevationState) -> Comma
             remove_home,
         } => parish::delete_user(username, remove_home, elevation).await,
         AgentOperation::DeleteGroup { group } => parish::delete_group(group, elevation).await,
+        AgentOperation::DirectoryUsageBreakdown { path } => {
+            catacomb::directory_usage_breakdown(path, elevation).await
+        }
+        AgentOperation::FindLargeFiles { path, min_size_mb } => {
+            catacomb::find_large_files(path, min_size_mb, elevation).await
+        }
+        AgentOperation::FilesystemCheckDryRun { device } => {
+            catacomb::filesystem_check_dry_run(device, elevation).await
+        }
+        AgentOperation::TrimFilesystem { mountpoint } => {
+            catacomb::trim_filesystem(mountpoint, elevation).await
+        }
+        AgentOperation::FilesystemRepair { device } => {
+            catacomb::filesystem_repair(device, elevation).await
+        }
     }
 }
 

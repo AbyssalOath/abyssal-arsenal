@@ -4,6 +4,7 @@ pub mod api;
 pub mod arsenals;
 pub mod audit;
 pub mod cadavault;
+pub mod catacomb;
 pub mod cystoolbox;
 pub mod dashboard;
 pub mod defleshing;

@@ -432,6 +432,34 @@ pub struct MortiscopeHostTemplate {
     pub result_error: Option<String>,
 }
 
+pub struct CatacombHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "catacomb.html")]
+pub struct CatacombTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<CatacombHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "catacomb_host.html")]
+pub struct CatacombHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// `storage.manage` -- gates the Write/Destructive section, distinct
+    /// from the `storage.view` the read/inspection operations use.
+    pub can_manage: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 pub struct ParishHostRow {
     pub id: String,
     pub name: String,

@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -445,6 +445,36 @@ pub enum AgentOperation {
     /// irreversible for the same reason as `DeleteUser`. Refuses
     /// `"root"`.
     DeleteGroup { group: String },
+    /// Immediate-subdirectory disk usage under `path`
+    /// (`du -h --max-depth=1 <path>`) -- the classic "what's eating this
+    /// directory" traversal, one level deep.
+    DirectoryUsageBreakdown { path: String },
+    /// Files at or under `path` larger than `min_size_mb` megabytes
+    /// (`find <path> -xdev -type f -size +<N>M`). `-xdev` keeps the
+    /// search from wandering into other mounted filesystems under
+    /// `path`, so scanning `/` doesn't also walk every remote mount.
+    FindLargeFiles { path: String, min_size_mb: u32 },
+    /// Read-only filesystem consistency check (`fsck -n <device>`) --
+    /// reports problems without fixing anything, so unlike
+    /// `FilesystemRepair` this is safe to run even on a mounted
+    /// filesystem.
+    FilesystemCheckDryRun { device: String },
+    /// Discards unused blocks on a mounted filesystem so the underlying
+    /// SSD/storage can reclaim them (`fstrim -v <mountpoint>`) --
+    /// routine, low-risk maintenance (the same operation most distros
+    /// already run on a timer). Write, not Destructive: it never removes
+    /// anything a filesystem still considers live.
+    TrimFilesystem { mountpoint: String },
+    /// Runs `fsck`'s actual repair mode (`fsck -y <device>`, auto-answer
+    /// yes to every fix). Destructive and genuinely dangerous if
+    /// misused: the agent refuses outright if `device` is currently
+    /// mounted (verified via `findmnt` immediately before dispatch,
+    /// failing closed if that check itself can't be completed) --
+    /// repairing a mounted filesystem's on-disk structures while it's
+    /// live is a well-known way to cause the exact corruption this
+    /// operation exists to fix. The control plane requires explicit
+    /// confirmation before ever dispatching this regardless.
+    FilesystemRepair { device: String },
 }
 
 /// Hand-written rather than derived so a value carrying a real sudo password
@@ -692,6 +722,27 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::DeleteGroup { group } => {
                 f.debug_struct("DeleteGroup").field("group", group).finish()
             }
+            AgentOperation::DirectoryUsageBreakdown { path } => f
+                .debug_struct("DirectoryUsageBreakdown")
+                .field("path", path)
+                .finish(),
+            AgentOperation::FindLargeFiles { path, min_size_mb } => f
+                .debug_struct("FindLargeFiles")
+                .field("path", path)
+                .field("min_size_mb", min_size_mb)
+                .finish(),
+            AgentOperation::FilesystemCheckDryRun { device } => f
+                .debug_struct("FilesystemCheckDryRun")
+                .field("device", device)
+                .finish(),
+            AgentOperation::TrimFilesystem { mountpoint } => f
+                .debug_struct("TrimFilesystem")
+                .field("mountpoint", mountpoint)
+                .finish(),
+            AgentOperation::FilesystemRepair { device } => f
+                .debug_struct("FilesystemRepair")
+                .field("device", device)
+                .finish(),
         }
     }
 }
@@ -993,6 +1044,13 @@ pub fn is_protected_account_name(name: &str) -> bool {
 /// no business in a comment field.
 pub fn is_valid_gecos_comment(comment: &str) -> bool {
     !comment.starts_with('-') && comment.len() <= 200 && comment.chars().all(|c| !c.is_control())
+}
+
+/// A minimum file size in megabytes for `FindLargeFiles`. Bounded well
+/// below what `find -size` could actually express, just to keep the
+/// value sane (0 would match everything, which isn't "large files").
+pub fn is_valid_size_mb(mb: u32) -> bool {
+    (1..=1_000_000).contains(&mb)
 }
 
 /// A signal name for `kill -s <NAME>`, checked against a fixed allow-list
@@ -1357,5 +1415,18 @@ mod tests {
         assert!(!is_valid_gecos_comment("-x"));
         assert!(!is_valid_gecos_comment("bad\ncomment"));
         assert!(!is_valid_gecos_comment(&"a".repeat(201)));
+    }
+
+    #[test]
+    fn accepts_reasonable_size_mb() {
+        assert!(is_valid_size_mb(1));
+        assert!(is_valid_size_mb(100));
+        assert!(is_valid_size_mb(1_000_000));
+    }
+
+    #[test]
+    fn rejects_out_of_range_size_mb() {
+        assert!(!is_valid_size_mb(0));
+        assert!(!is_valid_size_mb(1_000_001));
     }
 }

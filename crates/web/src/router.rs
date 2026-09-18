@@ -622,6 +622,35 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/parish/:host_id/delete-group",
             post(routes::parish::delete_group),
         )
+        .route("/arsenals/catacomb", get(routes::catacomb::show))
+        .route(
+            "/arsenals/catacomb/:host_id",
+            get(routes::catacomb::show_host),
+        )
+        .route(
+            "/arsenals/catacomb/:host_id/du",
+            post(routes::catacomb::directory_usage_breakdown),
+        )
+        .route(
+            "/arsenals/catacomb/:host_id/large-files",
+            post(routes::catacomb::find_large_files),
+        )
+        .route(
+            "/arsenals/catacomb/:host_id/fsck-check",
+            post(routes::catacomb::filesystem_check_dry_run),
+        )
+        .route(
+            "/arsenals/catacomb/:host_id/trim",
+            post(routes::catacomb::trim_filesystem),
+        )
+        .route(
+            "/arsenals/catacomb/:host_id/repair/confirm",
+            get(routes::catacomb::filesystem_repair_confirm),
+        )
+        .route(
+            "/arsenals/catacomb/:host_id/repair",
+            post(routes::catacomb::filesystem_repair),
+        )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
         .route("/api/me", get(routes::api::me))

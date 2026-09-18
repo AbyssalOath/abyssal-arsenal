@@ -1,3 +1,4 @@
+mod catacomb;
 mod defleshing;
 mod elevation;
 mod enroll;

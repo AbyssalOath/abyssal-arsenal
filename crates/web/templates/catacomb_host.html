@@ -1,0 +1,109 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Catacomb — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Catacomb — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/catacomb">&larr; Back to host list</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
+    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Read</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/catacomb/{{ host_id }}/du">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="du-path">Path</label>
+      <input type="text" id="du-path" name="path" placeholder="e.g. /var" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="du-password">Sudo password (if needed)</label>
+      <input type="password" id="du-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Directory Usage Breakdown</button>
+    </form>
+    <form method="post" action="/arsenals/catacomb/{{ host_id }}/large-files">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="lf-path">Path</label>
+      <input type="text" id="lf-path" name="path" placeholder="e.g. /var" required>
+      <label for="lf-size">Minimum size (MB)</label>
+      <input type="number" id="lf-size" name="min_size_mb" min="1" max="1000000" value="100" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="lf-password">Sudo password (if needed)</label>
+      <input type="password" id="lf-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Find Large Files</button>
+    </form>
+    <form method="post" action="/arsenals/catacomb/{{ host_id }}/fsck-check">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="fsck-device">Device</label>
+      <input type="text" id="fsck-device" name="device" placeholder="e.g. /dev/sda1" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="fsck-password">Sudo password (if needed)</label>
+      <input type="password" id="fsck-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Filesystem Check (dry run)</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3 style="margin-top:0;">Write</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/catacomb/{{ host_id }}/trim">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="trim-path">Mountpoint</label>
+      <input type="text" id="trim-path" name="path" placeholder="e.g. /" required>
+      {% if !elevated && base.can_hosts_elevate %}
+      <label for="trim-password">Sudo password (if needed)</label>
+      <input type="password" id="trim-password" name="sudo_password" autocomplete="off">
+      {% endif %}
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Trim Filesystem</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destructive</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Refused outright if the device is currently mounted. This can rewrite on-disk structures
+    and cannot be undone.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/catacomb/{{ host_id }}/repair/confirm">
+      <label for="repair-device">Device</label>
+      <input type="text" id="repair-device" name="device" placeholder="e.g. /dev/sda1" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Repair Filesystem&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
