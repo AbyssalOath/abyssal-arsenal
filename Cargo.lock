@@ -11,6 +11,7 @@ dependencies = [
  "clap",
  "futures-util",
  "http",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

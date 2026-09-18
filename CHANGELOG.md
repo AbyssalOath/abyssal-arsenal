@@ -79,7 +79,13 @@ for what that means for cloning and updating.
   hand-authored unit file. Both values can still be passed as flags for
   non-interactive/scripted installs (Ansible, cloud-init, ...); a
   non-systemd host enrolls and is told to run `abyssal-agent run`
-  directly instead of failing.
+  directly instead of failing. If it isn't already running as root, it
+  asks (`Run this with sudo now? [Y/n]`, default yes) and re-execs itself
+  under `sudo` (`std::os::unix::process::CommandExt::exec`, replacing its
+  own process image, the same pattern common install scripts use) rather
+  than failing partway through with a permission error -- declining, or
+  running fully non-interactively, tells you to re-run as root instead of
+  guessing.
 
 ### Fixed
 

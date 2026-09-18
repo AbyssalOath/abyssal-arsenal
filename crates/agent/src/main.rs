@@ -77,8 +77,10 @@ enum Command {
     /// Interactively enrolls this host and installs/enables a systemd
     /// service for it, prompting for anything not already given as a flag
     /// -- the seamless "just run it" path. Needs root (to write the
-    /// credentials file and manage the systemd service). Safe to re-run:
-    /// an already-enrolled host skips straight to the service setup.
+    /// credentials file and manage the systemd service); if not already
+    /// running as one, offers to re-exec itself under `sudo` rather than
+    /// failing partway through. Safe to re-run: an already-enrolled host
+    /// skips straight to the service setup.
     Install {
         #[arg(long)]
         control_plane_url: Option<String>,
@@ -160,6 +162,8 @@ async fn install(
 ) -> anyhow::Result<()> {
     println!("Abyssal Arsenal agent setup\n");
 
+    ensure_root_or_reexec()?;
+
     let already_enrolled = tokio::fs::metadata(&credentials_file).await.is_ok();
     if already_enrolled {
         println!(
@@ -222,6 +226,81 @@ fn prompt(label: &str) -> anyhow::Result<String> {
         anyhow::bail!("a value is required");
     }
     Ok(value)
+}
+
+/// Same shape as `prompt`, but accepts an empty answer as `default_yes`
+/// instead of erroring -- for a yes/no confirmation, not a required value.
+fn prompt_yes_no(label: &str, default_yes: bool) -> anyhow::Result<bool> {
+    use std::io::Write;
+    print!("{label}");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).context(
+        "failed to read from stdin -- re-run this as root instead if running non-interactively",
+    )?;
+    let answer = line.trim().to_lowercase();
+    if answer.is_empty() {
+        return Ok(default_yes);
+    }
+    Ok(matches!(answer.as_str(), "y" | "yes"))
+}
+
+/// True on Unix once the effective UID is 0. Always false on any other
+/// target -- `abyssal-agent` only ever runs on Linux hosts in practice, so
+/// this is just a defensive fallback rather than real cross-platform
+/// support.
+fn running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid() takes no arguments, touches no memory, and
+        // cannot fail.
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// `install` needs root (to write the credentials file and manage the
+/// systemd service). Rather than failing outright, offer to re-exec
+/// under `sudo` -- same interactive prompt-then-`exec sudo "$0" "$@"`
+/// pattern already familiar from plenty of install scripts. `exec()`
+/// replaces this process image entirely (never returns on success), so
+/// the re-exec'd process picks up exactly where this one would have,
+/// just with EUID 0 -- `running_as_root()` short-circuits immediately on
+/// its next call, no risk of looping.
+fn ensure_root_or_reexec() -> anyhow::Result<()> {
+    if running_as_root() {
+        return Ok(());
+    }
+
+    println!("Root privileges are required to enroll this host and manage its systemd service.");
+    if !prompt_yes_no("Run this with sudo now? [Y/n]: ", true)? {
+        anyhow::bail!("root is required to continue -- re-run with sudo");
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let current_exe =
+            std::env::current_exe().context("could not determine this binary's own path")?;
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+
+        // Only returns if sudo itself couldn't even be started (not
+        // installed, not on PATH, ...) -- a successful exec never returns
+        // here at all.
+        let err = std::process::Command::new("sudo")
+            .arg(&current_exe)
+            .args(&args)
+            .exec();
+        Err(err).context("failed to re-exec with sudo -- is sudo installed and on PATH?")
+    }
+    #[cfg(not(unix))]
+    {
+        anyhow::bail!("automatic sudo re-exec is only supported on Unix; re-run this as root")
+    }
 }
 
 async fn install_systemd_service(

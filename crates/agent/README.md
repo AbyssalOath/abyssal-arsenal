@@ -23,10 +23,10 @@ command from the wire.
    The binary is already executable inside the archive; if your download
    method stripped that (some browsers and archive tools do), just
    `chmod +x abyssal-agent` before the next step.
-3. Run it with root and follow the prompts:
+3. Run it and follow the prompts:
 
    ```bash
-   sudo ./abyssal-agent
+   ./abyssal-agent
    ```
 
    With no arguments at all, `abyssal-agent` runs its interactive `install`
@@ -35,6 +35,13 @@ command from the wire.
    (`systemctl enable --now abyssal-agent`) so it survives a reboot without
    you having to hand-author a unit file. That's the whole install --
    nothing else to configure.
+
+   Installing needs root, but you don't have to remember `sudo` yourself --
+   if it isn't already running as root, it asks (`Run this with sudo now?
+   [Y/n]`) and re-execs itself under `sudo` on your behalf, which then
+   prompts for your password the normal way. Answering no, or running
+   fully non-interactively, just tells you to re-run it as root instead of
+   guessing.
 
    Prefer a non-interactive/scripted install instead (Ansible, cloud-init,
    ...)? Pass the same two values as flags and it skips the prompts:
