@@ -1,6 +1,6 @@
-use abyssal_core::{role, Permission};
+use abyssal_core::{Permission, role};
 
-use crate::{repo, DbPool};
+use crate::{DbPool, repo};
 
 /// Idempotently seeds the fixed permission catalogue and the built-in roles with
 /// their default permission sets. Safe to call on every startup — existing rows

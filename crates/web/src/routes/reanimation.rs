@@ -6,15 +6,15 @@ use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
+use axum::Form;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::common::{
-    maybe_elevate, require_csrf, urlencoding_encode, workflow_context_rows, WorkflowContextRow,
+    WorkflowContextRow, maybe_elevate, require_csrf, urlencoding_encode, workflow_context_rows,
 };
 use crate::csrf;
 use crate::error::WebError;
@@ -33,10 +33,10 @@ pub async fn show(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
 
-    if let Some(host_id) = host_context::current(&jar) {
-        if state.hosts.is_connected(host_id) {
-            return Ok(Redirect::to(&format!("/arsenals/reanimation/{host_id}")).into_response());
-        }
+    if let Some(host_id) = host_context::current(&jar)
+        && state.hosts.is_connected(host_id)
+    {
+        return Ok(Redirect::to(&format!("/arsenals/reanimation/{host_id}")).into_response());
     }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);

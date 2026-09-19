@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use abyssal_agent_protocol::{AgentMessage, ServerMessage};
 use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
-use abyssal_core::secret::{generate_token, hash_token};
 use abyssal_core::Host;
+use abyssal_core::secret::{generate_token, hash_token};
 use abyssal_database::repo;
+use axum::Json;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -42,7 +42,7 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
                 StatusCode::UNAUTHORIZED,
                 "invalid, expired, or already-used enrollment token",
             )
-                .into_response()
+                .into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to consume enrollment token");

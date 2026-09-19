@@ -30,8 +30,7 @@ const BLOCKLIST_TABLE: &str = "abyssal_blocklist";
 const ISOLATION_TABLE: &str = "abyssal_isolation";
 const RULE_COMMENT: &str = "abyssal-arsenal-blocklist";
 
-const NO_BACKEND: &str =
-    "No firewall backend detected (checked nftables, iptables) -- this operation needs one of them.";
+const NO_BACKEND: &str = "No firewall backend detected (checked nftables, iptables) -- this operation needs one of them.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {

@@ -24,10 +24,10 @@ const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// future formatting changes to the unit rows themselves.
 fn count_failed_units(stdout: &str) -> i32 {
     for line in stdout.lines().rev() {
-        if let Some(rest) = line.trim().strip_suffix("loaded units listed.") {
-            if let Ok(n) = rest.trim().parse::<i32>() {
-                return n;
-            }
+        if let Some(rest) = line.trim().strip_suffix("loaded units listed.")
+            && let Ok(n) = rest.trim().parse::<i32>()
+        {
+            return n;
         }
     }
     0

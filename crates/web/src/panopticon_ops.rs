@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 
 use abyssal_core::Permission;
-use abyssal_database::{repo, DbPool};
+use abyssal_database::{DbPool, repo};
 use abyssal_execution::{
-    run_command, ExecutionError, Operation, OperationKind, OperationOutput, OperationParams,
+    ExecutionError, Operation, OperationKind, OperationOutput, OperationParams, run_command,
 };
 
 const NMAP_NOT_INSTALLED: &str = "nmap is not installed in the control plane's own environment \
@@ -98,10 +98,10 @@ async fn neighbor_mac_table() -> HashMap<String, String> {
     for line in output.stdout.lines() {
         let tokens: Vec<&str> = line.split_whitespace().collect();
         let Some(ip) = tokens.first() else { continue };
-        if let Some(pos) = tokens.iter().position(|&t| t == "lladdr") {
-            if let Some(mac) = tokens.get(pos + 1) {
-                table.insert(ip.to_string(), mac.to_string());
-            }
+        if let Some(pos) = tokens.iter().position(|&t| t == "lladdr")
+            && let Some(mac) = tokens.get(pos + 1)
+        {
+            table.insert(ip.to_string(), mac.to_string());
         }
     }
     table

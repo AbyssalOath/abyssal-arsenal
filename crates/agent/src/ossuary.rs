@@ -13,7 +13,7 @@
 //! enforced entirely in `crates/web/src/routes/ossuary.rs` before
 //! dispatch ever happens.
 
-use abyssal_agent_protocol::{is_valid_mount_target, CommandOutcome, OperationOutput};
+use abyssal_agent_protocol::{CommandOutcome, OperationOutput, is_valid_mount_target};
 
 use crate::elevation::ElevationState;
 use crate::process::present;

@@ -1,8 +1,8 @@
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use rand::rngs::OsRng;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
+use rand::rngs::OsRng;
 
 pub const CSRF_COOKIE: &str = "abyssal_csrf";
 pub const CSRF_FIELD: &str = "csrf_token";

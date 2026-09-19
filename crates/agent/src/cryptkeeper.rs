@@ -16,7 +16,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use abyssal_agent_protocol::{
-    is_valid_account_name, is_valid_gecos_comment, CommandOutcome, OperationOutput,
+    CommandOutcome, OperationOutput, is_valid_account_name, is_valid_gecos_comment,
 };
 
 use crate::elevation::ElevationState;
@@ -167,10 +167,10 @@ pub async fn generate_ssh_keypair(
         return CommandOutcome::Err(format!("refusing to overwrite existing file at {path}"));
     }
 
-    if let Some(parent) = std::path::Path::new(&path).parent() {
-        if let Some(parent) = parent.to_str().filter(|p| !p.is_empty()) {
-            let _ = elevation.run("mkdir", &["-p", parent]).await;
-        }
+    if let Some(parent) = std::path::Path::new(&path).parent()
+        && let Some(parent) = parent.to_str().filter(|p| !p.is_empty())
+    {
+        let _ = elevation.run("mkdir", &["-p", parent]).await;
     }
 
     match elevation

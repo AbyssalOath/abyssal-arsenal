@@ -1,5 +1,5 @@
-use abyssal_database::repo::audit::NewAuditEntry;
 use abyssal_database::DbPool;
+use abyssal_database::repo::audit::NewAuditEntry;
 use serde_json::Value;
 use uuid::Uuid;
 

@@ -5,9 +5,9 @@ use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use abyssal_execution::OperationParams;
 use abyssal_rbac::AuthContext;
+use axum::Form;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -59,10 +59,10 @@ async fn render(
     let hosts = repo::hosts::list(&state.pool).await?;
     let mut managed_by_ip: HashMap<String, String> = HashMap::new();
     for host in &hosts {
-        if host.is_active() {
-            if let Some(ip) = &host.last_seen_ip {
-                managed_by_ip.insert(ip.clone(), host.name.clone());
-            }
+        if host.is_active()
+            && let Some(ip) = &host.last_seen_ip
+        {
+            managed_by_ip.insert(ip.clone(), host.name.clone());
         }
     }
 
@@ -152,14 +152,14 @@ fn validate_scan_query(q: &ScanQuery) -> Result<(String, Option<String>), WebErr
         )));
     }
     let ports = q.ports.as_deref().map(str::trim).filter(|p| !p.is_empty());
-    if let Some(p) = ports {
-        if !abyssal_agent_protocol::is_valid_port_spec(p) {
-            return Err(WebError(AppError::Validation(
-                "That doesn't look like a valid port spec (digits, commas, and hyphens only, \
+    if let Some(p) = ports
+        && !abyssal_agent_protocol::is_valid_port_spec(p)
+    {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid port spec (digits, commas, and hyphens only, \
                  e.g. 22,80,443 or 1-1024)."
-                    .into(),
-            )));
-        }
+                .into(),
+        )));
     }
     Ok((target, ports.map(str::to_string)))
 }

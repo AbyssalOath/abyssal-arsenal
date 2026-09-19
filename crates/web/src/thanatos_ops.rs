@@ -14,9 +14,9 @@
 use std::time::Duration;
 
 use abyssal_agent_protocol::{AgentOperation, CommandOutcome};
-use abyssal_core::settings::{THANATOS_ALERT_RECIPIENTS, THANATOS_MONITORING_ENABLED};
 use abyssal_core::Severity;
-use abyssal_database::{repo, DbPool};
+use abyssal_core::settings::{THANATOS_ALERT_RECIPIENTS, THANATOS_MONITORING_ENABLED};
+use abyssal_database::{DbPool, repo};
 use abyssal_notifications::{NotificationDispatcher, NotificationMessage};
 use uuid::Uuid;
 

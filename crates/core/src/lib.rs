@@ -15,7 +15,7 @@ pub use host::Host;
 pub use module::ModuleCategory;
 pub use network_device::NetworkDevice;
 pub use permission::Permission;
-pub use role::{Role, BUILT_IN_ROLES};
+pub use role::{BUILT_IN_ROLES, Role};
 pub use security_event::{SecurityEvent, Severity};
 pub use session::Session;
 pub use user::{AuthProviderKind, User};

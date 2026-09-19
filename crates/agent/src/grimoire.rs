@@ -9,7 +9,7 @@
 //! failure mode. Complements Vivisection's `SetSwappiness` (runtime-only)
 //! with the persistent counterpart.
 
-use abyssal_agent_protocol::{is_valid_account_name, CommandOutcome, OperationOutput};
+use abyssal_agent_protocol::{CommandOutcome, OperationOutput, is_valid_account_name};
 
 use crate::elevation::ElevationState;
 use crate::process::present;

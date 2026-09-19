@@ -81,8 +81,7 @@ pub fn clear_session_cookie(state: &AppState) -> Cookie<'static> {
 /// Not an enforcement mechanism (matches the rest of this app's posture:
 /// warn for local testing, hard-require TLS in production) -- see
 /// SECURITY.md.
-const TLS_WARNING: &str =
-    "WARNING: this connection is not running over TLS -- the sudo password was sent in \
+const TLS_WARNING: &str = "WARNING: this connection is not running over TLS -- the sudo password was sent in \
      plaintext over the network. Do not use Apotheosis over an untrusted network without \
      TLS.\n\n";
 

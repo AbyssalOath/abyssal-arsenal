@@ -6,15 +6,15 @@ use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
+use axum::Form;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::common::{
-    maybe_elevate, require_csrf, urlencoding_encode, workflow_context_rows, WorkflowContextRow,
+    WorkflowContextRow, maybe_elevate, require_csrf, urlencoding_encode, workflow_context_rows,
 };
 use crate::csrf;
 use crate::error::WebError;
@@ -35,10 +35,10 @@ pub async fn show(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::BackupsView)?;
 
-    if let Some(host_id) = host_context::current(&jar) {
-        if state.hosts.is_connected(host_id) {
-            return Ok(Redirect::to(&format!("/arsenals/reliquary/{host_id}")).into_response());
-        }
+    if let Some(host_id) = host_context::current(&jar)
+        && state.hosts.is_connected(host_id)
+    {
+        return Ok(Redirect::to(&format!("/arsenals/reliquary/{host_id}")).into_response());
     }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
@@ -681,8 +681,7 @@ mod tests {
     #[test]
     fn read_only_error_suggests_resurrection() {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
-        let error_message =
-            "tar exited with status 2: tar: /var/backups/abyssal-arsenal: Cannot open: Read-only file system";
+        let error_message = "tar exited with status 2: tar: /var/backups/abyssal-arsenal: Cannot open: Read-only file system";
         let entry = serde_json::json!({ "error_message": error_message });
 
         let matches = registry
@@ -700,9 +699,11 @@ mod tests {
             "tar exited with status 1: tar: nonexistent-backup.tar.gz: No such file or directory";
         let entry = serde_json::json!({ "error_message": error_message });
 
-        assert!(registry
-            .evaluate("reliquary", "backup_write_failed", &entry)
-            .matches
-            .is_empty());
+        assert!(
+            registry
+                .evaluate("reliquary", "backup_write_failed", &entry)
+                .matches
+                .is_empty()
+        );
     }
 }

@@ -4,9 +4,9 @@ use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::role;
 use abyssal_core::settings::PUBLIC_REGISTRATION_ENABLED;
 use abyssal_database::repo;
+use axum::Form;
 use axum::extract::{ConnectInfo, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 

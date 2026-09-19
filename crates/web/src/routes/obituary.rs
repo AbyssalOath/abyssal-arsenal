@@ -5,9 +5,9 @@ use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
+use axum::Form;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -32,10 +32,10 @@ pub async fn show(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
 
-    if let Some(host_id) = host_context::current(&jar) {
-        if state.hosts.is_connected(host_id) {
-            return Ok(Redirect::to(&format!("/arsenals/obituary/{host_id}")).into_response());
-        }
+    if let Some(host_id) = host_context::current(&jar)
+        && state.hosts.is_connected(host_id)
+    {
+        return Ok(Redirect::to(&format!("/arsenals/obituary/{host_id}")).into_response());
     }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
@@ -788,9 +788,11 @@ mod tests {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
         let entry = serde_json::json!({ "usage_bytes": 121_634_816u64 });
 
-        assert!(registry
-            .evaluate("obituary", "journal_disk_usage", &entry)
-            .matches
-            .is_empty());
+        assert!(
+            registry
+                .evaluate("obituary", "journal_disk_usage", &entry)
+                .matches
+                .is_empty()
+        );
     }
 }

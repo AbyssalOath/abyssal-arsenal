@@ -1,5 +1,5 @@
 use abyssal_core::Permission;
-use abyssal_database::{repo, DbPool};
+use abyssal_database::{DbPool, repo};
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_rbac::AuthContext;
 use askama::Template;

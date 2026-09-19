@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use abyssal_core::{Permission, User};
-use abyssal_database::{repo, DbPool};
+use abyssal_database::{DbPool, repo};
 
 /// The fully-resolved authorization context for one authenticated request:
 /// the user, and the union of permissions granted by every role they hold.

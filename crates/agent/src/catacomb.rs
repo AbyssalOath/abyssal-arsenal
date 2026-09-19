@@ -5,7 +5,7 @@
 //! inventory), Resurrection (mount *state*), and Ossuary's future
 //! partition/LVM/RAID scope (the block/volume layer underneath).
 
-use abyssal_agent_protocol::{is_valid_mount_target, CommandOutcome};
+use abyssal_agent_protocol::{CommandOutcome, is_valid_mount_target};
 
 use crate::elevation::ElevationState;
 

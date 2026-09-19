@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 

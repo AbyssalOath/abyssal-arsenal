@@ -10,8 +10,56 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-19
+
 ### Added
 
+- **Contextual Arsenal Workflow Navigation**: a new `abyssal-workflows` crate
+  (pure, dependency-light, no I/O) evaluates a compile-time-embedded
+  `registry.json` of trigger conditions against an arsenal's read-operation
+  results and surfaces "suggested actions" -- buttons on the results page
+  linking straight into another arsenal, prefilled with the context that
+  triggered the suggestion (e.g. a disk-usage read in Cystoolbox crossing a
+  threshold suggests jumping to Catacomb's large-file finder, Defleshing's
+  cleanup, or Ossuary's volume management, each prefilled with the
+  offending mount path). The condition registry supports a full operator
+  set (`equals`, `not_equals`, `greater_than_or_equal`, `less_than`,
+  `contains`, `starts_with`, `ends_with`, `matches` (regex), `exists`) and
+  arbitrarily nested `all`/`any` compound conditions, deliberately
+  evaluated without short-circuiting so a registry-authoring bug in an
+  unreached branch still surfaces. 15 registry entries cover the
+  cross-arsenal relationships with genuine operational signal: Cystoolbox
+  to Catacomb/Defleshing/Ossuary (disk pressure), Necropsy to
+  Ossuary/Resurrection/Mortiscope (failed health checks), Mortiscope to
+  Vivisection/Reanimation (high CPU), Thanatos to Inquest/Postmortem
+  (alerted security scans), Obituary to Defleshing (large journal size),
+  Resurrection to Necropsy/Reliquary and Reliquary to Resurrection
+  (read-only filesystem errors, both directions), and Cryptkeeper to
+  Incarnation (certificate expiry, using a new `== Expiry ==` section the
+  agent's `certificate_detail` now also collects via `openssl x509 -noout
+  -enddate`). All 12 destination arsenals show an "arrived here because..."
+  context banner naming which fields triggered the suggestion, and now
+  also carry the source page's selected host forward as the global
+  top-nav host selection when landing via a suggested action (not on
+  ordinary manual navigation), including on the landing page's own nav so
+  it's never stale for a single render. Evaluation failures (e.g. a bad
+  regex in a registry entry) are recorded as a new
+  `WORKFLOW_EVALUATION_FAILED` audit event rather than silently dropped or
+  panicking, and a new optional read-only `/admin/workflows` page lists
+  the full registry for anyone auditing what triggers what. Documented in
+  full, including an "adding a new workflow relationship" checklist, in
+  `crates/workflows/README.md`.
+- **Rust edition bumped to 2024** (from 2021), inherited workspace-wide via
+  `[workspace.package] edition`. Enables if-let chains
+  (`if let Some(x) = y && cond { ... }`), which `cargo clippy`'s
+  `collapsible_if` lint immediately started recommending in ~34 places
+  that used to be a nested `if let { if ... }` -- mechanically rewritten
+  everywhere via `cargo clippy --fix` and reformatted with `cargo fmt`
+  (whose import-sorting default also changed slightly under the new
+  edition). No functional changes: verified with a full `cargo build`,
+  `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D
+  warnings` (matching CI's own gate), and `cargo fmt --check` pass, all
+  clean.
 - **Version tracking and update notice**: a `VERSION` file at the repository
   root is now the single source of truth for this build's version, embedded
   into the control-plane binary at compile time. A new background sweep
@@ -89,6 +137,17 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- `Dockerfile`'s dependency-caching layer never learned about the new
+  `crates/workflows` workspace member -- it copied every other member's
+  `Cargo.toml` and stubbed its source for the dependency-only build, but
+  not this one, so `cargo build --release --workspace` failed immediately
+  trying to resolve a workspace member whose manifest was never copied
+  into the build context. Caught by an actual CI Docker build failure
+  (exit code 101 on the stub-and-build step), not just local `cargo
+  build` (which sees the real source tree and never hits this). Fixed
+  with one more `COPY` and one more entry in the stub-generation loop,
+  verified by replicating the same Cargo.toml-only-copy-then-stub layer
+  in isolation.
 - `Dockerfile` never copied the new root-level `VERSION` file into the
   build stage, so `crates/web/src/update_check.rs`'s
   `include_str!("../../../VERSION")` would have failed the real Docker

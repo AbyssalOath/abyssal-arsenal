@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_database::{repo, DbPool};
+use abyssal_database::{DbPool, repo};
 
 use crate::Arsenal;
 

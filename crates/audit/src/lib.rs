@@ -2,7 +2,7 @@ mod action;
 mod writer;
 
 pub use action::{AuditAction, AuditOutcome};
-pub use writer::{record, Actor, AuditEvent};
+pub use writer::{Actor, AuditEvent, record};
 
 pub use abyssal_database::repo::audit::{AuditEntry, AuditFilter};
 

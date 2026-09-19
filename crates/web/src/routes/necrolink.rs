@@ -5,9 +5,9 @@ use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
+use axum::Form;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -28,10 +28,10 @@ pub async fn show(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
 
-    if let Some(host_id) = host_context::current(&jar) {
-        if state.hosts.is_connected(host_id) {
-            return Ok(Redirect::to(&format!("/arsenals/necrolink/{host_id}")).into_response());
-        }
+    if let Some(host_id) = host_context::current(&jar)
+        && state.hosts.is_connected(host_id)
+    {
+        return Ok(Redirect::to(&format!("/arsenals/necrolink/{host_id}")).into_response());
     }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
@@ -562,12 +562,12 @@ pub async fn scan_confirm(
         )));
     }
     let ports = q.ports.as_deref().map(str::trim).filter(|p| !p.is_empty());
-    if let Some(p) = ports {
-        if !abyssal_agent_protocol::is_valid_port_spec(p) {
-            return Err(WebError(AppError::Validation(
+    if let Some(p) = ports
+        && !abyssal_agent_protocol::is_valid_port_spec(p)
+    {
+        return Err(WebError(AppError::Validation(
                 "That doesn't look like a valid port spec (digits, commas, and hyphens only, e.g. 22,80,443 or 1-1024).".into(),
             )));
-        }
     }
 
     let host = repo::hosts::find_by_id(&state.pool, host_id)
@@ -666,12 +666,12 @@ pub async fn network_scan(
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .map(str::to_string);
-    if let Some(p) = &ports {
-        if !abyssal_agent_protocol::is_valid_port_spec(p) {
-            return Err(WebError(AppError::Validation(
-                "That doesn't look like a valid port spec.".into(),
-            )));
-        }
+    if let Some(p) = &ports
+        && !abyssal_agent_protocol::is_valid_port_spec(p)
+    {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid port spec.".into(),
+        )));
     }
 
     crate::common::require_typed_confirmation(&form.confirm_text, &target)?;

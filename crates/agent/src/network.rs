@@ -32,10 +32,10 @@ pub async fn routes() -> CommandOutcome {
 /// effective resolver configuration regardless of what manages it and is
 /// present on every Linux host.
 pub async fn dns_config() -> CommandOutcome {
-    if command_exists("resolvectl").await {
-        if let Ok(output) = run_command("resolvectl", &["status"]).await {
-            return CommandOutcome::Ok(output);
-        }
+    if command_exists("resolvectl").await
+        && let Ok(output) = run_command("resolvectl", &["status"]).await
+    {
+        return CommandOutcome::Ok(output);
     }
 
     match tokio::fs::read_to_string("/etc/resolv.conf").await {
@@ -125,10 +125,10 @@ pub async fn network_scan(
     if !abyssal_agent_protocol::is_valid_network_target(&target) {
         return CommandOutcome::Err(format!("refusing to scan invalid target: {target}"));
     }
-    if let Some(spec) = &ports {
-        if !abyssal_agent_protocol::is_valid_port_spec(spec) {
-            return CommandOutcome::Err(format!("refusing invalid port spec: {spec}"));
-        }
+    if let Some(spec) = &ports
+        && !abyssal_agent_protocol::is_valid_port_spec(spec)
+    {
+        return CommandOutcome::Err(format!("refusing invalid port spec: {spec}"));
     }
     if !command_exists("nmap").await {
         return CommandOutcome::Err(NMAP_NOT_INSTALLED.to_string());

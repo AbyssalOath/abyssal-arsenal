@@ -1,11 +1,11 @@
 use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
-use abyssal_core::secret::{generate_token, hash_token};
 use abyssal_core::AppError;
+use abyssal_core::secret::{generate_token, hash_token};
 use abyssal_database::repo;
 use abyssal_notifications::{NotificationMessage, Severity};
+use axum::Form;
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use chrono::Duration;
 use serde::Deserialize;
@@ -87,39 +87,34 @@ pub async fn submit_forgot_password(
     require_csrf(&jar, &form.csrf_token)?;
 
     let email = form.email.trim().to_string();
-    if let Ok(Some(user)) = repo::users::find_by_email(&state.pool, &email).await {
-        if user.is_active && user.password_hash.is_some() {
-            let already_recent = repo::password_resets::has_recent_request(
-                &state.pool,
-                user.id,
-                RESET_COOLDOWN_MINUTES,
-            )
-            .await
-            .unwrap_or(false);
+    if let Ok(Some(user)) = repo::users::find_by_email(&state.pool, &email).await
+        && user.is_active
+        && user.password_hash.is_some()
+    {
+        let already_recent =
+            repo::password_resets::has_recent_request(&state.pool, user.id, RESET_COOLDOWN_MINUTES)
+                .await
+                .unwrap_or(false);
 
-            if !already_recent {
-                let raw_token = generate_token();
-                let token_hash = hash_token(&raw_token);
+        if !already_recent {
+            let raw_token = generate_token();
+            let token_hash = hash_token(&raw_token);
 
-                if repo::password_resets::create(&state.pool, user.id, &token_hash, RESET_TOKEN_TTL)
-                    .await
-                    .is_ok()
-                {
-                    let message = build_reset_email(
-                        &user.email,
-                        &raw_token,
-                        state.config.public_url.as_deref(),
-                    );
-                    state.notifications.dispatch(&message).await;
+            if repo::password_resets::create(&state.pool, user.id, &token_hash, RESET_TOKEN_TTL)
+                .await
+                .is_ok()
+            {
+                let message =
+                    build_reset_email(&user.email, &raw_token, state.config.public_url.as_deref());
+                state.notifications.dispatch(&message).await;
 
-                    abyssal_audit::record(
-                        &state.pool,
-                        AuditEvent::new(AuditAction::PasswordResetRequested, AuditOutcome::Success)
-                            .resource(&user.username),
-                    )
-                    .await
-                    .ok();
-                }
+                abyssal_audit::record(
+                    &state.pool,
+                    AuditEvent::new(AuditAction::PasswordResetRequested, AuditOutcome::Success)
+                        .resource(&user.username),
+                )
+                .await
+                .ok();
             }
         }
     }
@@ -239,9 +234,11 @@ mod tests {
             Some("https://arsenal.example.com"),
         );
         assert_eq!(message.recipients, vec!["user@example.com".to_string()]);
-        assert!(message
-            .body
-            .contains("https://arsenal.example.com/reset-password?token=raw-token-value"));
+        assert!(
+            message
+                .body
+                .contains("https://arsenal.example.com/reset-password?token=raw-token-value")
+        );
         assert!(message.body.contains("raw-token-value"));
     }
 

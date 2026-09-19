@@ -1,4 +1,4 @@
-use abyssal_agent_protocol::{AgentMessage, ServerMessage, PROTOCOL_VERSION};
+use abyssal_agent_protocol::{AgentMessage, PROTOCOL_VERSION, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use http::{Request, Uri};
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;

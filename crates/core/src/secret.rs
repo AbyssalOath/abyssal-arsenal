@@ -1,7 +1,7 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use rand::rngs::OsRng;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
 const TOKEN_BYTES: usize = 32;

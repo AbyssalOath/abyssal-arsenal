@@ -72,7 +72,7 @@ pub async fn create_backup(
         _ => {
             return CommandOutcome::Err(format!(
                 "can't determine a parent directory and name for {source_path}"
-            ))
+            ));
         }
     };
     let parent = if parent.is_empty() { "/" } else { parent };

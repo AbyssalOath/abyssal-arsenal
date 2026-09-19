@@ -4,7 +4,7 @@
 //! control plane's own login accounts (that's `/admin/users`, a
 //! completely separate system with its own permissions).
 
-use abyssal_agent_protocol::{is_protected_account_name, is_valid_account_name, CommandOutcome};
+use abyssal_agent_protocol::{CommandOutcome, is_protected_account_name, is_valid_account_name};
 
 use crate::elevation::ElevationState;
 

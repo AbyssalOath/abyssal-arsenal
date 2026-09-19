@@ -4,9 +4,9 @@ use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_auth::{AuthError, AuthProvider, LocalAuthProvider};
 use abyssal_core::settings::PUBLIC_REGISTRATION_ENABLED;
 use abyssal_database::repo;
+use axum::Form;
 use axum::extract::{ConnectInfo, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
@@ -147,10 +147,9 @@ pub async fn logout(
     if let Some(token) = jar
         .get(&state.config.session_cookie_name)
         .map(|c| c.value().to_string())
+        && let Ok(Some(session)) = abyssal_auth::session::validate(&state.pool, &token).await
     {
-        if let Ok(Some(session)) = abyssal_auth::session::validate(&state.pool, &token).await {
-            abyssal_auth::session::revoke(&state.pool, session.id).await?;
-        }
+        abyssal_auth::session::revoke(&state.pool, session.id).await?;
     }
 
     if let Some(CurrentUser(ctx)) = current {

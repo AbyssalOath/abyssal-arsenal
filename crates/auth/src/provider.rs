@@ -1,5 +1,5 @@
 use abyssal_core::User;
-use abyssal_database::{repo, DbPool};
+use abyssal_database::{DbPool, repo};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

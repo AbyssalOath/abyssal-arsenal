@@ -1,6 +1,6 @@
-use abyssal_core::secret::{generate_token, hash_token};
 use abyssal_core::Session;
-use abyssal_database::{repo, DbPool};
+use abyssal_core::secret::{generate_token, hash_token};
+use abyssal_database::{DbPool, repo};
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 

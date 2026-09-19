@@ -357,12 +357,12 @@ async fn system_info() -> CommandOutcome {
     match run_command("uname", &["-a"]).await {
         Ok(mut output) => {
             output.stdout = output.stdout.trim().to_string();
-            if let Ok(uptime_raw) = tokio::fs::read_to_string("/proc/uptime").await {
-                if let Some(seconds) = uptime_raw.split_whitespace().next() {
-                    output
-                        .stdout
-                        .push_str(&format!("\nuptime_seconds: {seconds}"));
-                }
+            if let Ok(uptime_raw) = tokio::fs::read_to_string("/proc/uptime").await
+                && let Some(seconds) = uptime_raw.split_whitespace().next()
+            {
+                output
+                    .stdout
+                    .push_str(&format!("\nuptime_seconds: {seconds}"));
             }
             CommandOutcome::Ok(output)
         }
