@@ -168,7 +168,15 @@ pub async fn show_host(
     let context = workflow_context_rows(&query);
     let prefill_pid = query.get("pid").cloned();
     render_host_with_context(
-        &state, &jar, &ctx, host_id, None, None, None, context, prefill_pid,
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        None,
+        None,
+        None,
+        context,
+        prefill_pid,
     )
     .await
 }

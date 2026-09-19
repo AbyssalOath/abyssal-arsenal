@@ -34,7 +34,12 @@ impl WorkflowRegistry {
     /// suggested action (there is no "best match" -- all of them render)
     /// alongside any genuine evaluation failures. See
     /// `evaluator::evaluate` for what counts as a failure.
-    pub fn evaluate(&self, source_arsenal: &str, source_action: &str, result: &Value) -> EvaluationOutcome {
+    pub fn evaluate(
+        &self,
+        source_arsenal: &str,
+        source_action: &str,
+        result: &Value,
+    ) -> EvaluationOutcome {
         evaluate(&self.entries, source_arsenal, source_action, result)
     }
 }

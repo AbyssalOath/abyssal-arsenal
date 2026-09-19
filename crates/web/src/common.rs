@@ -276,11 +276,17 @@ fn workflow_suggested_action_view(
 /// this is the one place that turns a returned failure into something
 /// admin-visible. Best-effort: a failure to *record* a failure must never
 /// block the page that's rendering.
-async fn record_workflow_evaluation_failures(pool: &abyssal_database::DbPool, failures: &[abyssal_workflows::EvaluationFailure]) {
+async fn record_workflow_evaluation_failures(
+    pool: &abyssal_database::DbPool,
+    failures: &[abyssal_workflows::EvaluationFailure],
+) {
     for failure in failures {
         let resource = format!(
             "{}:{} -> {}:{}",
-            failure.source_arsenal, failure.source_action, failure.target_arsenal, failure.target_action
+            failure.source_arsenal,
+            failure.source_action,
+            failure.target_arsenal,
+            failure.target_action
         );
         let result = abyssal_audit::record(
             pool,
@@ -318,7 +324,9 @@ pub async fn suggested_actions_for(
     let mut matches = Vec::new();
     let mut failures = Vec::new();
     for result in results {
-        let mut outcome = state.workflows.evaluate(source_arsenal, source_action, result);
+        let mut outcome = state
+            .workflows
+            .evaluate(source_arsenal, source_action, result);
         matches.append(&mut outcome.matches);
         failures.append(&mut outcome.failures);
     }
@@ -355,7 +363,10 @@ mod tests {
         let mut query = HashMap::new();
         query.insert("mount_point".to_string(), "/tmp".to_string());
         query.insert("usage_percent".to_string(), "97".to_string());
-        query.insert("unrelated_param".to_string(), "should not appear".to_string());
+        query.insert(
+            "unrelated_param".to_string(),
+            "should not appear".to_string(),
+        );
 
         let rows = workflow_context_rows(&query);
         let labels: Vec<&str> = rows.iter().map(|r| r.label).collect();

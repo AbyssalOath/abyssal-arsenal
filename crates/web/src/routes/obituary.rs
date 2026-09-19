@@ -775,7 +775,9 @@ mod tests {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
         let entry = serde_json::json!({ "usage_bytes": 1_288_490_189u64 });
 
-        let matches = registry.evaluate("obituary", "journal_disk_usage", &entry).matches;
+        let matches = registry
+            .evaluate("obituary", "journal_disk_usage", &entry)
+            .matches;
         let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
 
         assert!(targets.contains(&"defleshing"));

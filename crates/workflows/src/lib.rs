@@ -14,5 +14,6 @@ mod types;
 pub use evaluator::evaluate;
 pub use registry::WorkflowRegistry;
 pub use types::{
-    Condition, EvaluationFailure, EvaluationOutcome, LeafCondition, MatchedAction, Operator, WorkflowEntry,
+    Condition, EvaluationFailure, EvaluationOutcome, LeafCondition, MatchedAction, Operator,
+    WorkflowEntry,
 };

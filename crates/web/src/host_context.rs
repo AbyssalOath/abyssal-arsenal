@@ -23,9 +23,16 @@ pub fn current(jar: &CookieJar) -> Option<Uuid> {
 /// that. Purely a UI convenience, same as `routes::host_context::select`
 /// -- never a security boundary, since every arsenal action still
 /// re-validates the host from its own URL path.
-pub fn carry_forward_cookie(host_id: Uuid, arrived_via_suggestion: bool) -> Option<Cookie<'static>> {
+pub fn carry_forward_cookie(
+    host_id: Uuid,
+    arrived_via_suggestion: bool,
+) -> Option<Cookie<'static>> {
     if !arrived_via_suggestion {
         return None;
     }
-    Some(Cookie::build((SELECTED_HOST_COOKIE, host_id.to_string())).path("/").build())
+    Some(
+        Cookie::build((SELECTED_HOST_COOKIE, host_id.to_string()))
+            .path("/")
+            .build(),
+    )
 }

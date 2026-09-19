@@ -93,13 +93,19 @@ impl Condition {
             Condition::All { all } => {
                 format!(
                     "all({})",
-                    all.iter().map(Condition::describe).collect::<Vec<_>>().join(", ")
+                    all.iter()
+                        .map(Condition::describe)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             }
             Condition::Any { any } => {
                 format!(
                     "any({})",
-                    any.iter().map(Condition::describe).collect::<Vec<_>>().join(", ")
+                    any.iter()
+                        .map(Condition::describe)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             }
             Condition::Leaf(leaf) => leaf.describe(),

@@ -398,7 +398,9 @@ mod tests {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
         let entry = serde_json::json!({ "persisted_count": 5, "alerted": true });
 
-        let matches = registry.evaluate("thanatos", "scan_security_events", &entry).matches;
+        let matches = registry
+            .evaluate("thanatos", "scan_security_events", &entry)
+            .matches;
         let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
 
         assert!(targets.contains(&"inquest"));

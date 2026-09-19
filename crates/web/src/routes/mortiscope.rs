@@ -13,9 +13,7 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::common::{
-    maybe_elevate, require_csrf, workflow_context_rows, WorkflowContextRow,
-};
+use crate::common::{maybe_elevate, require_csrf, workflow_context_rows, WorkflowContextRow};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
@@ -530,7 +528,9 @@ mod tests {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
         let entry = serde_json::json!({ "pid": 1234, "comm": "stress-ng", "cpu_percent": 95.2 });
 
-        let matches = registry.evaluate("mortiscope", "top_process_by_cpu", &entry).matches;
+        let matches = registry
+            .evaluate("mortiscope", "top_process_by_cpu", &entry)
+            .matches;
         let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
 
         assert!(targets.contains(&"vivisection"));

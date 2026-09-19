@@ -423,8 +423,7 @@ pub async fn create_backup(
         Err(e) => {
             state.elevation.mark_deescalated(host_id);
             let error_message = e.to_string();
-            let suggested_actions =
-                backup_error_suggestions(&state, &error_message, host_id).await;
+            let suggested_actions = backup_error_suggestions(&state, &error_message, host_id).await;
             render_host_with_suggestions(
                 &state,
                 &jar,
@@ -604,8 +603,7 @@ pub async fn restore_backup(
         Err(e) => {
             state.elevation.mark_deescalated(host_id);
             let error_message = e.to_string();
-            let suggested_actions =
-                backup_error_suggestions(&state, &error_message, host_id).await;
+            let suggested_actions = backup_error_suggestions(&state, &error_message, host_id).await;
             render_host_with_suggestions(
                 &state,
                 &jar,
@@ -687,7 +685,9 @@ mod tests {
             "tar exited with status 2: tar: /var/backups/abyssal-arsenal: Cannot open: Read-only file system";
         let entry = serde_json::json!({ "error_message": error_message });
 
-        let matches = registry.evaluate("reliquary", "backup_write_failed", &entry).matches;
+        let matches = registry
+            .evaluate("reliquary", "backup_write_failed", &entry)
+            .matches;
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].target_arsenal, "resurrection");
@@ -696,7 +696,8 @@ mod tests {
     #[test]
     fn unrelated_error_suggests_nothing() {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
-        let error_message = "tar exited with status 1: tar: nonexistent-backup.tar.gz: No such file or directory";
+        let error_message =
+            "tar exited with status 1: tar: nonexistent-backup.tar.gz: No such file or directory";
         let entry = serde_json::json!({ "error_message": error_message });
 
         assert!(registry

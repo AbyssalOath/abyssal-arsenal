@@ -1,6 +1,9 @@
 use serde_json::Value;
 
-use crate::types::{Condition, EvaluationFailure, EvaluationOutcome, LeafCondition, MatchedAction, Operator, WorkflowEntry};
+use crate::types::{
+    Condition, EvaluationFailure, EvaluationOutcome, LeafCondition, MatchedAction, Operator,
+    WorkflowEntry,
+};
 
 /// Evaluates every entry in `entries` whose `source_arsenal`/`source_action`
 /// match, against one structured result object, and returns both the
@@ -26,23 +29,26 @@ pub fn evaluate(
 ) -> EvaluationOutcome {
     let mut outcome = EvaluationOutcome::default();
 
-    for entry in entries
-        .iter()
-        .filter(|entry| entry.source_arsenal == source_arsenal && entry.source_action == source_action)
-    {
+    for entry in entries.iter().filter(|entry| {
+        entry.source_arsenal == source_arsenal && entry.source_action == source_action
+    }) {
         let mut raw_failures = Vec::new();
         let matched = condition_matches(&entry.condition, result, &mut raw_failures);
 
         outcome
             .failures
-            .extend(raw_failures.into_iter().map(|(field, message)| EvaluationFailure {
-                source_arsenal: entry.source_arsenal.clone(),
-                source_action: entry.source_action.clone(),
-                target_arsenal: entry.target_arsenal.clone(),
-                target_action: entry.target_action.clone(),
-                field,
-                message,
-            }));
+            .extend(
+                raw_failures
+                    .into_iter()
+                    .map(|(field, message)| EvaluationFailure {
+                        source_arsenal: entry.source_arsenal.clone(),
+                        source_action: entry.source_action.clone(),
+                        target_arsenal: entry.target_arsenal.clone(),
+                        target_action: entry.target_action.clone(),
+                        field,
+                        message,
+                    }),
+            );
 
         if matched {
             outcome.matches.push(build_matched_action(entry, result));
@@ -57,7 +63,11 @@ pub fn evaluate(
 /// answer might be settled early, but a registry authoring bug (e.g. a bad
 /// regex) in a sibling branch should never go unreported just because it
 /// didn't end up mattering to the boolean outcome.
-fn condition_matches(condition: &Condition, result: &Value, failures: &mut Vec<(String, String)>) -> bool {
+fn condition_matches(
+    condition: &Condition,
+    result: &Value,
+    failures: &mut Vec<(String, String)>,
+) -> bool {
     match condition {
         Condition::All { all } => all
             .iter()
@@ -75,7 +85,11 @@ fn condition_matches(condition: &Condition, result: &Value, failures: &mut Vec<(
     }
 }
 
-fn leaf_matches(condition: &LeafCondition, result: &Value, failures: &mut Vec<(String, String)>) -> bool {
+fn leaf_matches(
+    condition: &LeafCondition,
+    result: &Value,
+    failures: &mut Vec<(String, String)>,
+) -> bool {
     let actual = result.get(&condition.field);
     let expected = condition.value.as_ref();
     match condition.operator {
@@ -97,15 +111,29 @@ fn leaf_matches(condition: &LeafCondition, result: &Value, failures: &mut Vec<(S
     }
 }
 
-fn numeric_cmp(actual: Option<&Value>, expected: Option<&Value>, cmp: impl Fn(f64, f64) -> bool) -> bool {
-    match (actual.and_then(Value::as_f64), expected.and_then(Value::as_f64)) {
+fn numeric_cmp(
+    actual: Option<&Value>,
+    expected: Option<&Value>,
+    cmp: impl Fn(f64, f64) -> bool,
+) -> bool {
+    match (
+        actual.and_then(Value::as_f64),
+        expected.and_then(Value::as_f64),
+    ) {
         (Some(actual), Some(expected)) => cmp(actual, expected),
         _ => false,
     }
 }
 
-fn string_cmp(actual: Option<&Value>, expected: Option<&Value>, cmp: impl Fn(&str, &str) -> bool) -> bool {
-    match (actual.and_then(Value::as_str), expected.and_then(Value::as_str)) {
+fn string_cmp(
+    actual: Option<&Value>,
+    expected: Option<&Value>,
+    cmp: impl Fn(&str, &str) -> bool,
+) -> bool {
+    match (
+        actual.and_then(Value::as_str),
+        expected.and_then(Value::as_str),
+    ) {
         (Some(actual), Some(expected)) => cmp(actual, expected),
         _ => false,
     }
@@ -124,8 +152,10 @@ fn regex_matches(
     field: &str,
     failures: &mut Vec<(String, String)>,
 ) -> bool {
-    let (Some(actual), Some(pattern)) = (actual.and_then(Value::as_str), expected.and_then(Value::as_str))
-    else {
+    let (Some(actual), Some(pattern)) = (
+        actual.and_then(Value::as_str),
+        expected.and_then(Value::as_str),
+    ) else {
         return false;
     };
 
@@ -149,7 +179,11 @@ fn build_matched_action(entry: &WorkflowEntry, result: &Value) -> MatchedAction 
     let context = entry
         .context_fields
         .iter()
-        .filter_map(|field| result.get(field).map(|v| (field.clone(), value_to_string(v))))
+        .filter_map(|field| {
+            result
+                .get(field)
+                .map(|v| (field.clone(), value_to_string(v)))
+        })
         .collect();
 
     MatchedAction {
@@ -231,7 +265,8 @@ mod tests {
             Operator::GreaterThanOrEqual,
             Some(json!(90)),
         ))];
-        let result = json!({ "filesystem": "/dev/sda1", "usage_percent": 97, "mount_point": "/tmp" });
+        let result =
+            json!({ "filesystem": "/dev/sda1", "usage_percent": 97, "mount_point": "/tmp" });
 
         let outcome = evaluate(&entries, "cystoolbox", "resource_usage_disk", &result);
 
@@ -251,7 +286,11 @@ mod tests {
     #[test]
     fn no_match_below_threshold() {
         assert!(!eval_one(
-            leaf("usage_percent", Operator::GreaterThanOrEqual, Some(json!(90))),
+            leaf(
+                "usage_percent",
+                Operator::GreaterThanOrEqual,
+                Some(json!(90))
+            ),
             json!({ "usage_percent": 42, "mount_point": "/tmp" })
         ));
     }
@@ -259,7 +298,11 @@ mod tests {
     #[test]
     fn missing_field_never_matches_and_never_panics() {
         assert!(!eval_one(
-            leaf("usage_percent", Operator::GreaterThanOrEqual, Some(json!(90))),
+            leaf(
+                "usage_percent",
+                Operator::GreaterThanOrEqual,
+                Some(json!(90))
+            ),
             json!({ "filesystem": "/dev/sda1", "mount_point": "/tmp" })
         ));
     }
@@ -285,7 +328,10 @@ mod tests {
             leaf("mount_point", Operator::Exists, None),
             json!({ "mount_point": "/tmp" })
         ));
-        assert!(!eval_one(leaf("mount_point", Operator::Exists, None), json!({})));
+        assert!(!eval_one(
+            leaf("mount_point", Operator::Exists, None),
+            json!({})
+        ));
     }
 
     #[test]
@@ -324,13 +370,20 @@ mod tests {
     #[test]
     fn ends_with_operator() {
         let cond = leaf("service", Operator::EndsWith, Some(json!(".service")));
-        assert!(eval_one(cond.clone(), json!({ "service": "nginx.service" })));
+        assert!(eval_one(
+            cond.clone(),
+            json!({ "service": "nginx.service" })
+        ));
         assert!(!eval_one(cond, json!({ "service": "nginx.socket" })));
     }
 
     #[test]
     fn matches_operator_with_valid_regex() {
-        let cond = leaf("mount_point", Operator::Matches, Some(json!("^/(tmp|var/tmp)$")));
+        let cond = leaf(
+            "mount_point",
+            Operator::Matches,
+            Some(json!("^/(tmp|var/tmp)$")),
+        );
         assert!(eval_one(cond.clone(), json!({ "mount_point": "/tmp" })));
         assert!(!eval_one(cond, json!({ "mount_point": "/home" })));
     }
@@ -384,12 +437,22 @@ mod tests {
     fn all_group_requires_every_condition() {
         let cond = Condition::All {
             all: vec![
-                leaf("usage_percent", Operator::GreaterThanOrEqual, Some(json!(90))),
+                leaf(
+                    "usage_percent",
+                    Operator::GreaterThanOrEqual,
+                    Some(json!(90)),
+                ),
                 leaf("mount_point", Operator::Equals, Some(json!("/tmp"))),
             ],
         };
-        assert!(eval_one(cond.clone(), json!({ "usage_percent": 97, "mount_point": "/tmp" })));
-        assert!(!eval_one(cond, json!({ "usage_percent": 97, "mount_point": "/home" })));
+        assert!(eval_one(
+            cond.clone(),
+            json!({ "usage_percent": 97, "mount_point": "/tmp" })
+        ));
+        assert!(!eval_one(
+            cond,
+            json!({ "usage_percent": 97, "mount_point": "/home" })
+        ));
     }
 
     #[test]
@@ -409,7 +472,11 @@ mod tests {
         // (usage_percent >= 90) AND (mount_point == /tmp OR mount_point == /var/tmp)
         let cond = Condition::All {
             all: vec![
-                leaf("usage_percent", Operator::GreaterThanOrEqual, Some(json!(90))),
+                leaf(
+                    "usage_percent",
+                    Operator::GreaterThanOrEqual,
+                    Some(json!(90)),
+                ),
                 Condition::Any {
                     any: vec![
                         leaf("mount_point", Operator::Equals, Some(json!("/tmp"))),
@@ -418,8 +485,17 @@ mod tests {
                 },
             ],
         };
-        assert!(eval_one(cond.clone(), json!({ "usage_percent": 95, "mount_point": "/var/tmp" })));
-        assert!(!eval_one(cond.clone(), json!({ "usage_percent": 95, "mount_point": "/home" })));
-        assert!(!eval_one(cond, json!({ "usage_percent": 10, "mount_point": "/tmp" })));
+        assert!(eval_one(
+            cond.clone(),
+            json!({ "usage_percent": 95, "mount_point": "/var/tmp" })
+        ));
+        assert!(!eval_one(
+            cond.clone(),
+            json!({ "usage_percent": 95, "mount_point": "/home" })
+        ));
+        assert!(!eval_one(
+            cond,
+            json!({ "usage_percent": 10, "mount_point": "/tmp" })
+        ));
     }
 }

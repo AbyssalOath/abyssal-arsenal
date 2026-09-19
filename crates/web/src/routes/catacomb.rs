@@ -173,7 +173,15 @@ pub async fn show_host(
     let context = workflow_context_rows(&query);
     let prefill_path = query.get("mount_point").cloned();
     render_host_with_context(
-        &state, &jar, &ctx, host_id, None, None, None, context, prefill_path,
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        None,
+        None,
+        None,
+        context,
+        prefill_path,
     )
     .await
 }

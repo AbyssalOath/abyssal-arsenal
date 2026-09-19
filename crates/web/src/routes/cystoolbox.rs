@@ -660,7 +660,8 @@ mod tests {
 
     #[test]
     fn skips_unparseable_rows_instead_of_failing() {
-        let stdout = "== Disk ==\nFilesystem      Size  Used Avail Use% Mounted on\nnot-enough-columns\n";
+        let stdout =
+            "== Disk ==\nFilesystem      Size  Used Avail Use% Mounted on\nnot-enough-columns\n";
         assert!(disk_usage_entries(stdout).is_empty());
     }
 
@@ -674,7 +675,9 @@ mod tests {
             "mount_point": "/tmp",
         });
 
-        let matches = registry.evaluate("cystoolbox", "resource_usage_disk", &entry).matches;
+        let matches = registry
+            .evaluate("cystoolbox", "resource_usage_disk", &entry)
+            .matches;
         let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
 
         assert!(targets.contains(&"catacomb"));

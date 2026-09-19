@@ -175,7 +175,15 @@ pub async fn show_host(
     let context = workflow_context_rows(&query);
     let prefill_device = query.get("device").cloned();
     render_host_with_context(
-        &state, &jar, &ctx, host_id, None, None, None, context, prefill_device,
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        None,
+        None,
+        None,
+        context,
+        prefill_device,
     )
     .await
 }

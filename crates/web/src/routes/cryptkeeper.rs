@@ -325,7 +325,10 @@ pub struct PathForm {
 /// doesn't parse) rather than guessing.
 fn certificate_expiry_entry(stdout: &str, path: &str) -> Option<serde_json::Value> {
     let expiry_section = stdout.split("== Expiry ==").nth(1)?;
-    let line = expiry_section.lines().find(|l| !l.trim().is_empty())?.trim();
+    let line = expiry_section
+        .lines()
+        .find(|l| !l.trim().is_empty())?
+        .trim();
     let date_str = line.strip_prefix("notAfter=")?;
     let date_str = date_str.strip_suffix(" GMT").unwrap_or(date_str);
     let not_after = chrono::NaiveDateTime::parse_from_str(date_str, "%b %e %H:%M:%S %Y")
@@ -969,9 +972,12 @@ mod tests {
     #[test]
     fn expiring_soon_suggests_incarnation() {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
-        let entry = serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": 10 });
+        let entry =
+            serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": 10 });
 
-        let matches = registry.evaluate("cryptkeeper", "certificate_detail", &entry).matches;
+        let matches = registry
+            .evaluate("cryptkeeper", "certificate_detail", &entry)
+            .matches;
 
         assert!(matches.iter().any(|m| m.target_arsenal == "incarnation"));
     }
@@ -979,9 +985,12 @@ mod tests {
     #[test]
     fn already_expired_also_suggests_incarnation() {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
-        let entry = serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": -5 });
+        let entry =
+            serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": -5 });
 
-        let matches = registry.evaluate("cryptkeeper", "certificate_detail", &entry).matches;
+        let matches = registry
+            .evaluate("cryptkeeper", "certificate_detail", &entry)
+            .matches;
 
         assert!(matches.iter().any(|m| m.target_arsenal == "incarnation"));
     }
@@ -989,7 +998,8 @@ mod tests {
     #[test]
     fn far_future_expiry_suggests_nothing() {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
-        let entry = serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": 365 });
+        let entry =
+            serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": 365 });
 
         assert!(registry
             .evaluate("cryptkeeper", "certificate_detail", &entry)
