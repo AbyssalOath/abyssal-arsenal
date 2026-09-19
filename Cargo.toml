@@ -13,6 +13,7 @@ members = [
     "crates/execution",
     "crates/hosts",
     "crates/modules",
+    "crates/workflows",
     "crates/web",
     "crates/arsenals/cystoolbox",
     "crates/arsenals/cadavault",
@@ -54,6 +55,7 @@ abyssal-audit = { path = "crates/audit" }
 abyssal-notifications = { path = "crates/notifications" }
 abyssal-execution = { path = "crates/execution" }
 abyssal-modules = { path = "crates/modules" }
+abyssal-workflows = { path = "crates/workflows" }
 abyssal-web = { path = "crates/web" }
 abyssal-hosts = { path = "crates/hosts" }
 abyssal-agent-protocol = { path = "crates/agent-protocol" }
@@ -96,6 +98,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "json", "migrate"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"

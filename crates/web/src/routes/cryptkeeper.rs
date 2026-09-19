@@ -18,7 +18,9 @@ use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, CryptkeeperHostRow, CryptkeeperHostTemplate, CryptkeeperTemplate};
+use crate::templates::{
+    BaseCtx, CryptkeeperHostRow, CryptkeeperHostTemplate, CryptkeeperTemplate, SuggestedActionView,
+};
 use crate::theme;
 
 /// Landing page for this arsenal: just a host picker, same as every other
@@ -76,6 +78,33 @@ async fn render_host(
     result_output: Option<String>,
     result_error: Option<String>,
 ) -> Result<Response, WebError> {
+    render_host_with_suggestions(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Same as `render_host`, but also renders a "Suggested Next Steps" section
+/// from the workflow registry's matches against this result -- see
+/// `certificate_detail` below, the one action that currently produces any.
+#[allow(clippy::too_many_arguments)]
+async fn render_host_with_suggestions(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
+    result_error: Option<String>,
+    suggested_actions: Vec<SuggestedActionView>,
+) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -102,6 +131,7 @@ async fn render_host(
         result_label,
         result_output,
         result_error,
+        suggested_actions,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -286,6 +316,28 @@ pub struct PathForm {
     path: String,
 }
 
+/// Parses the `== Expiry ==` section `certificate_detail` now appends
+/// (the agent's `openssl x509 -noout -enddate` line, `notAfter=Jan  1
+/// 00:00:00 2030 GMT`) into a structured `{path, days_until_expiry}`
+/// result. Purely additive -- the existing full `-text` dump above it is
+/// unchanged. Returns `None` when the section is missing (an
+/// as-yet-unredeployed agent that predates this section, or a date that
+/// doesn't parse) rather than guessing.
+fn certificate_expiry_entry(stdout: &str, path: &str) -> Option<serde_json::Value> {
+    let expiry_section = stdout.split("== Expiry ==").nth(1)?;
+    let line = expiry_section.lines().find(|l| !l.trim().is_empty())?.trim();
+    let date_str = line.strip_prefix("notAfter=")?;
+    let date_str = date_str.strip_suffix(" GMT").unwrap_or(date_str);
+    let not_after = chrono::NaiveDateTime::parse_from_str(date_str, "%b %e %H:%M:%S %Y")
+        .ok()?
+        .and_utc();
+    let days_until_expiry = (not_after - chrono::Utc::now()).num_days();
+    Some(serde_json::json!({
+        "path": path,
+        "days_until_expiry": days_until_expiry,
+    }))
+}
+
 pub async fn certificate_detail(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -296,15 +348,67 @@ pub async fn certificate_detail(
     abyssal_rbac::ensure(&ctx, Permission::SecurityView)?;
     require_csrf(&jar, &form.csrf_token)?;
     let path = validate_path(&form.path, "certificate path")?;
-    run_read_op(
-        &state,
-        &jar,
-        &ctx,
-        host_id,
-        AgentOperation::CertificateDetail { path: path.clone() },
-        &format!("Certificate Detail ({path})"),
-    )
-    .await
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let result_label = Some(format!("Certificate Detail ({path}) -- {}", host.name));
+
+    let elevated = state.elevation.is_elevated(host_id);
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            host_id,
+            &host.name,
+            AgentOperation::CertificateDetail { path: path.clone() },
+            Permission::SecurityView,
+            OperationKind::Read,
+            false,
+            Duration::from_secs(30),
+            None,
+            elevated,
+        )
+        .await;
+
+    match result {
+        Ok(output) => {
+            let entry = certificate_expiry_entry(&output.stdout, &path);
+            let suggested_actions = crate::common::suggested_actions_for(
+                &state,
+                "cryptkeeper",
+                "certificate_detail",
+                &entry.into_iter().collect::<Vec<_>>(),
+                host_id,
+            )
+            .await;
+            render_host_with_suggestions(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                Some(output.stdout),
+                None,
+                suggested_actions,
+            )
+            .await
+        }
+        Err(e) => {
+            state.elevation.mark_deescalated(host_id);
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                None,
+                Some(e.to_string()),
+            )
+            .await
+        }
+    }
 }
 
 pub async fn scan_sensitive_file_permissions(
@@ -830,5 +934,66 @@ pub async fn elevate(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    fn expiry_stdout(days_from_now: i64) -> String {
+        let date = Utc::now() + ChronoDuration::days(days_from_now);
+        format!(
+            "-- cert text --\n== Expiry ==\nnotAfter={}\n",
+            date.format("%b %e %H:%M:%S %Y GMT")
+        )
+    }
+
+    #[test]
+    fn parses_expiry_and_computes_days_remaining() {
+        let stdout = expiry_stdout(10);
+        let entry = certificate_expiry_entry(&stdout, "/etc/ssl/certs/example.pem").unwrap();
+        let days = entry["days_until_expiry"].as_i64().unwrap();
+        assert!((9..=10).contains(&days));
+    }
+
+    #[test]
+    fn missing_expiry_section_returns_none() {
+        assert_eq!(
+            certificate_expiry_entry("just cert text, no expiry section", "/path"),
+            None
+        );
+    }
+
+    #[test]
+    fn expiring_soon_suggests_incarnation() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": 10 });
+
+        let matches = registry.evaluate("cryptkeeper", "certificate_detail", &entry).matches;
+
+        assert!(matches.iter().any(|m| m.target_arsenal == "incarnation"));
+    }
+
+    #[test]
+    fn already_expired_also_suggests_incarnation() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": -5 });
+
+        let matches = registry.evaluate("cryptkeeper", "certificate_detail", &entry).matches;
+
+        assert!(matches.iter().any(|m| m.target_arsenal == "incarnation"));
+    }
+
+    #[test]
+    fn far_future_expiry_suggests_nothing() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "path": "/etc/ssl/certs/example.pem", "days_until_expiry": 365 });
+
+        assert!(registry
+            .evaluate("cryptkeeper", "certificate_detail", &entry)
+            .matches
+            .is_empty());
     }
 }

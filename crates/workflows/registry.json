@@ -1,0 +1,137 @@
+[
+  {
+    "source_arsenal": "cystoolbox",
+    "source_action": "resource_usage_disk",
+    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "catacomb",
+    "target_action": "directory_usage_breakdown",
+    "label": "Investigate {mount_point} with Catacomb",
+    "context_fields": ["mount_point", "usage_percent"]
+  },
+  {
+    "source_arsenal": "cystoolbox",
+    "source_action": "resource_usage_disk",
+    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "defleshing",
+    "target_action": "clear_tmp_confirm",
+    "label": "Clean {mount_point} with Defleshing",
+    "context_fields": ["mount_point", "usage_percent"]
+  },
+  {
+    "source_arsenal": "cystoolbox",
+    "source_action": "resource_usage_disk",
+    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "ossuary",
+    "target_action": "show_host",
+    "label": "Inspect Storage with Ossuary",
+    "context_fields": ["mount_point", "usage_percent"]
+  },
+  {
+    "source_arsenal": "necropsy",
+    "source_action": "disk_health",
+    "condition": { "field": "health_status", "operator": "equals", "value": "FAILED" },
+    "target_arsenal": "ossuary",
+    "target_action": "show_host",
+    "label": "Inspect Storage with Ossuary",
+    "context_fields": ["device"]
+  },
+  {
+    "source_arsenal": "necropsy",
+    "source_action": "disk_health",
+    "condition": { "field": "health_status", "operator": "equals", "value": "FAILED" },
+    "target_arsenal": "resurrection",
+    "target_action": "read_only_filesystems",
+    "label": "Check Read-Only Filesystems with Resurrection",
+    "context_fields": ["device"]
+  },
+  {
+    "source_arsenal": "necropsy",
+    "source_action": "disk_health",
+    "condition": { "field": "health_status", "operator": "equals", "value": "FAILED" },
+    "target_arsenal": "mortiscope",
+    "target_action": "disk_io_stats",
+    "label": "Check Disk I/O with Mortiscope",
+    "context_fields": ["device"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "top_process_by_cpu",
+    "condition": { "field": "cpu_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "vivisection",
+    "target_action": "vm_statistics",
+    "label": "Profile with Vivisection",
+    "context_fields": ["pid", "comm", "cpu_percent"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "top_process_by_cpu",
+    "condition": { "field": "cpu_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "reanimation",
+    "target_action": "process_detail",
+    "label": "Investigate PID {pid} with Reanimation",
+    "context_fields": ["pid", "comm", "cpu_percent"]
+  },
+  {
+    "source_arsenal": "thanatos",
+    "source_action": "scan_security_events",
+    "condition": { "field": "alerted", "operator": "equals", "value": true },
+    "target_arsenal": "inquest",
+    "target_action": "show_host",
+    "label": "Respond with Inquest",
+    "context_fields": ["persisted_count"]
+  },
+  {
+    "source_arsenal": "thanatos",
+    "source_action": "scan_security_events",
+    "condition": { "field": "alerted", "operator": "equals", "value": true },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate with Postmortem",
+    "context_fields": ["persisted_count"]
+  },
+  {
+    "source_arsenal": "obituary",
+    "source_action": "journal_disk_usage",
+    "condition": { "field": "usage_bytes", "operator": "greater_than_or_equal", "value": 1073741824 },
+    "target_arsenal": "defleshing",
+    "target_action": "show_host",
+    "label": "Manage Logs with Defleshing",
+    "context_fields": ["usage_bytes"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "read_only_filesystems",
+    "condition": { "field": "mount_point", "operator": "exists" },
+    "target_arsenal": "necropsy",
+    "target_action": "disk_health",
+    "label": "Check Disk Health with Necropsy",
+    "context_fields": ["mount_point", "source"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "read_only_filesystems",
+    "condition": { "field": "mount_point", "operator": "exists" },
+    "target_arsenal": "reliquary",
+    "target_action": "show_host",
+    "label": "Check Backups with Reliquary",
+    "context_fields": ["mount_point"]
+  },
+  {
+    "source_arsenal": "reliquary",
+    "source_action": "backup_write_failed",
+    "condition": { "field": "error_message", "operator": "contains", "value": "Read-only file system" },
+    "target_arsenal": "resurrection",
+    "target_action": "read_only_filesystems",
+    "label": "Check Read-Only Filesystems with Resurrection",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "cryptkeeper",
+    "source_action": "certificate_detail",
+    "condition": { "field": "days_until_expiry", "operator": "less_than", "value": 30 },
+    "target_arsenal": "incarnation",
+    "target_action": "list_services",
+    "label": "Restart the Affected Service with Incarnation",
+    "context_fields": ["path", "days_until_expiry"]
+  }
+]

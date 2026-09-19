@@ -39,3 +39,4 @@ pub mod thanatos;
 pub mod theme;
 pub mod users;
 pub mod vivisection;
+pub mod workflows;

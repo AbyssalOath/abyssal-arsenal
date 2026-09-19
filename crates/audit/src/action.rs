@@ -32,6 +32,7 @@ pub enum AuditAction {
     HostDeescalated,
     HostElevationExpired,
     NetworkDeviceRemoved,
+    WorkflowEvaluationFailed,
 }
 
 impl AuditAction {
@@ -66,6 +67,7 @@ impl AuditAction {
             AuditAction::HostDeescalated => "HOST_DEESCALATED",
             AuditAction::HostElevationExpired => "HOST_ELEVATION_EXPIRED",
             AuditAction::NetworkDeviceRemoved => "NETWORK_DEVICE_REMOVED",
+            AuditAction::WorkflowEvaluationFailed => "WORKFLOW_EVALUATION_FAILED",
         }
     }
 
@@ -99,6 +101,7 @@ impl AuditAction {
         AuditAction::HostDeescalated,
         AuditAction::HostElevationExpired,
         AuditAction::NetworkDeviceRemoved,
+        AuditAction::WorkflowEvaluationFailed,
     ];
 }
 

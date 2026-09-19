@@ -12,13 +12,15 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::common::{maybe_elevate, require_csrf, urlencoding_encode};
+use crate::common::{maybe_elevate, parse_human_size, require_csrf, urlencoding_encode};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, ObituaryHostRow, ObituaryHostTemplate, ObituaryTemplate};
+use crate::templates::{
+    BaseCtx, ObituaryHostRow, ObituaryHostTemplate, ObituaryTemplate, SuggestedActionView,
+};
 use crate::theme;
 
 /// Landing page for this arsenal: just a host picker, same as every other
@@ -76,6 +78,33 @@ async fn render_host(
     result_output: Option<String>,
     result_error: Option<String>,
 ) -> Result<Response, WebError> {
+    render_host_with_suggestions(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Same as `render_host`, but also renders a "Suggested Next Steps" section
+/// from the workflow registry's matches against this result -- see
+/// `journal_disk_usage` below, the one action that currently produces any.
+#[allow(clippy::too_many_arguments)]
+async fn render_host_with_suggestions(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
+    result_error: Option<String>,
+    suggested_actions: Vec<SuggestedActionView>,
+) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -102,6 +131,7 @@ async fn render_host(
         result_label,
         result_output,
         result_error,
+        suggested_actions,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -189,6 +219,31 @@ async fn run_read_op(
     }
 }
 
+/// `journalctl --disk-usage`'s sentence form: "Archived and active journals
+/// take up 116.0M in the file system."
+fn parse_journalctl_disk_usage(stdout: &str) -> Option<u64> {
+    let after = stdout.split("take up").nth(1)?;
+    let size_str = after.split(" in the file system").next()?.trim();
+    parse_human_size(size_str)
+}
+
+/// `du -sh /var/log`'s tab-separated form (the non-systemd fallback):
+/// "116M\t/var/log".
+fn parse_du_sh_output(stdout: &str) -> Option<u64> {
+    let size_str = stdout.lines().next()?.split_whitespace().next()?;
+    parse_human_size(size_str)
+}
+
+/// Parses Journal Disk Usage's existing text output -- either
+/// `journalctl --disk-usage`'s sentence or `du -sh`'s fallback, depending
+/// on which one the agent ran -- into a structured `{usage_bytes}` result.
+/// Purely additive -- the rendered text output is unchanged, this is only
+/// consumed by the workflow registry below.
+fn journal_disk_usage_entry(stdout: &str) -> Option<serde_json::Value> {
+    let usage_bytes = parse_journalctl_disk_usage(stdout).or_else(|| parse_du_sh_output(stdout))?;
+    Some(serde_json::json!({ "usage_bytes": usage_bytes }))
+}
+
 pub async fn journal_disk_usage(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -198,15 +253,67 @@ pub async fn journal_disk_usage(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::AuditView)?;
     require_csrf(&jar, &form.csrf_token)?;
-    run_read_op(
-        &state,
-        &jar,
-        &ctx,
-        host_id,
-        AgentOperation::JournalDiskUsage,
-        "Journal Disk Usage",
-    )
-    .await
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let result_label = Some(format!("Journal Disk Usage -- {}", host.name));
+
+    let elevated = state.elevation.is_elevated(host_id);
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            host_id,
+            &host.name,
+            AgentOperation::JournalDiskUsage,
+            Permission::AuditView,
+            OperationKind::Read,
+            false,
+            Duration::from_secs(15),
+            None,
+            elevated,
+        )
+        .await;
+
+    match result {
+        Ok(output) => {
+            let entry = journal_disk_usage_entry(&output.stdout);
+            let suggested_actions = crate::common::suggested_actions_for(
+                &state,
+                "obituary",
+                "journal_disk_usage",
+                &entry.into_iter().collect::<Vec<_>>(),
+                host_id,
+            )
+            .await;
+            render_host_with_suggestions(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                Some(output.stdout),
+                None,
+                suggested_actions,
+            )
+            .await
+        }
+        Err(e) => {
+            state.elevation.mark_deescalated(host_id);
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                None,
+                Some(e.to_string()),
+            )
+            .await
+        }
+    }
 }
 
 pub async fn log_rotation_status(
@@ -633,5 +740,55 @@ pub async fn elevate(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_journalctl_sentence_form() {
+        let stdout = "Archived and active journals take up 116.0M in the file system.\n";
+        assert_eq!(
+            journal_disk_usage_entry(stdout),
+            Some(serde_json::json!({ "usage_bytes": 121_634_816u64 }))
+        );
+    }
+
+    #[test]
+    fn parses_du_sh_fallback_form() {
+        let stdout = "1.2G\t/var/log\n";
+        assert_eq!(
+            journal_disk_usage_entry(stdout),
+            Some(serde_json::json!({ "usage_bytes": 1_288_490_189u64 }))
+        );
+    }
+
+    #[test]
+    fn unparseable_output_returns_none() {
+        assert_eq!(journal_disk_usage_entry("not a size at all"), None);
+    }
+
+    #[test]
+    fn usage_at_or_above_one_gb_suggests_defleshing() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "usage_bytes": 1_288_490_189u64 });
+
+        let matches = registry.evaluate("obituary", "journal_disk_usage", &entry).matches;
+        let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
+
+        assert!(targets.contains(&"defleshing"));
+    }
+
+    #[test]
+    fn usage_below_one_gb_suggests_nothing() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "usage_bytes": 121_634_816u64 });
+
+        assert!(registry
+            .evaluate("obituary", "journal_disk_usage", &entry)
+            .matches
+            .is_empty());
     }
 }

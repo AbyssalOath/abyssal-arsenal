@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use abyssal_agent_protocol::AgentOperation;
@@ -12,7 +13,7 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::common::{maybe_elevate, require_csrf};
+use crate::common::{maybe_elevate, require_csrf, workflow_context_rows, WorkflowContextRow};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
@@ -76,9 +77,45 @@ async fn render_host(
     result_output: Option<String>,
     result_error: Option<String>,
 ) -> Result<Response, WebError> {
+    render_host_with_context(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Same as `render_host`, but also shows a banner naming which
+/// workflow-registry context fields (if any) arrived in the query string
+/// -- nothing on this landing page has a field a passed context maps to
+/// (a mount point or a journal size isn't a device/path/PID this arsenal's
+/// forms take), so the banner is all Phase 6 adds here.
+#[allow(clippy::too_many_arguments)]
+async fn render_host_with_context(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
+    result_error: Option<String>,
+    context: Vec<WorkflowContextRow>,
+) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
+
+    let arrived_via_suggestion = !context.is_empty();
+    let selected_host_id = if arrived_via_suggestion {
+        Some(host_id)
+    } else {
+        host_context::current(jar)
+    };
 
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -88,7 +125,7 @@ async fn render_host(
         &state.elevation,
         &state.hosts,
         &state.pool,
-        host_context::current(jar),
+        selected_host_id,
     )
     .await?;
 
@@ -102,9 +139,14 @@ async fn render_host(
         result_label,
         result_output,
         result_error,
+        context,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    let jar = match host_context::carry_forward_cookie(host_id, arrived_via_suggestion) {
         Some(c) => jar.add(c),
         None => jar,
     };
@@ -116,9 +158,20 @@ pub async fn show_host(
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
-    render_host(&state, &jar, &ctx, host_id, None, None, None).await
+    render_host_with_context(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        None,
+        None,
+        None,
+        workflow_context_rows(&query),
+    )
+    .await
 }
 
 #[derive(Deserialize)]

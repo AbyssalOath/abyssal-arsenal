@@ -29,6 +29,7 @@
         {% if base.can_hosts_view %}<a href="/admin/hosts">{% call macros::icon("host") %} Hosts</a>{% endif %}
         {% if base.can_audit_view %}<a href="/admin/audit">{% call macros::icon("audit") %} Obituary (Audit Log)</a>{% endif %}
         {% if base.can_modules_manage %}<a href="/admin/modules">{% call macros::icon("module") %} Modules</a>{% endif %}
+        {% if base.can_modules_manage %}<a href="/admin/workflows">{% call macros::icon("route") %} Workflows</a>{% endif %}
         {% if base.can_settings_manage %}<a href="/admin/settings">{% call macros::icon("settings") %} Settings</a>{% endif %}
         <a href="/style-guide">{% call macros::icon("module") %} Style Guide</a>
       </nav>

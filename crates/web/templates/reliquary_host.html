@@ -30,6 +30,13 @@
   </div>
   {% endif %}
 
+  {% if !context.is_empty() %}
+  <div class="info-banner" style="margin-top:10px;">
+    Arrived here from a suggested next step, with:
+    {% for c in context %}<code>{{ c.label }}: {{ c.value }}</code>{% if !loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
   <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
     <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
     {% if let Some(output) = result_output %}
@@ -70,7 +77,8 @@
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <div>
       <label for="create-source">Source path</label>
-      <input type="text" id="create-source" name="source_path" placeholder="e.g. /etc" required style="margin-bottom:0;">
+      <input type="text" id="create-source" name="source_path" placeholder="e.g. /etc" required style="margin-bottom:0;"
+        {% if let Some(p) = prefill_source_path %}value="{{ p }}"{% endif %}>
     </div>
     <div>
       <label for="create-name">Backup name</label>

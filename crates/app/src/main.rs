@@ -12,6 +12,7 @@ use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
 use abyssal_notifications::{NotificationDispatcher, SmtpProvider};
 use abyssal_web::{AppState, WebConfig};
+use abyssal_workflows::WorkflowRegistry;
 use config::Config;
 use std::time::Duration;
 
@@ -36,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         pool,
         modules: Arc::new(registry),
+        workflows: Arc::new(WorkflowRegistry::load_builtin()),
         config: Arc::new(WebConfig {
             session_cookie_name: config.session_cookie_name.clone(),
             session_ttl: chrono::Duration::hours(config.session_ttl_hours),

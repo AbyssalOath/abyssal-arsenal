@@ -15,6 +15,7 @@ abyssal-database.workspace = true
 abyssal-audit.workspace = true
 abyssal-auth.workspace = true
 abyssal-modules.workspace = true
+abyssal-workflows.workspace = true
 abyssal-notifications.workspace = true
 abyssal-web.workspace = true
 abyssal-execution.workspace = true

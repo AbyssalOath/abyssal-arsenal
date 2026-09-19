@@ -5,6 +5,8 @@ use abyssal_rbac::AuthContext;
 use askama::Template;
 use uuid::Uuid;
 
+use crate::common::WorkflowContextRow;
+
 /// One host the nav's Apotheosis panel shows as currently (believed)
 /// elevated, with a human-readable remaining time.
 #[derive(Clone)]
@@ -364,6 +366,27 @@ pub struct ModulesTemplate {
     pub modules: Vec<ModuleRow>,
 }
 
+/// One row of the Contextual Arsenal Workflow Navigation registry admin
+/// view -- a read-only rendering of `abyssal_workflows::WorkflowEntry`, for
+/// debugging why a suggestion did or didn't show up without reading
+/// `registry.json` directly.
+pub struct WorkflowEntryRow {
+    pub source_arsenal: String,
+    pub source_action: String,
+    pub condition: String,
+    pub target_arsenal: String,
+    pub target_action: String,
+    pub label: String,
+    pub context_fields: String,
+}
+
+#[derive(Template)]
+#[template(path = "workflows.html")]
+pub struct WorkflowsTemplate {
+    pub base: BaseCtx,
+    pub entries: Vec<WorkflowEntryRow>,
+}
+
 #[derive(Template)]
 #[template(path = "settings.html")]
 pub struct SettingsTemplate {
@@ -477,6 +500,15 @@ pub struct CystoolboxTemplate {
     pub hosts: Vec<CystoolboxHostRow>,
 }
 
+/// One "Suggested Next Steps" button: a matched workflow-registry action,
+/// already resolved to a concrete URL for this host. See
+/// `abyssal_workflows` for how matches are produced.
+#[derive(Clone)]
+pub struct SuggestedActionView {
+    pub label: String,
+    pub url: String,
+}
+
 #[derive(Template)]
 #[template(path = "cystoolbox_host.html")]
 pub struct CystoolboxHostTemplate {
@@ -492,6 +524,9 @@ pub struct CystoolboxHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    /// Workflow-registry matches for this result, if any. Empty for every
+    /// action that doesn't emit a structured result the registry reacts to.
+    pub suggested_actions: Vec<SuggestedActionView>,
 }
 
 pub struct CadavaultHostRow {
@@ -546,6 +581,7 @@ pub struct PostmortemHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
 }
 
 pub struct MortiscopeHostRow {
@@ -573,6 +609,8 @@ pub struct MortiscopeHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+    pub context: Vec<WorkflowContextRow>,
 }
 
 pub struct GrimoireHostRow {
@@ -634,6 +672,10 @@ pub struct OssuaryHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
+    /// Pre-fills Partition Table's device field when a suggestion carried
+    /// a `device` (not every suggestion into this page names one).
+    pub prefill_device: Option<String>,
 }
 
 pub struct InquestHostRow {
@@ -668,6 +710,7 @@ pub struct InquestHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
 }
 
 pub struct NetworkDeviceRow {
@@ -740,6 +783,7 @@ pub struct CryptkeeperHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
 }
 
 pub struct ThanatosHostRow {
@@ -790,6 +834,7 @@ pub struct ThanatosHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
 }
 
 pub struct ApothecaryHostRow {
@@ -846,6 +891,13 @@ pub struct CatacombHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    /// Which workflow-registry context fields (if any) arrived in the
+    /// query string, for an "arrived here because..." banner.
+    pub context: Vec<WorkflowContextRow>,
+    /// Pre-fills the Directory Usage Breakdown path field when a
+    /// suggestion carried a `mount_point` -- the user still has to click
+    /// "run."
+    pub prefill_path: Option<String>,
 }
 
 pub struct ParishHostRow {
@@ -902,6 +954,7 @@ pub struct VivisectionHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
 }
 
 pub struct DefleshingHostRow {
@@ -930,6 +983,7 @@ pub struct DefleshingHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
 }
 
 pub struct ReanimationHostRow {
@@ -958,6 +1012,9 @@ pub struct ReanimationHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
+    /// Pre-fills Process Detail's PID field when a suggestion carried one.
+    pub prefill_pid: Option<String>,
 }
 
 pub struct NecropolisHostRow {
@@ -1014,6 +1071,10 @@ pub struct NecropsyHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+    pub context: Vec<WorkflowContextRow>,
+    /// Pre-fills Disk Health's device field when a suggestion carried one.
+    pub prefill_device: Option<String>,
 }
 
 pub struct IncarnationHostRow {
@@ -1042,6 +1103,7 @@ pub struct IncarnationHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
 }
 
 pub struct ResurrectionHostRow {
@@ -1070,6 +1132,8 @@ pub struct ResurrectionHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+    pub context: Vec<WorkflowContextRow>,
 }
 
 pub struct ReliquaryHostRow {
@@ -1100,6 +1164,11 @@ pub struct ReliquaryHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+    pub context: Vec<WorkflowContextRow>,
+    /// Pre-fills Create Backup's source path when a suggestion carried a
+    /// `mount_point`.
+    pub prefill_source_path: Option<String>,
 }
 
 pub struct NecrolinkHostRow {
@@ -1158,4 +1227,5 @@ pub struct ObituaryHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
 }

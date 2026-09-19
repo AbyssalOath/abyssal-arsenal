@@ -89,6 +89,7 @@ pub fn build(state: AppState) -> Router {
             "/admin/modules/:key/disable",
             post(routes::modules::disable),
         )
+        .route("/admin/workflows", get(routes::workflows::list))
         .route("/admin/settings", get(routes::settings::show))
         .route(
             "/admin/settings/registration",

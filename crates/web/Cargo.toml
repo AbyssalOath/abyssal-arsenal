@@ -12,6 +12,7 @@ abyssal-auth.workspace = true
 abyssal-rbac.workspace = true
 abyssal-audit.workspace = true
 abyssal-modules.workspace = true
+abyssal-workflows.workspace = true
 abyssal-notifications.workspace = true
 abyssal-execution.workspace = true
 abyssal-hosts.workspace = true

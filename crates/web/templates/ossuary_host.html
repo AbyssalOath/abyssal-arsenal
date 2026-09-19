@@ -30,6 +30,13 @@
   </div>
   {% endif %}
 
+  {% if !context.is_empty() %}
+  <div class="info-banner" style="margin-top:10px;">
+    Arrived here from a suggested next step, with:
+    {% for c in context %}<code>{{ c.label }}: {{ c.value }}</code>{% if !loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
   <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
     <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
     {% if let Some(output) = result_output %}
@@ -50,7 +57,8 @@
     <form method="post" action="/arsenals/ossuary/{{ host_id }}/partition-table">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="pt-device">Device</label>
-      <input type="text" id="pt-device" name="device" placeholder="e.g. /dev/sda" required>
+      <input type="text" id="pt-device" name="device" placeholder="e.g. /dev/sda" required
+        {% if let Some(d) = prefill_device %}value="{{ d }}"{% endif %}>
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Partition Table</button>
     </form>
     <form method="post" action="/arsenals/ossuary/{{ host_id }}/lvm-summary">

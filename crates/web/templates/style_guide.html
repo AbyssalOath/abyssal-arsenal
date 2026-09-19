@@ -119,6 +119,28 @@
 </div>
 
 <div class="card">
+  <h2>Suggested Next Steps (Contextual Arsenal Workflow Navigation)</h2>
+  <p style="color:var(--text-muted);">
+    When an arsenal's result implies "go investigate this elsewhere" (Cystoolbox's disk usage
+    is critical, a security scan raised an alert, a certificate is expiring soon), the workflow
+    registry (<code>crates/workflows</code>) renders every matching suggestion here -- never
+    auto-navigating, never auto-executing. Deliberately distinct from both the results panel
+    above (what just happened) and an info banner (why you're here): the accent-colored left
+    border marks it as an actionable next step, and its <code>.btn-suggestion</code> outline
+    buttons are never confused with this page's own Read/Write/Destructive buttons. Multiple
+    matches always render together as a button group -- nothing here picks a "best" one for you.
+  </p>
+  <div class="suggested-actions-panel">
+    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+    <div class="action-grid" style="margin-top:8px;">
+      <a class="btn btn-suggestion" href="#">Investigate /tmp with Catacomb</a>
+      <a class="btn btn-suggestion" href="#">Clean /tmp with Defleshing</a>
+      <a class="btn btn-suggestion" href="#">Inspect Storage with Ossuary</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <h2>Banners</h2>
   <div class="info-banner">Informational -- e.g. an enrollment token was generated.</div>
   <div class="success-banner" style="margin-top:10px;">Success -- e.g. a setting was saved.</div>

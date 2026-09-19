@@ -47,6 +47,17 @@
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Run Security Event Scan</button>
   </form>
+
+  {% if !suggested_actions.is_empty() %}
+  <div class="suggested-actions-panel">
+    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+    <div class="action-grid" style="margin-top:8px;">
+      {% for action in suggested_actions %}
+      <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <div class="card">

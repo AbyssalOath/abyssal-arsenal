@@ -1,0 +1,52 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Workflow Registry — Abyssal Arsenal{% endblock %}
+{% block heading %}Contextual Arsenal Workflow Registry{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Every entry in <code>crates/workflows/registry.json</code> -- read-only, for debugging why a
+    "Suggested Next Steps" button did or didn't show up on an arsenal's result page. The registry
+    itself is compiled into the binary, not edited here: adding a workflow relationship means
+    adding a JSON entry and redeploying, documented in <code>crates/workflows/README.md</code>.
+  </p>
+  {% if entries.is_empty() %}
+  <p class="results-empty">No workflow entries defined.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th>Condition</th>
+        <th>Target</th>
+        <th>Label</th>
+        <th>Context passed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td>{% call macros::icon("module") %} {{ e.source_arsenal }} &rarr; <code>{{ e.source_action }}</code></td>
+        <td><code>{{ e.condition }}</code></td>
+        <td>{% call macros::icon("route") %} {{ e.target_arsenal }} &rarr; <code>{{ e.target_action }}</code></td>
+        <td>{{ e.label }}</td>
+        <td>{% if e.context_fields.is_empty() %}<span style="color:var(--text-muted);">(none)</span>{% else %}<code>{{ e.context_fields }}</code>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Evaluation failures</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    A genuine authoring bug in a condition (currently: an invalid regex pattern on a
+    <code>matches</code> operator) -- never an ordinary missing field, which always just means "no
+    match" -- is recorded to the audit log as <code>WORKFLOW_EVALUATION_FAILED</code>. Filter for
+    it on the <a href="/admin/audit?action=WORKFLOW_EVALUATION_FAILED">Obituary audit log</a>.
+  </p>
+</div>
+
+{% endblock %}

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use abyssal_agent_protocol::AgentOperation;
@@ -12,7 +13,9 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::common::{maybe_elevate, require_csrf, urlencoding_encode};
+use crate::common::{
+    maybe_elevate, require_csrf, urlencoding_encode, workflow_context_rows, WorkflowContextRow,
+};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
@@ -20,6 +23,7 @@ use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{
     BaseCtx, ResurrectionHostRow, ResurrectionHostTemplate, ResurrectionTemplate,
+    SuggestedActionView,
 };
 use crate::theme;
 
@@ -78,9 +82,49 @@ async fn render_host(
     result_output: Option<String>,
     result_error: Option<String>,
 ) -> Result<Response, WebError> {
+    render_host_with_suggestions(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+}
+
+/// Same as `render_host`, but also renders a "Suggested Next Steps" section
+/// from the workflow registry's matches against this result (see
+/// `read_only_filesystems` below, the one action that currently produces
+/// any), and shows a banner naming which workflow-registry context fields
+/// (if any) arrived in the query string -- Necropsy's `device` doesn't map
+/// to a field this arsenal's no-argument read ops take, so the banner is
+/// all Phase 6 adds here.
+#[allow(clippy::too_many_arguments)]
+async fn render_host_with_suggestions(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
+    result_error: Option<String>,
+    suggested_actions: Vec<SuggestedActionView>,
+    context: Vec<WorkflowContextRow>,
+) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
+
+    let arrived_via_suggestion = !context.is_empty();
+    let selected_host_id = if arrived_via_suggestion {
+        Some(host_id)
+    } else {
+        host_context::current(jar)
+    };
 
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -90,7 +134,7 @@ async fn render_host(
         &state.elevation,
         &state.hosts,
         &state.pool,
-        host_context::current(jar),
+        selected_host_id,
     )
     .await?;
 
@@ -104,9 +148,15 @@ async fn render_host(
         result_label,
         result_output,
         result_error,
+        suggested_actions,
+        context,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    let jar = match host_context::carry_forward_cookie(host_id, arrived_via_suggestion) {
         Some(c) => jar.add(c),
         None => jar,
     };
@@ -118,9 +168,21 @@ pub async fn show_host(
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
-    render_host(&state, &jar, &ctx, host_id, None, None, None).await
+    render_host_with_suggestions(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        None,
+        None,
+        None,
+        Vec::new(),
+        workflow_context_rows(&query),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -229,6 +291,30 @@ pub async fn system_running_state(
     .await
 }
 
+/// Parses `findmnt --raw --noheadings --options ro --output
+/// TARGET,SOURCE,FSTYPE,OPTIONS`'s output -- one line per currently
+/// read-only mount -- into structured `{mount_point, source, fstype}`
+/// results. Purely additive -- the rendered text output is unchanged, this
+/// is only consumed by the workflow registry below. A row that doesn't
+/// parse cleanly is skipped rather than failing the page. No output at all
+/// means no read-only mounts, which is the common case.
+fn read_only_filesystem_entries(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 3 {
+                return None;
+            }
+            Some(serde_json::json!({
+                "mount_point": fields[0],
+                "source": fields[1],
+                "fstype": fields[2],
+            }))
+        })
+        .collect()
+}
+
 pub async fn read_only_filesystems(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -238,15 +324,67 @@ pub async fn read_only_filesystems(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
     require_csrf(&jar, &form.csrf_token)?;
-    run_read_op(
-        &state,
-        &jar,
-        &ctx,
-        host_id,
-        AgentOperation::ReadOnlyFilesystems,
-        "Read-Only Filesystems",
-    )
-    .await
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let result_label = Some(format!("Read-Only Filesystems -- {}", host.name));
+
+    let elevated = state.elevation.is_elevated(host_id);
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            host_id,
+            &host.name,
+            AgentOperation::ReadOnlyFilesystems,
+            Permission::SystemsView,
+            OperationKind::Read,
+            false,
+            Duration::from_secs(15),
+            None,
+            elevated,
+        )
+        .await;
+
+    match result {
+        Ok(output) => {
+            let suggested_actions = crate::common::suggested_actions_for(
+                &state,
+                "resurrection",
+                "read_only_filesystems",
+                &read_only_filesystem_entries(&output.stdout),
+                host_id,
+            )
+            .await;
+            render_host_with_suggestions(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                Some(output.stdout),
+                None,
+                suggested_actions,
+                Vec::new(),
+            )
+            .await
+        }
+        Err(e) => {
+            state.elevation.mark_deescalated(host_id);
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                None,
+                Some(e.to_string()),
+            )
+            .await
+        }
+    }
 }
 
 /// Shared by Reload systemd / Reset Failed Units: `Write`, no confirmation
@@ -560,5 +698,48 @@ pub async fn elevate(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_one_read_only_mount() {
+        let stdout = "/mnt/data /dev/sdb1 ext4 ro,relatime\n";
+        let entries = read_only_filesystem_entries(stdout);
+
+        assert_eq!(
+            entries,
+            vec![serde_json::json!({
+                "mount_point": "/mnt/data",
+                "source": "/dev/sdb1",
+                "fstype": "ext4",
+            })]
+        );
+    }
+
+    #[test]
+    fn no_output_means_no_entries() {
+        assert!(read_only_filesystem_entries("").is_empty());
+    }
+
+    #[test]
+    fn read_only_mount_suggests_necropsy_and_reliquary() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({
+            "mount_point": "/mnt/data",
+            "source": "/dev/sdb1",
+            "fstype": "ext4",
+        });
+
+        let matches = registry
+            .evaluate("resurrection", "read_only_filesystems", &entry)
+            .matches;
+        let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
+
+        assert!(targets.contains(&"necropsy"));
+        assert!(targets.contains(&"reliquary"));
     }
 }

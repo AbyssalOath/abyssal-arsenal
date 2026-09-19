@@ -6,6 +6,7 @@ use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
 use abyssal_notifications::NotificationDispatcher;
+use abyssal_workflows::WorkflowRegistry;
 use chrono::Duration;
 use tokio::sync::RwLock;
 
@@ -28,6 +29,11 @@ pub struct WebConfig {
 pub struct AppState {
     pub pool: DbPool,
     pub modules: Arc<ModuleRegistry>,
+    /// The Contextual Arsenal Workflow Navigation registry -- which
+    /// "investigate/act on this elsewhere" buttons a source arsenal's
+    /// structured result can suggest. See `abyssal_workflows` for the
+    /// registry schema and evaluator.
+    pub workflows: Arc<WorkflowRegistry>,
     pub config: Arc<WebConfig>,
     pub login_limiter: Arc<LoginLimiter>,
     pub notifications: Arc<NotificationDispatcher>,

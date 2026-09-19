@@ -19,8 +19,8 @@ use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{
-    AlertRow, BaseCtx, SecurityEventRow, SeverityCountRow, ThanatosHostRow, ThanatosHostTemplate,
-    ThanatosTemplate,
+    AlertRow, BaseCtx, SecurityEventRow, SeverityCountRow, SuggestedActionView, ThanatosHostRow,
+    ThanatosHostTemplate, ThanatosTemplate,
 };
 use crate::theme;
 
@@ -123,6 +123,33 @@ async fn render_host(
     result_output: Option<String>,
     result_error: Option<String>,
 ) -> Result<Response, WebError> {
+    render_host_with_suggestions(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Same as `render_host`, but also renders a "Suggested Next Steps" section
+/// from the workflow registry's matches against this result -- see `scan`
+/// below, the one action that currently produces any.
+#[allow(clippy::too_many_arguments)]
+async fn render_host_with_suggestions(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
+    result_error: Option<String>,
+    suggested_actions: Vec<SuggestedActionView>,
+) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -165,6 +192,7 @@ async fn render_host(
         result_label,
         result_output,
         result_error,
+        suggested_actions,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -242,6 +270,7 @@ pub async fn scan(
             )
             .await;
 
+            let mut suggested_actions = Vec::new();
             let summary = match ingest {
                 Ok((persisted, informational, alerted)) => {
                     let mut lines = Vec::new();
@@ -260,12 +289,26 @@ pub async fn scan(
                                 .to_string(),
                         );
                     }
+
+                    let entry = serde_json::json!({
+                        "persisted_count": persisted,
+                        "alerted": alerted,
+                    });
+                    suggested_actions = crate::common::suggested_actions_for(
+                        &state,
+                        "thanatos",
+                        "scan_security_events",
+                        std::slice::from_ref(&entry),
+                        host_id,
+                    )
+                    .await;
+
                     lines.join("\n")
                 }
                 Err(e) => format!("Scan completed, but failed to persist results: {e}"),
             };
 
-            render_host(
+            render_host_with_suggestions(
                 &state,
                 &jar,
                 &ctx,
@@ -273,6 +316,7 @@ pub async fn scan(
                 result_label,
                 Some(summary),
                 None,
+                suggested_actions,
             )
             .await
         }
@@ -344,5 +388,31 @@ pub async fn elevate(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn alerted_scan_suggests_inquest_and_postmortem() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "persisted_count": 5, "alerted": true });
+
+        let matches = registry.evaluate("thanatos", "scan_security_events", &entry).matches;
+        let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
+
+        assert!(targets.contains(&"inquest"));
+        assert!(targets.contains(&"postmortem"));
+    }
+
+    #[test]
+    fn non_alerted_scan_suggests_nothing() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "persisted_count": 3, "alerted": false });
+
+        assert!(registry
+            .evaluate("thanatos", "scan_security_events", &entry)
+            .matches
+            .is_empty());
     }
 }

@@ -42,6 +42,17 @@
     <p class="results-empty">No output yet -- run a check.</p>
     {% endif %}
   </details>
+
+  {% if !suggested_actions.is_empty() %}
+  <div class="suggested-actions-panel">
+    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+    <div class="action-grid" style="margin-top:8px;">
+      {% for action in suggested_actions %}
+      <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <div class="card">

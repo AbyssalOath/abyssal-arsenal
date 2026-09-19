@@ -194,6 +194,19 @@ button:disabled:hover, .btn:disabled:hover {
 .btn-danger:hover { filter: brightness(1.08); }
 .btn-danger:disabled, .btn-danger:disabled:hover { background: var(--danger-btn-bg); filter: none; }
 
+/* Contextual Arsenal Workflow Navigation's "go do this in another arsenal"
+   links: an outline style, deliberately unlike every filled button above,
+   so a suggested next step is never mistaken for an action this page's own
+   form is about to perform. Padding is 1px tighter than the filled buttons'
+   to offset the added border and keep the same visual size. */
+.btn-suggestion {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 8px 15px;
+}
+.btn-suggestion:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
 .error-banner {
   background: color-mix(in srgb, var(--danger) 16%, var(--surface-solid));
   border: 1px solid var(--danger);
@@ -231,6 +244,28 @@ button:disabled:hover, .btn:disabled:hover {
   border-radius: 5px;
   margin-bottom: var(--space-4);
   font-size: 0.9rem;
+}
+
+/* Contextual Arsenal Workflow Navigation's "Suggested Next Steps" panel.
+   Deliberately distinct from `.results-panel` (what just happened, a
+   passive report) and `.info-banner` (why you're here) alike: the
+   accent-colored left border marks this as an actionable next step, and
+   its buttons (`.btn-suggestion`) are an outline style so they're never
+   mistaken for one of the page's own Read/Write/Destructive actions. Used
+   identically by every arsenal that can produce a suggestion -- this is
+   the one component, not a per-page reimplementation. */
+.suggested-actions-panel {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  padding: 10px 14px;
+  border-radius: 5px;
+  margin-top: var(--space-4);
+}
+.suggested-actions-panel > strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .app-shell { display: flex; flex-direction: column; min-height: 100vh; }

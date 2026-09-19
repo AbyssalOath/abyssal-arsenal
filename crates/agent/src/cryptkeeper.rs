@@ -339,13 +339,39 @@ pub async fn certificate_detail(path: String, elevation: &ElevationState) -> Com
     if !abyssal_agent_protocol::is_valid_absolute_path(&path) {
         return CommandOutcome::Err(format!("refusing invalid path: {path}"));
     }
-    match elevation
+    let text = match elevation
         .run("openssl", &["x509", "-noout", "-text", "-in", &path])
         .await
     {
-        Ok(output) => CommandOutcome::Ok(output),
-        Err(e) => CommandOutcome::Err(format!("failed to read certificate at {path}: {e}")),
-    }
+        Ok(output) => output,
+        Err(e) => return CommandOutcome::Err(format!("failed to read certificate at {path}: {e}")),
+    };
+
+    // `-enddate` is a second, additive call purely for a clean, stable
+    // parse target: `-text`'s "Not After :" line formatting isn't
+    // guaranteed stable across OpenSSL versions, but `-enddate` exists
+    // specifically to give one machine-parseable line. Best-effort --
+    // if it fails for some reason, the full `-text` detail above is
+    // still shown unchanged, just without the Expiry section below it.
+    let enddate = elevation
+        .run("openssl", &["x509", "-noout", "-enddate", "-in", &path])
+        .await
+        .map(|output| output.stdout);
+
+    let stdout = match enddate {
+        Ok(enddate) => format!(
+            "{}\n== Expiry ==\n{}",
+            text.stdout.trim_end(),
+            enddate.trim_end()
+        ),
+        Err(_) => text.stdout.clone(),
+    };
+
+    CommandOutcome::Ok(OperationOutput {
+        stdout,
+        stderr: text.stderr,
+        exit_code: text.exit_code,
+    })
 }
 
 // ---------------------------------------------------------------------
