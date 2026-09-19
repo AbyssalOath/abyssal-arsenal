@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependency compilation separately from actual source. This is a
-# 35-crate workspace, so the dummy-source trick needs a stub for every
+# 37-crate workspace, so the dummy-source trick needs a stub for every
 # member crate, not just the binaries -- otherwise `cargo build` fails
 # resolving the workspace before it ever gets to compiling real dependencies.
 COPY Cargo.toml Cargo.lock ./
@@ -20,6 +20,7 @@ COPY crates/notifications/Cargo.toml crates/notifications/Cargo.toml
 COPY crates/execution/Cargo.toml crates/execution/Cargo.toml
 COPY crates/hosts/Cargo.toml crates/hosts/Cargo.toml
 COPY crates/modules/Cargo.toml crates/modules/Cargo.toml
+COPY crates/workflows/Cargo.toml crates/workflows/Cargo.toml
 COPY crates/agent-protocol/Cargo.toml crates/agent-protocol/Cargo.toml
 COPY crates/web/Cargo.toml crates/web/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
@@ -48,7 +49,7 @@ COPY crates/arsenals/inquest/Cargo.toml crates/arsenals/inquest/Cargo.toml
 COPY crates/arsenals/thanatos/Cargo.toml crates/arsenals/thanatos/Cargo.toml
 COPY crates/arsenals/panopticon/Cargo.toml crates/arsenals/panopticon/Cargo.toml
 
-RUN for crate in core database auth rbac audit notifications execution hosts modules agent-protocol web \
+RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol web \
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \
