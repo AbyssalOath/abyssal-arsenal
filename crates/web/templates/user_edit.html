@@ -1,0 +1,53 @@
+{% extends "app_base.html" %}
+{% block title %}Edit User — Abyssal Arsenal{% endblock %}
+{% block heading %}Edit User{% endblock %}
+{% block content %}
+
+{% if let Some(err) = error %}
+<div class="error-banner">{{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Profile</h2>
+  <form method="post" action="/admin/users/{{ user_id }}/edit">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" value="{{ username }}" required>
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" value="{{ email }}" required>
+    <div class="actions">
+      <button type="submit" class="btn-warning">Save changes</button>
+      <a class="btn btn-secondary" href="/admin/users">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Reset password</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Generates a temporary password, forces a new one to be set at next login, and signs
+    this user out of every other active session -- same as if they'd reset it themselves.
+  </p>
+
+  {% if let Some(pw) = generated_password %}
+  <div class="info-banner">
+    <strong>Generated password — copy it now, it will not be shown again:</strong>
+    <input type="text" readonly value="{{ pw }}" style="margin-top:8px; font-family:monospace;">
+  </div>
+  {% endif %}
+
+  <form method="post" action="/admin/users/{{ user_id }}/reset-password">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="password">New password</label>
+    <input type="password" id="password" name="password" value="{{ password_prefill }}" required minlength="15">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-10px 0 16px;">
+      At least 15 characters, with an uppercase letter, a lowercase letter, a number, and a special character.
+    </p>
+    <button type="submit" name="intent" value="generate" class="btn-secondary" style="margin-right:10px;">
+      Generate strong password
+    </button>
+    <button type="submit" name="intent" value="reset" class="btn-danger">Reset password</button>
+  </form>
+</div>
+
+{% endblock %}

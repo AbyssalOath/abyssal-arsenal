@@ -1,0 +1,32 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Edit Switch — Abyssal Arsenal{% endblock %}
+{% block heading %}Edit Switch{% endblock %}
+{% block content %}
+
+<div class="card">
+  {% if let Some(err) = error %}
+  <div class="error-banner">{{ err }}</div>
+  {% endif %}
+
+  <form method="post" action="/arsenals/panopticon/switches/{{ switch_id }}/edit">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="switch-name">Name</label>
+    <input type="text" id="switch-name" name="name" value="{{ name }}" required style="max-width:360px;">
+    <label for="switch-ip">IP address or hostname</label>
+    <input type="text" id="switch-ip" name="ip_address" value="{{ ip_address }}" required style="max-width:360px;">
+    <label for="switch-port">SNMP port</label>
+    <input type="text" id="switch-port" name="snmp_port" value="{{ snmp_port }}" style="max-width:160px;">
+    <label for="switch-community">Community string</label>
+    <input type="password" id="switch-community" name="community" autocomplete="new-password" placeholder="Leave blank to keep the existing one" style="max-width:360px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-10px 0 16px;">
+      Leave blank to keep the community string already on file -- there's nothing to show it back to you with.
+    </p>
+    <div class="actions">
+      <button type="submit" class="btn-secondary">{% call macros::icon("network") %} Save changes</button>
+      <a class="btn btn-secondary" href="/arsenals/panopticon/switches">Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

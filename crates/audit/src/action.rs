@@ -36,7 +36,9 @@ pub enum AuditAction {
     NetworkDeviceDiscovered,
     NetworkUntrustedDeviceSeen,
     NetworkSwitchAdded,
+    NetworkSwitchUpdated,
     NetworkSwitchRemoved,
+    UserProfileUpdated,
     WorkflowEvaluationFailed,
 }
 
@@ -76,7 +78,9 @@ impl AuditAction {
             AuditAction::NetworkDeviceDiscovered => "NETWORK_DEVICE_DISCOVERED",
             AuditAction::NetworkUntrustedDeviceSeen => "NETWORK_UNTRUSTED_DEVICE_SEEN",
             AuditAction::NetworkSwitchAdded => "NETWORK_SWITCH_ADDED",
+            AuditAction::NetworkSwitchUpdated => "NETWORK_SWITCH_UPDATED",
             AuditAction::NetworkSwitchRemoved => "NETWORK_SWITCH_REMOVED",
+            AuditAction::UserProfileUpdated => "USER_PROFILE_UPDATED",
             AuditAction::WorkflowEvaluationFailed => "WORKFLOW_EVALUATION_FAILED",
         }
     }
@@ -115,7 +119,9 @@ impl AuditAction {
         AuditAction::NetworkDeviceDiscovered,
         AuditAction::NetworkUntrustedDeviceSeen,
         AuditAction::NetworkSwitchAdded,
+        AuditAction::NetworkSwitchUpdated,
         AuditAction::NetworkSwitchRemoved,
+        AuditAction::UserProfileUpdated,
         AuditAction::WorkflowEvaluationFailed,
     ];
 }

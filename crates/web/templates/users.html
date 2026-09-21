@@ -60,6 +60,7 @@
         </td>
         <td>{{ u.roles }}</td>
         <td class="actions">
+          <a class="btn btn-secondary" href="/admin/users/{{ u.id }}/edit">Edit</a>
           {% if u.is_active %}
           <a class="btn btn-danger" href="/admin/users/{{ u.id }}/disable/confirm">Disable</a>
           {% else %}

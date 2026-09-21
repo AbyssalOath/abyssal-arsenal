@@ -297,6 +297,25 @@ pub struct UsersTemplate {
     pub password_prefill: String,
 }
 
+/// One user's edit page -- profile fields (username/email, to fix a typo
+/// made at creation) plus an admin-triggered password reset, which mirrors
+/// the create-user page's own "generate, review, then confirm" flow: a
+/// separate "Generate strong password" submit re-renders this same page
+/// with `generated_password` set (a one-time preview, nothing persisted
+/// yet), and only the following "Reset password" submit -- which posts
+/// back whatever's currently in the password field -- actually writes it.
+#[derive(Template)]
+#[template(path = "user_edit.html")]
+pub struct UserEditTemplate {
+    pub base: BaseCtx,
+    pub user_id: String,
+    pub username: String,
+    pub email: String,
+    pub error: Option<String>,
+    pub generated_password: Option<String>,
+    pub password_prefill: String,
+}
+
 pub struct PermissionRow {
     pub key: String,
     pub granted: bool,
@@ -836,6 +855,23 @@ pub struct PanopticonSwitchesTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+}
+
+/// Edit form for one switch's name/address/port -- see
+/// `routes/panopticon.rs::switch_edit_*`. The community string field is
+/// deliberately never prefilled (there's no plaintext to show -- only
+/// `community_encrypted` is on hand, and even if it weren't, echoing a
+/// live credential back into a form is bad practice); leaving it blank on
+/// submit means "keep the existing one".
+#[derive(Template)]
+#[template(path = "panopticon_switch_edit.html")]
+pub struct PanopticonSwitchEditTemplate {
+    pub base: BaseCtx,
+    pub switch_id: String,
+    pub name: String,
+    pub ip_address: String,
+    pub snmp_port: u16,
+    pub error: Option<String>,
 }
 
 pub struct PanopticonPortRow {

@@ -86,6 +86,7 @@
           </form>
           {% endif %}
           {% if can_manage %}
+          <a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ s.id }}/edit">Edit</a>
           <form method="post" action="/arsenals/panopticon/switches/{{ s.id }}/enabled" style="display:inline;">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
             <input type="hidden" name="enabled" value="{% if s.enabled %}false{% else %}true{% endif %}">

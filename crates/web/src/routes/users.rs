@@ -232,6 +232,267 @@ async fn send_welcome_email(
     !results.is_empty() && results.iter().all(|(_, r)| r.is_ok())
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn render_edit(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    user_id: Uuid,
+    username: String,
+    email: String,
+    error: Option<String>,
+    generated_password: Option<String>,
+) -> Result<Response, WebError> {
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
+
+    let password_prefill = generated_password.clone().unwrap_or_default();
+
+    let tpl = crate::templates::UserEditTemplate {
+        base,
+        user_id: user_id.to_string(),
+        username,
+        email,
+        error,
+        generated_password,
+        password_prefill,
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+pub async fn edit_form(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
+    let user = repo::users::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    render_edit(
+        &state,
+        &jar,
+        &ctx,
+        user.id,
+        user.username,
+        user.email,
+        None,
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct EditUserForm {
+    csrf_token: String,
+    username: String,
+    email: String,
+}
+
+/// Fixes a typo'd username/email from account creation -- distinct from
+/// `reset_password` below, which is a separate form/action on the same
+/// edit page.
+pub async fn edit(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<EditUserForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let target = repo::users::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let username = form.username.trim().to_string();
+    let email = form.email.trim().to_string();
+
+    if username.is_empty() || username.len() > 64 {
+        return render_edit(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            username,
+            email,
+            Some("Username must be 1-64 characters.".to_string()),
+            None,
+        )
+        .await;
+    }
+    if email.is_empty() || !email.contains('@') {
+        return render_edit(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            username,
+            email,
+            Some("That doesn't look like a valid email address.".to_string()),
+            None,
+        )
+        .await;
+    }
+
+    repo::users::update_profile(&state.pool, id, &username, &email).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::UserProfileUpdated, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&username)
+            .metadata(serde_json::json!({
+                "previous_username": target.username,
+                "previous_email": target.email,
+            })),
+    )
+    .await?;
+
+    Ok(Redirect::to(&format!(
+        "/admin/users?message={}",
+        crate::common::urlencoding_encode(&format!("Updated {username}."))
+    ))
+    .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ResetPasswordForm {
+    csrf_token: String,
+    intent: String,
+    #[serde(default)]
+    password: String,
+}
+
+fn build_password_reset_email(
+    user: &abyssal_core::User,
+    temporary_password: &str,
+) -> abyssal_notifications::NotificationMessage {
+    abyssal_notifications::NotificationMessage {
+        subject: "Your Abyssal Arsenal password has been reset".to_string(),
+        body: format!(
+            "Hello {username},\n\n\
+             An administrator has reset the password on your Abyssal Arsenal account.\n\n\
+             Username: {username}\n\
+             Temporary password: {temporary_password}\n\n\
+             You will be required to set a new password the next time you log in. Every \
+             other active session of yours has been signed out.\n\n\
+             This is an automated message -- please do not reply.",
+            username = user.username,
+        ),
+        severity: abyssal_notifications::Severity::Info,
+        recipients: vec![user.email.clone()],
+    }
+}
+
+async fn send_password_reset_email(
+    state: &AppState,
+    user: &abyssal_core::User,
+    temporary_password: &str,
+) -> bool {
+    if user.email.trim().is_empty() {
+        return false;
+    }
+    let message = build_password_reset_email(user, temporary_password);
+    let results = state.notifications.dispatch(&message).await;
+    !results.is_empty() && results.iter().all(|(_, r)| r.is_ok())
+}
+
+/// Admin-triggered password reset -- e.g. the user forgot theirs, or the
+/// admin wants to lock out a session they suspect is compromised. Mirrors
+/// `create`'s own two-step "generate, review, then confirm" flow exactly:
+/// `intent=generate` only previews a strong random password (re-renders
+/// the edit page, nothing persisted yet); `intent=reset` persists whatever
+/// the submitted password field actually contains, forces a change at
+/// next login, and revokes every other active session of theirs, the same
+/// way a self-service reset (`routes/password_reset.rs`) already does.
+pub async fn reset_password(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<ResetPasswordForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let target = repo::users::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    if form.intent == "generate" {
+        let generated = abyssal_auth::password::generate_strong_password();
+        return render_edit(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            target.username,
+            target.email,
+            None,
+            Some(generated),
+        )
+        .await;
+    }
+
+    if let Err(message) = abyssal_auth::password::validate_strength(&form.password) {
+        return render_edit(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            target.username,
+            target.email,
+            Some(message),
+            None,
+        )
+        .await;
+    }
+
+    let hash = abyssal_auth::password::hash_password(&form.password)?;
+    repo::users::update_password(&state.pool, id, &hash, true).await?;
+    abyssal_auth::session::revoke_all_for_user(&state.pool, id).await?;
+
+    let email_sent = send_password_reset_email(&state, &target, &form.password).await;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::PasswordReset, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&target.username)
+            .metadata(serde_json::json!({ "email_sent": email_sent })),
+    )
+    .await?;
+
+    Ok(Redirect::to(&format!(
+        "/admin/users?message={}",
+        crate::common::urlencoding_encode(&format!("Password reset for {}.", target.username))
+    ))
+    .into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -116,6 +116,26 @@ pub async fn set_active(pool: &DbPool, id: Uuid, active: bool) -> anyhow::Result
     Ok(())
 }
 
+/// Updates an existing user's username/email -- e.g. correcting a typo an
+/// admin made at account creation. Uniqueness is still only enforced by
+/// the table's own `UNIQUE` constraints, same as `create`: a collision
+/// surfaces as a plain DB error rather than a pre-checked, friendlier one,
+/// consistent with how `create` already handles it.
+pub async fn update_profile(
+    pool: &DbPool,
+    id: Uuid,
+    username: &str,
+    email: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE users SET username = ?, email = ? WHERE id = ?")
+        .bind(username)
+        .bind(email)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn delete(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
     sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(id.to_string())

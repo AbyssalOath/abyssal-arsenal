@@ -698,6 +698,200 @@ pub async fn switch_add(
     Ok(Redirect::to("/arsenals/panopticon/switches").into_response())
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn render_switch_edit(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    switch_id: Uuid,
+    name: String,
+    ip_address: String,
+    snmp_port: u16,
+    error: Option<String>,
+) -> Result<Response, WebError> {
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
+
+    let tpl = crate::templates::PanopticonSwitchEditTemplate {
+        base,
+        switch_id: switch_id.to_string(),
+        name,
+        ip_address,
+        snmp_port,
+        error,
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+pub async fn switch_edit_form(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    let switch = repo::panopticon_switches::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    render_switch_edit(
+        &state,
+        &jar,
+        &ctx,
+        switch.id,
+        switch.name,
+        switch.ip_address,
+        switch.snmp_port,
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct SwitchEditForm {
+    csrf_token: String,
+    name: String,
+    ip_address: String,
+    #[serde(default)]
+    snmp_port: String,
+    /// Blank means "keep the existing community string" -- see
+    /// `PanopticonSwitchEditTemplate`'s doc comment for why this field is
+    /// never prefilled with anything to begin with.
+    #[serde(default)]
+    community: String,
+}
+
+pub async fn switch_edit(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SwitchEditForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::panopticon_switches::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let name = form.name.trim().to_string();
+    let ip_address = form.ip_address.trim().to_string();
+    let snmp_port_raw = form.snmp_port.trim();
+    let snmp_port: u16 = if snmp_port_raw.is_empty() {
+        161
+    } else {
+        match snmp_port_raw.parse() {
+            Ok(p) => p,
+            Err(_) => {
+                return render_switch_edit(
+                    &state,
+                    &jar,
+                    &ctx,
+                    id,
+                    name,
+                    ip_address,
+                    161,
+                    Some("SNMP port must be 1-65535.".to_string()),
+                )
+                .await;
+            }
+        }
+    };
+
+    if name.is_empty() || name.len() > 128 {
+        return render_switch_edit(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            name,
+            ip_address,
+            snmp_port,
+            Some("Switch name must be 1-128 characters.".to_string()),
+        )
+        .await;
+    }
+    if !abyssal_agent_protocol::is_valid_network_target(&ip_address) {
+        return render_switch_edit(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            name,
+            ip_address,
+            snmp_port,
+            Some("That doesn't look like a valid IP address or hostname.".to_string()),
+        )
+        .await;
+    }
+
+    let community = form.community.trim();
+    if !community.is_empty() {
+        let Some(encryption_key) = &state.encryption_key else {
+            return render_switch_edit(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                name,
+                ip_address,
+                snmp_port,
+                Some(
+                    "ENCRYPTION_KEY isn't configured -- can't store a new community string."
+                        .to_string(),
+                ),
+            )
+            .await;
+        };
+        let community_encrypted = match encryption_key.encrypt(community) {
+            Ok(v) => v,
+            Err(e) => {
+                return render_switch_edit(
+                    &state,
+                    &jar,
+                    &ctx,
+                    id,
+                    name,
+                    ip_address,
+                    snmp_port,
+                    Some(format!("Encryption failed: {e}")),
+                )
+                .await;
+            }
+        };
+        repo::panopticon_switches::update_community(&state.pool, id, &community_encrypted).await?;
+    }
+
+    repo::panopticon_switches::update(&state.pool, id, &name, &ip_address, snmp_port).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::NetworkSwitchUpdated, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&name),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/switches").into_response())
+}
+
 #[derive(Deserialize)]
 pub struct SwitchEnabledForm {
     csrf_token: String,

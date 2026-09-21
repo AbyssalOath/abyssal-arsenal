@@ -47,6 +47,14 @@ pub fn build(state: AppState) -> Router {
         .route("/admin/users/create", post(routes::users::create))
         .route("/admin/users/:id/enable", post(routes::users::enable))
         .route(
+            "/admin/users/:id/edit",
+            get(routes::users::edit_form).post(routes::users::edit),
+        )
+        .route(
+            "/admin/users/:id/reset-password",
+            post(routes::users::reset_password),
+        )
+        .route(
             "/admin/users/:id/disable/confirm",
             get(routes::users::disable_confirm),
         )
@@ -1133,6 +1141,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/switches",
             get(routes::panopticon::switches_show).post(routes::panopticon::switch_add),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/edit",
+            get(routes::panopticon::switch_edit_form).post(routes::panopticon::switch_edit),
         )
         .route(
             "/arsenals/panopticon/switches/:id/enabled",

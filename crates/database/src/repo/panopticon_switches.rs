@@ -90,6 +90,44 @@ pub async fn find_by_id(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<Panopt
     Ok(row.map(Into::into))
 }
 
+/// Updates a switch's non-secret fields -- name/address/port, the sort of
+/// thing an admin fixes after a typo. Leaves `community_encrypted`
+/// untouched; see `update_community` for that, which is deliberately a
+/// separate call so the edit form can leave the community string blank
+/// to mean "keep the existing one" rather than forcing it to be retyped
+/// just to fix an IP address.
+pub async fn update(
+    pool: &DbPool,
+    id: Uuid,
+    name: &str,
+    ip_address: &str,
+    snmp_port: u16,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE panopticon_switches SET name = ?, ip_address = ?, snmp_port = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(ip_address)
+    .bind(snmp_port)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn update_community(
+    pool: &DbPool,
+    id: Uuid,
+    community_encrypted: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE panopticon_switches SET community_encrypted = ? WHERE id = ?")
+        .bind(community_encrypted)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_enabled(pool: &DbPool, id: Uuid, enabled: bool) -> anyhow::Result<()> {
     sqlx::query("UPDATE panopticon_switches SET enabled = ? WHERE id = ?")
         .bind(enabled)
