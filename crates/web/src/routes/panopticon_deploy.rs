@@ -13,19 +13,19 @@
 //! spanning a couple of extra hops here. See `crate::ssh_deploy`'s module
 //! comment for the in-memory-only guarantee once a deploy actually starts.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use abyssal_agent_protocol::is_valid_ip_address;
 use abyssal_core::secret::{generate_token, hash_token};
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
-use axum::Form;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use chrono::Duration as ChronoDuration;
-use serde::Deserialize;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -84,6 +84,46 @@ fn validate_ips(ips: &[String]) -> Result<(), WebError> {
 /// (`deploy_one_host` falls back to the IP address either way).
 fn sanitize_hostname(hostname: Option<String>) -> Option<String> {
     hostname.filter(|h| abyssal_agent_protocol::is_valid_hostname(h))
+}
+
+/// Manually parses a form body into a multi-map, one entry per distinct
+/// key. `axum::Form<T>` (backed by `serde_urlencoded`) cannot deserialize a
+/// `Vec<String>` field from repeated `key=a&key=b` occurrences the way a
+/// checkbox group or a repeated hidden field actually submits -- it treats
+/// a single occurrence as a bare scalar and fails with "invalid type:
+/// string ..., expected a sequence" the moment there's more than one
+/// selected host. `routes/roles.rs::update_permissions` hit and fixed this
+/// exact error first; every handler below with a repeated-key field
+/// follows the same fix (parse the raw body by hand) instead.
+struct FormFields(HashMap<String, Vec<String>>);
+
+impl FormFields {
+    fn parse(body: &[u8]) -> Self {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for (key, value) in form_urlencoded::parse(body) {
+            map.entry(key.into_owned())
+                .or_default()
+                .push(value.into_owned());
+        }
+        Self(map)
+    }
+
+    /// The first value submitted under `key`, or an empty string if it
+    /// wasn't present at all -- mirrors a plain `String` field with
+    /// `#[serde(default)]`.
+    fn one(&self, key: &str) -> String {
+        self.0
+            .get(key)
+            .and_then(|v| v.first())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Every value submitted under `key`, in submission order -- mirrors a
+    /// `Vec<String>` field, without the limitation above.
+    fn many(&self, key: &str) -> Vec<String> {
+        self.0.get(key).cloned().unwrap_or_default()
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -169,45 +209,35 @@ async fn render_picker_response(
     Ok((jar, tpl).into_response())
 }
 
-#[derive(Deserialize)]
-pub struct ScanPickerRefreshForm {
-    csrf_token: String,
-    #[serde(default)]
-    all_ips: Vec<String>,
-    select: String,
-}
-
 pub async fn scan_picker_refresh(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
-    Form(form): Form<ScanPickerRefreshForm>,
+    body: Bytes,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
-    require_csrf(&jar, &form.csrf_token)?;
-    render_scan_picker(&state, &jar, &ctx, form.all_ips, form.select == "all").await
+    let fields = FormFields::parse(&body);
+    require_csrf(&jar, &fields.one("csrf_token"))?;
+    let all_ips = fields.many("all_ips");
+    let all_checked = fields.one("select") == "all";
+    render_scan_picker(&state, &jar, &ctx, all_ips, all_checked).await
 }
 
 // ---------------------------------------------------------------------
 // Step 2: credentials
 // ---------------------------------------------------------------------
 
-#[derive(Deserialize)]
-pub struct ScanPickerSubmitForm {
-    csrf_token: String,
-    #[serde(default)]
-    selected_ips: Vec<String>,
-}
-
 pub async fn credentials_form(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
-    Form(form): Form<ScanPickerSubmitForm>,
+    body: Bytes,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
-    require_csrf(&jar, &form.csrf_token)?;
-    validate_ips(&form.selected_ips)?;
+    let fields = FormFields::parse(&body);
+    require_csrf(&jar, &fields.one("csrf_token"))?;
+    let selected_ips = fields.many("selected_ips");
+    validate_ips(&selected_ips)?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -221,8 +251,8 @@ pub async fn credentials_form(
     )
     .await?;
 
-    let mut hosts = Vec::with_capacity(form.selected_ips.len());
-    for ip in form.selected_ips {
+    let mut hosts = Vec::with_capacity(selected_ips.len());
+    for ip in selected_ips {
         let device = repo::network_devices::find_by_ip(&state.pool, &ip).await?;
         hosts.push(DeployCredentialHostRow {
             ip,
@@ -332,37 +362,46 @@ fn resolve_credentials(
 // Step 3: host-key probe + review
 // ---------------------------------------------------------------------
 
-#[derive(Deserialize)]
 pub struct DeployCredentialsSubmitForm {
     csrf_token: String,
     ip: Vec<String>,
     shared_username: String,
-    #[serde(default)]
     shared_auth_method: String,
-    #[serde(default)]
     shared_password: String,
-    #[serde(default)]
     shared_pem: String,
-    #[serde(default)]
     shared_passphrase: String,
-    #[serde(default)]
     shared_sudo_password: String,
-    #[serde(default)]
     shared_ssh_port: String,
-    #[serde(default)]
     override_username: Vec<String>,
-    #[serde(default)]
     override_auth_method: Vec<String>,
-    #[serde(default)]
     override_password: Vec<String>,
-    #[serde(default)]
     override_pem: Vec<String>,
-    #[serde(default)]
     override_passphrase: Vec<String>,
-    #[serde(default)]
     override_sudo_password: Vec<String>,
-    #[serde(default)]
     override_ssh_port: Vec<String>,
+}
+
+impl DeployCredentialsSubmitForm {
+    fn from_fields(fields: &FormFields) -> Self {
+        Self {
+            csrf_token: fields.one("csrf_token"),
+            ip: fields.many("ip"),
+            shared_username: fields.one("shared_username"),
+            shared_auth_method: fields.one("shared_auth_method"),
+            shared_password: fields.one("shared_password"),
+            shared_pem: fields.one("shared_pem"),
+            shared_passphrase: fields.one("shared_passphrase"),
+            shared_sudo_password: fields.one("shared_sudo_password"),
+            shared_ssh_port: fields.one("shared_ssh_port"),
+            override_username: fields.many("override_username"),
+            override_auth_method: fields.many("override_auth_method"),
+            override_password: fields.many("override_password"),
+            override_pem: fields.many("override_pem"),
+            override_passphrase: fields.many("override_passphrase"),
+            override_sudo_password: fields.many("override_sudo_password"),
+            override_ssh_port: fields.many("override_ssh_port"),
+        }
+    }
 }
 
 /// Blank (not overridden) falls back to `shared`; blank in both falls back
@@ -398,9 +437,10 @@ pub async fn deploy_hostkeys(
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     headers: HeaderMap,
-    Form(form): Form<DeployCredentialsSubmitForm>,
+    body: Bytes,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    let form = DeployCredentialsSubmitForm::from_fields(&FormFields::parse(&body));
     require_csrf(&jar, &form.csrf_token)?;
     validate_ips(&form.ip)?;
 
@@ -552,39 +592,48 @@ pub async fn deploy_hostkeys(
 // enrollment token per host, starts the job.
 // ---------------------------------------------------------------------
 
-#[derive(Deserialize)]
 pub struct DeployConfirmForm {
     csrf_token: String,
-    #[serde(default)]
     confirm: bool,
     ip: Vec<String>,
-    #[serde(default)]
     expected_fingerprint: Vec<String>,
-    #[serde(default)]
     ssh_port: Vec<String>,
     shared_username: String,
-    #[serde(default)]
     shared_auth_method: String,
-    #[serde(default)]
     shared_password: String,
-    #[serde(default)]
     shared_pem: String,
-    #[serde(default)]
     shared_passphrase: String,
-    #[serde(default)]
     shared_sudo_password: String,
-    #[serde(default)]
     override_username: Vec<String>,
-    #[serde(default)]
     override_auth_method: Vec<String>,
-    #[serde(default)]
     override_password: Vec<String>,
-    #[serde(default)]
     override_pem: Vec<String>,
-    #[serde(default)]
     override_passphrase: Vec<String>,
-    #[serde(default)]
     override_sudo_password: Vec<String>,
+}
+
+impl DeployConfirmForm {
+    fn from_fields(fields: &FormFields) -> Self {
+        Self {
+            csrf_token: fields.one("csrf_token"),
+            confirm: fields.one("confirm") == "true",
+            ip: fields.many("ip"),
+            expected_fingerprint: fields.many("expected_fingerprint"),
+            ssh_port: fields.many("ssh_port"),
+            shared_username: fields.one("shared_username"),
+            shared_auth_method: fields.one("shared_auth_method"),
+            shared_password: fields.one("shared_password"),
+            shared_pem: fields.one("shared_pem"),
+            shared_passphrase: fields.one("shared_passphrase"),
+            shared_sudo_password: fields.one("shared_sudo_password"),
+            override_username: fields.many("override_username"),
+            override_auth_method: fields.many("override_auth_method"),
+            override_password: fields.many("override_password"),
+            override_pem: fields.many("override_pem"),
+            override_passphrase: fields.many("override_passphrase"),
+            override_sudo_password: fields.many("override_sudo_password"),
+        }
+    }
 }
 
 pub async fn deploy_confirm(
@@ -592,9 +641,10 @@ pub async fn deploy_confirm(
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     headers: HeaderMap,
-    Form(form): Form<DeployConfirmForm>,
+    body: Bytes,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    let form = DeployConfirmForm::from_fields(&FormFields::parse(&body));
     require_csrf(&jar, &form.csrf_token)?;
     if !form.confirm {
         return Err(WebError(AppError::Validation(
