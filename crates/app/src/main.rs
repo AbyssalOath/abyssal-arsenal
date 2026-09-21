@@ -36,7 +36,18 @@ async fn main() -> anyhow::Result<()> {
     let registry = ModuleRegistry::new(arsenals::all());
     registry.ensure_seeded(&pool).await?;
 
-    let executor = Executor::new(pool.clone(), Duration::from_secs(30));
+    // 30 minutes -- this is `Executor::execute`'s one shared timeout across
+    // every in-process `Operation` it runs, which today means Panopticon's
+    // two control-plane operations: the nmap discovery scan and the SNMP
+    // switch poll (`execute_on_host`, used by every other arsenal's
+    // host-agent dispatches, takes its own per-call timeout instead and
+    // isn't affected by this). A short default was fine for a quick SNMP
+    // poll but cut off a real nmap scan of anything larger than a small
+    // subnet; the SNMP poll's own per-request timeouts
+    // (`panopticon_snmp.rs::REQUEST_TIMEOUT`) still bound it far tighter
+    // than this in practice, so raising this shared ceiling only helps the
+    // scan, not harms the poll.
+    let executor = Executor::new(pool.clone(), Duration::from_secs(30 * 60));
     let encryption_key = config.encryption_key.take().map(Arc::new);
 
     let state = AppState {

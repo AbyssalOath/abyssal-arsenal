@@ -288,3 +288,26 @@ pub async fn delete(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
+
+/// Removes every listed device in one transaction -- the "Remove" action
+/// on a Topology subnet row, which has no row of its own to delete (a
+/// subnet is purely a grouping of `list()`'s results by IP, computed in
+/// `routes/panopticon.rs::subnet_of`, never a stored entity) -- the only
+/// way to make one stop appearing there is removing every device that
+/// currently falls into it, same as removing each individually.
+pub async fn delete_by_ids(pool: &DbPool, ids: &[Uuid]) -> anyhow::Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut tx = pool.begin().await?;
+    let mut deleted = 0u64;
+    for id in ids {
+        let result = sqlx::query("DELETE FROM panopticon_devices WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        deleted += result.rows_affected();
+    }
+    tx.commit().await?;
+    Ok(deleted)
+}

@@ -46,13 +46,28 @@
   <p style="color:var(--text-muted); margin-top:0;">No devices in the inventory yet -- run a discovery scan.</p>
   {% else %}
   <table>
-    <thead><tr><th>Subnet</th><th>Devices</th><th>Managed</th></tr></thead>
+    <thead>
+      <tr>
+        <th>Subnet</th><th>Devices</th><th>Managed</th>
+        {% if can_scan || can_manage %}<th>Actions</th>{% endif %}
+      </tr>
+    </thead>
     <tbody>
       {% for s in subnets %}
       <tr>
         <td>{{ s.subnet }}</td>
         <td>{{ s.device_count }}</td>
         <td>{{ s.managed_count }} / {{ s.device_count }}</td>
+        {% if can_scan || can_manage %}
+        <td class="actions">
+          {% if can_scan && s.subnet != "other" %}
+          <a class="btn btn-secondary" href="/arsenals/panopticon/scan/confirm?target={{ s.subnet }}">{% call macros::icon("scan") %} Rescan</a>
+          {% endif %}
+          {% if can_manage %}
+          <a class="btn btn-danger" href="/arsenals/panopticon/subnets/remove/confirm?subnet={{ s.subnet }}">{% call macros::icon("danger") %} Remove</a>
+          {% endif %}
+        </td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

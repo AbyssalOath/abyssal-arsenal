@@ -456,6 +456,133 @@ pub async fn remove_device(
 }
 
 // ---------------------------------------------------------------------
+// Subnet actions (Topology table) -- a subnet is purely a grouping of
+// devices by `subnet_of(ip)`, computed fresh in `render` every time, never
+// a stored entity of its own. "Rescan" needs no dedicated route at all --
+// it's just a link into the existing scan-confirm flow with the subnet as
+// the target (see panopticon.html). "Remove" does need one: the only way
+// to make a subnet stop appearing in the table is removing every device
+// that currently falls into it.
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SubnetQuery {
+    subnet: String,
+}
+
+pub async fn subnet_remove_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<SubnetQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+
+    let subnet = q.subnet.trim().to_string();
+    let devices = repo::network_devices::list(&state.pool).await?;
+    let count = devices
+        .iter()
+        .filter(|d| subnet_of(&d.ip_address) == subnet)
+        .count();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+
+    let tpl = crate::templates::ConfirmTemplate {
+        base,
+        title: "Remove subnet from topology".to_string(),
+        message: format!(
+            "This will remove all {count} device(s) currently grouped under \"{subnet}\" \
+             from the network device inventory -- there's no separate \"topology\" record to \
+             delete, this has the same effect as removing each of those devices individually. \
+             They reappear if a future scan finds them again -- this doesn't block or affect \
+             the devices themselves."
+        ),
+        action_url: format!(
+            "/arsenals/panopticon/subnets/remove?subnet={}",
+            urlencoding_encode(&subnet)
+        ),
+        cancel_url: "/arsenals/panopticon".to_string(),
+        escalate_host_id: None,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "subnet".to_string(),
+            expected: subnet.clone(),
+        }),
+        extra_hidden_fields: vec![],
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RemoveSubnetForm {
+    csrf_token: String,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
+}
+
+pub async fn subnet_remove(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<SubnetQuery>,
+    Form(form): Form<RemoveSubnetForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Removal was not confirmed.".into(),
+        )));
+    }
+
+    let subnet = q.subnet.trim().to_string();
+    crate::common::require_typed_confirmation(&form.confirm_text, &subnet)?;
+
+    let devices = repo::network_devices::list(&state.pool).await?;
+    let matching: Vec<_> = devices
+        .into_iter()
+        .filter(|d| subnet_of(&d.ip_address) == subnet)
+        .collect();
+    let ids: Vec<Uuid> = matching.iter().map(|d| d.id).collect();
+    let ip_addresses: Vec<String> = matching.into_iter().map(|d| d.ip_address).collect();
+
+    let removed = repo::network_devices::delete_by_ids(&state.pool, &ids).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::NetworkSubnetRemoved, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&subnet)
+            .metadata(serde_json::json!({
+                "devices_removed": removed,
+                "ip_addresses": ip_addresses,
+            })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon").into_response())
+}
+
+// ---------------------------------------------------------------------
 // Device classification (device type / trust state / notes)
 // ---------------------------------------------------------------------
 
