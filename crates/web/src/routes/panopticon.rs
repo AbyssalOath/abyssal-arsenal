@@ -311,10 +311,12 @@ pub async fn scan(
     crate::common::require_typed_confirmation(&form.confirm_text, &target)?;
 
     let result_label = Some(format!("Discovery Scan ({target})"));
+    let discovered_sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let op = DiscoveryScanOperation {
         pool: state.pool.clone(),
         target,
         ports,
+        discovered_sink: discovered_sink.clone(),
     };
     let result = state
         .executor
@@ -332,6 +334,16 @@ pub async fn scan(
 
     match result {
         Ok(output) => {
+            let discovered = discovered_sink
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if ctx.has(Permission::HostsManage) && !discovered.is_empty() {
+                return super::panopticon_deploy::render_scan_picker_from_discovered(
+                    &state, &jar, &ctx, discovered,
+                )
+                .await;
+            }
             render(
                 &state,
                 &jar,

@@ -123,6 +123,7 @@ time = "0.3"
 aes-gcm = { version = "0.10", features = ["zeroize"] }
 snmp2 = { version = "0.5", default-features = false, features = ["tokio", "heap_buffers"] }
 pnet_datalink = { version = "0.35", default-features = false, features = ["std"] }
+russh = { version = "0.63", default-features = false, features = ["aws-lc-rs", "rsa"] }
 
 [profile.release]
 lto = true

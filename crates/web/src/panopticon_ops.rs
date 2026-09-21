@@ -162,11 +162,23 @@ pub(crate) async fn audit_sighting(
     }
 }
 
+/// One device this scan found, already upserted into the inventory --
+/// enough for the "Quick Add Host From Network Scan" picker
+/// (`routes/panopticon.rs`) to render checkboxes without re-parsing nmap's
+/// text output itself.
+#[derive(Debug, Clone)]
+pub struct DiscoveredHost {
+    pub ip: String,
+    pub hostname: Option<String>,
+    pub mac: Option<String>,
+}
+
 struct DiscoveryOutcome {
     stdout: String,
     stderr: String,
     exit_code: Option<i32>,
     upserted: usize,
+    discovered: Vec<DiscoveredHost>,
 }
 
 /// Runs an nmap TCP connect scan (`-sT`, no raw sockets needed -- this
@@ -200,6 +212,7 @@ async fn run_discovery_scan(
     let neighbors = neighbor_mac_table().await;
 
     let mut upserted = 0usize;
+    let mut discovered_hosts = Vec::with_capacity(discovered.len());
     for host in &discovered {
         let mac = neighbors.get(&host.ip).map(String::as_str);
         let prior = match repo::network_devices::find_by_ip(pool, &host.ip).await {
@@ -222,6 +235,11 @@ async fn run_discovery_scan(
                     tracing::warn!(error = %e, ip = %host.ip, "failed to record audit event for discovered device");
                 }
                 upserted += 1;
+                discovered_hosts.push(DiscoveredHost {
+                    ip: host.ip.clone(),
+                    hostname: host.hostname.clone(),
+                    mac: mac.map(str::to_string),
+                });
             }
             Err(e) => {
                 tracing::warn!(error = %e, ip = %host.ip, "failed to upsert discovered device");
@@ -234,6 +252,7 @@ async fn run_discovery_scan(
         stderr: output.stderr,
         exit_code: output.exit_code,
         upserted,
+        discovered: discovered_hosts,
     })
 }
 
@@ -245,6 +264,14 @@ pub struct DiscoveryScanOperation {
     pub pool: DbPool,
     pub target: String,
     pub ports: Option<String>,
+    /// Side channel for the structured per-device results -- `Operation`'s
+    /// `run()` can only return `OperationOutput` (shared with the agent
+    /// wire protocol via `abyssal_agent_protocol`, so it isn't something
+    /// this one caller can extend just for itself). The caller
+    /// (`routes/panopticon.rs::scan`) reads this back after `execute()`
+    /// returns to render the "Quick Add Host" picker without re-parsing
+    /// `OperationOutput.stdout`.
+    pub discovered_sink: std::sync::Arc<std::sync::Mutex<Vec<DiscoveredHost>>>,
 }
 
 #[async_trait::async_trait]
@@ -267,6 +294,9 @@ impl Operation for DiscoveryScanOperation {
 
     async fn run(&self, _params: &OperationParams) -> Result<OperationOutput, ExecutionError> {
         let outcome = run_discovery_scan(&self.pool, &self.target, self.ports.as_deref()).await?;
+        if let Ok(mut sink) = self.discovered_sink.lock() {
+            *sink = outcome.discovered;
+        }
         Ok(OperationOutput {
             stdout: format!(
                 "Discovered {} device(s); added to the inventory.\n\n{}",

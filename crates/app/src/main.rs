@@ -69,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
             abyssal_web::update_check::UpdateStatus::current(),
         )),
         encryption_key: encryption_key.clone(),
+        deploy_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());

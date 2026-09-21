@@ -6,6 +6,16 @@ executes a fixed, versioned whitelist of operations locally
 (`abyssal-agent-protocol::AgentOperation`) -- it never accepts an arbitrary
 command from the wire.
 
+Everything below is the manual path: an operator SSHing into the host
+themselves and running these steps by hand. If the host already turned up
+in Panopticon's network discovery, the control plane can do this over SSH
+for you instead -- see "Add Hosts" on a scan's results in
+`/arsenals/panopticon`, and the "Deploying agents over SSH" section of
+[ARCHITECTURE.md](../../ARCHITECTURE.md#deploying-agents-over-ssh-quick-add-host-from-network-scan)
+for how it works. It ultimately runs the same non-interactive install
+described below (`abyssal-agent install --control-plane-url ...
+--enrollment-token ...`), just without you typing it in yourself.
+
 ## Quick install (recommended)
 
 1. In the control plane's web UI, go to `/admin/hosts` and generate an

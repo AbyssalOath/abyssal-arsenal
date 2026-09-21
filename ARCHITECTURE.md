@@ -351,6 +351,102 @@ and neither does any individual action form):
   De-escalate button -- a status/control surface, not itself where
   elevation happens.
 
+## Deploying agents over SSH ("Quick Add Host From Network Scan")
+
+Enrollment above assumes an operator SSHing into the target by hand and
+running `abyssal-agent run --control-plane-url ... --enrollment-token ...`
+themselves. This feature bridges Panopticon's discovery scan directly to
+that same enrollment path: pick devices a scan just found, supply SSH
+credentials, and let the control plane SSH in and run the installer for
+you. Nothing on the agent side changed -- `abyssal-agent install
+--control-plane-url <url> --enrollment-token <token>` (`crates/agent/src/
+main.rs`) was already fully non-interactive whenever both flags are given;
+this is entirely a new control-plane capability.
+
+**Flow** (`crates/web/src/routes/panopticon_deploy.rs`,
+`crates/web/src/ssh_deploy.rs`): scan results -> picker (checkboxes,
+"select all"/"none") -> SSH credentials (one shared set plus optional
+per-host overrides) -> host-key review -> deploy status. Every step is a
+plain server-rendered page, matching this app's no-client-JS house style
+-- "select all"/"none" and the auto-refreshing status page
+(`<meta http-equiv="refresh">`) both work without any JavaScript. A
+discovery scan already upserts every device it finds into the inventory
+unconditionally (`panopticon_ops::run_discovery_scan`), so cancelling out
+of the picker loses nothing; only "Add Hosts" continues into this flow.
+
+**Host keys: trust-on-first-use, never silently disabled.** The
+credentials step's submit triggers a probe -- open an SSH connection far
+enough to read the server's public key fingerprint, no authentication
+attempted -- for every selected host, storable in `ssh_trusted_host_keys`
+(`migrations/0013_ssh_deploy.sql`). A first sighting is shown for the
+admin to confirm; an already-trusted, unchanged fingerprint skips the
+review page entirely (`deploy_hostkeys`'s "every host already trusted"
+fast path) so a repeat deploy doesn't need to carry credentials through
+one extra hop unnecessarily; a **changed** fingerprint is a hard stop for
+that host specifically -- it's simply excluded from what gets sent to the
+confirm step, with no way to click past it in the same flow.
+
+**Credentials are never persisted, anywhere, ever.** `SshCredentials`'
+password/private-key/passphrase/sudo-password fields are all
+`zeroize::Zeroizing<String>` (the same primitive `crates/web/src/
+common.rs` and `crates/agent/src/elevation.rs` already use for exactly
+this reason). There is no saved-credential store, on purpose --
+`crates/web/src/ssh_deploy.rs`'s module comment and the original
+implementation plan both call this out as a deliberately deferred, opt-in
+feature if ever wanted, which would reuse `abyssal_core::crypto::
+EncryptionKey` (built for Panopticon's SNMP community strings) rather than
+inventing new storage. Between steps, credentials exist only as hidden
+form fields in the rendered HTML and the next request's body -- the same
+mechanism `confirm.html`'s existing `sudo_password` field already uses for
+the single-step Apotheosis elevation confirm, just spanning a couple of
+extra hops here since there's no server-side session to hold them in
+instead. The sudo password and the enrollment token are never placed on
+the remote command line at all: the sudo password is piped to `sudo -S`
+over the SSH session's stdin (mirroring how `crates/agent/src/
+elevation.rs` already sends a sudo password to `sudo -S -v` over the
+agent's own WebSocket), and every other value interpolated into a remote
+command string is both validated (`abyssal_agent_protocol::
+is_valid_ip_address`, or `is_valid_hostname` before a hostname becomes
+`--name`) and POSIX-single-quote-escaped (`ssh_deploy::shell_quote`) as
+defense in depth, since an SSH `exec` channel takes one command string the
+remote shell parses -- there's no safe argv-passing option the way a local
+`Command::arg()` has.
+
+**Enrollment tokens are one-per-host, not one-per-job.**
+`host_enrollment_tokens::consume` is single-use by design (see host
+enrollment above), so a deploy job generates and stores one fresh
+15-minute token per selected host at the moment the job actually starts
+(`start_deploy_job`) -- reusing a single token across multiple hosts would
+only ever enroll the first one.
+
+**Orchestration** (`ssh_deploy::run_deploy_job`): a `tokio::sync::
+Semaphore`-gated `tokio::task::JoinSet`, default concurrency 5, so one
+host's failure or a hung connection can never block or delay the others.
+Each host gets its own connect timeout (10s) and command timeout (5
+minutes). Confirming success is **not** "the install command exited 0" --
+after a successful install, the task polls (bounded, 60s total) for a host
+row matching the `--name` it told the agent to register as that has
+actually connected back over its own WebSocket
+(`HostConnectionRegistry::is_connected`), the same live-connection state
+`/admin/hosts` itself reads. `HostDeployStarted`/`HostDeploySucceeded`/
+`HostDeployFailed` audit rows (one per host per attempt, attributed to
+whoever confirmed the deploy) are the durable record of what happened;
+progress itself (`AppState.deploy_jobs`) is in-memory only, mirroring the
+one other precedent for live shared state on `AppState`
+(`update_status`) -- losing job progress on a restart isn't a durability
+requirement worth a database table for, and every meaningful outcome is
+already in the audit log regardless.
+
+The one real implementation of the `SshClient`/`SshSession` traits this
+all runs against is `russh` (`RusshClient`, `RusshSession`) -- a pure-Rust
+SSH client, chosen specifically so password authentication and reading
+stdin (`sudo -S`) don't need a subprocess wrapping the system `ssh`
+binary. Everything above is built against the trait, not `russh` directly,
+so `ssh_deploy`'s own tests exercise every named failure mode (connection
+refused/timeout, auth failure, sudo denied, a changed host key, a failed
+download/install, and "exited 0 but the agent never checked in") against a
+fake implementation with no real network involved.
+
 ## The second-gate pattern for catastrophic-risk operations
 
 Every Destructive operation already requires the caller to explicitly set

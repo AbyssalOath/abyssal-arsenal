@@ -40,6 +40,9 @@ pub enum AuditAction {
     NetworkSwitchUpdated,
     NetworkSwitchRemoved,
     UserProfileUpdated,
+    HostDeployStarted,
+    HostDeploySucceeded,
+    HostDeployFailed,
     WorkflowEvaluationFailed,
 }
 
@@ -83,6 +86,9 @@ impl AuditAction {
             AuditAction::NetworkSwitchUpdated => "NETWORK_SWITCH_UPDATED",
             AuditAction::NetworkSwitchRemoved => "NETWORK_SWITCH_REMOVED",
             AuditAction::UserProfileUpdated => "USER_PROFILE_UPDATED",
+            AuditAction::HostDeployStarted => "HOST_DEPLOY_STARTED",
+            AuditAction::HostDeploySucceeded => "HOST_DEPLOY_SUCCEEDED",
+            AuditAction::HostDeployFailed => "HOST_DEPLOY_FAILED",
             AuditAction::WorkflowEvaluationFailed => "WORKFLOW_EVALUATION_FAILED",
         }
     }
@@ -125,6 +131,9 @@ impl AuditAction {
         AuditAction::NetworkSwitchUpdated,
         AuditAction::NetworkSwitchRemoved,
         AuditAction::UserProfileUpdated,
+        AuditAction::HostDeployStarted,
+        AuditAction::HostDeploySucceeded,
+        AuditAction::HostDeployFailed,
         AuditAction::WorkflowEvaluationFailed,
     ];
 }

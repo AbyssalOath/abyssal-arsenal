@@ -1,0 +1,53 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Deploy Status — Abyssal Arsenal{% endblock %}
+{% block head_extra %}
+{% if !complete %}
+<meta http-equiv="refresh" content="3">
+{% endif %}
+{% endblock %}
+{% block heading %}Deploy Status{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    {% if complete %}
+    Every host in this job has reached a final state.
+    {% else %}
+    This page refreshes automatically every few seconds until every host finishes.
+    {% endif %}
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>IP address</th><th>Hostname</th><th>Status</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      {% for h in hosts %}
+      <tr>
+        <td>{{ h.ip_address }}</td>
+        <td>{% if let Some(n) = h.hostname %}{{ n }}{% else %}&mdash;{% endif %}</td>
+        <td><span class="badge {{ h.state_class }}">{{ h.state_label }}</span></td>
+        <td>
+          {% if let Some(detail) = h.failure_detail %}
+          <div class="error-banner" style="margin:0;">{{ detail }}</div>
+          {% endif %}
+          {% if !h.output.is_empty() %}
+          <details>
+            <summary>Command output</summary>
+            <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ h.output }}</pre>
+          </details>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div style="margin-top:14px;">
+    <a class="btn btn-secondary" href="/admin/hosts">{% call macros::icon("host") %} Managed Hosts</a>
+    <a class="btn btn-secondary" href="/arsenals/panopticon">{% call macros::icon("network") %} Panopticon</a>
+  </div>
+</div>
+
+{% endblock %}

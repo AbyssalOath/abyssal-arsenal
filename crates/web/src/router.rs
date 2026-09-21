@@ -1174,6 +1174,26 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/panopticon/switches/:id/traffic",
             get(routes::panopticon::switch_traffic),
         )
+        .route(
+            "/arsenals/panopticon/deploy/picker/refresh",
+            post(routes::panopticon_deploy::scan_picker_refresh),
+        )
+        .route(
+            "/arsenals/panopticon/deploy/credentials",
+            post(routes::panopticon_deploy::credentials_form),
+        )
+        .route(
+            "/arsenals/panopticon/deploy/hostkeys",
+            post(routes::panopticon_deploy::deploy_hostkeys),
+        )
+        .route(
+            "/arsenals/panopticon/deploy/confirm",
+            post(routes::panopticon_deploy::deploy_confirm),
+        )
+        .route(
+            "/arsenals/panopticon/deploy/status/:job_id",
+            get(routes::panopticon_deploy::deploy_status),
+        )
         .route("/arsenals/thanatos", get(routes::thanatos::show))
         .route(
             "/arsenals/thanatos/:host_id",

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use abyssal_auth::LoginLimiter;
@@ -10,7 +11,9 @@ use abyssal_notifications::NotificationDispatcher;
 use abyssal_workflows::WorkflowRegistry;
 use chrono::Duration;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
+use crate::ssh_deploy::DeployJob;
 use crate::update_check::UpdateStatus;
 
 pub struct WebConfig {
@@ -54,4 +57,13 @@ pub struct AppState {
     /// than storing a credential unencrypted. See
     /// `abyssal_core::crypto::EncryptionKey`.
     pub encryption_key: Option<Arc<EncryptionKey>>,
+    /// In-memory only, by design -- see `crate::ssh_deploy`'s module
+    /// comment. Never durable: a job's meaningful outcomes are recorded
+    /// via the audit log instead, and losing this map on restart (a
+    /// deploy job outliving the process) isn't a requirement worth a
+    /// database table for what's otherwise a few minutes of progress
+    /// tracking. Each job's own `RwLock` is separate from this map's so
+    /// polling one job's status page never contends with starting or
+    /// looking up another.
+    pub deploy_jobs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<DeployJob>>>>>,
 }

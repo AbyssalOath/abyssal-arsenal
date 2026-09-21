@@ -1,0 +1,63 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Confirm Host Keys — Abyssal Arsenal{% endblock %}
+{% block heading %}Confirm SSH Host Keys{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Review each host's SSH host key fingerprint before anything connects with
+    credentials. A host whose key changed since it was last trusted here is
+    blocked from this deploy -- that usually means the host was reimaged, or it
+    could mean something is intercepting the connection.
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>IP address</th><th>Hostname</th><th>Fingerprint</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.ip }}</td>
+        <td>{{ r.hostname }}</td>
+        <td style="font-family:monospace;">{% if r.fingerprint.is_empty() %}&mdash;{% else %}{{ r.fingerprint }}{% endif %}</td>
+        <td><span class="badge {{ r.status_class }}">{{ r.status_label }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if any_deployable %}
+  <form method="post" action="/arsenals/panopticon/deploy/confirm" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="confirm" value="true">
+    <input type="hidden" name="shared_username" value="{{ shared_username }}">
+    <input type="hidden" name="shared_auth_method" value="{{ shared_auth_method }}">
+    <input type="hidden" name="shared_password" value="{{ shared_password }}">
+    <input type="hidden" name="shared_pem" value="{{ shared_pem }}">
+    <input type="hidden" name="shared_passphrase" value="{{ shared_passphrase }}">
+    <input type="hidden" name="shared_sudo_password" value="{{ shared_sudo_password }}">
+    {% for r in rows %}
+    {% if !r.blocked %}
+    <input type="hidden" name="ip" value="{{ r.ip }}">
+    <input type="hidden" name="expected_fingerprint" value="{{ r.fingerprint }}">
+    <input type="hidden" name="ssh_port" value="{{ r.ssh_port }}">
+    <input type="hidden" name="override_username" value="{{ r.override_username }}">
+    <input type="hidden" name="override_auth_method" value="{{ r.override_auth_method }}">
+    <input type="hidden" name="override_password" value="{{ r.override_password }}">
+    <input type="hidden" name="override_pem" value="{{ r.override_pem }}">
+    <input type="hidden" name="override_passphrase" value="{{ r.override_passphrase }}">
+    <input type="hidden" name="override_sudo_password" value="{{ r.override_sudo_password }}">
+    {% endif %}
+    {% endfor %}
+    <button type="submit" class="btn-danger">{% call macros::icon("host") %} Confirm and Deploy</button>
+    <a class="btn btn-secondary" href="/arsenals/panopticon">Cancel</a>
+  </form>
+  {% else %}
+  <p style="margin-top:14px;">No hosts can be deployed to -- see the status column above.</p>
+  <a class="btn btn-secondary" href="/arsenals/panopticon">Back to Panopticon</a>
+  {% endif %}
+</div>
+
+{% endblock %}

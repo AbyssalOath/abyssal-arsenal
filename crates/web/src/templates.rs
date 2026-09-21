@@ -903,6 +903,112 @@ pub struct PanopticonSwitchTrafficTemplate {
     pub chart_current_out: Option<String>,
 }
 
+// -----------------------------------------------------------------------
+// "Quick Add Host From Network Scan" -- picker -> credentials -> host-key
+// review -> deploy status. See `routes/panopticon_deploy.rs` and
+// `crate::ssh_deploy` for the handlers/orchestration behind these.
+// -----------------------------------------------------------------------
+
+pub struct ScanPickerHostRow {
+    pub ip: String,
+    pub hostname: String,
+    pub mac: String,
+    pub checked: bool,
+}
+
+/// After a discovery scan, lets the admin pick which of the just-discovered
+/// devices to deploy the agent to over SSH -- see
+/// `routes/panopticon_deploy.rs::render_scan_picker`. "Select all"/"none"
+/// (`scan_picker_refresh`) re-renders this same template rather than using
+/// client-side JS, matching this app's server-rendered-only house style.
+#[derive(Template)]
+#[template(path = "panopticon_scan_picker.html")]
+pub struct PanopticonScanPickerTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<ScanPickerHostRow>,
+}
+
+pub struct DeployCredentialHostRow {
+    pub ip: String,
+    pub hostname: String,
+}
+
+/// SSH credentials for the selected hosts: one shared set, plus an
+/// optional per-host override (see `routes/panopticon_deploy.rs`'s doc
+/// comment on `resolve_credentials` for the override semantics). Nothing
+/// here is ever written to a database -- these fields only ever exist in
+/// this rendered HTML and the next request's body.
+#[derive(Template)]
+#[template(path = "panopticon_deploy_credentials.html")]
+pub struct PanopticonDeployCredentialsTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<DeployCredentialHostRow>,
+    pub error: Option<String>,
+}
+
+/// One host's host-key probe result, plus its credential fields carried
+/// forward verbatim as hidden inputs (not re-derived -- see
+/// `routes/panopticon_deploy.rs::deploy_hostkeys`) so the final confirm
+/// step gets exactly what the admin typed without this page needing to
+/// persist anything server-side.
+pub struct DeployHostKeyRow {
+    pub ip: String,
+    pub hostname: String,
+    pub fingerprint: String,
+    pub status_label: String,
+    pub status_class: String,
+    /// A changed (not new) host key is a hard stop -- this host is shown
+    /// with an explanation but its fields aren't emitted as hidden inputs,
+    /// so it can't be included in the confirm step no matter what's
+    /// clicked.
+    pub blocked: bool,
+    /// Already resolved from shared/override at probe time (the probe
+    /// itself needed the real port) -- carried forward as one final value
+    /// rather than shared/override fields again.
+    pub ssh_port: u16,
+    pub override_username: String,
+    pub override_auth_method: String,
+    pub override_password: String,
+    pub override_pem: String,
+    pub override_passphrase: String,
+    pub override_sudo_password: String,
+}
+
+#[derive(Template)]
+#[template(path = "panopticon_deploy_hostkeys.html")]
+pub struct PanopticonDeployHostKeysTemplate {
+    pub base: BaseCtx,
+    pub rows: Vec<DeployHostKeyRow>,
+    pub any_deployable: bool,
+    pub shared_username: String,
+    pub shared_auth_method: String,
+    pub shared_password: String,
+    pub shared_pem: String,
+    pub shared_passphrase: String,
+    pub shared_sudo_password: String,
+}
+
+pub struct DeployStatusHostRow {
+    pub ip_address: String,
+    pub hostname: Option<String>,
+    pub state_label: String,
+    pub state_class: String,
+    pub is_terminal: bool,
+    pub failure_detail: Option<String>,
+    pub output: String,
+}
+
+/// Auto-refreshes (`<meta http-equiv="refresh">`) until every host reaches
+/// a terminal state -- see `routes/panopticon_deploy.rs::deploy_status`.
+#[derive(Template)]
+#[template(path = "panopticon_deploy_status.html")]
+pub struct PanopticonDeployStatusTemplate {
+    pub base: BaseCtx,
+    pub job_id: String,
+    pub hosts: Vec<DeployStatusHostRow>,
+    pub complete: bool,
+}
+
 pub struct CryptkeeperHostRow {
     pub id: String,
     pub name: String,

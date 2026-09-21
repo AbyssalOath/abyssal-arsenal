@@ -1,0 +1,48 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Quick Add Hosts — Abyssal Arsenal{% endblock %}
+{% block heading %}Quick Add Hosts From Scan{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Every device this scan found is already saved to the inventory below, whether
+    or not you add any of them here. Pick which ones to deploy the agent to over
+    SSH, or cancel and add them later from the device inventory.
+  </p>
+
+  {% if hosts.is_empty() %}
+  <p style="color:var(--text-muted);">No devices were discovered by this scan.</p>
+  <a class="btn btn-secondary" href="/arsenals/panopticon">Back to Panopticon</a>
+  {% else %}
+  <form method="post" action="/arsenals/panopticon/deploy/credentials">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <table>
+      <thead>
+        <tr><th></th><th>IP address</th><th>Hostname</th><th>MAC</th></tr>
+      </thead>
+      <tbody>
+        {% for h in hosts %}
+        <tr>
+          <td>
+            <input type="checkbox" name="selected_ips" value="{{ h.ip }}" {% if h.checked %}checked{% endif %}>
+            <input type="hidden" name="all_ips" value="{{ h.ip }}">
+          </td>
+          <td>{{ h.ip }}</td>
+          <td>{{ h.hostname }}</td>
+          <td>{{ h.mac }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div style="margin-top:14px;">
+      <button type="submit" formaction="/arsenals/panopticon/deploy/picker/refresh" name="select" value="all" class="btn-secondary">Select all</button>
+      <button type="submit" formaction="/arsenals/panopticon/deploy/picker/refresh" name="select" value="none" class="btn-secondary">Deselect all</button>
+      <button type="submit" class="btn-danger">{% call macros::icon("host") %} Add Hosts&hellip;</button>
+      <a class="btn btn-secondary" href="/arsenals/panopticon">Cancel</a>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+{% endblock %}

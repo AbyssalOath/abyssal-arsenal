@@ -12,6 +12,7 @@ mod panopticon_snmp;
 mod panopticon_traffic;
 pub mod router;
 pub mod routes;
+pub mod ssh_deploy;
 pub mod state;
 pub mod templates;
 mod thanatos_ops;

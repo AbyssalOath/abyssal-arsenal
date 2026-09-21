@@ -15,4 +15,5 @@ pub mod roles;
 pub mod security_events;
 pub mod sessions;
 pub mod settings;
+pub mod ssh_trusted_host_keys;
 pub mod users;

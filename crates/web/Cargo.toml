@@ -22,7 +22,7 @@ axum.workspace = true
 axum-extra.workspace = true
 tower.workspace = true
 tower-http.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 serde.workspace = true
 serde_json.workspace = true
 askama.workspace = true
@@ -41,4 +41,6 @@ async-trait.workspace = true
 reqwest.workspace = true
 snmp2.workspace = true
 pnet_datalink.workspace = true
+russh.workspace = true
 thiserror.workspace = true
+sqlx.workspace = true
