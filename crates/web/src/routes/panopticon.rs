@@ -2,6 +2,11 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
+use abyssal_core::settings::{
+    PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS, PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS,
+    PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS,
+    PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
+};
 use abyssal_core::{AppError, DeviceType, Permission, TrustState};
 use abyssal_database::repo;
 use abyssal_execution::OperationParams;
@@ -862,4 +867,147 @@ pub async fn switch_poll_now(
             render_switches(&state, &jar, &ctx, result_label, None, Some(e.to_string())).await
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// Switch bandwidth (Phase 3)
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SwitchTrafficQuery {
+    port: Option<u32>,
+    range: Option<String>,
+}
+
+pub async fn switch_traffic(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(q): Query<SwitchTrafficQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+
+    let switch = repo::panopticon_switches::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let raw_days = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
+        PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
+    )
+    .await?;
+    let hourly_days = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
+        PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS,
+    )
+    .await?;
+    let daily_days = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
+        PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS,
+    )
+    .await?;
+
+    let ports = repo::panopticon_traffic::list_ports(&state.pool, id).await?;
+    let mut port_rows = Vec::with_capacity(ports.len());
+    for port in &ports {
+        let latest =
+            repo::panopticon_traffic::latest_raw_samples(&state.pool, id, port.if_index, 2).await?;
+        let rate = crate::panopticon_traffic::rates_from_raw(&latest);
+        let (current_in, current_out) = match rate.last() {
+            Some(p) => (
+                crate::panopticon_traffic::format_bps(p.avg_in_bps),
+                crate::panopticon_traffic::format_bps(p.avg_out_bps),
+            ),
+            None => ("—".to_string(), "—".to_string()),
+        };
+        port_rows.push(crate::templates::PanopticonPortRow {
+            if_index: port.if_index,
+            label: port
+                .if_descr
+                .clone()
+                .unwrap_or_else(|| format!("if{}", port.if_index)),
+            last_seen_at: crate::common::format_in_tz(port.last_seen_at, &ctx.user.timezone),
+            current_in,
+            current_out,
+        });
+    }
+
+    let available = crate::panopticon_traffic::available_ranges(raw_days, hourly_days, daily_days);
+    let selected_range = q
+        .range
+        .as_deref()
+        .and_then(crate::panopticon_traffic::TrafficRange::from_str)
+        .filter(|r| available.contains(r))
+        .unwrap_or(crate::panopticon_traffic::TrafficRange::Hours24);
+    let ranges = available
+        .iter()
+        .map(|r| {
+            (
+                r.as_str().to_string(),
+                r.label().to_string(),
+                *r == selected_range,
+            )
+        })
+        .collect();
+
+    let mut chart_svg = None;
+    let mut chart_port_label = None;
+    let mut chart_current_in = None;
+    let mut chart_current_out = None;
+    if let Some(if_index) = q.port {
+        let points = crate::panopticon_traffic::points_for_range(
+            &state.pool,
+            id,
+            if_index,
+            selected_range,
+            raw_days,
+            hourly_days,
+            daily_days,
+        )
+        .await?;
+        chart_svg = crate::panopticon_traffic::render_chart_svg(&points);
+        chart_port_label = port_rows
+            .iter()
+            .find(|p| p.if_index == if_index)
+            .map(|p| p.label.clone());
+        if let Some(last) = points.last() {
+            chart_current_in = Some(crate::panopticon_traffic::format_bps(last.avg_in_bps));
+            chart_current_out = Some(crate::panopticon_traffic::format_bps(last.avg_out_bps));
+        }
+    }
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+
+    let tpl = crate::templates::PanopticonSwitchTrafficTemplate {
+        base,
+        switch_id: switch.id.to_string(),
+        switch_name: switch.name,
+        ports: port_rows,
+        selected_port: q.port,
+        selected_range: selected_range.as_str().to_string(),
+        ranges,
+        chart_svg,
+        chart_port_label,
+        chart_current_in,
+        chart_current_out,
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
 }

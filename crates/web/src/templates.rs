@@ -402,6 +402,9 @@ pub struct SettingsTemplate {
     pub panopticon_mdns_enabled: bool,
     pub panopticon_arp_enabled: bool,
     pub panopticon_arp_interface: String,
+    pub panopticon_traffic_raw_retention_days: u32,
+    pub panopticon_traffic_hourly_retention_days: u32,
+    pub panopticon_traffic_daily_retention_days: u32,
     pub message: Option<String>,
 }
 
@@ -833,6 +836,35 @@ pub struct PanopticonSwitchesTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+}
+
+pub struct PanopticonPortRow {
+    pub if_index: u32,
+    pub label: String,
+    pub last_seen_at: String,
+    pub current_in: String,
+    pub current_out: String,
+}
+
+/// One switch's port list + (optionally) a rendered chart for one
+/// selected port -- see `routes/panopticon.rs::switch_traffic`.
+#[derive(Template)]
+#[template(path = "panopticon_switch_traffic.html")]
+pub struct PanopticonSwitchTrafficTemplate {
+    pub base: BaseCtx,
+    pub switch_id: String,
+    pub switch_name: String,
+    pub ports: Vec<PanopticonPortRow>,
+    pub selected_port: Option<u32>,
+    pub selected_range: String,
+    /// (range key, label, is this the selected one) for the duration
+    /// buttons -- only ranges the current retention settings can actually
+    /// serve are included (see `panopticon_traffic::available_ranges`).
+    pub ranges: Vec<(String, String, bool)>,
+    pub chart_svg: Option<String>,
+    pub chart_port_label: Option<String>,
+    pub chart_current_in: Option<String>,
+    pub chart_current_out: Option<String>,
 }
 
 pub struct CryptkeeperHostRow {

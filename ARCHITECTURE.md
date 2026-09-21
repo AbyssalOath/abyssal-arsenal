@@ -447,7 +447,38 @@ below for what that implies for toggling them).
   the manual "Poll now" button's exact polling code
   (`panopticon_snmp.rs::poll_and_record`) -- the only difference is
   `Executor`-gated vs. unattended, same split as every sweep/manual-action
-  pair in this table.
+  pair in this table. The same SNMP session also walks IF-MIB's 64-bit
+  `ifHCIn/OutOctets` (falling back to the legacy 32-bit counters if a
+  switch doesn't expose the HC ones) for every port it saw an `ifDescr`
+  for, not just ports with a live FDB entry, and records one raw counter
+  row per port into `panopticon_port_traffic_raw` -- the bandwidth
+  history feature's only collection point, piggybacking on this sweep
+  rather than polling separately.
+- **Panopticon traffic rollup** (`abyssal_web::spawn_panopticon_traffic_rollup`,
+  every hour): turns those raw counter rows into actual bandwidth graphs.
+  Consecutive raw samples become rate points (bits/sec) in
+  `panopticon_traffic.rs::rates_from_raw` -- a decrease between two
+  readings is a wraparound for a legacy 32-bit counter (adds back 2^32,
+  the standard MRTG/Cacti convention; a 32-bit counter can wrap multiple
+  times between polls on a fast link, which this can't recover from, an
+  inherent 32-bit-counter limitation) or a reset for a 64-bit one (skipped
+  outright, since 2^64 bytes is never reached in practice). Every hour,
+  and once a day, computes and upserts that period's rollup bucket
+  (avg/max bps) directly from raw data for every known port -- the two
+  rollup tiers are independent of each other, not chained, so either can
+  be on while the other is off. Each tier's retention is admin-configurable
+  (Settings page, `panopticon.traffic_{raw,hourly,daily}_retention_days`);
+  `0` for the hourly or daily tier means fully off -- not computed, and
+  every existing row for it deleted, not just left to stop growing. Raw
+  retention has a 2-day floor (`panopticon_traffic.rs::MIN_RAW_RETENTION_DAYS`)
+  regardless of what's configured, since the daily rollup needs a full
+  elapsed day of raw data still on hand when it runs. The traffic page
+  (`/arsenals/panopticon/switches/:id/traffic`) picks the coarsest tier
+  that still fully covers whatever duration preset is selected (raw when
+  it fits, else hourly, else daily) and renders the result as an inline
+  SVG line chart computed server-side (`panopticon_traffic.rs::
+  render_chart_svg`) -- no client-side JavaScript charting library, this
+  app has none anywhere.
 - **Panopticon mDNS listener** (`abyssal_web::spawn_panopticon_mdns_listener`,
   gated by `panopticon.mdns_enabled`): an ordinary UDP multicast socket
   join on port 5353, no elevated privileges needed -- picks up devices
@@ -564,7 +595,7 @@ switcher has to render everywhere, not just on arsenal pages.
 
 ## Data model
 
-Eleven migrations so far:
+Twelve migrations so far:
 
 - `0001_init.sql` -- `users`, `roles`, `permissions`, `role_permissions`,
   `user_roles`, `sessions`, `audit_log`, `settings`, `modules`.
@@ -601,6 +632,12 @@ Eleven migrations so far:
   switches Panopticon polls over SNMP, community string encrypted at
   rest) and `panopticon_devices.switch_id`/`switch_port`/
   `switch_port_seen_at`, populated by the SNMP sweep.
+- `0012_panopticon_traffic.sql` -- `panopticon_switch_ports` (every port a
+  poll has ever seen `ifDescr` for on a switch), `panopticon_
+  port_traffic_raw` (raw per-poll octet counters), and the
+  `panopticon_port_traffic_hourly`/`_daily` rollup tiers -- see the
+  "Panopticon traffic rollup" background-task bullet above for how the
+  three fit together.
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time

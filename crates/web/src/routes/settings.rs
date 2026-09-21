@@ -3,8 +3,11 @@ use abyssal_core::settings::{
     APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES, APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
     HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED, PANOPTICON_ARP_ENABLED,
     PANOPTICON_ARP_INTERFACE, PANOPTICON_MDNS_ENABLED, PANOPTICON_SWEEP_ENABLED,
-    PANOPTICON_SWEEP_TARGET, PUBLIC_REGISTRATION_ENABLED, THANATOS_ALERT_RECIPIENTS,
-    THANATOS_MONITORING_ENABLED,
+    PANOPTICON_SWEEP_TARGET, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
+    PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
+    PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
+    PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
+    THANATOS_ALERT_RECIPIENTS, THANATOS_MONITORING_ENABLED,
 };
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
@@ -67,6 +70,24 @@ pub async fn show(
         repo::settings::get_bool(&state.pool, PANOPTICON_ARP_ENABLED, false).await?;
     let panopticon_arp_interface =
         repo::settings::get_string(&state.pool, PANOPTICON_ARP_INTERFACE, "").await?;
+    let panopticon_traffic_raw_retention_days = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
+        PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
+    )
+    .await?;
+    let panopticon_traffic_hourly_retention_days = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
+        PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS,
+    )
+    .await?;
+    let panopticon_traffic_daily_retention_days = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
+        PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS,
+    )
+    .await?;
 
     let tpl = SettingsTemplate {
         base,
@@ -81,6 +102,9 @@ pub async fn show(
         panopticon_mdns_enabled,
         panopticon_arp_enabled,
         panopticon_arp_interface,
+        panopticon_traffic_raw_retention_days,
+        panopticon_traffic_hourly_retention_days,
+        panopticon_traffic_daily_retention_days,
         message: None,
     };
     let jar = match new_cookie {
@@ -543,6 +567,83 @@ pub async fn set_panopticon_arp_interface(
                 username: &ctx.user.username,
             })
             .resource(PANOPTICON_ARP_INTERFACE),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PanopticonTrafficRetentionForm {
+    csrf_token: String,
+    raw_days: u32,
+    hourly_days: u32,
+    daily_days: u32,
+}
+
+/// One form, three retention settings -- they're conceptually a single
+/// "how much bandwidth history to keep" decision (see
+/// `abyssal_core::settings::PANOPTICON_TRAFFIC_*_RETENTION_DAYS`'s own
+/// doc comments for what `0` means for the hourly/daily tiers), so
+/// there's no reason to split them across separate forms/handlers the
+/// way the enabled-toggle settings above are.
+pub async fn set_panopticon_traffic_retention(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonTrafficRetentionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if form.raw_days < crate::panopticon_traffic::MIN_RAW_RETENTION_DAYS || form.raw_days > 3650 {
+        return Err(WebError(AppError::Validation(format!(
+            "Raw retention must be between {} and 3650 days -- the daily rollup needs at \
+             least a full day of raw data still on hand when it runs.",
+            crate::panopticon_traffic::MIN_RAW_RETENTION_DAYS
+        ))));
+    }
+    if form.hourly_days > 3650 || form.daily_days > 3650 {
+        return Err(WebError(AppError::Validation(
+            "Retention can't exceed 3650 days.".into(),
+        )));
+    }
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
+        serde_json::json!(form.raw_days),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
+        serde_json::json!(form.hourly_days),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
+        serde_json::json!(form.daily_days),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("panopticon.traffic_retention")
+            .metadata(serde_json::json!({
+                "raw_days": form.raw_days,
+                "hourly_days": form.hourly_days,
+                "daily_days": form.daily_days,
+            })),
     )
     .await?;
 

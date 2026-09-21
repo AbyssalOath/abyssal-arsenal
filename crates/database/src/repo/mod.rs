@@ -7,6 +7,7 @@ pub mod modules;
 pub mod network_device_ports;
 pub mod network_devices;
 pub mod panopticon_switches;
+pub mod panopticon_traffic;
 pub mod password_resets;
 pub mod pinned_modules;
 pub mod role_module_visibility;

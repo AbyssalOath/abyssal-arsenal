@@ -60,7 +60,7 @@
     <thead>
       <tr>
         <th>Name</th><th>Address</th><th>SNMP port</th><th>Status</th>
-        <th>Last polled</th><th>Last error</th>
+        <th>Last polled</th><th>Last error</th><th>Bandwidth</th>
         {% if can_manage || can_scan %}<th>Actions</th>{% endif %}
       </tr>
     </thead>
@@ -76,6 +76,7 @@
         </td>
         <td>{% if let Some(t) = s.last_polled_at %}{{ t }}{% else %}&mdash;{% endif %}</td>
         <td>{% if let Some(e) = s.last_poll_error %}<span style="color:var(--danger);">{{ e }}</span>{% else %}&mdash;{% endif %}</td>
+        <td><a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ s.id }}/traffic">{% call macros::icon("route") %} Bandwidth</a></td>
         {% if can_manage || can_scan %}
         <td class="actions">
           {% if can_scan %}

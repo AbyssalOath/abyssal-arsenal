@@ -326,6 +326,38 @@
       </div>
     </div>
 
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("network") %} Panopticon bandwidth history</div>
+        <p class="settings-row-desc">How long to keep per-switch-port bandwidth samples, at each resolution.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Raw 5-minute samples come from the same SNMP poll that already reads each
+            switch's MAC/port table -- no separate polling cadence. Hourly and daily are
+            optional rollups computed from raw data once it's old enough; either one set to
+            <code>0</code> is fully off -- nothing computed, nothing stored, any existing
+            rows for it deleted -- so a bandwidth graph beyond the raw window then has
+            nothing to show unless the other rollup tier is on. Raw retention has a 2-day
+            floor: the daily rollup needs a full elapsed day of raw data on hand when it
+            runs.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/panopticon-traffic-retention" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="traffic-raw-days">Raw (days)</label>
+          <input type="number" id="traffic-raw-days" name="raw_days" min="2" max="3650" value="{{ panopticon_traffic_raw_retention_days }}" style="max-width:90px;">
+          <label for="traffic-hourly-days">Hourly (days, 0=off)</label>
+          <input type="number" id="traffic-hourly-days" name="hourly_days" min="0" max="3650" value="{{ panopticon_traffic_hourly_retention_days }}" style="max-width:90px;">
+          <label for="traffic-daily-days">Daily (days, 0=off)</label>
+          <input type="number" id="traffic-daily-days" name="daily_days" min="0" max="3650" value="{{ panopticon_traffic_daily_retention_days }}" style="max-width:90px;">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
   </div>
 </div>
 

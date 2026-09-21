@@ -23,6 +23,7 @@ use abyssal_database::{DbPool, repo};
 use abyssal_execution::{
     ExecutionError, Operation, OperationKind, OperationOutput, OperationParams,
 };
+use chrono::Utc;
 use snmp2::{AsyncSession, Oid, Value};
 
 /// Every SNMP request (not just the initial connect) gets this long before
@@ -38,6 +39,17 @@ const MAX_WALK_ENTRIES: usize = 20_000;
 const DOT1D_TP_FDB_PORT: &[u64] = &[1, 3, 6, 1, 2, 1, 17, 4, 3, 1, 2];
 const DOT1D_BASE_PORT_IF_INDEX: &[u64] = &[1, 3, 6, 1, 2, 1, 17, 1, 4, 1, 2];
 const IF_DESCR: &[u64] = &[1, 3, 6, 1, 2, 1, 2, 2, 1, 2];
+/// ifXTable's 64-bit "high capacity" counters (RFC 2863) -- preferred over
+/// the legacy 32-bit ones below whenever a switch supports them, since a
+/// 32-bit byte counter wraps roughly every 34 seconds at 1 Gbps line rate,
+/// far faster than any reasonable poll interval can track reliably (see
+/// `panopticon_traffic.rs::rates_from_raw`).
+const IF_HC_IN_OCTETS: &[u64] = &[1, 3, 6, 1, 2, 1, 31, 1, 1, 1, 6];
+const IF_HC_OUT_OCTETS: &[u64] = &[1, 3, 6, 1, 2, 1, 31, 1, 1, 1, 10];
+/// Legacy 32-bit fallback (RFC 1213) for a switch whose ifXTable doesn't
+/// expose the HC counters above.
+const IF_IN_OCTETS: &[u64] = &[1, 3, 6, 1, 2, 1, 2, 2, 1, 10];
+const IF_OUT_OCTETS: &[u64] = &[1, 3, 6, 1, 2, 1, 2, 2, 1, 16];
 
 #[derive(Debug, thiserror::Error)]
 pub enum SnmpPollError {
@@ -55,6 +67,11 @@ pub enum SnmpPollError {
 enum OwnedValue {
     Integer(i64),
     OctetString(Vec<u8>),
+    /// Unifies `Counter32`/`Unsigned32`/`Counter64` -- all three are just
+    /// an unsigned magnitude as far as this module cares; only the OID
+    /// walked (HC vs. legacy) determines whether a caller should treat a
+    /// decrease as a 32-bit wrap or a reset.
+    Counter(u64),
 }
 
 fn oid_suffix(oid: &Oid<'_>, base: &Oid<'_>) -> Option<Vec<u64>> {
@@ -97,6 +114,8 @@ async fn walk_table(
             let owned = match value {
                 Value::Integer(n) => OwnedValue::Integer(n),
                 Value::OctetString(bytes) => OwnedValue::OctetString(bytes.to_vec()),
+                Value::Counter32(n) | Value::Unsigned32(n) => OwnedValue::Counter(u64::from(n)),
+                Value::Counter64(n) => OwnedValue::Counter(n),
                 _ => continue,
             };
             results.push((suffix, owned));
@@ -185,7 +204,95 @@ async fn poll_switch(
         }
     }
 
+    // Bandwidth collection reuses this same session/poll but is entirely
+    // best-effort: a switch that doesn't support IF-MIB's octet counters
+    // (or a transient error walking them) shouldn't take down FDB-based
+    // port matching above, which already succeeded. Errors are logged,
+    // never propagated.
+    collect_port_traffic(pool, &mut sess, switch, &addr, &if_to_descr).await;
+
     Ok(matched)
+}
+
+/// Walks IF-MIB's 64-bit `ifHCIn/OutOctets`, falling back to the legacy
+/// 32-bit `ifIn/OutOctets` when a switch's ifXTable doesn't expose them,
+/// and records one raw sample per port Panopticon has ever seen ifDescr
+/// for on this switch (`if_to_descr`, from the FDB-matching walk above --
+/// not just ports with a live FDB entry, since a bandwidth graph is
+/// useful for every port, including uplinks with no single device behind
+/// them). Best-effort throughout: logs and moves on rather than failing
+/// the whole poll, since this is strictly additive to what `poll_switch`
+/// already accomplished by the time this runs.
+async fn collect_port_traffic(
+    pool: &DbPool,
+    sess: &mut AsyncSession,
+    switch: &abyssal_core::PanopticonSwitch,
+    addr: &str,
+    if_to_descr: &HashMap<i64, String>,
+) {
+    let hc_in = walk_table(sess, IF_HC_IN_OCTETS, addr).await;
+    let hc_out = walk_table(sess, IF_HC_OUT_OCTETS, addr).await;
+
+    let (in_map, out_map, bits): (HashMap<i64, u64>, HashMap<i64, u64>, u8) = match (hc_in, hc_out)
+    {
+        (Ok(hc_in), Ok(hc_out)) if !hc_in.is_empty() && !hc_out.is_empty() => {
+            (counter_map(&hc_in), counter_map(&hc_out), 64)
+        }
+        _ => {
+            let in32 = walk_table(sess, IF_IN_OCTETS, addr).await;
+            let out32 = walk_table(sess, IF_OUT_OCTETS, addr).await;
+            match (in32, out32) {
+                (Ok(in32), Ok(out32)) => (counter_map(&in32), counter_map(&out32), 32),
+                (Err(e), _) | (_, Err(e)) => {
+                    tracing::warn!(error = %e, switch = %switch.name, "failed to walk IF-MIB octet counters");
+                    return;
+                }
+            }
+        }
+    };
+
+    let now = Utc::now();
+    for (&if_index, &in_octets) in &in_map {
+        let Some(&out_octets) = out_map.get(&if_index) else {
+            continue;
+        };
+        let if_index_u32 = if_index as u32;
+        if let Err(e) = repo::panopticon_traffic::upsert_port(
+            pool,
+            switch.id,
+            if_index_u32,
+            if_to_descr.get(&if_index).map(String::as_str),
+        )
+        .await
+        {
+            tracing::warn!(error = %e, switch = %switch.name, if_index, "failed to record switch port");
+        }
+        if let Err(e) = repo::panopticon_traffic::insert_raw_sample(
+            pool,
+            switch.id,
+            if_index_u32,
+            in_octets,
+            out_octets,
+            bits,
+            now,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, switch = %switch.name, if_index, "failed to record traffic sample");
+        }
+    }
+}
+
+/// Extracts a single-integer-suffix -> `Counter` walk result into a plain
+/// `ifIndex -> value` map, ignoring anything that isn't shaped that way.
+fn counter_map(entries: &[(Vec<u64>, OwnedValue)]) -> HashMap<i64, u64> {
+    let mut map = HashMap::new();
+    for (suffix, value) in entries {
+        if let (Some(&if_index), OwnedValue::Counter(n)) = (suffix.first(), value) {
+            map.insert(if_index as i64, *n);
+        }
+    }
+    map
 }
 
 /// Decrypts `switch.community_encrypted` and polls it, recording the

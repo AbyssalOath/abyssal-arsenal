@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
     abyssal_web::spawn_update_check_sweep(state.clone());
     abyssal_web::spawn_panopticon_sweep(state.pool.clone());
     abyssal_web::spawn_panopticon_snmp_sweep(state.pool.clone(), encryption_key);
+    abyssal_web::spawn_panopticon_traffic_rollup(state.pool.clone());
     spawn_panopticon_listeners(state.pool.clone()).await;
 
     let app = abyssal_web::build(state);

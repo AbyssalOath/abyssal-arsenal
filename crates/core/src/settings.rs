@@ -94,3 +94,35 @@ pub const PANOPTICON_ARP_ENABLED: &str = "panopticon.arp_enabled";
 /// networking (or running the binary directly) is required to see real
 /// LAN traffic.
 pub const PANOPTICON_ARP_INTERFACE: &str = "panopticon.arp_interface";
+
+/// How many days of raw (un-rolled-up) per-poll bandwidth samples
+/// (`panopticon_port_traffic_raw`) to keep before the rollup/prune loop
+/// (`abyssal_web::spawn_panopticon_traffic_rollup`) deletes them.
+/// Bandwidth graphs within this window read raw samples directly (full
+/// 5-minute resolution); older graphs fall back to the hourly/daily
+/// rollup tiers below, if enabled. Enforced at at least 2 days
+/// (`panopticon_traffic.rs::MIN_RAW_RETENTION_DAYS`) regardless of what's
+/// configured here -- the daily rollup needs a full elapsed day of raw
+/// data still on hand to compute from when it runs.
+pub const PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS: &str = "panopticon.traffic_raw_retention_days";
+pub const PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS: u32 = 14;
+
+/// How many days of hourly bandwidth rollups
+/// (`panopticon_port_traffic_hourly`) to keep. `0` disables this tier
+/// entirely -- the rollup loop stops computing new hourly rows and prunes
+/// every existing one, giving the "fixed raw window, no rollup" behavior
+/// on its own; a bandwidth graph beyond the raw retention window then has
+/// nothing to show unless the daily tier is enabled instead (or as well).
+pub const PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS: &str =
+    "panopticon.traffic_hourly_retention_days";
+pub const PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS: u32 = 90;
+
+/// How many days of daily bandwidth rollups (`panopticon_port_traffic_daily`)
+/// to keep. `0` disables this tier the same way the hourly one is
+/// disabled by `0` above. Computed directly from that day's raw samples,
+/// not from the hourly tier -- the two rollup tiers are independent, so
+/// either can be on while the other is off (e.g. long-term daily trend
+/// lines without paying for 90 days of hourly resolution nobody's
+/// looking at).
+pub const PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS: &str = "panopticon.traffic_daily_retention_days";
+pub const PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS: u32 = 365;

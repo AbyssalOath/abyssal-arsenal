@@ -1,0 +1,67 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}{{ switch_name }} Bandwidth — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — {{ switch_name }} Bandwidth{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    In/out throughput per port, computed from the raw SNMP octet counters the background
+    poll already collects every 5 minutes. A busy port's traffic isn't necessarily one
+    device's -- an uplink or trunk port carries everything behind it, not just whatever
+    Panopticon has mapped there.
+    <a href="/arsenals/panopticon/switches">{% call macros::icon("network") %} Back to switches</a>
+  </p>
+</div>
+
+{% if let Some(port) = selected_port %}
+  {% if let Some(svg) = chart_svg %}
+  <div class="card">
+    <h3>{% call macros::icon("route") %} {% if let Some(label) = chart_port_label %}{{ label }}{% else %}Port{% endif %}</h3>
+    <p style="color:var(--text-muted); margin-top:0;">
+      <span style="color:#3b82f6;">■</span> In: {% if let Some(v) = chart_current_in %}{{ v }}{% else %}&mdash;{% endif %}
+      &nbsp;&nbsp;
+      <span style="color:#f59e0b;">■</span> Out: {% if let Some(v) = chart_current_out %}{{ v }}{% else %}&mdash;{% endif %}
+    </p>
+    <div style="color:var(--text);">{{ svg|safe }}</div>
+    <div style="margin-top:10px;">
+      {% for (key, label, selected) in ranges %}
+      <a class="btn {% if selected %}btn-secondary{% else %}btn{% endif %}"
+         href="/arsenals/panopticon/switches/{{ switch_id }}/traffic?port={{ port }}&amp;range={{ key }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="card">
+    <p style="color:var(--text-muted); margin-top:0;">Not enough data yet for this port -- check back after the next poll or two.</p>
+  </div>
+  {% endif %}
+{% endif %}
+
+<div class="card">
+  <h3>{% call macros::icon("network") %} Ports</h3>
+  {% if ports.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No ports polled yet -- run "Poll now" from the switches page.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Port</th><th>Current in</th><th>Current out</th><th>Last seen</th><th>Chart</th></tr>
+    </thead>
+    <tbody>
+      {% for p in ports %}
+      <tr>
+        <td>{{ p.label }}</td>
+        <td>{{ p.current_in }}</td>
+        <td>{{ p.current_out }}</td>
+        <td>{{ p.last_seen_at }}</td>
+        <td class="actions">
+          <a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ switch_id }}/traffic?port={{ p.if_index }}&amp;range={{ selected_range }}">{% call macros::icon("route") %} View</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

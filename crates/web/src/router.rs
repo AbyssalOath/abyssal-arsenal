@@ -135,6 +135,10 @@ pub fn build(state: AppState) -> Router {
             "/admin/settings/panopticon-arp-interface",
             post(routes::settings::set_panopticon_arp_interface),
         )
+        .route(
+            "/admin/settings/panopticon-traffic-retention",
+            post(routes::settings::set_panopticon_traffic_retention),
+        )
         .route("/admin/hosts", get(routes::hosts::list))
         .route(
             "/admin/hosts/enroll-token",
@@ -1145,6 +1149,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/switches/:id/remove",
             post(routes::panopticon::switch_remove),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/traffic",
+            get(routes::panopticon::switch_traffic),
         )
         .route("/arsenals/thanatos", get(routes::thanatos::show))
         .route(
