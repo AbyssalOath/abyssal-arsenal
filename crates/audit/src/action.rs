@@ -32,6 +32,11 @@ pub enum AuditAction {
     HostDeescalated,
     HostElevationExpired,
     NetworkDeviceRemoved,
+    NetworkDeviceClassified,
+    NetworkDeviceDiscovered,
+    NetworkUntrustedDeviceSeen,
+    NetworkSwitchAdded,
+    NetworkSwitchRemoved,
     WorkflowEvaluationFailed,
 }
 
@@ -67,6 +72,11 @@ impl AuditAction {
             AuditAction::HostDeescalated => "HOST_DEESCALATED",
             AuditAction::HostElevationExpired => "HOST_ELEVATION_EXPIRED",
             AuditAction::NetworkDeviceRemoved => "NETWORK_DEVICE_REMOVED",
+            AuditAction::NetworkDeviceClassified => "NETWORK_DEVICE_CLASSIFIED",
+            AuditAction::NetworkDeviceDiscovered => "NETWORK_DEVICE_DISCOVERED",
+            AuditAction::NetworkUntrustedDeviceSeen => "NETWORK_UNTRUSTED_DEVICE_SEEN",
+            AuditAction::NetworkSwitchAdded => "NETWORK_SWITCH_ADDED",
+            AuditAction::NetworkSwitchRemoved => "NETWORK_SWITCH_REMOVED",
             AuditAction::WorkflowEvaluationFailed => "WORKFLOW_EVALUATION_FAILED",
         }
     }
@@ -101,6 +111,11 @@ impl AuditAction {
         AuditAction::HostDeescalated,
         AuditAction::HostElevationExpired,
         AuditAction::NetworkDeviceRemoved,
+        AuditAction::NetworkDeviceClassified,
+        AuditAction::NetworkDeviceDiscovered,
+        AuditAction::NetworkUntrustedDeviceSeen,
+        AuditAction::NetworkSwitchAdded,
+        AuditAction::NetworkSwitchRemoved,
         AuditAction::WorkflowEvaluationFailed,
     ];
 }

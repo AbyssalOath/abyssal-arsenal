@@ -120,6 +120,9 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 tokio-util = "0.7"
 strum = { version = "0.26", features = ["derive"] }
 time = "0.3"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+snmp2 = { version = "0.5", default-features = false, features = ["tokio", "heap_buffers"] }
+pnet_datalink = { version = "0.35", default-features = false, features = ["std"] }
 
 [profile.release]
 lto = true

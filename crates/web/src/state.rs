@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use abyssal_auth::LoginLimiter;
+use abyssal_core::EncryptionKey;
 use abyssal_database::DbPool;
 use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
@@ -47,4 +48,10 @@ pub struct AppState {
     /// once, the latest tagged release GitHub reports -- see
     /// `crate::update_check`.
     pub update_status: Arc<RwLock<UpdateStatus>>,
+    /// AES-256-GCM master key for encrypting Panopticon switches' SNMP
+    /// community strings at rest -- `None` when `ENCRYPTION_KEY` isn't
+    /// set, in which case the switch-add route refuses cleanly rather
+    /// than storing a credential unencrypted. See
+    /// `abyssal_core::crypto::EncryptionKey`.
+    pub encryption_key: Option<Arc<EncryptionKey>>,
 }

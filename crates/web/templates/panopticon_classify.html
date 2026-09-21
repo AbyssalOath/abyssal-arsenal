@@ -1,0 +1,38 @@
+{% extends "app_base.html" %}
+{% block title %}Classify Device — Abyssal Arsenal{% endblock %}
+{% block heading %}Classify Device{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Classifying <strong>{{ ip_address }}</strong>. This is purely advisory --
+    nothing in Panopticon enforces access based on it yet.
+  </p>
+  <form method="post" action="/arsenals/panopticon/devices/{{ device_id }}/classify">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+    <label for="device-type">Device type</label>
+    <select id="device-type" name="device_type" style="max-width:360px;">
+      {% for (value, label, selected) in device_types %}
+      <option value="{{ value }}" {% if selected %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="trust-state">Trust state</label>
+    <select id="trust-state" name="trust_state" style="max-width:360px;">
+      {% for (value, label, selected) in trust_states %}
+      <option value="{{ value }}" {% if selected %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="notes">Notes</label>
+    <textarea id="notes" name="notes" rows="4" style="max-width:480px; width:100%;">{{ notes }}</textarea>
+
+    <div class="actions" style="margin-top:14px;">
+      <button type="submit" class="btn-secondary">Save classification</button>
+      <a class="btn btn-secondary" href="/arsenals/panopticon">Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

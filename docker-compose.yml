@@ -48,6 +48,18 @@ services:
       # host-side port is configurable, in case 8080 is already taken by
       # something else on this machine. Set HTTP_PORT in .env to change it.
       - "${HTTP_PORT:-8080}:8080"
+      # mDNS listener (Panopticon, off by default) -- ordinary UDP, no
+      # extra capability needed, just the published port.
+      - "5353:5353/udp"
+    # Panopticon's ARP listener (off by default, crates/web/src/panopticon_arp.rs)
+    # needs CAP_NET_RAW to open a raw packet capture socket -- explicit
+    # here even though it's already one of Docker's default capabilities,
+    # so this doesn't silently stop working if that default ever changes
+    # or gets stripped by other hardening. The binary itself (not this
+    # container broadly) is what's actually granted the capability, via
+    # `setcap` in the Dockerfile -- see that file's comment.
+    cap_add:
+      - NET_RAW
     environment:
       DATABASE_URL: mysql://${MARIADB_USER:-abyssal}:${MARIADB_PASSWORD:-changeme}@mariadb:3306/${MARIADB_DATABASE:-abyssal_arsenal}
       PORT: 8080
@@ -61,6 +73,10 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       RUST_LOG: ${RUST_LOG:-info}
       STATIC_DIR: static
+      # AES-256-GCM master key for Panopticon switches' stored SNMP
+      # community strings (crates/core/src/crypto.rs). Optional -- only
+      # needed if you add a switch. Generate with `openssl rand -base64 32`.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 10s

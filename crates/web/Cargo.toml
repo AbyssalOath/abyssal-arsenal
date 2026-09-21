@@ -39,3 +39,6 @@ zeroize.workspace = true
 form_urlencoded.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
+snmp2.workspace = true
+pnet_datalink.workspace = true
+thiserror.workspace = true

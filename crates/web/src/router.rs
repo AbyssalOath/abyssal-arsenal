@@ -115,6 +115,26 @@ pub fn build(state: AppState) -> Router {
             "/admin/settings/thanatos-alert-recipients",
             post(routes::settings::set_thanatos_alert_recipients),
         )
+        .route(
+            "/admin/settings/panopticon-sweep-enabled",
+            post(routes::settings::set_panopticon_sweep_enabled),
+        )
+        .route(
+            "/admin/settings/panopticon-sweep-target",
+            post(routes::settings::set_panopticon_sweep_target),
+        )
+        .route(
+            "/admin/settings/panopticon-mdns-enabled",
+            post(routes::settings::set_panopticon_mdns_enabled),
+        )
+        .route(
+            "/admin/settings/panopticon-arp-enabled",
+            post(routes::settings::set_panopticon_arp_enabled),
+        )
+        .route(
+            "/admin/settings/panopticon-arp-interface",
+            post(routes::settings::set_panopticon_arp_interface),
+        )
         .route("/admin/hosts", get(routes::hosts::list))
         .route(
             "/admin/hosts/enroll-token",
@@ -1101,6 +1121,30 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/devices/:id/remove",
             post(routes::panopticon::remove_device),
+        )
+        .route(
+            "/arsenals/panopticon/devices/:id/classify",
+            get(routes::panopticon::classify_form).post(routes::panopticon::classify_device),
+        )
+        .route(
+            "/arsenals/panopticon/switches",
+            get(routes::panopticon::switches_show).post(routes::panopticon::switch_add),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/enabled",
+            post(routes::panopticon::switch_set_enabled),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/poll",
+            post(routes::panopticon::switch_poll_now),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/remove/confirm",
+            get(routes::panopticon::switch_remove_confirm),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/remove",
+            post(routes::panopticon::switch_remove),
         )
         .route("/arsenals/thanatos", get(routes::thanatos::show))
         .route(

@@ -1,7 +1,9 @@
+pub mod crypto;
 pub mod error;
 pub mod host;
 pub mod module;
 pub mod network_device;
+pub mod oui;
 pub mod permission;
 pub mod role;
 pub mod secret;
@@ -10,10 +12,14 @@ pub mod session;
 pub mod settings;
 pub mod user;
 
+pub use crypto::{CryptoError, EncryptionKey};
 pub use error::AppError;
 pub use host::Host;
 pub use module::ModuleCategory;
-pub use network_device::NetworkDevice;
+pub use network_device::{
+    DeviceType, NetworkDevice, NetworkDevicePort, PanopticonSwitch, TrustState,
+};
+pub use oui::lookup_vendor;
 pub use permission::Permission;
 pub use role::{BUILT_IN_ROLES, Role};
 pub use security_event::{SecurityEvent, Severity};

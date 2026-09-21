@@ -10,14 +10,22 @@ use abyssal_modules::Arsenal;
 /// itself rather than being dispatched to a host's agent. Where every other
 /// arsenal's operations are `AgentOperation` variants sent over a specific
 /// enrolled host's connection via `Executor::execute_on_host`, Panopticon's
-/// future operations (active discovery via nmap/ARP/ICMP/SNMP, passive
-/// visibility from DHCP/ARP/switch telemetry, and correlation against known
-/// agent-managed hosts) are in-process `Operation`s run directly against the
-/// control plane's own network stack via `Executor::execute` — the same
-/// "control plane's own diagnostics" pathway `Executor` already documents,
-/// just not yet used by any shipped arsenal. This reflects that network
-/// discovery doesn't require, and shouldn't require, installing an agent on
-/// every device just to learn it exists.
+/// operations (active discovery via nmap, SNMP polling of managed switches,
+/// and correlation against known agent-managed hosts) are in-process
+/// `Operation`s run directly against the control plane's own network stack
+/// via `Executor::execute` — the same "control plane's own diagnostics"
+/// pathway `Executor` already documents. Its two passive discovery
+/// listeners (mDNS, ARP -- `crates/web/src/panopticon_mdns.rs`/
+/// `panopticon_arp.rs`) sit outside that pathway entirely, the same way
+/// every background sweep does (see ARCHITECTURE.md's "Background tasks"):
+/// system-initiated, not request-driven, so there's no `AuthContext` for
+/// `Executor` to check permissions against in the first place. This
+/// reflects that network discovery doesn't require, and shouldn't require,
+/// installing an agent on every device just to learn it exists. The ARP
+/// listener is the one place in this entire workspace that runs with
+/// elevated privileges (`CAP_NET_RAW`, granted to the binary itself via
+/// `setcap`, not by running as root) -- every other arsenal, including the
+/// rest of Panopticon, stays unprivileged by design.
 ///
 /// Conceptually paired with Necrolink: Necrolink *is* the network (per-host
 /// interface/route/DNS/socket administration), Panopticon *watches* it.

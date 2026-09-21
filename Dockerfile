@@ -79,7 +79,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl nmap \
+    ca-certificates curl nmap libcap2-bin \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /app --shell /usr/sbin/nologin abyssal
 
@@ -89,6 +89,16 @@ COPY crates/web/static /app/static
 # Migrations are embedded into the binary at compile time by
 # sqlx::migrate!() (see crates/database/src/pool.rs) -- nothing to copy at
 # runtime for them.
+#
+# Panopticon's ARP listener (crates/web/src/panopticon_arp.rs, off by
+# default) needs CAP_NET_RAW to open a raw AF_PACKET capture socket. This
+# process still runs as the unprivileged `abyssal` user below -- rather
+# than running as root, the capability is granted to the binary itself
+# (a Linux file capability, the same mechanism `ping` uses to work
+# unprivileged), so `USER abyssal` two lines down doesn't lose it. Docker
+# already grants containers CAP_NET_RAW by default; docker-compose.yml's
+# `cap_add: [NET_RAW]` makes that explicit rather than relying on it.
+RUN setcap cap_net_raw+eip /app/abyssal-arsenal
 RUN chown -R abyssal:abyssal /app
 USER abyssal
 

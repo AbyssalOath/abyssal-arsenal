@@ -1,8 +1,10 @@
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
     APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES, APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
-    HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED, PUBLIC_REGISTRATION_ENABLED,
-    THANATOS_ALERT_RECIPIENTS, THANATOS_MONITORING_ENABLED,
+    HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED, PANOPTICON_ARP_ENABLED,
+    PANOPTICON_ARP_INTERFACE, PANOPTICON_MDNS_ENABLED, PANOPTICON_SWEEP_ENABLED,
+    PANOPTICON_SWEEP_TARGET, PUBLIC_REGISTRATION_ENABLED, THANATOS_ALERT_RECIPIENTS,
+    THANATOS_MONITORING_ENABLED,
 };
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
@@ -55,6 +57,16 @@ pub async fn show(
         repo::settings::get_bool(&state.pool, THANATOS_MONITORING_ENABLED, false).await?;
     let thanatos_alert_recipients =
         repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "").await?;
+    let panopticon_sweep_enabled =
+        repo::settings::get_bool(&state.pool, PANOPTICON_SWEEP_ENABLED, false).await?;
+    let panopticon_sweep_target =
+        repo::settings::get_string(&state.pool, PANOPTICON_SWEEP_TARGET, "").await?;
+    let panopticon_mdns_enabled =
+        repo::settings::get_bool(&state.pool, PANOPTICON_MDNS_ENABLED, false).await?;
+    let panopticon_arp_enabled =
+        repo::settings::get_bool(&state.pool, PANOPTICON_ARP_ENABLED, false).await?;
+    let panopticon_arp_interface =
+        repo::settings::get_string(&state.pool, PANOPTICON_ARP_INTERFACE, "").await?;
 
     let tpl = SettingsTemplate {
         base,
@@ -64,6 +76,11 @@ pub async fn show(
         host_isolation_enabled,
         thanatos_monitoring_enabled,
         thanatos_alert_recipients,
+        panopticon_sweep_enabled,
+        panopticon_sweep_target,
+        panopticon_mdns_enabled,
+        panopticon_arp_enabled,
+        panopticon_arp_interface,
         message: None,
     };
     let jar = match new_cookie {
@@ -285,6 +302,89 @@ pub async fn set_thanatos_alert_recipients(
 }
 
 #[derive(Deserialize)]
+pub struct PanopticonSweepEnabledForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_panopticon_sweep_enabled(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonSweepEnabledForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_SWEEP_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_SWEEP_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PanopticonSweepTargetForm {
+    csrf_token: String,
+    #[serde(default)]
+    target: String,
+}
+
+pub async fn set_panopticon_sweep_target(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonSweepTargetForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let target = form.target.trim();
+    if !target.is_empty() && !abyssal_agent_protocol::is_valid_network_target(target) {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid IP address, CIDR range, or hostname.".into(),
+        )));
+    }
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_SWEEP_TARGET,
+        serde_json::json!(target),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_SWEEP_TARGET),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
 pub struct ElevationWindowForm {
     csrf_token: String,
     minutes: u32,
@@ -322,6 +422,127 @@ pub async fn set_elevation_window(
             })
             .resource(APOTHEOSIS_ELEVATION_WINDOW_MINUTES)
             .metadata(serde_json::json!({ "minutes": form.minutes })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PanopticonMdnsEnabledForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_panopticon_mdns_enabled(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonMdnsEnabledForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_MDNS_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_MDNS_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PanopticonArpEnabledForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_panopticon_arp_enabled(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonArpEnabledForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_ARP_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_ARP_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PanopticonArpInterfaceForm {
+    csrf_token: String,
+    #[serde(default)]
+    interface: String,
+}
+
+pub async fn set_panopticon_arp_interface(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonArpInterfaceForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let interface = form.interface.trim();
+    if interface.len() > 64 || interface.chars().any(char::is_whitespace) {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid interface name.".into(),
+        )));
+    }
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_ARP_INTERFACE,
+        serde_json::json!(interface),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_ARP_INTERFACE),
     )
     .await?;
 

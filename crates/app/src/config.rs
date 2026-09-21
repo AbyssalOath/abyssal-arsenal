@@ -17,6 +17,14 @@ pub struct Config {
     /// admin has to set it explicitly. Without it, the reset email still
     /// includes the raw token itself for the recipient to paste in.
     pub public_url: Option<String>,
+    /// Base64-encoded 32-byte AES-256-GCM master key, used only to encrypt
+    /// and decrypt Panopticon switches' stored SNMP community strings
+    /// (`abyssal_core::crypto::EncryptionKey`). Optional: a deployment
+    /// that never configures a switch shouldn't be forced to generate and
+    /// manage a secret it doesn't use. Parsed once at startup rather than
+    /// on first use so a malformed key fails loudly at boot, not silently
+    /// on the first switch someone tries to add.
+    pub encryption_key: Option<abyssal_core::EncryptionKey>,
 }
 
 fn env_opt(key: &str) -> Option<String> {
@@ -45,6 +53,10 @@ impl Config {
             smtp_password: env_opt("SMTP_PASSWORD"),
             smtp_from: env_opt("SMTP_FROM"),
             public_url: env_opt("PUBLIC_URL").map(|v| v.trim_end_matches('/').to_string()),
+            encryption_key: env_opt("ENCRYPTION_KEY")
+                .map(|v| abyssal_core::EncryptionKey::from_base64(&v))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("ENCRYPTION_KEY is invalid: {e}"))?,
         })
     }
 }

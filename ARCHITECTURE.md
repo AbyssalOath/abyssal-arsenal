@@ -384,12 +384,18 @@ might be.
 ## Background tasks
 
 Everything in the control plane is otherwise request-driven -- nothing
-runs unless a browser or an agent connection causes it to. Four
-exceptions, all `tokio::spawn`'d fixed-interval loops started once at
-startup (`crates/app/src/main.rs`), following the same shape: no
-`AuthContext` to check permissions against, since nothing initiated the
-work, so each bypasses the request-oriented `Executor` entirely and
-talks to the lower-level primitive underneath it directly.
+runs unless a browser or an agent connection causes it to. The exceptions
+are all `tokio::spawn`'d, started once at startup (`crates/app/src/
+main.rs`), and share one trait: no `AuthContext` to check permissions
+against, since nothing initiated the work, so each bypasses the
+request-oriented `Executor` entirely and talks to the lower-level
+primitive underneath it directly. Most are fixed-interval sweeps that
+always start; Panopticon's mDNS and ARP listeners are a different shape
+-- event-driven receive loops, and each only starts at all if its
+setting says to (checked once, here, not re-checked per-tick the way a
+sweep's gate is, since starting one means binding a real socket or
+opening a raw capture, not flipping a soft flag -- see their own bullets
+below for what that implies for toggling them).
 
 - **Elevation expiry sweep** (`spawn_elevation_expiry_sweep`, every 60s):
   `ElevationTracker::is_elevated`/`snapshot` already evict lapsed entries
@@ -407,6 +413,71 @@ talks to the lower-level primitive underneath it directly.
   through `HostConnectionRegistry::dispatch` (bypassing
   `execute_on_host()`), then runs the same persist-and-correlate pipeline
   the on-demand scan route uses.
+- **Panopticon sweep** (`abyssal_web::spawn_panopticon_sweep`, two
+  independent loops): a passive refresh every 60s, unconditional --
+  re-reads the control plane's own kernel neighbor table (`ip neigh`,
+  no traffic sent) and records a sighting for every entry, the same
+  best-effort MAC source the manual scan already uses -- and an active
+  nmap sweep every 30 minutes, gated first against
+  `panopticon.sweep_enabled` and a non-empty `panopticon.sweep_target`
+  (both re-checked fresh every tick), which re-runs the same discovery
+  scan the manual, admin-triggered scan uses. Both loops share one
+  "record a sighting" pipeline with the on-demand scan route
+  (`panopticon_ops.rs::run_discovery_scan`/`audit_sighting`): a device
+  never seen before, or a device already classified `Untrusted` that
+  reappears after having gone stale (`NetworkDevice::is_stale`), gets a
+  `NetworkDeviceDiscovered`/`NetworkUntrustedDeviceSeen` audit event --
+  edge-triggered, not per-tick, so a persistently-visible untrusted
+  device doesn't spam the log.
+- **Panopticon SNMP sweep** (`abyssal_web::spawn_panopticon_snmp_sweep`,
+  every 5 minutes): polls every enabled row in `panopticon_switches` over
+  SNMP v2c for BRIDGE-MIB's `dot1dTpFdbTable` (MAC -> bridge port,
+  joined through `dot1dBasePortIfIndex` and IF-MIB's `ifDescr` for a
+  human port label) -- the mechanism that gives a device's inventory row
+  a `switch_id`/`switch_port`. Each switch's community string is stored
+  encrypted (`abyssal_core::crypto::EncryptionKey`, AES-256-GCM,
+  `ENCRYPTION_KEY` env var) -- the one credential this platform stores
+  reversibly rather than hash-only, since the sweep has to present the
+  actual plaintext to the switch with nobody around to type it in again.
+  No-ops entirely when `ENCRYPTION_KEY` isn't set. Every SNMP request is
+  individually timeout-bounded (`panopticon_snmp.rs::REQUEST_TIMEOUT`,
+  5s) so one unreachable switch can't stall the sweep; per-switch success/
+  failure is recorded on the switch row (`last_polled_at`/
+  `last_poll_error`) and shown on `/arsenals/panopticon/switches`. Shares
+  the manual "Poll now" button's exact polling code
+  (`panopticon_snmp.rs::poll_and_record`) -- the only difference is
+  `Executor`-gated vs. unattended, same split as every sweep/manual-action
+  pair in this table.
+- **Panopticon mDNS listener** (`abyssal_web::spawn_panopticon_mdns_listener`,
+  gated by `panopticon.mdns_enabled`): an ordinary UDP multicast socket
+  join on port 5353, no elevated privileges needed -- picks up devices
+  that self-announce a `*.local` hostname (most consumer/IoT gear) even
+  if they never respond to an active scan. Hand-rolled DNS message
+  parsing (`panopticon_mdns.rs`, including RFC 1035 name-compression
+  pointers, bounded against a malicious/corrupt pointer loop) rather than
+  a new dependency, consistent with this codebase's existing preference
+  for hand-rolled parsing of a well-understood wire format over pulling
+  in a crate for one field. Off by default; binding the socket is a real
+  startup-time resource acquisition, so toggling this takes a server
+  restart, the same posture a raw syslog UDP/TCP receiver would need.
+- **Panopticon ARP listener** (`abyssal_web::spawn_panopticon_arp_listener`,
+  gated by `panopticon.arp_enabled` + a non-empty `panopticon.arp_interface`):
+  raw `AF_PACKET` capture via `pnet_datalink`, the one place in this
+  entire workspace that needs elevated privileges (`CAP_NET_RAW`) --
+  every other arsenal, including the rest of Panopticon, runs as an
+  ordinary unprivileged process by design. Granted as a Linux file
+  capability on the binary itself (Dockerfile's `setcap cap_net_raw+eip`),
+  not by running the container as root, so `USER abyssal` still holds;
+  docker-compose.yml's `cap_add: [NET_RAW]` makes the container-level
+  grant explicit. `promiscuous: false` deliberately -- ARP is link-layer
+  broadcast/direct-reply traffic an ordinary bridge port already receives,
+  so promiscuous mode (which would additionally need `CAP_NET_ADMIN`)
+  buys nothing here. The blocking `DataLinkReceiver::next()` call runs on
+  a `spawn_blocking` task, forwarding parsed sightings to an ordinary
+  async task over an `mpsc` channel rather than blocking a tokio worker
+  on socket reads. Same Docker-bridge-vs-physical-LAN caveat the manual
+  discovery scan's own page already states, and the same
+  restart-to-toggle posture as the mDNS listener.
 - **Dashboard health sweep** (`abyssal_web::spawn_health_sweep`, every 5
   minutes): dispatches `AgentOperation::FailedServices` (Mortiscope) to
   every connected host directly through `HostConnectionRegistry::dispatch`
@@ -493,7 +564,7 @@ switcher has to render everywhere, not just on arsenal pages.
 
 ## Data model
 
-Seven migrations so far:
+Eleven migrations so far:
 
 - `0001_init.sql` -- `users`, `roles`, `permissions`, `role_permissions`,
   `user_roles`, `sessions`, `audit_log`, `settings`, `modules`.
@@ -516,6 +587,20 @@ Seven migrations so far:
   dashboard health sweep's per-host results, one row per host, upserted
   every tick) and `backup_records` (one row per backup Reliquary creates,
   so the dashboard can show fleet-wide backup status cheaply).
+- `0008_password_resets.sql` -- `password_resets` (single-use, short-lived
+  local-account reset tokens, hash-only at rest like every other bearer
+  token this platform stores).
+- `0009_role_module_visibility.sql` -- `role_module_visibility`, a
+  per-role declutter layer on top of (never instead of) the permission
+  system for the dashboard's arsenal grid.
+- `0010_panopticon_enrichment.sql` -- adds `device_type`/`trust_state`/
+  `notes` to `panopticon_devices` (the first NAC-adjacent primitive, an
+  admin-assigned trust flag) and normalizes what had been a freeform
+  `open_ports` string into its own `panopticon_device_ports` table.
+- `0011_panopticon_switches.sql` -- `panopticon_switches` (managed
+  switches Panopticon polls over SNMP, community string encrypted at
+  rest) and `panopticon_devices.switch_id`/`switch_port`/
+  `switch_port_seen_at`, populated by the SNMP sweep.
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time
@@ -539,6 +624,17 @@ maintained offline query cache.
   bridge network, that's the Docker bridge, not the physical LAN --
   reaching a real network needs host networking, or running the binary
   directly outside Docker.
+- `ENCRYPTION_KEY` (optional; `install.sh` generates one unconditionally)
+  is the AES-256-GCM master key for Panopticon switches' stored SNMP
+  community strings. Unset it and the app still runs fine -- adding a
+  switch just refuses cleanly until it's set.
+- Panopticon's ARP listener (off by default) is the one place in this
+  workspace that needs elevated privileges. The Dockerfile grants
+  `CAP_NET_RAW` to the binary itself (`setcap`), not to the container's
+  root user, so the process still runs as the unprivileged `abyssal` user;
+  docker-compose.yml's `cap_add: [NET_RAW]` and the published `5353/udp`
+  (for the mDNS listener, also off by default) exist for these two
+  opt-in features and do nothing while both stay disabled.
 
 ## Known limitations
 

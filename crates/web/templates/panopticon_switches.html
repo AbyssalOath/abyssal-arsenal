@@ -1,0 +1,104 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Panopticon Switches — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — Managed Switches{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    SNMP v2c polling of switches you add below -- reads BRIDGE-MIB's
+    forwarding database to find which physical port a device's MAC sits
+    behind, shown on the <a href="/arsenals/panopticon">main inventory page</a>.
+    Only ever enriches a device already known by IP; a MAC a switch
+    reports that Panopticon has never otherwise seen doesn't create a new
+    inventory row by itself. An unattended sweep polls every enabled
+    switch here every 5 minutes automatically.
+  </p>
+
+  {% if let Some(label) = result_label %}
+  <details class="results-panel" open>
+    <summary>{{ label }}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+  </details>
+  {% endif %}
+
+  {% if can_manage %}
+    {% if encryption_configured %}
+    <form method="post" action="/arsenals/panopticon/switches" style="margin-top:14px;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="switch-name">Name</label>
+      <input type="text" id="switch-name" name="name" placeholder="e.g. Core switch" required style="max-width:360px;">
+      <label for="switch-ip">IP address or hostname</label>
+      <input type="text" id="switch-ip" name="ip_address" placeholder="e.g. 192.168.1.2" required style="max-width:360px;">
+      <label for="switch-port">SNMP port</label>
+      <input type="text" id="switch-port" name="snmp_port" placeholder="161" style="max-width:160px;">
+      <label for="switch-community">Community string</label>
+      <input type="password" id="switch-community" name="community" autocomplete="new-password" required style="max-width:360px;">
+      <button type="submit" class="btn-secondary">{% call macros::icon("network") %} Add switch</button>
+    </form>
+    {% else %}
+    <div class="error-banner" style="margin-top:14px;">
+      <code>ENCRYPTION_KEY</code> isn't set in the environment, so a switch's community
+      string can't be stored safely -- set it (32 random bytes, base64-encoded, e.g.
+      <code>openssl rand -base64 32</code>) and restart before adding a switch.
+    </div>
+    {% endif %}
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("network") %} Switches</h3>
+  {% if switches.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No switches configured yet.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Address</th><th>SNMP port</th><th>Status</th>
+        <th>Last polled</th><th>Last error</th>
+        {% if can_manage || can_scan %}<th>Actions</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in switches %}
+      <tr>
+        <td>{{ s.name }}</td>
+        <td>{{ s.ip_address }}</td>
+        <td>{{ s.snmp_port }}</td>
+        <td>
+          {% if s.enabled %}<span class="badge badge-success">Enabled</span>
+          {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
+        </td>
+        <td>{% if let Some(t) = s.last_polled_at %}{{ t }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if let Some(e) = s.last_poll_error %}<span style="color:var(--danger);">{{ e }}</span>{% else %}&mdash;{% endif %}</td>
+        {% if can_manage || can_scan %}
+        <td class="actions">
+          {% if can_scan %}
+          <form method="post" action="/arsenals/panopticon/switches/{{ s.id }}/poll" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn btn-secondary">{% call macros::icon("scan") %} Poll now</button>
+          </form>
+          {% endif %}
+          {% if can_manage %}
+          <form method="post" action="/arsenals/panopticon/switches/{{ s.id }}/enabled" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="enabled" value="{% if s.enabled %}false{% else %}true{% endif %}">
+            <button type="submit" class="btn btn-secondary">{% if s.enabled %}Disable{% else %}Enable{% endif %}</button>
+          </form>
+          <a class="btn btn-danger" href="/arsenals/panopticon/switches/{{ s.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

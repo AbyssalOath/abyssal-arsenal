@@ -189,6 +189,143 @@
       </div>
     </div>
 
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("scan") %} Panopticon active sweep</div>
+        <p class="settings-row-desc">Unattended scan that re-runs a discovery scan against a fixed target on a schedule.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Every 30 minutes, runs the same nmap discovery scan the Panopticon page's manual
+            scan does, against the target set below, and records what it finds -- nobody has
+            to click anything. Off by default: this sends real scan traffic to a whole target
+            range on its own schedule, which can trip intrusion detection on or near that
+            target. Panopticon's passive neighbor-table refresh (continuous device discovery
+            that never sends traffic) runs regardless of this setting; only the active scan
+            is gated. Manual, admin-triggered scans from the Panopticon page work regardless
+            of this setting either way.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if panopticon_sweep_enabled %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if panopticon_sweep_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/panopticon-sweep-enabled">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if panopticon_sweep_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if panopticon_sweep_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if panopticon_sweep_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("scan") %} Panopticon sweep target</div>
+        <p class="settings-row-desc">IP, CIDR range, or hostname the active sweep scans on each run.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            The active sweep does nothing on a tick where this is empty, even if the toggle
+            above is on -- there's no default target to guess. Scans every port nmap checks
+            by default, same as leaving the port field blank on a manual scan.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/panopticon-sweep-target" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="panopticon-sweep-target" class="sr-only">Sweep target</label>
+          <input type="text" id="panopticon-sweep-target" name="target" value="{{ panopticon_sweep_target }}" placeholder="e.g. 192.168.1.0/24">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("network") %} Panopticon mDNS listener</div>
+        <p class="settings-row-desc">Passive discovery from devices that self-announce over mDNS (*.local).</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            An ordinary UDP multicast socket join on port 5353 -- no elevated privileges
+            needed. Picks up consumer devices (printers, IoT, phones, Macs, Chromecasts) that
+            self-announce a <code>*.local</code> hostname even if they never respond to an
+            active scan. This binds a real socket at startup, so toggling this takes a
+            server restart, not just this save.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if panopticon_mdns_enabled %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if panopticon_mdns_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/panopticon-mdns-enabled">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if panopticon_mdns_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if panopticon_mdns_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if panopticon_mdns_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("network") %} Panopticon ARP listener</div>
+        <p class="settings-row-desc">Passive discovery by sniffing raw ARP traffic on a network interface.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Requires <code>CAP_NET_RAW</code> (see the Dockerfile/docker-compose.yml) --
+            a real deviation from every other arsenal here, which all run unprivileged.
+            Behind Docker's default bridge network this only ever sees the Docker bridge's
+            own ARP traffic, not a physical LAN's; host networking (or running the binary
+            directly) is required to see real LAN traffic. This opens a real raw-socket
+            capture at startup, so toggling this or changing the interface below takes a
+            server restart.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if panopticon_arp_enabled %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if panopticon_arp_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/panopticon-arp-enabled">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if panopticon_arp_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if panopticon_arp_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if panopticon_arp_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("network") %} Panopticon ARP interface</div>
+        <p class="settings-row-desc">Network interface the ARP listener captures on, e.g. <code>eth0</code>.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            The ARP listener doesn't start at all if this is empty, even if the toggle
+            above is on -- there's no default interface to guess.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/panopticon-arp-interface" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="panopticon-arp-interface" class="sr-only">ARP interface</label>
+          <input type="text" id="panopticon-arp-interface" name="interface" value="{{ panopticon_arp_interface }}" placeholder="e.g. eth0">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
   </div>
 </div>
 

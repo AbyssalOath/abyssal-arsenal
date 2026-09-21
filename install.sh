@@ -34,6 +34,11 @@ else
         echo "Generating secrets..."
         MARIADB_ROOT_PASSWORD=$(openssl rand -hex 24)
         MARIADB_PASSWORD=$(openssl rand -hex 24)
+        # AES-256-GCM master key for Panopticon switches' stored SNMP
+        # community strings (crates/core/src/crypto.rs) -- optional at
+        # runtime (only needed if a switch is ever added), but generated
+        # unconditionally here so it's simply already there if one is.
+        ENCRYPTION_KEY=$(openssl rand -base64 32)
 
         # --- Host port (database) ---
         # MariaDB is bound to 127.0.0.1 only (see docker-compose.yml) so host-side
@@ -60,6 +65,7 @@ MARIADB_USER=abyssal
 MARIADB_PASSWORD=${MARIADB_PASSWORD}
 DB_PORT=${db_port}
 DATABASE_URL=mysql://abyssal:${MARIADB_PASSWORD}@127.0.0.1:${db_port}/abyssal_arsenal
+ENCRYPTION_KEY=${ENCRYPTION_KEY}
 EOF
 
         chmod 600 .env # restrict readability to the owning user only

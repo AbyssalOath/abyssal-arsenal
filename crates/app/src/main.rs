@@ -6,7 +6,11 @@ use std::sync::Arc;
 
 use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
 use abyssal_auth::LoginLimiter;
+use abyssal_core::settings::{
+    PANOPTICON_ARP_ENABLED, PANOPTICON_ARP_INTERFACE, PANOPTICON_MDNS_ENABLED,
+};
 use abyssal_database::DbPool;
+use abyssal_database::repo;
 use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
@@ -23,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let config = Config::from_env()?;
+    let mut config = Config::from_env()?;
 
     let pool = abyssal_database::connect(&config.database_url).await?;
     abyssal_database::run_migrations(&pool).await?;
@@ -33,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
     registry.ensure_seeded(&pool).await?;
 
     let executor = Executor::new(pool.clone(), Duration::from_secs(30));
+    let encryption_key = config.encryption_key.take().map(Arc::new);
 
     let state = AppState {
         pool,
@@ -52,12 +57,16 @@ async fn main() -> anyhow::Result<()> {
         update_status: Arc::new(tokio::sync::RwLock::new(
             abyssal_web::update_check::UpdateStatus::current(),
         )),
+        encryption_key: encryption_key.clone(),
     };
 
     spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());
     abyssal_web::spawn_thanatos_sweep(state.clone());
     abyssal_web::spawn_health_sweep(state.clone());
     abyssal_web::spawn_update_check_sweep(state.clone());
+    abyssal_web::spawn_panopticon_sweep(state.pool.clone());
+    abyssal_web::spawn_panopticon_snmp_sweep(state.pool.clone(), encryption_key);
+    spawn_panopticon_listeners(state.pool.clone()).await;
 
     let app = abyssal_web::build(state);
 
@@ -96,6 +105,34 @@ fn spawn_elevation_expiry_sweep(pool: DbPool, elevation: Arc<ElevationTracker>) 
             }
         }
     });
+}
+
+/// Starts Panopticon's mDNS/ARP listeners if their settings say to --
+/// checked once, here, at startup rather than on every tick the way the
+/// sweep toggles are, since binding a socket (mDNS) or opening a raw
+/// capture (ARP) is a real resource acquisition, not a soft setting.
+/// Toggling either setting, or changing the ARP interface, therefore
+/// takes a server restart to take effect, same as the syslog receiver
+/// pattern this mirrors. A DB error reading either setting is treated as
+/// "off" -- these are both opt-in features, so failing safe means not
+/// starting them, not starting them unconditionally.
+async fn spawn_panopticon_listeners(pool: DbPool) {
+    let mdns_enabled = repo::settings::get_bool(&pool, PANOPTICON_MDNS_ENABLED, false)
+        .await
+        .unwrap_or(false);
+    if mdns_enabled {
+        abyssal_web::spawn_panopticon_mdns_listener(pool.clone());
+    }
+
+    let arp_enabled = repo::settings::get_bool(&pool, PANOPTICON_ARP_ENABLED, false)
+        .await
+        .unwrap_or(false);
+    let arp_interface = repo::settings::get_string(&pool, PANOPTICON_ARP_INTERFACE, "")
+        .await
+        .unwrap_or_default();
+    if arp_enabled && !arp_interface.trim().is_empty() {
+        abyssal_web::spawn_panopticon_arp_listener(pool, arp_interface.trim().to_string());
+    }
 }
 
 fn build_notifications(config: &Config) -> NotificationDispatcher {

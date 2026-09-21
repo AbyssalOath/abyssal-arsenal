@@ -48,3 +48,49 @@ pub const THANATOS_MONITORING_ENABLED: &str = "thanatos.monitoring_enabled";
 /// persisted and shown in the UI either way, this only controls whether
 /// it's also actively pushed out.
 pub const THANATOS_ALERT_RECIPIENTS: &str = "thanatos.alert_recipients";
+
+/// Gates Panopticon's unattended periodic *active* discovery sweep (real
+/// nmap traffic against `PANOPTICON_SWEEP_TARGET`, on a long fixed
+/// interval -- see `spawn_panopticon_sweep`). Off by default, same
+/// reasoning as `THANATOS_MONITORING_ENABLED`: this sends real scan
+/// traffic to a whole target range on its own schedule with nobody having
+/// clicked anything, which can trip intrusion detection on or near that
+/// target. The passive `ip neigh` refresh half of the sweep is
+/// unconditional and unaffected by this setting -- it only ever reads the
+/// control plane's own already-populated neighbor table, never sends
+/// traffic. Manual, admin-triggered scans from the Panopticon page are
+/// also unaffected either way.
+pub const PANOPTICON_SWEEP_ENABLED: &str = "panopticon.sweep_enabled";
+
+/// Target (IP, CIDR range, or hostname) the active sweep scans on each
+/// tick when `PANOPTICON_SWEEP_ENABLED` is on -- validated with the same
+/// `abyssal_agent_protocol::is_valid_network_target` the manual scan form
+/// uses. Empty by default; the sweep no-ops on a tick where this is unset
+/// even if the toggle above is on, rather than guessing a target.
+pub const PANOPTICON_SWEEP_TARGET: &str = "panopticon.sweep_target";
+
+/// Enables the passive mDNS listener (`abyssal_web::spawn_panopticon_mdns_listener`)
+/// -- an ordinary UDP multicast socket join, no elevated privileges needed.
+/// Off by default like every other opt-in listener in this codebase (see
+/// the syslog receiver's own fail-closed-by-default posture, which this
+/// mirrors): binding the socket happens once at startup, so toggling this
+/// takes a server restart, not just a settings save.
+pub const PANOPTICON_MDNS_ENABLED: &str = "panopticon.mdns_enabled";
+
+/// Enables the passive ARP listener (`abyssal_web::spawn_panopticon_arp_listener`)
+/// -- a raw `AF_PACKET` capture on `PANOPTICON_ARP_INTERFACE`, which needs
+/// `CAP_NET_RAW` (see the Dockerfile's `setcap` and docker-compose.yml's
+/// `cap_add`). Off by default. Like the mDNS listener, the capture socket
+/// is opened once at startup, so toggling this or changing the interface
+/// takes a server restart.
+pub const PANOPTICON_ARP_ENABLED: &str = "panopticon.arp_enabled";
+
+/// Network interface name (e.g. `eth0`) the ARP listener captures on.
+/// Empty by default; the listener doesn't start at all if this is unset
+/// even when `PANOPTICON_ARP_ENABLED` is on, rather than guessing an
+/// interface. Behind Docker's default bridge network this only ever sees
+/// the Docker bridge's own ARP traffic, not a physical LAN's -- the same
+/// caveat the manual discovery scan's own page already states; host
+/// networking (or running the binary directly) is required to see real
+/// LAN traffic.
+pub const PANOPTICON_ARP_INTERFACE: &str = "panopticon.arp_interface";

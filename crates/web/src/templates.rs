@@ -397,6 +397,11 @@ pub struct SettingsTemplate {
     pub host_isolation_enabled: bool,
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
+    pub panopticon_sweep_enabled: bool,
+    pub panopticon_sweep_target: String,
+    pub panopticon_mdns_enabled: bool,
+    pub panopticon_arp_enabled: bool,
+    pub panopticon_arp_interface: String,
     pub message: Option<String>,
 }
 
@@ -717,24 +722,53 @@ pub struct NetworkDeviceRow {
     pub id: String,
     pub ip_address: String,
     pub mac_address: Option<String>,
+    /// Best-effort manufacturer name from the MAC's OUI prefix
+    /// (`NetworkDevice::vendor`), or `None` when there's no MAC on record
+    /// or its prefix isn't in Panopticon's curated table.
+    pub vendor: Option<String>,
     pub hostname: Option<String>,
+    /// Open ports joined into one display string (e.g. `"22/tcp ssh,
+    /// 80/tcp http"`) -- normalized storage lives in
+    /// `panopticon_device_ports`; this is just this row's rendering of it.
     pub open_ports: Option<String>,
+    pub device_type_label: String,
+    /// Raw `DeviceType::as_str()` key, for pre-selecting the classify
+    /// form's `<select>`.
+    pub device_type_value: String,
+    pub trust_label: String,
+    /// Raw `TrustState::as_str()` key -- also doubles as the CSS badge
+    /// modifier class suffix (`badge-{trust_value}` isn't used directly,
+    /// see the template's own `{% match %}` for the mapping).
+    pub trust_value: String,
+    pub notes: Option<String>,
     pub first_seen_at: String,
     pub last_seen_at: String,
+    /// Set when `last_seen_at` is older than Panopticon's staleness
+    /// threshold -- see `routes/panopticon.rs::STALE_THRESHOLD`. This is
+    /// never real-time presence, only "the last scan that saw it responded
+    /// this long ago".
+    pub stale: bool,
     /// `Some(host.name)` when this device's IP matches a currently
     /// enrolled host's last-known connecting address (`Host::last_seen_ip`)
     /// -- a best-effort correlation, not a guarantee (a host's LAN address
     /// can change, and this is only ever as fresh as that host's last
     /// WebSocket reconnect).
     pub managed_host_name: Option<String>,
+    /// `"<switch name> / <port label>"` from the most recent SNMP poll
+    /// that found this device's MAC in a switch's forwarding database, or
+    /// `None` if no poll ever has (no switches configured, this device's
+    /// MAC unknown to any polled switch, or it hasn't been polled since
+    /// this device first appeared).
+    pub switch_location: Option<String>,
 }
 
 /// One row of Panopticon's topology view -- devices grouped by inferred
 /// IPv4 /24 (the common case for a LAN) or bucketed together under
 /// `"other"` for anything else (IPv6, or an address this simple grouping
-/// can't parse). Deliberately not real L2/switch topology -- see the
-/// `arsenal-panopticon` crate's doc comment for why that's out of scope
-/// without SNMP/LLDP access this platform doesn't have.
+/// can't parse). Deliberately not real L2/switch topology -- per-device
+/// switch/port location (`NetworkDeviceRow::switch_location`) comes from
+/// polling switches individually (`/arsenals/panopticon/switches`), not
+/// from any broader LLDP-derived map of how those switches interconnect.
 pub struct SubnetGroup {
     pub subnet: String,
     pub device_count: usize,
@@ -752,6 +786,50 @@ pub struct PanopticonTemplate {
     pub can_manage: bool,
     pub devices: Vec<NetworkDeviceRow>,
     pub subnets: Vec<SubnetGroup>,
+    /// The `?port=` query value echoed back into the filter input, empty
+    /// when unfiltered.
+    pub port_filter: String,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
+/// The device classification form -- see `routes/panopticon.rs::classify_*`.
+#[derive(Template)]
+#[template(path = "panopticon_classify.html")]
+pub struct PanopticonClassifyTemplate {
+    pub base: BaseCtx,
+    pub device_id: String,
+    pub ip_address: String,
+    /// (`DeviceType::as_str()` key, label, is this the device's current type)
+    pub device_types: Vec<(&'static str, &'static str, bool)>,
+    /// (`TrustState::as_str()` key, label, is this the device's current state)
+    pub trust_states: Vec<(&'static str, &'static str, bool)>,
+    pub notes: String,
+}
+
+pub struct PanopticonSwitchRow {
+    pub id: String,
+    pub name: String,
+    pub ip_address: String,
+    pub snmp_port: u16,
+    pub enabled: bool,
+    pub last_polled_at: Option<String>,
+    pub last_poll_error: Option<String>,
+}
+
+/// Managed-switch list + add form -- see `routes/panopticon.rs::switches_*`.
+#[derive(Template)]
+#[template(path = "panopticon_switches.html")]
+pub struct PanopticonSwitchesTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    pub can_scan: bool,
+    pub switches: Vec<PanopticonSwitchRow>,
+    /// `false` when no `ENCRYPTION_KEY` is configured -- the add-switch
+    /// form is hidden (with an explanatory note) rather than accepting a
+    /// community string it can't actually store safely.
+    pub encryption_configured: bool,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
