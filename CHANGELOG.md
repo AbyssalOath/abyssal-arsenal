@@ -99,6 +99,16 @@ for what that means for cloning and updating.
   genuinely take over a minute before the next retry even fires, and the
   shorter window risked reporting a host as never having checked in when
   it was actually about to connect fine on its own.
+- Found the actual root cause of the SSH deploy check-in failures above:
+  the install command ran `abyssal-agent install` straight out of its
+  temporary download directory and then deleted that same directory as
+  its own cleanup step. Since the agent's installer writes the systemd
+  service to run from wherever it was executed, this left every deploy's
+  service pointing at a binary that no longer existed -- confirmed
+  against a real deploy as systemd's `203/EXEC`, and unrelated to network
+  access or timing. The install now copies the binary to
+  `/opt/abyssal-agent` first and installs from there, so the service
+  keeps working after cleanup and across reboots.
 
 ### Changed
 

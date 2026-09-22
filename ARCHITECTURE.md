@@ -500,6 +500,29 @@ hostname_is_fallback` tracks which case applied and the deploy status page
 shows an explicit "IP fallback" badge when it's true, rather than letting
 an IP quietly stand in for a real name.
 
+**The downloaded binary is copied to a permanent location before
+`install` ever runs, not run straight out of the temp download
+directory.** `abyssal-agent install` writes the systemd unit's
+`ExecStart` as wherever it's *currently running from*
+(`std::env::current_exe()`, `crates/agent/src/main.rs::
+install_systemd_service`) -- a manual install is just "wherever the
+operator extracted it, and that's now permanent by convention," and the
+agent has no other way to know where it's "meant" to live. An earlier
+version of `ssh_deploy::build_install_command` downloaded to
+`/tmp/abyssal-agent-deploy`, ran `install` from there, and then deleted
+that same directory as its own cleanup step -- which left the systemd
+service pointing at a binary that no longer existed, failing every
+restart with systemd's `203/EXEC`. Confirmed against a real deploy, not
+a theoretical concern. The install command now copies the binary to
+`/opt/abyssal-agent` first and installs from there; only the temporary
+staging directory and downloaded archive get cleaned up afterward, never
+that permanent copy. Getting the resulting shell command right required
+one more level of quoting than everywhere else in this flow --
+`build_install_command` wraps an already-`shell_quote`d inner command in
+`shell_quote` again so it survives as one argument to `sudo -S sh -c`,
+and that nesting is exercised against a real `/bin/sh` (not just
+eyeballed) in `ssh_deploy`'s own tests.
+
 **Orchestration** (`ssh_deploy::run_deploy_job`): a `tokio::sync::
 Semaphore`-gated `tokio::task::JoinSet`, default concurrency 5, so one
 host's failure or a hung connection can never block or delay the others.

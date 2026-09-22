@@ -104,6 +104,55 @@ pub fn shell_quote(value: &str) -> String {
     out
 }
 
+/// The remote install command -- copies the just-downloaded binary into a
+/// permanent location before running `install`, rather than installing
+/// straight out of the temporary download directory and deleting it
+/// afterward.
+///
+/// `abyssal-agent install` writes the systemd unit's `ExecStart` as
+/// wherever it's *currently running from* (`std::env::current_exe()`, see
+/// `crates/agent/src/main.rs::install_systemd_service`) -- it has no other
+/// way to know where it's "meant" to live, since a manual install is just
+/// "wherever the operator happened to extract it, and that's now
+/// permanent by convention." Installing from the temporary staging
+/// directory and then deleting that same directory (an earlier version of
+/// this command did exactly that) left the service pointing at a binary
+/// that no longer existed: every restart failed immediately with
+/// systemd's `203/EXEC` ("could not execute the configured binary") --
+/// confirmed against a real deploy, not a theoretical concern. Copying the
+/// binary to `/opt/abyssal-agent` first and installing *from there* fixes
+/// it for this run and every future reboot; only the temporary staging
+/// directory and archive get cleaned up afterward, never that permanent
+/// copy.
+///
+/// The double-nested quoting here (`shell_quote` applied to the whole
+/// inner command, itself full of `shell_quote`d values) is what safely
+/// carries arbitrary credential/hostname content through two shell
+/// parsing passes -- the outer SSH `exec` shell's, then `sh -c`'s own.
+/// This exact nesting is what this module's own
+/// `nested_shell_quoting_survives_two_levels_of_shell_parsing` test
+/// actually runs through a real `/bin/sh`, not just eyeballs.
+fn build_install_command(
+    control_plane_url: &str,
+    enrollment_token: &str,
+    hostname: &str,
+) -> String {
+    let install_binary_cmd = format!(
+        "mkdir -p /opt/abyssal-agent && \
+         cp /tmp/abyssal-agent-deploy/abyssal-agent /opt/abyssal-agent/abyssal-agent && \
+         chmod +x /opt/abyssal-agent/abyssal-agent && \
+         /opt/abyssal-agent/abyssal-agent install --control-plane-url {} \
+         --enrollment-token {} --name {}",
+        shell_quote(control_plane_url),
+        shell_quote(enrollment_token),
+        shell_quote(hostname)
+    );
+    format!(
+        "sudo -S sh -c {} ; rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz",
+        shell_quote(&install_binary_cmd)
+    )
+}
+
 // ---------------------------------------------------------------------
 // Result / failure types
 // ---------------------------------------------------------------------
@@ -671,14 +720,8 @@ async fn deploy_one_host(
         ));
     }
 
-    let install_cmd = format!(
-        "sudo -S /tmp/abyssal-agent-deploy/abyssal-agent install --control-plane-url {} \
-         --enrollment-token {} --name {} ; \
-         rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz",
-        shell_quote(control_plane_url),
-        shell_quote(enrollment_token),
-        shell_quote(&resolved_hostname)
-    );
+    let install_cmd =
+        build_install_command(control_plane_url, enrollment_token, &resolved_hostname);
     let mut sudo_stdin = Zeroizing::new(String::with_capacity(
         target.credentials.sudo_password.len() + 1,
     ));
@@ -913,6 +956,82 @@ mod tests {
     #[test]
     fn shell_quote_handles_empty_string() {
         assert_eq!(shell_quote(""), "''");
+    }
+
+    // ---------------------------------------------------------------
+    // build_install_command -- structure and the double-nested quoting
+    // it depends on (a real regression: an earlier version installed
+    // straight out of the temp download directory and then deleted that
+    // same directory, leaving the systemd service pointing at a binary
+    // that no longer existed -- confirmed against a real deploy as
+    // systemd's `203/EXEC`).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn install_command_installs_from_a_permanent_location_not_the_temp_one() {
+        let cmd = build_install_command("https://cp.example.com", "tok", "myhost");
+        assert!(cmd.starts_with("sudo -S sh -c "));
+        assert!(cmd.contains("mkdir -p /opt/abyssal-agent"));
+        assert!(cmd.contains(
+            "cp /tmp/abyssal-agent-deploy/abyssal-agent /opt/abyssal-agent/abyssal-agent"
+        ));
+        assert!(cmd.contains("/opt/abyssal-agent/abyssal-agent install"));
+        // The cleanup at the end must only ever remove the temporary
+        // staging directory/archive -- never the permanent copy the
+        // service now depends on for every future restart and reboot.
+        assert!(cmd.ends_with("rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz"));
+        assert!(!cmd.contains("rm -rf /opt"));
+    }
+
+    #[tokio::test]
+    async fn nested_shell_quoting_survives_two_levels_of_shell_parsing() {
+        // Exercises exactly the nesting `build_install_command` relies on
+        // -- an inner command string, itself full of `shell_quote`d
+        // values, wrapped in `shell_quote` again to become one `sh -c`
+        // argument -- against a real shell, not just by inspection.
+        // Adversarial values (embedded quotes, `&&`, `;`, `$()`,
+        // backticks) must survive both parsing passes completely intact.
+        if tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("true")
+            .status()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: /bin/sh not available in this environment");
+            return;
+        }
+
+        let adversarial_url = "http://host; rm -rf /tmp/pwned && echo 'gotcha' `whoami` $(id)";
+        let adversarial_token = "tok'; DROP TABLE hosts; --";
+        let adversarial_name = "name with spaces and \"quotes\" and $VAR and `cmd`";
+
+        let inner = format!(
+            "printf '%s\\n' {} {} {}",
+            shell_quote(adversarial_url),
+            shell_quote(adversarial_token),
+            shell_quote(adversarial_name),
+        );
+        let outer = format!("sh -c {}", shell_quote(&inner));
+
+        let output = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&outer)
+            .output()
+            .await
+            .expect("local sh must be available to run this test");
+
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(
+            lines,
+            vec![adversarial_url, adversarial_token, adversarial_name]
+        );
     }
 
     // ---------------------------------------------------------------
