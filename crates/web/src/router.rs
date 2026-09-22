@@ -1006,6 +1006,22 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/grimoire/:host_id/elevate",
             post(routes::grimoire::elevate),
         )
+        .route(
+            "/arsenals/grimoire/macros",
+            post(routes::grimoire::save_cron_macro),
+        )
+        .route(
+            "/arsenals/grimoire/macros/:macro_id/edit",
+            get(routes::grimoire::macro_edit_form).post(routes::grimoire::macro_edit),
+        )
+        .route(
+            "/arsenals/grimoire/macros/:macro_id/remove/confirm",
+            get(routes::grimoire::macro_remove_confirm),
+        )
+        .route(
+            "/arsenals/grimoire/macros/:macro_id/remove",
+            post(routes::grimoire::macro_remove),
+        )
         .route("/arsenals/inquest", get(routes::inquest::show))
         .route(
             "/arsenals/inquest/:host_id",

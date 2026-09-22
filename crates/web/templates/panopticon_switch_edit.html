@@ -17,10 +17,57 @@
     <input type="text" id="switch-ip" name="ip_address" value="{{ ip_address }}" required style="max-width:360px;">
     <label for="switch-port">SNMP port</label>
     <input type="text" id="switch-port" name="snmp_port" value="{{ snmp_port }}" style="max-width:160px;">
-    <label for="switch-community">Community string</label>
-    <input type="password" id="switch-community" name="community" autocomplete="new-password" placeholder="Leave blank to keep the existing one" style="max-width:360px;">
+
+    <label>SNMP version</label>
+    <div class="snmp-panel">
+      {% for (key, label, is_current) in snmp_versions %}
+      <label class="inline-radio">
+        <input type="radio" class="snmp-version-{{ key }}" name="snmp_version" value="{{ key }}" {% if is_current %}checked{% endif %}>
+        {{ label }}
+      </label>
+      {% endfor %}
+
+      <div class="snmp-community-fields">
+        <label for="switch-community">Community string</label>
+        <input type="password" id="switch-community" name="community" autocomplete="new-password" placeholder="Leave blank to keep the existing one" style="max-width:360px;">
+      </div>
+
+      <div class="snmp-v3-fields">
+        <label for="switch-v3-username">Security username</label>
+        <input type="text" id="switch-v3-username" name="snmp_v3_username" value="{{ snmp_v3_username }}" autocomplete="off" style="max-width:360px;">
+
+        <label for="switch-v3-security-level">Security level</label>
+        <select id="switch-v3-security-level" name="snmp_v3_security_level" style="max-width:360px;">
+          {% for (key, label, is_current) in snmp_security_levels %}
+          <option value="{{ key }}" {% if is_current %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="switch-v3-auth-protocol">Authentication protocol</label>
+        <select id="switch-v3-auth-protocol" name="snmp_v3_auth_protocol" style="max-width:360px;">
+          {% for (key, label, is_current) in snmp_auth_protocols %}
+          <option value="{{ key }}" {% if is_current %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="switch-v3-auth-password">Authentication password</label>
+        <input type="password" id="switch-v3-auth-password" name="snmp_v3_auth_password" autocomplete="new-password" placeholder="Leave blank to keep the existing one" style="max-width:360px;">
+
+        <label for="switch-v3-priv-protocol">Privacy protocol</label>
+        <select id="switch-v3-priv-protocol" name="snmp_v3_priv_protocol" style="max-width:360px;">
+          {% for (key, label, is_current) in snmp_priv_protocols %}
+          <option value="{{ key }}" {% if is_current %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="switch-v3-priv-password">Privacy password</label>
+        <input type="password" id="switch-v3-priv-password" name="snmp_v3_priv_password" autocomplete="new-password" placeholder="Leave blank to keep the existing one" style="max-width:360px;">
+      </div>
+    </div>
     <p style="color:var(--text-muted); font-size:0.8rem; margin:-10px 0 16px;">
-      Leave blank to keep the community string already on file -- there's nothing to show it back to you with.
+      Leave a password field blank to keep the value already on file -- there's nothing to show it
+      back to you with. Changing the SNMP version requires entering its credentials fresh, since
+      the old ones don't carry over.
     </p>
     <div class="actions">
       <button type="submit" class="btn-secondary">{% call macros::icon("network") %} Save changes</button>

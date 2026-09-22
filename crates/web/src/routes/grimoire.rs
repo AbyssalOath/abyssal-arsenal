@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use abyssal_agent_protocol::AgentOperation;
-use abyssal_core::{AppError, Permission};
+use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
+use abyssal_core::{AppError, MacroScope, Permission};
 use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
@@ -67,6 +68,52 @@ pub async fn show(
     Ok((jar, tpl).into_response())
 }
 
+/// Every macro visible to `ctx.user` (their own personal macros, plus
+/// every role macro for a role they belong to), as `GrimoireMacroRow`s
+/// ready to render -- see `repo::macros::list_visible_to_user`.
+/// `can_edit` is true for the owner or anyone holding
+/// `Permission::MacrosManageAll`, never for a role-mate merely using a
+/// shared role macro.
+async fn visible_macro_rows(
+    state: &AppState,
+    ctx: &AuthContext,
+) -> anyhow::Result<Vec<crate::templates::GrimoireMacroRow>> {
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let role_ids: Vec<Uuid> = user_roles.iter().map(|r| r.id).collect();
+    let macros = repo::macros::list_visible_to_user(&state.pool, ctx.user.id, &role_ids).await?;
+
+    let all_roles = repo::roles::list(&state.pool).await?;
+    let role_name = |id: Uuid| -> String {
+        all_roles
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| "unknown role".to_string())
+    };
+
+    Ok(macros
+        .into_iter()
+        .map(|m| {
+            let can_edit = m.owner_user_id == ctx.user.id || ctx.has(Permission::MacrosManageAll);
+            let scope_label = match m.scope {
+                MacroScope::Personal => "Personal".to_string(),
+                MacroScope::Role => format!("Role: {}", role_name(m.role_id.unwrap_or_default())),
+            };
+            crate::templates::GrimoireMacroRow {
+                id: m.id.to_string(),
+                name: m.name,
+                scope_label,
+                job_name: m.job_name,
+                schedule: m.schedule,
+                run_as_user: m.run_as_user,
+                command: m.command,
+                can_edit,
+            }
+        })
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn render_host(
     state: &AppState,
     jar: &CookieJar,
@@ -74,7 +121,8 @@ async fn render_host(
     host_id: Uuid,
     result_label: Option<String>,
     result_output: Option<String>,
-    result_error: Option<String>,
+    mut result_error: Option<String>,
+    load_macro: Option<Uuid>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
@@ -92,6 +140,33 @@ async fn render_host(
     )
     .await?;
 
+    let macros = visible_macro_rows(state, ctx).await?;
+
+    let mut cron_job_name = String::new();
+    let mut cron_schedule = String::new();
+    let mut cron_run_as_user = String::new();
+    let mut cron_command = String::new();
+    if let Some(macro_id) = load_macro {
+        let macro_id = macro_id.to_string();
+        match macros.iter().find(|m| m.id == macro_id) {
+            Some(m) => {
+                cron_job_name = m.job_name.clone();
+                cron_schedule = m.schedule.clone();
+                cron_run_as_user = m.run_as_user.clone();
+                cron_command = m.command.clone();
+            }
+            None => {
+                result_error = Some("That macro isn't available.".to_string());
+            }
+        }
+    }
+
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let macro_roles = user_roles
+        .into_iter()
+        .map(|r| (r.id.to_string(), r.name))
+        .collect();
+
     let tpl = GrimoireHostTemplate {
         can_manage: ctx.has(Permission::SystemsManage),
         elevated: state.elevation.is_elevated(host_id),
@@ -99,6 +174,12 @@ async fn render_host(
         base,
         host_id: host_id.to_string(),
         host_name: host.name,
+        macros,
+        macro_roles,
+        cron_job_name,
+        cron_schedule,
+        cron_run_as_user,
+        cron_command,
         result_label,
         result_output,
         result_error,
@@ -111,14 +192,21 @@ async fn render_host(
     Ok((jar, tpl).into_response())
 }
 
+#[derive(Deserialize)]
+pub struct ShowHostQuery {
+    #[serde(default)]
+    load_macro: Option<Uuid>,
+}
+
 pub async fn show_host(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(host_id): Path<Uuid>,
+    Query(q): Query<ShowHostQuery>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
-    render_host(&state, &jar, &ctx, host_id, None, None, None).await
+    render_host(&state, &jar, &ctx, host_id, None, None, None, q.load_macro).await
 }
 
 #[derive(Deserialize)]
@@ -168,6 +256,7 @@ async fn run_read_op(
                 result_label,
                 Some(output.stdout),
                 None,
+                None,
             )
             .await
         }
@@ -181,6 +270,7 @@ async fn run_read_op(
                 result_label,
                 None,
                 Some(e.to_string()),
+                None,
             )
             .await
         }
@@ -273,6 +363,7 @@ async fn run_write_op(
                 result_label,
                 Some(output.stdout),
                 None,
+                None,
             )
             .await
         }
@@ -286,6 +377,7 @@ async fn run_write_op(
                 result_label,
                 None,
                 Some(e.to_string()),
+                None,
             )
             .await
         }
@@ -429,6 +521,452 @@ pub async fn set_cron_job(
 }
 
 // ---------------------------------------------------------------------
+// Scheduled-task macros -- GitHub issue #7. A macro is host-independent
+// (job_name/schedule/run_as_user/command, no target host), so "save as
+// macro" is a second submit button on the same Set Scheduled Task form
+// (`formaction`/`formmethod`, no client-side JS) rather than a separate
+// page: the browser submits the exact same field values either way.
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SaveCronMacroForm {
+    csrf_token: String,
+    host_id: Uuid,
+    job_name: String,
+    schedule: String,
+    run_as_user: String,
+    command: String,
+    macro_name: String,
+    #[serde(default)]
+    macro_scope: String,
+    #[serde(default)]
+    macro_role_id: String,
+}
+
+pub async fn save_cron_macro(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<SaveCronMacroForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let job_name = validate_job_name(&form.job_name)?;
+    if !abyssal_agent_protocol::is_valid_cron_schedule(&form.schedule) {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid cron schedule (e.g. \"0 3 * * *\" or \"@daily\")."
+                .into(),
+        )));
+    }
+    let run_as_user = form.run_as_user.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_account_name(&run_as_user) {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid username.".into(),
+        )));
+    }
+    if !abyssal_agent_protocol::is_valid_cron_command(&form.command) {
+        return Err(WebError(AppError::Validation(
+            "That doesn't look like a valid command.".into(),
+        )));
+    }
+
+    let macro_name = form.macro_name.trim();
+    if macro_name.is_empty() || macro_name.len() > 128 {
+        return Err(WebError(AppError::Validation(
+            "Macro name must be 1-128 characters.".into(),
+        )));
+    }
+
+    let scope: MacroScope = form
+        .macro_scope
+        .trim()
+        .parse()
+        .unwrap_or(MacroScope::Personal);
+    let role_id = match scope {
+        MacroScope::Personal => None,
+        MacroScope::Role => {
+            let role_id: Uuid = form.macro_role_id.trim().parse().map_err(|_| {
+                WebError(AppError::Validation(
+                    "Pick a role for a role-scoped macro.".into(),
+                ))
+            })?;
+            let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+            if !user_roles.iter().any(|r| r.id == role_id) {
+                return Err(WebError(AppError::Validation(
+                    "You can only save a role macro for a role you belong to.".into(),
+                )));
+            }
+            Some(role_id)
+        }
+    };
+
+    repo::macros::create(
+        &state.pool,
+        repo::macros::MacroFields {
+            name: macro_name,
+            owner_user_id: ctx.user.id,
+            scope,
+            role_id,
+            job_name: &job_name,
+            schedule: &form.schedule,
+            run_as_user: &run_as_user,
+            command: &form.command,
+        },
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::MacroCreated, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(macro_name),
+    )
+    .await?;
+
+    Ok(Redirect::to(&format!("/arsenals/grimoire/{}", form.host_id)).into_response())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_macro_edit(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    macro_id: Uuid,
+    host_id: Uuid,
+    name: String,
+    scope: MacroScope,
+    role_id: Option<Uuid>,
+    job_name: String,
+    schedule: String,
+    run_as_user: String,
+    command: String,
+    error: Option<String>,
+) -> Result<Response, WebError> {
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
+
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let macro_roles = user_roles
+        .into_iter()
+        .map(|r| {
+            let selected = scope == MacroScope::Role && role_id == Some(r.id);
+            (r.id.to_string(), r.name, selected)
+        })
+        .collect();
+
+    let tpl = crate::templates::GrimoireMacroEditTemplate {
+        base,
+        macro_id: macro_id.to_string(),
+        host_id: host_id.to_string(),
+        name,
+        is_personal: scope == MacroScope::Personal,
+        macro_roles,
+        job_name,
+        schedule,
+        run_as_user,
+        command,
+        error,
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+/// Only the owner, or someone with `MacrosManageAll`, may edit/delete a
+/// macro -- a role-mate can use a shared role macro but never change or
+/// remove it. Enforced here (not just by hiding the Edit/Delete links in
+/// the template), since the UI check alone would be bypassable by
+/// visiting the URL directly.
+fn ensure_can_edit_macro(ctx: &AuthContext, m: &abyssal_core::Macro) -> Result<(), WebError> {
+    if m.owner_user_id == ctx.user.id || ctx.has(Permission::MacrosManageAll) {
+        Ok(())
+    } else {
+        Err(WebError(AppError::Forbidden))
+    }
+}
+
+#[derive(Deserialize)]
+pub struct MacroHostQuery {
+    host_id: Uuid,
+}
+
+pub async fn macro_edit_form(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(macro_id): Path<Uuid>,
+    Query(q): Query<MacroHostQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    let m = repo::macros::find_by_id(&state.pool, macro_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ensure_can_edit_macro(&ctx, &m)?;
+    render_macro_edit(
+        &state,
+        &jar,
+        &ctx,
+        m.id,
+        q.host_id,
+        m.name,
+        m.scope,
+        m.role_id,
+        m.job_name,
+        m.schedule,
+        m.run_as_user,
+        m.command,
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct MacroEditForm {
+    csrf_token: String,
+    host_id: Uuid,
+    name: String,
+    job_name: String,
+    schedule: String,
+    run_as_user: String,
+    command: String,
+    #[serde(default)]
+    macro_scope: String,
+    #[serde(default)]
+    macro_role_id: String,
+}
+
+pub async fn macro_edit(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(macro_id): Path<Uuid>,
+    Form(form): Form<MacroEditForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let existing = repo::macros::find_by_id(&state.pool, macro_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ensure_can_edit_macro(&ctx, &existing)?;
+
+    let render_error = |message: String| {
+        let scope: MacroScope = form
+            .macro_scope
+            .trim()
+            .parse()
+            .unwrap_or(MacroScope::Personal);
+        let role_id = form.macro_role_id.trim().parse::<Uuid>().ok();
+        render_macro_edit(
+            &state,
+            &jar,
+            &ctx,
+            macro_id,
+            form.host_id,
+            form.name.clone(),
+            scope,
+            role_id,
+            form.job_name.clone(),
+            form.schedule.clone(),
+            form.run_as_user.clone(),
+            form.command.clone(),
+            Some(message),
+        )
+    };
+
+    let name = form.name.trim().to_string();
+    if name.is_empty() || name.len() > 128 {
+        return render_error("Macro name must be 1-128 characters.".to_string()).await;
+    }
+    let job_name = match validate_job_name(&form.job_name) {
+        Ok(v) => v,
+        Err(_) => {
+            return render_error(
+                "That doesn't look like a valid job name (lowercase letters, digits, - and _ \
+                 only)."
+                    .to_string(),
+            )
+            .await;
+        }
+    };
+    if !abyssal_agent_protocol::is_valid_cron_schedule(&form.schedule) {
+        return render_error(
+            "That doesn't look like a valid cron schedule (e.g. \"0 3 * * *\" or \"@daily\")."
+                .to_string(),
+        )
+        .await;
+    }
+    let run_as_user = form.run_as_user.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_account_name(&run_as_user) {
+        return render_error("That doesn't look like a valid username.".to_string()).await;
+    }
+    if !abyssal_agent_protocol::is_valid_cron_command(&form.command) {
+        return render_error("That doesn't look like a valid command.".to_string()).await;
+    }
+
+    let scope: MacroScope = form
+        .macro_scope
+        .trim()
+        .parse()
+        .unwrap_or(MacroScope::Personal);
+    let role_id = match scope {
+        MacroScope::Personal => None,
+        MacroScope::Role => {
+            let Ok(role_id) = form.macro_role_id.trim().parse::<Uuid>() else {
+                return render_error("Pick a role for a role-scoped macro.".to_string()).await;
+            };
+            let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+            if !user_roles.iter().any(|r| r.id == role_id) {
+                return render_error(
+                    "You can only save a role macro for a role you belong to.".to_string(),
+                )
+                .await;
+            }
+            Some(role_id)
+        }
+    };
+
+    repo::macros::update(
+        &state.pool,
+        macro_id,
+        repo::macros::MacroFields {
+            name: &name,
+            owner_user_id: existing.owner_user_id,
+            scope,
+            role_id,
+            job_name: &job_name,
+            schedule: &form.schedule,
+            run_as_user: &run_as_user,
+            command: &form.command,
+        },
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::MacroUpdated, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&name),
+    )
+    .await?;
+
+    Ok(Redirect::to(&format!("/arsenals/grimoire/{}", form.host_id)).into_response())
+}
+
+pub async fn macro_remove_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(macro_id): Path<Uuid>,
+    Query(q): Query<MacroHostQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    let m = repo::macros::find_by_id(&state.pool, macro_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ensure_can_edit_macro(&ctx, &m)?;
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+
+    let tpl = crate::templates::ConfirmTemplate {
+        base,
+        title: "Remove macro".to_string(),
+        message: format!("This will remove the macro \"{}\".", m.name),
+        action_url: format!("/arsenals/grimoire/macros/{macro_id}/remove"),
+        cancel_url: format!("/arsenals/grimoire/{}", q.host_id),
+        escalate_host_id: None,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "macro name".to_string(),
+            expected: m.name,
+        }),
+        extra_hidden_fields: vec![("host_id".to_string(), q.host_id.to_string())],
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct MacroRemoveForm {
+    csrf_token: String,
+    host_id: Uuid,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
+}
+
+pub async fn macro_remove(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(macro_id): Path<Uuid>,
+    Form(form): Form<MacroRemoveForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Removal was not confirmed.".into(),
+        )));
+    }
+
+    let m = repo::macros::find_by_id(&state.pool, macro_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ensure_can_edit_macro(&ctx, &m)?;
+    crate::common::require_typed_confirmation(&form.confirm_text, &m.name)?;
+
+    repo::macros::delete(&state.pool, macro_id).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::MacroDeleted, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&m.name),
+    )
+    .await?;
+
+    Ok(Redirect::to(&format!("/arsenals/grimoire/{}", form.host_id)).into_response())
+}
+
+// ---------------------------------------------------------------------
 // Destructive
 // ---------------------------------------------------------------------
 
@@ -554,6 +1092,7 @@ async fn run_destructive_op(
                 result_label,
                 Some(output.stdout),
                 None,
+                None,
             )
             .await
         }
@@ -567,6 +1106,7 @@ async fn run_destructive_op(
                 result_label,
                 None,
                 Some(e.to_string()),
+                None,
             )
             .await
         }
@@ -776,6 +1316,7 @@ pub async fn elevate(
                 Some("Elevate".to_string()),
                 Some(message),
                 None,
+                None,
             )
             .await
         }
@@ -788,8 +1329,77 @@ pub async fn elevate(
                 Some("Elevate".to_string()),
                 None,
                 Some(e),
+                None,
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use abyssal_core::{AuthProviderKind, Macro, MacroScope, User};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn ctx_with(user_id: Uuid, permissions: &[Permission]) -> AuthContext {
+        AuthContext {
+            user: User {
+                id: user_id,
+                username: "test".into(),
+                email: "test@example.com".into(),
+                password_hash: None,
+                auth_provider: AuthProviderKind::local(),
+                is_active: true,
+                must_change_password: false,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                last_login_at: None,
+                timezone: "UTC".into(),
+            },
+            permissions: permissions.iter().copied().collect::<HashSet<_>>(),
+        }
+    }
+
+    fn macro_owned_by(owner_user_id: Uuid) -> Macro {
+        Macro {
+            id: Uuid::new_v4(),
+            name: "Nightly backup".into(),
+            owner_user_id,
+            scope: MacroScope::Personal,
+            role_id: None,
+            job_name: "nightly-backup".into(),
+            schedule: "@daily".into(),
+            run_as_user: "root".into(),
+            command: "/usr/local/bin/backup.sh".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn owner_can_edit_their_own_macro() {
+        let owner = Uuid::new_v4();
+        let ctx = ctx_with(owner, &[]);
+        assert!(ensure_can_edit_macro(&ctx, &macro_owned_by(owner)).is_ok());
+    }
+
+    #[test]
+    fn non_owner_without_manage_all_cannot_edit() {
+        let ctx = ctx_with(Uuid::new_v4(), &[]);
+        assert!(matches!(
+            ensure_can_edit_macro(&ctx, &macro_owned_by(Uuid::new_v4())),
+            Err(WebError(AppError::Forbidden))
+        ));
+    }
+
+    #[test]
+    fn non_owner_with_manage_all_can_edit() {
+        let ctx = ctx_with(Uuid::new_v4(), &[Permission::MacrosManageAll]);
+        assert!(ensure_can_edit_macro(&ctx, &macro_owned_by(Uuid::new_v4())).is_ok());
     }
 }

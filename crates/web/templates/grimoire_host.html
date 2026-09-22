@@ -63,6 +63,46 @@
 </div>
 
 {% if can_manage %}
+<div class="card">
+  <h3>{% call macros::icon("audit") %} Scheduled Task Macros</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    A saved job name/schedule/user/command template, reusable across hosts instead of
+    retyped every time -- "Personal" macros are visible only to you, "Role: X" macros to
+    every member of that role.
+  </p>
+  {% if macros.is_empty() %}
+  <p style="color:var(--text-muted);">
+    No macros saved yet. Fill out "Set Scheduled Task" below and click "Save as Macro".
+  </p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Visible to</th><th>Job name</th><th>Schedule</th><th>Run as</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in macros %}
+      <tr>
+        <td>{{ m.name }}</td>
+        <td>{{ m.scope_label }}</td>
+        <td>{{ m.job_name }}</td>
+        <td>{{ m.schedule }}</td>
+        <td>{{ m.run_as_user }}</td>
+        <td class="actions">
+          <a class="btn btn-secondary" href="/arsenals/grimoire/{{ host_id }}?load_macro={{ m.id }}">Load</a>
+          {% if m.can_edit %}
+          <a class="btn btn-secondary" href="/arsenals/grimoire/macros/{{ m.id }}/edit?host_id={{ host_id }}">Edit</a>
+          <a class="btn btn-danger" href="/arsenals/grimoire/macros/{{ m.id }}/remove/confirm?host_id={{ host_id }}">Delete</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
 <div class="card kind-write">
   <h3>Write</h3>
   <div class="action-grid">
@@ -82,15 +122,44 @@
     </form>
     <form method="post" action="/arsenals/grimoire/{{ host_id }}/set-cron">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <input type="hidden" name="host_id" value="{{ host_id }}">
       <label for="set-cron-name">Job name</label>
-      <input type="text" id="set-cron-name" name="job_name" placeholder="e.g. nightly-backup" required>
+      <input type="text" id="set-cron-name" name="job_name" value="{{ cron_job_name }}" placeholder="e.g. nightly-backup" required>
       <label for="set-cron-schedule">Schedule</label>
-      <input type="text" id="set-cron-schedule" name="schedule" placeholder="e.g. @daily or 0 3 * * *" required>
+      <input type="text" id="set-cron-schedule" name="schedule" value="{{ cron_schedule }}" placeholder="e.g. @daily or 0 3 * * *" required>
       <label for="set-cron-user">Run as user</label>
-      <input type="text" id="set-cron-user" name="run_as_user" placeholder="e.g. root" required>
+      <input type="text" id="set-cron-user" name="run_as_user" value="{{ cron_run_as_user }}" placeholder="e.g. root" required>
       <label for="set-cron-command">Command</label>
-      <input type="text" id="set-cron-command" name="command" placeholder="e.g. /usr/local/bin/backup.sh" required>
-      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Set Scheduled Task</button>
+      <input type="text" id="set-cron-command" name="command" value="{{ cron_command }}" placeholder="e.g. /usr/local/bin/backup.sh" required>
+
+      <label for="set-cron-macro-name">Macro name (optional -- also save this as a reusable macro)</label>
+      <input type="text" id="set-cron-macro-name" name="macro_name" placeholder="e.g. Nightly backup">
+      <label>Visible to (if saving as a macro)</label>
+      <div>
+        <label class="inline-radio">
+          <input type="radio" name="macro_scope" value="personal" checked>
+          Just me
+        </label>
+        {% for (role_id, role_name) in macro_roles %}
+        <label class="inline-radio">
+          <input type="radio" name="macro_scope" value="role">
+          My role: {{ role_name }}
+        </label>
+        {% endfor %}
+      </div>
+      {% if !macro_roles.is_empty() %}
+      <label for="set-cron-macro-role">Role (if "My role" selected above)</label>
+      <select id="set-cron-macro-role" name="macro_role_id">
+        {% for (role_id, role_name) in macro_roles %}
+        <option value="{{ role_id }}">{{ role_name }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
+
+      <div class="actions">
+        <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Set Scheduled Task</button>
+        <button type="submit" formaction="/arsenals/grimoire/macros" class="btn-secondary">{% call macros::icon("audit") %} Save as Macro</button>
+      </div>
     </form>
   </div>
 </div>

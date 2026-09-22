@@ -1,0 +1,56 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Edit Macro — Abyssal Arsenal{% endblock %}
+{% block heading %}Edit Macro{% endblock %}
+{% block content %}
+
+<div class="card">
+  {% if let Some(err) = error %}
+  <div class="error-banner">{{ err }}</div>
+  {% endif %}
+
+  <form method="post" action="/arsenals/grimoire/macros/{{ macro_id }}/edit">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="host_id" value="{{ host_id }}">
+    <label for="macro-name">Macro name</label>
+    <input type="text" id="macro-name" name="name" value="{{ name }}" required style="max-width:360px;">
+
+    <label>Visible to</label>
+    <div>
+      <label class="inline-radio">
+        <input type="radio" name="macro_scope" value="personal" {% if is_personal %}checked{% endif %}>
+        Just me
+      </label>
+      {% for (role_id, role_name, is_current) in macro_roles %}
+      <label class="inline-radio">
+        <input type="radio" name="macro_scope" value="role" {% if is_current %}checked{% endif %}>
+        My role: {{ role_name }}
+      </label>
+      {% endfor %}
+    </div>
+    {% if !macro_roles.is_empty() %}
+    <label for="macro-role-id">Role (if "My role" selected above)</label>
+    <select id="macro-role-id" name="macro_role_id" style="max-width:360px;">
+      {% for (role_id, role_name, is_current) in macro_roles %}
+      <option value="{{ role_id }}" {% if is_current %}selected{% endif %}>{{ role_name }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+
+    <label for="macro-job-name">Job name</label>
+    <input type="text" id="macro-job-name" name="job_name" value="{{ job_name }}" required style="max-width:360px;">
+    <label for="macro-schedule">Schedule</label>
+    <input type="text" id="macro-schedule" name="schedule" value="{{ schedule }}" required style="max-width:360px;">
+    <label for="macro-run-as-user">Run as user</label>
+    <input type="text" id="macro-run-as-user" name="run_as_user" value="{{ run_as_user }}" required style="max-width:360px;">
+    <label for="macro-command">Command</label>
+    <input type="text" id="macro-command" name="command" value="{{ command }}" required style="max-width:360px;">
+
+    <div class="actions">
+      <button type="submit" class="btn-secondary">{% call macros::icon("generate") %} Save changes</button>
+      <a class="btn btn-secondary" href="/arsenals/grimoire/{{ host_id }}">Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

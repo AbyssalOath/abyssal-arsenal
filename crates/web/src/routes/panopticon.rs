@@ -7,7 +7,10 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
 };
-use abyssal_core::{AppError, DeviceType, Permission, TrustState};
+use abyssal_core::{
+    AppError, DeviceType, Permission, SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel,
+    SnmpVersion, TrustState,
+};
 use abyssal_database::repo;
 use abyssal_execution::OperationParams;
 use abyssal_rbac::AuthContext;
@@ -721,6 +724,56 @@ pub async fn classify_device(
 // Managed switches (SNMP polling)
 // ---------------------------------------------------------------------
 
+/// (`T::as_str()` key, label, is this the currently-selected value) for
+/// one of the four SNMP dropdowns, built fresh each render from the
+/// enum's own `ALL`/`as_str`/`label` rather than duplicating that list in
+/// template data.
+fn snmp_options<T: Copy + PartialEq>(
+    all: &'static [T],
+    current: T,
+    as_str: impl Fn(T) -> &'static str,
+    label: impl Fn(T) -> &'static str,
+) -> Vec<(&'static str, &'static str, bool)> {
+    all.iter()
+        .map(|&v| (as_str(v), label(v), v == current))
+        .collect()
+}
+
+/// Validates that the fields required by `snmp_version` were actually
+/// supplied, returning the exact user-facing message naming what's
+/// missing. Pure (no DB, no encryption) so it's directly unit-testable --
+/// see `tests::snmp_validation` below.
+fn validate_snmp_fields(
+    snmp_version: SnmpVersion,
+    community: &str,
+    v3_username: &str,
+    v3_security_level: SnmpSecurityLevel,
+    v3_auth_password: &str,
+    v3_priv_password: &str,
+) -> Result<(), &'static str> {
+    match snmp_version {
+        SnmpVersion::V1 | SnmpVersion::V2c => {
+            if community.is_empty() {
+                Err("Community string is required for SNMP v1/v2c.")
+            } else {
+                Ok(())
+            }
+        }
+        SnmpVersion::V3 => {
+            if v3_username.is_empty() {
+                return Err("Security username is required for SNMP v3.");
+            }
+            if v3_security_level != SnmpSecurityLevel::NoAuthNoPriv && v3_auth_password.is_empty() {
+                return Err("Authentication password is required for this SNMP v3 security level.");
+            }
+            if v3_security_level == SnmpSecurityLevel::AuthPriv && v3_priv_password.is_empty() {
+                return Err("Privacy password is required for the authPriv security level.");
+            }
+            Ok(())
+        }
+    }
+}
+
 async fn render_switches(
     state: &AppState,
     jar: &CookieJar,
@@ -749,6 +802,7 @@ async fn render_switches(
             name: s.name,
             ip_address: s.ip_address,
             snmp_port: s.snmp_port,
+            snmp_version_label: s.snmp_version.label(),
             enabled: s.enabled,
             last_polled_at: s
                 .last_polled_at
@@ -763,6 +817,30 @@ async fn render_switches(
         base,
         switches: switch_rows,
         encryption_configured: state.encryption_key.is_some(),
+        snmp_versions: snmp_options(
+            SnmpVersion::ALL,
+            SnmpVersion::default(),
+            SnmpVersion::as_str,
+            SnmpVersion::label,
+        ),
+        snmp_security_levels: snmp_options(
+            SnmpSecurityLevel::ALL,
+            SnmpSecurityLevel::default(),
+            SnmpSecurityLevel::as_str,
+            SnmpSecurityLevel::label,
+        ),
+        snmp_auth_protocols: snmp_options(
+            SnmpAuthProtocol::ALL,
+            SnmpAuthProtocol::default(),
+            SnmpAuthProtocol::as_str,
+            SnmpAuthProtocol::label,
+        ),
+        snmp_priv_protocols: snmp_options(
+            SnmpPrivProtocol::ALL,
+            SnmpPrivProtocol::default(),
+            SnmpPrivProtocol::as_str,
+            SnmpPrivProtocol::label,
+        ),
         result_label,
         result_output,
         result_error,
@@ -791,7 +869,22 @@ pub struct SwitchAddForm {
     ip_address: String,
     #[serde(default)]
     snmp_port: String,
+    #[serde(default)]
+    snmp_version: String,
+    #[serde(default)]
     community: String,
+    #[serde(default)]
+    snmp_v3_username: String,
+    #[serde(default)]
+    snmp_v3_security_level: String,
+    #[serde(default)]
+    snmp_v3_auth_protocol: String,
+    #[serde(default)]
+    snmp_v3_auth_password: String,
+    #[serde(default)]
+    snmp_v3_priv_protocol: String,
+    #[serde(default)]
+    snmp_v3_priv_password: String,
 }
 
 pub async fn switch_add(
@@ -806,7 +899,7 @@ pub async fn switch_add(
     let Some(encryption_key) = &state.encryption_key else {
         return Err(WebError(AppError::Validation(
             "Set ENCRYPTION_KEY in the environment before adding a switch -- its SNMP \
-             community string can't be stored safely without it."
+             credentials can't be stored safely without it."
                 .into(),
         )));
     };
@@ -831,23 +924,68 @@ pub async fn switch_add(
             .parse()
             .map_err(|_| WebError(AppError::Validation("SNMP port must be 1-65535.".into())))?
     };
-    let community = form.community.trim();
-    if community.is_empty() {
-        return Err(WebError(AppError::Validation(
-            "Community string is required.".into(),
-        )));
-    }
+    let snmp_version = SnmpVersion::from_str(form.snmp_version.trim()).map_err(|()| {
+        WebError(AppError::Validation(
+            "Not a recognized SNMP version.".into(),
+        ))
+    })?;
 
-    let community_encrypted = encryption_key
-        .encrypt(community)
-        .map_err(|e| WebError(AppError::Validation(format!("Encryption failed: {e}"))))?;
+    let community = form.community.trim();
+    let v3_username = form.snmp_v3_username.trim();
+    let v3_security_level =
+        SnmpSecurityLevel::from_str(form.snmp_v3_security_level.trim()).unwrap_or_default();
+    let v3_auth_protocol =
+        SnmpAuthProtocol::from_str(form.snmp_v3_auth_protocol.trim()).unwrap_or_default();
+    let v3_auth_password = form.snmp_v3_auth_password.trim();
+    let v3_priv_protocol =
+        SnmpPrivProtocol::from_str(form.snmp_v3_priv_protocol.trim()).unwrap_or_default();
+    let v3_priv_password = form.snmp_v3_priv_password.trim();
+
+    validate_snmp_fields(
+        snmp_version,
+        community,
+        v3_username,
+        v3_security_level,
+        v3_auth_password,
+        v3_priv_password,
+    )
+    .map_err(|msg| WebError(AppError::Validation(msg.into())))?;
+
+    let mut credentials = repo::panopticon_switches::SnmpCredentials::default();
+    match snmp_version {
+        SnmpVersion::V1 | SnmpVersion::V2c => {
+            credentials.community_encrypted =
+                Some(encryption_key.encrypt(community).map_err(|e| {
+                    WebError(AppError::Validation(format!("Encryption failed: {e}")))
+                })?);
+        }
+        SnmpVersion::V3 => {
+            credentials.v3_username = Some(v3_username.to_string());
+            credentials.v3_security_level = Some(v3_security_level);
+            credentials.v3_auth_protocol = Some(v3_auth_protocol);
+            credentials.v3_priv_protocol = Some(v3_priv_protocol);
+            if !v3_auth_password.is_empty() {
+                credentials.v3_auth_password_encrypted =
+                    Some(encryption_key.encrypt(v3_auth_password).map_err(|e| {
+                        WebError(AppError::Validation(format!("Encryption failed: {e}")))
+                    })?);
+            }
+            if !v3_priv_password.is_empty() {
+                credentials.v3_priv_password_encrypted =
+                    Some(encryption_key.encrypt(v3_priv_password).map_err(|e| {
+                        WebError(AppError::Validation(format!("Encryption failed: {e}")))
+                    })?);
+            }
+        }
+    }
 
     repo::panopticon_switches::create(
         &state.pool,
         name,
         ip_address,
         snmp_port,
-        &community_encrypted,
+        snmp_version,
+        &credentials,
         true,
     )
     .await?;
@@ -866,15 +1004,26 @@ pub async fn switch_add(
     Ok(Redirect::to("/arsenals/panopticon/switches").into_response())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn render_switch_edit(
-    state: &AppState,
-    jar: &CookieJar,
-    ctx: &AuthContext,
+/// Everything the edit form needs to re-render itself after a validation
+/// failure -- bundled into one struct rather than a long parameter list,
+/// since it grew past a handful of fields once v3 entered the picture.
+struct SwitchEditFormState {
     switch_id: Uuid,
     name: String,
     ip_address: String,
     snmp_port: u16,
+    snmp_version: SnmpVersion,
+    v3_username: String,
+    v3_security_level: SnmpSecurityLevel,
+    v3_auth_protocol: SnmpAuthProtocol,
+    v3_priv_protocol: SnmpPrivProtocol,
+}
+
+async fn render_switch_edit(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    form_state: SwitchEditFormState,
     error: Option<String>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
@@ -891,10 +1040,35 @@ async fn render_switch_edit(
 
     let tpl = crate::templates::PanopticonSwitchEditTemplate {
         base,
-        switch_id: switch_id.to_string(),
-        name,
-        ip_address,
-        snmp_port,
+        switch_id: form_state.switch_id.to_string(),
+        name: form_state.name,
+        ip_address: form_state.ip_address,
+        snmp_port: form_state.snmp_port,
+        snmp_versions: snmp_options(
+            SnmpVersion::ALL,
+            form_state.snmp_version,
+            SnmpVersion::as_str,
+            SnmpVersion::label,
+        ),
+        snmp_v3_username: form_state.v3_username,
+        snmp_security_levels: snmp_options(
+            SnmpSecurityLevel::ALL,
+            form_state.v3_security_level,
+            SnmpSecurityLevel::as_str,
+            SnmpSecurityLevel::label,
+        ),
+        snmp_auth_protocols: snmp_options(
+            SnmpAuthProtocol::ALL,
+            form_state.v3_auth_protocol,
+            SnmpAuthProtocol::as_str,
+            SnmpAuthProtocol::label,
+        ),
+        snmp_priv_protocols: snmp_options(
+            SnmpPrivProtocol::ALL,
+            form_state.v3_priv_protocol,
+            SnmpPrivProtocol::as_str,
+            SnmpPrivProtocol::label,
+        ),
         error,
     };
     let jar = jar.clone();
@@ -919,10 +1093,17 @@ pub async fn switch_edit_form(
         &state,
         &jar,
         &ctx,
-        switch.id,
-        switch.name,
-        switch.ip_address,
-        switch.snmp_port,
+        SwitchEditFormState {
+            switch_id: switch.id,
+            name: switch.name,
+            ip_address: switch.ip_address,
+            snmp_port: switch.snmp_port,
+            snmp_version: switch.snmp_version,
+            v3_username: switch.snmp_v3_username.unwrap_or_default(),
+            v3_security_level: switch.snmp_v3_security_level.unwrap_or_default(),
+            v3_auth_protocol: switch.snmp_v3_auth_protocol.unwrap_or_default(),
+            v3_priv_protocol: switch.snmp_v3_priv_protocol.unwrap_or_default(),
+        },
         None,
     )
     .await
@@ -935,11 +1116,25 @@ pub struct SwitchEditForm {
     ip_address: String,
     #[serde(default)]
     snmp_port: String,
-    /// Blank means "keep the existing community string" -- see
-    /// `PanopticonSwitchEditTemplate`'s doc comment for why this field is
-    /// never prefilled with anything to begin with.
+    #[serde(default)]
+    snmp_version: String,
+    /// Blank means "keep the existing community string" -- but only when
+    /// `snmp_version` isn't changing; see `PanopticonSwitchEditTemplate`'s
+    /// doc comment.
     #[serde(default)]
     community: String,
+    #[serde(default)]
+    snmp_v3_username: String,
+    #[serde(default)]
+    snmp_v3_security_level: String,
+    #[serde(default)]
+    snmp_v3_auth_protocol: String,
+    #[serde(default)]
+    snmp_v3_auth_password: String,
+    #[serde(default)]
+    snmp_v3_priv_protocol: String,
+    #[serde(default)]
+    snmp_v3_priv_password: String,
 }
 
 pub async fn switch_edit(
@@ -952,12 +1147,34 @@ pub async fn switch_edit(
     abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
-    repo::panopticon_switches::find_by_id(&state.pool, id)
+    let existing = repo::panopticon_switches::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
 
     let name = form.name.trim().to_string();
     let ip_address = form.ip_address.trim().to_string();
+    let snmp_version =
+        SnmpVersion::from_str(form.snmp_version.trim()).unwrap_or(existing.snmp_version);
+    let v3_security_level = SnmpSecurityLevel::from_str(form.snmp_v3_security_level.trim())
+        .unwrap_or_else(|()| existing.snmp_v3_security_level.unwrap_or_default());
+    let v3_auth_protocol = SnmpAuthProtocol::from_str(form.snmp_v3_auth_protocol.trim())
+        .unwrap_or_else(|()| existing.snmp_v3_auth_protocol.unwrap_or_default());
+    let v3_priv_protocol = SnmpPrivProtocol::from_str(form.snmp_v3_priv_protocol.trim())
+        .unwrap_or_else(|()| existing.snmp_v3_priv_protocol.unwrap_or_default());
+    let v3_username = form.snmp_v3_username.trim().to_string();
+
+    let form_state = |name: String, ip_address: String, snmp_port: u16| SwitchEditFormState {
+        switch_id: id,
+        name,
+        ip_address,
+        snmp_port,
+        snmp_version,
+        v3_username: v3_username.clone(),
+        v3_security_level,
+        v3_auth_protocol,
+        v3_priv_protocol,
+    };
+
     let snmp_port_raw = form.snmp_port.trim();
     let snmp_port: u16 = if snmp_port_raw.is_empty() {
         161
@@ -969,10 +1186,7 @@ pub async fn switch_edit(
                     &state,
                     &jar,
                     &ctx,
-                    id,
-                    name,
-                    ip_address,
-                    161,
+                    form_state(name, ip_address, 161),
                     Some("SNMP port must be 1-65535.".to_string()),
                 )
                 .await;
@@ -985,10 +1199,7 @@ pub async fn switch_edit(
             &state,
             &jar,
             &ctx,
-            id,
-            name,
-            ip_address,
-            snmp_port,
+            form_state(name, ip_address, snmp_port),
             Some("Switch name must be 1-128 characters.".to_string()),
         )
         .await;
@@ -998,50 +1209,122 @@ pub async fn switch_edit(
             &state,
             &jar,
             &ctx,
-            id,
-            name,
-            ip_address,
-            snmp_port,
+            form_state(name, ip_address, snmp_port),
             Some("That doesn't look like a valid IP address or hostname.".to_string()),
         )
         .await;
     }
 
     let community = form.community.trim();
-    if !community.is_empty() {
+    let v3_auth_password = form.snmp_v3_auth_password.trim();
+    let v3_priv_password = form.snmp_v3_priv_password.trim();
+    let version_changed = snmp_version != existing.snmp_version;
+    let new_secrets_supplied = match snmp_version {
+        SnmpVersion::V1 | SnmpVersion::V2c => !community.is_empty(),
+        SnmpVersion::V3 => {
+            !v3_username.is_empty() || !v3_auth_password.is_empty() || !v3_priv_password.is_empty()
+        }
+    };
+
+    if version_changed && !new_secrets_supplied {
+        return render_switch_edit(
+            &state,
+            &jar,
+            &ctx,
+            form_state(name, ip_address, snmp_port),
+            Some("Changing the SNMP version requires entering its credentials.".to_string()),
+        )
+        .await;
+    }
+
+    if version_changed || new_secrets_supplied {
+        if let Err(msg) = validate_snmp_fields(
+            snmp_version,
+            community,
+            &v3_username,
+            v3_security_level,
+            v3_auth_password,
+            v3_priv_password,
+        ) {
+            return render_switch_edit(
+                &state,
+                &jar,
+                &ctx,
+                form_state(name, ip_address, snmp_port),
+                Some(msg.to_string()),
+            )
+            .await;
+        }
+
         let Some(encryption_key) = &state.encryption_key else {
             return render_switch_edit(
                 &state,
                 &jar,
                 &ctx,
-                id,
-                name,
-                ip_address,
-                snmp_port,
+                form_state(name, ip_address, snmp_port),
                 Some(
-                    "ENCRYPTION_KEY isn't configured -- can't store a new community string."
+                    "ENCRYPTION_KEY isn't configured -- can't store new SNMP credentials."
                         .to_string(),
                 ),
             )
             .await;
         };
-        let community_encrypted = match encryption_key.encrypt(community) {
-            Ok(v) => v,
-            Err(e) => {
-                return render_switch_edit(
-                    &state,
-                    &jar,
-                    &ctx,
-                    id,
-                    name,
-                    ip_address,
-                    snmp_port,
-                    Some(format!("Encryption failed: {e}")),
-                )
-                .await;
+
+        let mut credentials = repo::panopticon_switches::SnmpCredentials::default();
+        match snmp_version {
+            SnmpVersion::V1 | SnmpVersion::V2c => match encryption_key.encrypt(community) {
+                Ok(v) => credentials.community_encrypted = Some(v),
+                Err(e) => {
+                    return render_switch_edit(
+                        &state,
+                        &jar,
+                        &ctx,
+                        form_state(name, ip_address, snmp_port),
+                        Some(format!("Encryption failed: {e}")),
+                    )
+                    .await;
+                }
+            },
+            SnmpVersion::V3 => {
+                credentials.v3_username = Some(v3_username.clone());
+                credentials.v3_security_level = Some(v3_security_level);
+                credentials.v3_auth_protocol = Some(v3_auth_protocol);
+                credentials.v3_priv_protocol = Some(v3_priv_protocol);
+                if !v3_auth_password.is_empty() {
+                    match encryption_key.encrypt(v3_auth_password) {
+                        Ok(v) => credentials.v3_auth_password_encrypted = Some(v),
+                        Err(e) => {
+                            return render_switch_edit(
+                                &state,
+                                &jar,
+                                &ctx,
+                                form_state(name, ip_address, snmp_port),
+                                Some(format!("Encryption failed: {e}")),
+                            )
+                            .await;
+                        }
+                    }
+                }
+                if !v3_priv_password.is_empty() {
+                    match encryption_key.encrypt(v3_priv_password) {
+                        Ok(v) => credentials.v3_priv_password_encrypted = Some(v),
+                        Err(e) => {
+                            return render_switch_edit(
+                                &state,
+                                &jar,
+                                &ctx,
+                                form_state(name, ip_address, snmp_port),
+                                Some(format!("Encryption failed: {e}")),
+                            )
+                            .await;
+                        }
+                    }
+                }
             }
-        };
-        repo::panopticon_switches::update_community(&state.pool, id, &community_encrypted).await?;
+        }
+
+        repo::panopticon_switches::update_credentials(&state.pool, id, snmp_version, &credentials)
+            .await?;
     }
 
     repo::panopticon_switches::update(&state.pool, id, &name, &ip_address, snmp_port).await?;
@@ -1111,7 +1394,7 @@ pub async fn switch_remove_confirm(
         base,
         title: "Remove switch".to_string(),
         message: format!(
-            "This will remove \"{}\" and its stored (encrypted) community string. Devices \
+            "This will remove \"{}\" and its stored (encrypted) SNMP credentials. Devices \
              this switch previously located keep their last-known port label until the next \
              poll of a switch that still knows about them.",
             switch.name
@@ -1198,7 +1481,7 @@ pub async fn switch_poll_now(
         .ok_or(AppError::NotFound)?;
     let Some(encryption_key) = state.encryption_key.clone() else {
         return Err(WebError(AppError::Validation(
-            "ENCRYPTION_KEY isn't configured -- this switch's community string can't be \
+            "ENCRYPTION_KEY isn't configured -- this switch's SNMP credentials can't be \
              decrypted."
                 .into(),
         )));
@@ -1395,5 +1678,109 @@ mod tests {
         assert!(ip_matches_subnet_target("10.245.20.53", "10.245.20.0/24"));
         assert!(!ip_matches_subnet_target("10.245.20.53", "10.245.21.0/24"));
         assert!(!ip_matches_subnet_target("not-an-ip", "10.245.20.0/24"));
+    }
+
+    #[test]
+    fn v1_and_v2c_require_a_community_string() {
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V1,
+                "",
+                "",
+                SnmpSecurityLevel::default(),
+                "",
+                ""
+            )
+            .is_err()
+        );
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V2c,
+                "public",
+                "",
+                SnmpSecurityLevel::default(),
+                "",
+                ""
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn v3_no_auth_no_priv_only_needs_a_username() {
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V3,
+                "",
+                "monitor",
+                SnmpSecurityLevel::NoAuthNoPriv,
+                "",
+                ""
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V3,
+                "",
+                "",
+                SnmpSecurityLevel::NoAuthNoPriv,
+                "",
+                ""
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn v3_auth_no_priv_requires_an_auth_password() {
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V3,
+                "",
+                "monitor",
+                SnmpSecurityLevel::AuthNoPriv,
+                "",
+                ""
+            )
+            .is_err()
+        );
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V3,
+                "",
+                "monitor",
+                SnmpSecurityLevel::AuthNoPriv,
+                "hunter2",
+                ""
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn v3_auth_priv_requires_both_passwords() {
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V3,
+                "",
+                "monitor",
+                SnmpSecurityLevel::AuthPriv,
+                "hunter2",
+                ""
+            )
+            .is_err()
+        );
+        assert!(
+            validate_snmp_fields(
+                SnmpVersion::V3,
+                "",
+                "monitor",
+                SnmpSecurityLevel::AuthPriv,
+                "hunter2",
+                "swordfish"
+            )
+            .is_ok()
+        );
     }
 }

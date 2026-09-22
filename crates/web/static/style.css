@@ -773,6 +773,23 @@ th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transf
   display: none;
 }
 
+/* Managed-switch add/edit forms: SNMP version selector (GitHub issue #6)
+   -- same CSS-only, no-JS conditional-fields approach as `.creds-panel`
+   above. Exactly one of `.snmp-community-fields` (v1/v2c) or
+   `.snmp-v3-fields` (v3) is shown at a time, driven by which radio in
+   `.snmp-panel` is checked. */
+.snmp-panel .snmp-community-fields,
+.snmp-panel .snmp-v3-fields {
+  margin: var(--space-2) 0;
+}
+.snmp-panel:has(.snmp-version-v1:checked) .snmp-v3-fields,
+.snmp-panel:has(.snmp-version-v2c:checked) .snmp-v3-fields {
+  display: none;
+}
+.snmp-panel:has(.snmp-version-v3:checked) .snmp-community-fields {
+  display: none;
+}
+
 /* Discovery scan progress bar (panopticon_scan_progress.html). Determinate
    by default (a `width` set inline per the current percentage); `.
    indeterminate` overrides that with a moving striped animation for the

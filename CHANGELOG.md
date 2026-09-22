@@ -12,6 +12,32 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Macros for Grimoire scheduled tasks**: save a scheduled-task ("cron
+  job") template's job name, schedule, run-as user, and command as a
+  reusable macro instead of retyping it on every host. "Save as Macro"
+  sits next to the normal "Set Scheduled Task" submit button on the same
+  form; "Load" on any saved macro refills the form from it. A macro is
+  either Personal (visible only to its owner) or scoped to one of the
+  owner's roles (visible to, and usable by, every other member of that
+  role -- handy for a small team sharing the same job templates). Only
+  the owner, or an account with the new `macros.manage_all` permission,
+  can edit or delete a macro. Reuses the existing role system end to end
+  (no new "team" concept invented) -- see
+  [ARCHITECTURE.md](ARCHITECTURE.md#authorization-rbac).
+- **SNMP version selection for managed switches**: adding or editing a
+  switch under Panopticon's managed-switches page now lets you pick SNMP
+  v1, v2c, or v3 instead of always polling v2c. v3 adds its own fields
+  (security username, security level, auth protocol/password, privacy
+  protocol/password), shown or hidden based on the selected version and
+  security level the same CSS-only way the SSH deploy credentials form
+  already toggles password vs. private-key fields -- no client-side
+  JavaScript. v3's auth/privacy passwords are encrypted at rest with the
+  same `ENCRYPTION_KEY` (AES-256-GCM) already used for the v1/v2c
+  community string. Every switch added before this feature existed keeps
+  polling over v2c unmodified -- the new `snmp_version` column defaults to
+  `'v2c'` for every pre-existing row. See
+  [ARCHITECTURE.md](ARCHITECTURE.md#background-tasks) for how the poll
+  itself picks credentials per-switch.
 - **Quick Add Host From Network Scan**: lets an admin go from a Panopticon
   discovery scan straight to enrolled managed hosts over SSH, instead of
   SSHing into each one by hand. After a scan, a picker lets you select

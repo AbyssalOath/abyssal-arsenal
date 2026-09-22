@@ -97,6 +97,15 @@ across the control-plane / agent boundary except through
 - **Fail closed.** Any failure to resolve a user's permissions (a database
   error, a missing session) is treated as denied, never allowed. This is a
   hard rule throughout the codebase, not just a comment.
+- Role membership itself (not just permissions) is also reused directly by
+  feature code outside the auth system proper: Grimoire's macros (GitHub
+  issue #7, `crates/core/src/macros.rs`) scope a saved macro to a role via
+  the same `roles`/`user_roles` tables and
+  `repo::roles::roles_for_user`, rather than a second, feature-specific
+  notion of "team." A new `Permission::MacrosManageAll` (granted only to
+  Super Admin, like `AuditManage`) is the one addition macros needed --
+  everything else about "who can see/use/edit a macro" is ordinary
+  ownership plus existing role membership.
 
 ## Audit logging
 
@@ -687,17 +696,29 @@ below for what that implies for toggling them).
   edge-triggered, not per-tick, so a persistently-visible untrusted
   device doesn't spam the log.
 - **Panopticon SNMP sweep** (`abyssal_web::spawn_panopticon_snmp_sweep`,
-  every 5 minutes): polls every enabled row in `panopticon_switches` over
-  SNMP v2c for BRIDGE-MIB's `dot1dTpFdbTable` (MAC -> bridge port,
+  every 5 minutes): polls every enabled row in `panopticon_switches` --
+  over SNMP v1, v2c, or v3, per-switch (`snmp_version`, GitHub issue #6)
+  -- for BRIDGE-MIB's `dot1dTpFdbTable` (MAC -> bridge port,
   joined through `dot1dBasePortIfIndex` and IF-MIB's `ifDescr` for a
   human port label) -- the mechanism that gives a device's inventory row
-  a `switch_id`/`switch_port`. Each switch's community string is stored
+  a `switch_id`/`switch_port`. `panopticon_snmp.rs::decrypt_credentials`
+  reads whichever of `community_encrypted` (v1/v2c) or the `snmp_v3_*`
+  fields (v3: username, security level, auth protocol/password, privacy
+  protocol/password) the switch's own `snmp_version` says are live, and
+  `poll_switch` opens the matching `snmp2::AsyncSession` (`new_v1`/
+  `new_v2c`/`new_v3`) -- never a hardcoded version. Every secret
+  (the v1/v2c community string, the v3 auth/privacy passwords) is stored
   encrypted (`abyssal_core::crypto::EncryptionKey`, AES-256-GCM,
-  `ENCRYPTION_KEY` env var) -- the one credential this platform stores
-  reversibly rather than hash-only, since the sweep has to present the
-  actual plaintext to the switch with nobody around to type it in again.
-  No-ops entirely when `ENCRYPTION_KEY` isn't set. Every SNMP request is
-  individually timeout-bounded (`panopticon_snmp.rs::REQUEST_TIMEOUT`,
+  `ENCRYPTION_KEY` env var) -- the one kind of credential this platform
+  stores reversibly rather than hash-only, since the sweep has to present
+  the actual plaintext to the switch with nobody around to type it in
+  again. A switch added before `snmp_version` existed keeps polling v2c
+  unmodified -- the column defaults to `'v2c'` for every pre-existing row
+  (`migrations/0014_panopticon_switch_snmp_version.sql`), and the same
+  default is what a row's `FromStr` falls back to if it ever saw an
+  unrecognized value. No-ops entirely when `ENCRYPTION_KEY` isn't set.
+  Every SNMP request is individually timeout-bounded
+  (`panopticon_snmp.rs::REQUEST_TIMEOUT`,
   5s) so one unreachable switch can't stall the sweep; per-switch success/
   failure is recorded on the switch row (`last_polled_at`/
   `last_poll_error`) and shown on `/arsenals/panopticon/switches`. Shares
@@ -897,6 +918,22 @@ Twelve migrations so far:
   `panopticon_port_traffic_hourly`/`_daily` rollup tiers -- see the
   "Panopticon traffic rollup" background-task bullet above for how the
   three fit together.
+- `0014_panopticon_switch_snmp_version.sql` -- adds `snmp_version` to
+  `panopticon_switches` (`'v2c'` default, so every pre-existing switch
+  keeps polling exactly as before) and the nullable `snmp_v3_*` columns
+  (username, security level, auth protocol/password, privacy
+  protocol/password) v3 switches use instead of `community_encrypted`,
+  which becomes nullable for the same reason (GitHub issue #6).
+- `0015_macros.sql` -- `macros` (GitHub issue #7): a saved, reusable
+  Grimoire scheduled-task template (`job_name`/`schedule`/`run_as_user`/
+  `command`, the exact fields `AgentOperation::SetCronJob` needs, minus a
+  target host) an admin can replay across hosts instead of retyping.
+  `scope` is `personal` (visible only to `owner_user_id`) or `role`
+  (visible to every member of `role_id`, required exactly when
+  `scope = 'role'`) -- reuses the existing `roles`/`user_roles` tables
+  (`0001_init.sql`) rather than inventing a second role concept. See
+  `crates/core/src/macros.rs::Macro` and
+  `crates/database/src/repo/macros.rs::list_visible_to_user`.
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time
@@ -922,8 +959,9 @@ maintained offline query cache.
   directly outside Docker.
 - `ENCRYPTION_KEY` (optional; `install.sh` generates one unconditionally)
   is the AES-256-GCM master key for Panopticon switches' stored SNMP
-  community strings. Unset it and the app still runs fine -- adding a
-  switch just refuses cleanly until it's set.
+  credentials -- the v1/v2c community string, or the v3 auth/privacy
+  passwords, whichever `snmp_version` applies. Unset it and the app still
+  runs fine -- adding a switch just refuses cleanly until it's set.
 - Panopticon's ARP listener (off by default) is the one place in this
   workspace that needs elevated privileges. The Dockerfile grants
   `CAP_NET_RAW` to the binary itself (`setcap`), not to the container's

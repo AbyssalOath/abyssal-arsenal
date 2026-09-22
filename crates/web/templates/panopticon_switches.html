@@ -6,9 +6,9 @@
 
 <div class="card">
   <p style="color:var(--text-muted); margin-top:0;">
-    SNMP v2c polling of switches you add below -- reads BRIDGE-MIB's
-    forwarding database to find which physical port a device's MAC sits
-    behind, shown on the <a href="/arsenals/panopticon">main inventory page</a>.
+    SNMP polling (v1, v2c, or v3) of switches you add below -- reads
+    BRIDGE-MIB's forwarding database to find which physical port a
+    device's MAC sits behind, shown on the <a href="/arsenals/panopticon">main inventory page</a>.
     Only ever enriches a device already known by IP; a MAC a switch
     reports that Panopticon has never otherwise seen doesn't create a new
     inventory row by itself. An unattended sweep polls every enabled
@@ -37,14 +37,60 @@
       <input type="text" id="switch-ip" name="ip_address" placeholder="e.g. 192.168.1.2" required style="max-width:360px;">
       <label for="switch-port">SNMP port</label>
       <input type="text" id="switch-port" name="snmp_port" placeholder="161" style="max-width:160px;">
-      <label for="switch-community">Community string</label>
-      <input type="password" id="switch-community" name="community" autocomplete="new-password" required style="max-width:360px;">
+
+      <label>SNMP version</label>
+      <div class="snmp-panel">
+        {% for (key, label, is_default) in snmp_versions %}
+        <label class="inline-radio">
+          <input type="radio" class="snmp-version-{{ key }}" name="snmp_version" value="{{ key }}" {% if is_default %}checked{% endif %}>
+          {{ label }}
+        </label>
+        {% endfor %}
+
+        <div class="snmp-community-fields">
+          <label for="switch-community">Community string</label>
+          <input type="password" id="switch-community" name="community" autocomplete="new-password" style="max-width:360px;">
+        </div>
+
+        <div class="snmp-v3-fields">
+          <label for="switch-v3-username">Security username</label>
+          <input type="text" id="switch-v3-username" name="snmp_v3_username" autocomplete="off" style="max-width:360px;">
+
+          <label for="switch-v3-security-level">Security level</label>
+          <select id="switch-v3-security-level" name="snmp_v3_security_level" style="max-width:360px;">
+            {% for (key, label, is_default) in snmp_security_levels %}
+            <option value="{{ key }}" {% if is_default %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+
+          <label for="switch-v3-auth-protocol">Authentication protocol</label>
+          <select id="switch-v3-auth-protocol" name="snmp_v3_auth_protocol" style="max-width:360px;">
+            {% for (key, label, is_default) in snmp_auth_protocols %}
+            <option value="{{ key }}" {% if is_default %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+
+          <label for="switch-v3-auth-password">Authentication password</label>
+          <input type="password" id="switch-v3-auth-password" name="snmp_v3_auth_password" autocomplete="new-password" style="max-width:360px;">
+
+          <label for="switch-v3-priv-protocol">Privacy protocol</label>
+          <select id="switch-v3-priv-protocol" name="snmp_v3_priv_protocol" style="max-width:360px;">
+            {% for (key, label, is_default) in snmp_priv_protocols %}
+            <option value="{{ key }}" {% if is_default %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+
+          <label for="switch-v3-priv-password">Privacy password</label>
+          <input type="password" id="switch-v3-priv-password" name="snmp_v3_priv_password" autocomplete="new-password" style="max-width:360px;">
+        </div>
+      </div>
+
       <button type="submit" class="btn-secondary">{% call macros::icon("network") %} Add switch</button>
     </form>
     {% else %}
     <div class="error-banner" style="margin-top:14px;">
-      <code>ENCRYPTION_KEY</code> isn't set in the environment, so a switch's community
-      string can't be stored safely -- set it (32 random bytes, base64-encoded, e.g.
+      <code>ENCRYPTION_KEY</code> isn't set in the environment, so a switch's SNMP
+      credentials can't be stored safely -- set it (32 random bytes, base64-encoded, e.g.
       <code>openssl rand -base64 32</code>) and restart before adding a switch.
     </div>
     {% endif %}
@@ -59,7 +105,7 @@
   <table>
     <thead>
       <tr>
-        <th>Name</th><th>Address</th><th>SNMP port</th><th>Status</th>
+        <th>Name</th><th>Address</th><th>SNMP port</th><th>SNMP version</th><th>Status</th>
         <th>Last polled</th><th>Last error</th><th>Bandwidth</th>
         {% if can_manage || can_scan %}<th>Actions</th>{% endif %}
       </tr>
@@ -70,6 +116,7 @@
         <td>{{ s.name }}</td>
         <td>{{ s.ip_address }}</td>
         <td>{{ s.snmp_port }}</td>
+        <td>{{ s.snmp_version_label }}</td>
         <td>
           {% if s.enabled %}<span class="badge badge-success">Enabled</span>
           {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}

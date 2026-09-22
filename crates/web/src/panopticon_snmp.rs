@@ -1,11 +1,8 @@
-//! SNMP v2c polling of managed switches for BRIDGE-MIB MAC-to-port data --
-//! the mechanism that gives Panopticon actual NAC-grade visibility (which
-//! physical switch port a device's MAC currently sits behind), and the
-//! prerequisite for any future bandwidth-per-port work. v2c (community
-//! string) only, deliberately: v3 (per-user auth/privacy protocols, engine
-//! ID discovery) is real additional complexity this phase doesn't need --
-//! a switch that only offers v3 simply can't be polled yet, a documented
-//! limitation rather than a silent gap.
+//! SNMP polling (v1, v2c, or v3 -- `PanopticonSwitch::snmp_version`) of
+//! managed switches for BRIDGE-MIB MAC-to-port data -- the mechanism that
+//! gives Panopticon actual NAC-grade visibility (which physical switch
+//! port a device's MAC currently sits behind), and the prerequisite for
+//! any future bandwidth-per-port work.
 //!
 //! A poll only ever *enriches* a device Panopticon already knows about by
 //! IP (active scan, passive `ip neigh` refresh, mDNS, or ARP sniffing) --
@@ -18,13 +15,17 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use abyssal_core::{EncryptionKey, Permission};
+use abyssal_core::{
+    EncryptionKey, Permission, SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion,
+};
 use abyssal_database::{DbPool, repo};
 use abyssal_execution::{
     ExecutionError, Operation, OperationKind, OperationOutput, OperationParams,
 };
 use chrono::Utc;
+use snmp2::v3::{Auth, AuthProtocol, Cipher, Security};
 use snmp2::{AsyncSession, Oid, Value};
+use zeroize::Zeroizing;
 
 /// Every SNMP request (not just the initial connect) gets this long before
 /// the poll gives up on that switch -- an unreachable or firewalled switch
@@ -53,7 +54,7 @@ const IF_OUT_OCTETS: &[u64] = &[1, 3, 6, 1, 2, 1, 2, 2, 1, 16];
 
 #[derive(Debug, thiserror::Error)]
 pub enum SnmpPollError {
-    #[error("could not decrypt this switch's stored community string: {0}")]
+    #[error("could not decrypt this switch's stored SNMP credentials: {0}")]
     Decrypt(#[from] abyssal_core::CryptoError),
     #[error("SNMP request to {0} timed out")]
     Timeout(String),
@@ -61,6 +62,77 @@ pub enum SnmpPollError {
     Protocol(String),
     #[error("SNMP I/O error: {0}")]
     Io(String),
+    /// A switch row is missing a field its own `snmp_version` requires --
+    /// should never happen given `switch_add`/`switch_edit`'s validation,
+    /// but this is the last line of defense before treating a `None` as
+    /// an empty credential instead of a config bug.
+    #[error("switch is misconfigured for {0}: {1}")]
+    Config(&'static str, String),
+}
+
+/// Decrypted, ready-to-use SNMP credentials for one poll -- built by
+/// `poll_and_record` from the switch's encrypted-at-rest fields
+/// immediately before use and never persisted or logged.
+enum SnmpCredentials {
+    V1(Zeroizing<String>),
+    V2c(Zeroizing<String>),
+    V3 {
+        username: String,
+        security_level: SnmpSecurityLevel,
+        auth_protocol: SnmpAuthProtocol,
+        auth_password: Option<Zeroizing<String>>,
+        priv_protocol: SnmpPrivProtocol,
+        priv_password: Option<Zeroizing<String>>,
+    },
+}
+
+impl SnmpCredentials {
+    /// Builds the `snmp2::v3::Security` this credential set describes.
+    /// Only ever called for `SnmpCredentials::V3` -- see `poll_switch`.
+    fn v3_security(
+        username: &str,
+        security_level: SnmpSecurityLevel,
+        auth_protocol: SnmpAuthProtocol,
+        auth_password: Option<&str>,
+        priv_protocol: SnmpPrivProtocol,
+        priv_password: Option<&str>,
+    ) -> Result<Security, SnmpPollError> {
+        let auth = match security_level {
+            SnmpSecurityLevel::NoAuthNoPriv => Auth::NoAuthNoPriv,
+            SnmpSecurityLevel::AuthNoPriv => Auth::AuthNoPriv,
+            SnmpSecurityLevel::AuthPriv => {
+                let privacy_password = priv_password.ok_or_else(|| {
+                    SnmpPollError::Config("v3 authPriv", "missing privacy password".into())
+                })?;
+                Auth::AuthPriv {
+                    cipher: match priv_protocol {
+                        SnmpPrivProtocol::Des => Cipher::Des,
+                        SnmpPrivProtocol::Aes128 => Cipher::Aes128,
+                        SnmpPrivProtocol::Aes192 => Cipher::Aes192,
+                        SnmpPrivProtocol::Aes256 => Cipher::Aes256,
+                    },
+                    privacy_password: privacy_password.as_bytes().to_vec(),
+                }
+            }
+        };
+        let auth_password = if security_level == SnmpSecurityLevel::NoAuthNoPriv {
+            ""
+        } else {
+            auth_password.ok_or_else(|| {
+                SnmpPollError::Config("v3 auth", "missing authentication password".into())
+            })?
+        };
+        Ok(Security::new(username.as_bytes(), auth_password.as_bytes())
+            .with_auth(auth)
+            .with_auth_protocol(match auth_protocol {
+                SnmpAuthProtocol::Md5 => AuthProtocol::Md5,
+                SnmpAuthProtocol::Sha1 => AuthProtocol::Sha1,
+                SnmpAuthProtocol::Sha224 => AuthProtocol::Sha224,
+                SnmpAuthProtocol::Sha256 => AuthProtocol::Sha256,
+                SnmpAuthProtocol::Sha384 => AuthProtocol::Sha384,
+                SnmpAuthProtocol::Sha512 => AuthProtocol::Sha512,
+            }))
+    }
 }
 
 #[derive(Clone)]
@@ -137,14 +209,39 @@ async fn walk_table(
 async fn poll_switch(
     pool: &DbPool,
     switch: &abyssal_core::PanopticonSwitch,
-    community: &str,
+    credentials: &SnmpCredentials,
 ) -> Result<usize, SnmpPollError> {
     let addr = format!("{}:{}", switch.ip_address, switch.snmp_port);
 
-    let mut sess = tokio::time::timeout(
-        REQUEST_TIMEOUT,
-        AsyncSession::new_v2c(addr.clone(), community.as_bytes(), 1),
-    )
+    let mut sess = tokio::time::timeout(REQUEST_TIMEOUT, async {
+        match credentials {
+            SnmpCredentials::V1(community) => {
+                AsyncSession::new_v1(addr.clone(), community.as_bytes(), 1).await
+            }
+            SnmpCredentials::V2c(community) => {
+                AsyncSession::new_v2c(addr.clone(), community.as_bytes(), 1).await
+            }
+            SnmpCredentials::V3 {
+                username,
+                security_level,
+                auth_protocol,
+                auth_password,
+                priv_protocol,
+                priv_password,
+            } => {
+                let security = SnmpCredentials::v3_security(
+                    username,
+                    *security_level,
+                    *auth_protocol,
+                    auth_password.as_deref().map(|s| s.as_str()),
+                    *priv_protocol,
+                    priv_password.as_deref().map(|s| s.as_str()),
+                )
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+                AsyncSession::new_v3(addr.clone(), 1, security).await
+            }
+        }
+    })
     .await
     .map_err(|_| SnmpPollError::Timeout(addr.clone()))?
     .map_err(|e| SnmpPollError::Io(e.to_string()))?;
@@ -295,17 +392,70 @@ fn counter_map(entries: &[(Vec<u64>, OwnedValue)]) -> HashMap<i64, u64> {
     map
 }
 
-/// Decrypts `switch.community_encrypted` and polls it, recording the
-/// outcome (success or error message) on the switch row either way.
-/// Shared by the manual "Poll now" action (`SnmpPollOperation`) and the
-/// unattended SNMP sweep (`spawn_panopticon_snmp_sweep`).
+/// Builds this switch's `SnmpCredentials`, decrypting exactly the
+/// ciphertext fields its `snmp_version` actually uses. A `None` where a
+/// value is required (e.g. no `community_encrypted` on a v1/v2c switch)
+/// means the row is misconfigured -- shouldn't happen given
+/// `switch_add`/`switch_edit`'s validation, but this is the last line of
+/// defense before treating it as an empty credential instead of a bug.
+fn decrypt_credentials(
+    switch: &abyssal_core::PanopticonSwitch,
+    encryption_key: &EncryptionKey,
+) -> Result<SnmpCredentials, SnmpPollError> {
+    match switch.snmp_version {
+        SnmpVersion::V1 | SnmpVersion::V2c => {
+            let Some(community_encrypted) = &switch.community_encrypted else {
+                return Err(SnmpPollError::Config(
+                    "v1/v2c",
+                    "missing community string".into(),
+                ));
+            };
+            let community = encryption_key.decrypt(community_encrypted)?;
+            Ok(if switch.snmp_version == SnmpVersion::V1 {
+                SnmpCredentials::V1(community)
+            } else {
+                SnmpCredentials::V2c(community)
+            })
+        }
+        SnmpVersion::V3 => {
+            let Some(username) = &switch.snmp_v3_username else {
+                return Err(SnmpPollError::Config("v3", "missing username".into()));
+            };
+            let security_level = switch.snmp_v3_security_level.unwrap_or_default();
+            let auth_password = switch
+                .snmp_v3_auth_password_encrypted
+                .as_deref()
+                .map(|enc| encryption_key.decrypt(enc))
+                .transpose()?;
+            let priv_password = switch
+                .snmp_v3_priv_password_encrypted
+                .as_deref()
+                .map(|enc| encryption_key.decrypt(enc))
+                .transpose()?;
+            Ok(SnmpCredentials::V3 {
+                username: username.clone(),
+                security_level,
+                auth_protocol: switch.snmp_v3_auth_protocol.unwrap_or_default(),
+                auth_password,
+                priv_protocol: switch.snmp_v3_priv_protocol.unwrap_or_default(),
+                priv_password,
+            })
+        }
+    }
+}
+
+/// Decrypts whichever of `switch`'s credential fields its `snmp_version`
+/// actually uses and polls it, recording the outcome (success or error
+/// message) on the switch row either way. Shared by the manual "Poll now"
+/// action (`SnmpPollOperation`) and the unattended SNMP sweep
+/// (`spawn_panopticon_snmp_sweep`).
 pub async fn poll_and_record(
     pool: &DbPool,
     switch: &abyssal_core::PanopticonSwitch,
     encryption_key: &EncryptionKey,
 ) -> Result<usize, SnmpPollError> {
-    let community = encryption_key.decrypt(&switch.community_encrypted)?;
-    let result = poll_switch(pool, switch, &community).await;
+    let credentials = decrypt_credentials(switch, encryption_key)?;
+    let result = poll_switch(pool, switch, &credentials).await;
     let error_message = result.as_ref().err().map(ToString::to_string);
     if let Err(e) =
         repo::panopticon_switches::record_poll_result(pool, switch.id, error_message.as_deref())

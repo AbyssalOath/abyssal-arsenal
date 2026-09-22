@@ -1,4 +1,6 @@
-use abyssal_core::PanopticonSwitch;
+use abyssal_core::{
+    PanopticonSwitch, SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion,
+};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -11,7 +13,14 @@ struct SwitchRow {
     name: String,
     ip_address: String,
     snmp_port: u16,
-    community_encrypted: String,
+    snmp_version: String,
+    community_encrypted: Option<String>,
+    snmp_v3_username: Option<String>,
+    snmp_v3_security_level: Option<String>,
+    snmp_v3_auth_protocol: Option<String>,
+    snmp_v3_auth_password_encrypted: Option<String>,
+    snmp_v3_priv_protocol: Option<String>,
+    snmp_v3_priv_password_encrypted: Option<String>,
     enabled: bool,
     last_polled_at: Option<NaiveDateTime>,
     last_poll_error: Option<String>,
@@ -29,7 +38,27 @@ impl From<SwitchRow> for PanopticonSwitch {
             name: row.name,
             ip_address: row.ip_address,
             snmp_port: row.snmp_port,
+            // A row written before this column existed can't happen (the
+            // migration backfills every existing row to 'v2c'), but an
+            // unrecognized value falls back to the same default rather
+            // than panicking -- see `SnmpVersion`'s own doc comment.
+            snmp_version: row.snmp_version.parse().unwrap_or_default(),
             community_encrypted: row.community_encrypted,
+            snmp_v3_username: row.snmp_v3_username,
+            snmp_v3_security_level: row
+                .snmp_v3_security_level
+                .as_deref()
+                .and_then(|s| s.parse::<SnmpSecurityLevel>().ok()),
+            snmp_v3_auth_protocol: row
+                .snmp_v3_auth_protocol
+                .as_deref()
+                .and_then(|s| s.parse::<SnmpAuthProtocol>().ok()),
+            snmp_v3_auth_password_encrypted: row.snmp_v3_auth_password_encrypted,
+            snmp_v3_priv_protocol: row
+                .snmp_v3_priv_protocol
+                .as_deref()
+                .and_then(|s| s.parse::<SnmpPrivProtocol>().ok()),
+            snmp_v3_priv_password_encrypted: row.snmp_v3_priv_password_encrypted,
             enabled: row.enabled,
             last_polled_at: row.last_polled_at.map(utc),
             last_poll_error: row.last_poll_error,
@@ -38,26 +67,54 @@ impl From<SwitchRow> for PanopticonSwitch {
     }
 }
 
+/// Everything `create` needs beyond name/address/port -- grouped into one
+/// struct rather than piling on more positional arguments, since which
+/// fields matter depends entirely on `snmp_version` (v1/v2c only ever
+/// populate `community_encrypted`; v3 only ever populates the rest).
+/// Validated by the caller (`routes/panopticon.rs::switch_add`) before
+/// this is built -- this layer just persists whatever it's handed.
+#[derive(Default)]
+pub struct SnmpCredentials {
+    pub community_encrypted: Option<String>,
+    pub v3_username: Option<String>,
+    pub v3_security_level: Option<SnmpSecurityLevel>,
+    pub v3_auth_protocol: Option<SnmpAuthProtocol>,
+    pub v3_auth_password_encrypted: Option<String>,
+    pub v3_priv_protocol: Option<SnmpPrivProtocol>,
+    pub v3_priv_password_encrypted: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
     pool: &DbPool,
     name: &str,
     ip_address: &str,
     snmp_port: u16,
-    community_encrypted: &str,
+    snmp_version: SnmpVersion,
+    credentials: &SnmpCredentials,
     enabled: bool,
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO panopticon_switches \
-         (id, name, ip_address, snmp_port, community_encrypted, enabled) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (id, name, ip_address, snmp_port, snmp_version, community_encrypted, \
+          snmp_v3_username, snmp_v3_security_level, snmp_v3_auth_protocol, \
+          snmp_v3_auth_password_encrypted, snmp_v3_priv_protocol, \
+          snmp_v3_priv_password_encrypted, enabled) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(name)
     .bind(ip_address)
     .bind(snmp_port)
-    .bind(community_encrypted)
+    .bind(snmp_version.as_str())
+    .bind(&credentials.community_encrypted)
+    .bind(&credentials.v3_username)
+    .bind(credentials.v3_security_level.map(|v| v.as_str()))
+    .bind(credentials.v3_auth_protocol.map(|v| v.as_str()))
+    .bind(&credentials.v3_auth_password_encrypted)
+    .bind(credentials.v3_priv_protocol.map(|v| v.as_str()))
+    .bind(&credentials.v3_priv_password_encrypted)
     .bind(enabled)
     .execute(pool)
     .await?;
@@ -91,11 +148,11 @@ pub async fn find_by_id(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<Panopt
 }
 
 /// Updates a switch's non-secret fields -- name/address/port, the sort of
-/// thing an admin fixes after a typo. Leaves `community_encrypted`
-/// untouched; see `update_community` for that, which is deliberately a
-/// separate call so the edit form can leave the community string blank
-/// to mean "keep the existing one" rather than forcing it to be retyped
-/// just to fix an IP address.
+/// thing an admin fixes after a typo. Leaves every credential column
+/// untouched; see `update_credentials` for those, which is deliberately a
+/// separate call so the edit form can leave secret fields blank to mean
+/// "keep the existing one" rather than forcing them to be retyped just to
+/// fix an IP address.
 pub async fn update(
     pool: &DbPool,
     id: Uuid,
@@ -115,16 +172,35 @@ pub async fn update(
     Ok(())
 }
 
-pub async fn update_community(
+/// Switches this switch's `snmp_version` and replaces every credential
+/// column wholesale (the old version's credentials are cleared, since
+/// e.g. a leftover `community_encrypted` on a switch now set to v3 would
+/// be stale, misleading state). Called only when the edit form actually
+/// supplies new credentials for the newly-selected version -- see
+/// `routes/panopticon.rs::switch_edit`.
+pub async fn update_credentials(
     pool: &DbPool,
     id: Uuid,
-    community_encrypted: &str,
+    snmp_version: SnmpVersion,
+    credentials: &SnmpCredentials,
 ) -> anyhow::Result<()> {
-    sqlx::query("UPDATE panopticon_switches SET community_encrypted = ? WHERE id = ?")
-        .bind(community_encrypted)
-        .bind(id.to_string())
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE panopticon_switches SET snmp_version = ?, community_encrypted = ?, \
+         snmp_v3_username = ?, snmp_v3_security_level = ?, snmp_v3_auth_protocol = ?, \
+         snmp_v3_auth_password_encrypted = ?, snmp_v3_priv_protocol = ?, \
+         snmp_v3_priv_password_encrypted = ? WHERE id = ?",
+    )
+    .bind(snmp_version.as_str())
+    .bind(&credentials.community_encrypted)
+    .bind(&credentials.v3_username)
+    .bind(credentials.v3_security_level.map(|v| v.as_str()))
+    .bind(credentials.v3_auth_protocol.map(|v| v.as_str()))
+    .bind(&credentials.v3_auth_password_encrypted)
+    .bind(credentials.v3_priv_protocol.map(|v| v.as_str()))
+    .bind(&credentials.v3_priv_password_encrypted)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

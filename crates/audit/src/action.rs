@@ -44,6 +44,9 @@ pub enum AuditAction {
     HostDeploySucceeded,
     HostDeployFailed,
     WorkflowEvaluationFailed,
+    MacroCreated,
+    MacroUpdated,
+    MacroDeleted,
 }
 
 impl AuditAction {
@@ -90,6 +93,9 @@ impl AuditAction {
             AuditAction::HostDeploySucceeded => "HOST_DEPLOY_SUCCEEDED",
             AuditAction::HostDeployFailed => "HOST_DEPLOY_FAILED",
             AuditAction::WorkflowEvaluationFailed => "WORKFLOW_EVALUATION_FAILED",
+            AuditAction::MacroCreated => "MACRO_CREATED",
+            AuditAction::MacroUpdated => "MACRO_UPDATED",
+            AuditAction::MacroDeleted => "MACRO_DELETED",
         }
     }
 
@@ -135,6 +141,9 @@ impl AuditAction {
         AuditAction::HostDeploySucceeded,
         AuditAction::HostDeployFailed,
         AuditAction::WorkflowEvaluationFailed,
+        AuditAction::MacroCreated,
+        AuditAction::MacroUpdated,
+        AuditAction::MacroDeleted,
     ];
 }
 

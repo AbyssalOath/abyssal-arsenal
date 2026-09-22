@@ -3,6 +3,7 @@ pub mod backup_records;
 pub mod host_enrollment_tokens;
 pub mod host_health;
 pub mod hosts;
+pub mod macros;
 pub mod modules;
 pub mod network_device_ports;
 pub mod network_devices;

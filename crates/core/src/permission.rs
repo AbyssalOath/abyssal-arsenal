@@ -69,6 +69,12 @@ pub enum Permission {
     HostsView,
     HostsManage,
     HostsElevate,
+
+    /// Edit or delete a macro owned by someone else, or a role-scoped macro
+    /// for a role this user isn't a member of. Never granted by any seeded
+    /// role except Super Admin -- the owner of a macro (or a role member,
+    /// for using/viewing a role macro) never needs it for their own.
+    MacrosManageAll,
 }
 
 impl Permission {
@@ -118,6 +124,8 @@ impl Permission {
             Permission::HostsView => "hosts.view",
             Permission::HostsManage => "hosts.manage",
             Permission::HostsElevate => "hosts.elevate",
+
+            Permission::MacrosManageAll => "macros.manage_all",
         }
     }
 
@@ -159,6 +167,7 @@ impl Permission {
         Permission::HostsView,
         Permission::HostsManage,
         Permission::HostsElevate,
+        Permission::MacrosManageAll,
     ];
 }
 

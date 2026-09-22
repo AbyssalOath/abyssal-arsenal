@@ -652,6 +652,21 @@ pub struct GrimoireTemplate {
     pub hosts: Vec<GrimoireHostRow>,
 }
 
+/// One saved scheduled-task macro, as visible to the current user -- see
+/// `routes/grimoire.rs::visible_macro_rows`. `can_edit` is only true for
+/// the macro's owner or someone with `Permission::MacrosManageAll`; a
+/// role-mate merely using a shared role macro sees no Edit/Delete links.
+pub struct GrimoireMacroRow {
+    pub id: String,
+    pub name: String,
+    pub scope_label: String,
+    pub job_name: String,
+    pub schedule: String,
+    pub run_as_user: String,
+    pub command: String,
+    pub can_edit: bool,
+}
+
 #[derive(Template)]
 #[template(path = "grimoire_host.html")]
 pub struct GrimoireHostTemplate {
@@ -663,9 +678,43 @@ pub struct GrimoireHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Every macro visible to this user (personal + their roles'),
+    /// GitHub issue #7.
+    pub macros: Vec<GrimoireMacroRow>,
+    /// (role_id, role_name) for every role this user belongs to -- the
+    /// "My role: X" options on the Save as Macro scope picker. Empty for
+    /// a user in no roles, in which case only "Just me" is offered.
+    pub macro_roles: Vec<(String, String)>,
+    /// Prefills the Set Scheduled Task fields below -- blank unless a
+    /// `?load_macro=` picked one, in which case these are that macro's
+    /// stored values.
+    pub cron_job_name: String,
+    pub cron_schedule: String,
+    pub cron_run_as_user: String,
+    pub cron_command: String,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+}
+
+/// Edit form for one macro -- see `routes/grimoire.rs::macro_edit_*`.
+/// `host_id` is carried through purely to redirect back to the host page
+/// the admin came from; a macro itself isn't tied to any one host.
+#[derive(Template)]
+#[template(path = "grimoire_macro_edit.html")]
+pub struct GrimoireMacroEditTemplate {
+    pub base: BaseCtx,
+    pub macro_id: String,
+    pub host_id: String,
+    pub name: String,
+    pub is_personal: bool,
+    /// (role_id, role_name, is this macro's current role)
+    pub macro_roles: Vec<(String, String, bool)>,
+    pub job_name: String,
+    pub schedule: String,
+    pub run_as_user: String,
+    pub command: String,
+    pub error: Option<String>,
 }
 
 pub struct OssuaryHostRow {
@@ -839,6 +888,7 @@ pub struct PanopticonSwitchRow {
     pub name: String,
     pub ip_address: String,
     pub snmp_port: u16,
+    pub snmp_version_label: &'static str,
     pub enabled: bool,
     pub last_polled_at: Option<String>,
     pub last_poll_error: Option<String>,
@@ -856,17 +906,27 @@ pub struct PanopticonSwitchesTemplate {
     /// form is hidden (with an explanatory note) rather than accepting a
     /// community string it can't actually store safely.
     pub encryption_configured: bool,
+    /// (`SnmpVersion::as_str()` key, label, is this the form's default)
+    pub snmp_versions: Vec<(&'static str, &'static str, bool)>,
+    /// (key, label, is this the form's default) for each of the three v3
+    /// dropdowns -- security level, auth protocol, privacy protocol.
+    pub snmp_security_levels: Vec<(&'static str, &'static str, bool)>,
+    pub snmp_auth_protocols: Vec<(&'static str, &'static str, bool)>,
+    pub snmp_priv_protocols: Vec<(&'static str, &'static str, bool)>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
 }
 
-/// Edit form for one switch's name/address/port -- see
-/// `routes/panopticon.rs::switch_edit_*`. The community string field is
-/// deliberately never prefilled (there's no plaintext to show -- only
-/// `community_encrypted` is on hand, and even if it weren't, echoing a
-/// live credential back into a form is bad practice); leaving it blank on
-/// submit means "keep the existing one".
+/// Edit form for one switch -- see `routes/panopticon.rs::switch_edit_*`.
+/// Every secret field (the v1/v2c community string, the v3 auth/privacy
+/// passwords) is deliberately never prefilled -- there's no plaintext to
+/// show, only ciphertext is on hand, and even if it weren't, echoing a
+/// live credential back into a form is bad practice. Leaving a secret
+/// field blank on submit means "keep the existing one", but only when
+/// `snmp_version` isn't also changing -- switching version requires full
+/// new credentials for it, since the old secrets don't apply to the new
+/// version at all.
 #[derive(Template)]
 #[template(path = "panopticon_switch_edit.html")]
 pub struct PanopticonSwitchEditTemplate {
@@ -875,6 +935,14 @@ pub struct PanopticonSwitchEditTemplate {
     pub name: String,
     pub ip_address: String,
     pub snmp_port: u16,
+    /// (key, label, is this switch's current version)
+    pub snmp_versions: Vec<(&'static str, &'static str, bool)>,
+    /// Not a secret -- prefilled from the switch's current v3 config (if
+    /// any) so re-saving without changing it doesn't require retyping it.
+    pub snmp_v3_username: String,
+    pub snmp_security_levels: Vec<(&'static str, &'static str, bool)>,
+    pub snmp_auth_protocols: Vec<(&'static str, &'static str, bool)>,
+    pub snmp_priv_protocols: Vec<(&'static str, &'static str, bool)>,
     pub error: Option<String>,
 }
 

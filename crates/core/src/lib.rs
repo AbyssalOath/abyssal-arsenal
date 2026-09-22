@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod error;
 pub mod host;
+pub mod macros;
 pub mod module;
 pub mod network_device;
 pub mod oui;
@@ -15,9 +16,11 @@ pub mod user;
 pub use crypto::{CryptoError, EncryptionKey};
 pub use error::AppError;
 pub use host::Host;
+pub use macros::{Macro, MacroScope};
 pub use module::ModuleCategory;
 pub use network_device::{
-    DeviceType, NetworkDevice, NetworkDevicePort, PanopticonSwitch, TrustState,
+    DeviceType, NetworkDevice, NetworkDevicePort, PanopticonSwitch, SnmpAuthProtocol,
+    SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
 };
 pub use oui::lookup_vendor;
 pub use permission::Permission;

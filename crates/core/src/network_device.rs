@@ -207,18 +207,237 @@ impl NetworkDevice {
     }
 }
 
-/// A managed switch Panopticon polls over SNMP v2c for BRIDGE-MIB
-/// MAC-to-port data (`panopticon_snmp.rs`). `community_encrypted` is
-/// ciphertext (`abyssal_core::crypto::EncryptionKey`) -- callers that need
-/// to actually poll the switch decrypt it themselves at the point of use
-/// rather than this type ever carrying a plaintext community string.
+/// Which SNMP protocol version a managed switch is polled with
+/// (`panopticon_snmp.rs`). Every switch added before this field existed
+/// was polled over v2c exclusively, so `V2c` is both the default for a
+/// brand-new switch and what a pre-existing row's `NULL`/missing column
+/// value (`FromStr` never sees -- the migration backfills it, see
+/// `migrations/0014_panopticon_switch_snmp_version.sql`) is normalized to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SnmpVersion {
+    V1,
+    #[default]
+    V2c,
+    V3,
+}
+
+impl SnmpVersion {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SnmpVersion::V1 => "v1",
+            SnmpVersion::V2c => "v2c",
+            SnmpVersion::V3 => "v3",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SnmpVersion::V1 => "SNMPv1",
+            SnmpVersion::V2c => "SNMPv2c",
+            SnmpVersion::V3 => "SNMPv3",
+        }
+    }
+
+    pub const ALL: &'static [SnmpVersion] = &[SnmpVersion::V1, SnmpVersion::V2c, SnmpVersion::V3];
+}
+
+impl std::str::FromStr for SnmpVersion {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "v1" => Ok(SnmpVersion::V1),
+            "v2c" => Ok(SnmpVersion::V2c),
+            "v3" => Ok(SnmpVersion::V3),
+            _ => Err(()),
+        }
+    }
+}
+
+/// SNMPv3's "security level" -- how much of `USM` (User-based Security
+/// Model) is actually applied on top of the username. Mirrors
+/// `snmp2::v3::Auth` one-for-one; kept as its own enum here rather than
+/// depending on `snmp2` from `abyssal-core` (which otherwise has no SNMP
+/// dependency at all -- that stays confined to `panopticon_snmp.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SnmpSecurityLevel {
+    NoAuthNoPriv,
+    #[default]
+    AuthNoPriv,
+    AuthPriv,
+}
+
+impl SnmpSecurityLevel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SnmpSecurityLevel::NoAuthNoPriv => "noAuthNoPriv",
+            SnmpSecurityLevel::AuthNoPriv => "authNoPriv",
+            SnmpSecurityLevel::AuthPriv => "authPriv",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SnmpSecurityLevel::NoAuthNoPriv => "No auth, no privacy",
+            SnmpSecurityLevel::AuthNoPriv => "Auth, no privacy",
+            SnmpSecurityLevel::AuthPriv => "Auth + privacy",
+        }
+    }
+
+    pub const ALL: &'static [SnmpSecurityLevel] = &[
+        SnmpSecurityLevel::NoAuthNoPriv,
+        SnmpSecurityLevel::AuthNoPriv,
+        SnmpSecurityLevel::AuthPriv,
+    ];
+}
+
+impl std::str::FromStr for SnmpSecurityLevel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "noAuthNoPriv" => Ok(SnmpSecurityLevel::NoAuthNoPriv),
+            "authNoPriv" => Ok(SnmpSecurityLevel::AuthNoPriv),
+            "authPriv" => Ok(SnmpSecurityLevel::AuthPriv),
+            _ => Err(()),
+        }
+    }
+}
+
+/// SNMPv3 authentication hash, mirroring `snmp2::v3::AuthProtocol`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SnmpAuthProtocol {
+    #[default]
+    Md5,
+    Sha1,
+    Sha224,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl SnmpAuthProtocol {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SnmpAuthProtocol::Md5 => "md5",
+            SnmpAuthProtocol::Sha1 => "sha1",
+            SnmpAuthProtocol::Sha224 => "sha224",
+            SnmpAuthProtocol::Sha256 => "sha256",
+            SnmpAuthProtocol::Sha384 => "sha384",
+            SnmpAuthProtocol::Sha512 => "sha512",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SnmpAuthProtocol::Md5 => "MD5",
+            SnmpAuthProtocol::Sha1 => "SHA-1",
+            SnmpAuthProtocol::Sha224 => "SHA-224",
+            SnmpAuthProtocol::Sha256 => "SHA-256",
+            SnmpAuthProtocol::Sha384 => "SHA-384",
+            SnmpAuthProtocol::Sha512 => "SHA-512",
+        }
+    }
+
+    pub const ALL: &'static [SnmpAuthProtocol] = &[
+        SnmpAuthProtocol::Md5,
+        SnmpAuthProtocol::Sha1,
+        SnmpAuthProtocol::Sha224,
+        SnmpAuthProtocol::Sha256,
+        SnmpAuthProtocol::Sha384,
+        SnmpAuthProtocol::Sha512,
+    ];
+}
+
+impl std::str::FromStr for SnmpAuthProtocol {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "md5" => Ok(SnmpAuthProtocol::Md5),
+            "sha1" => Ok(SnmpAuthProtocol::Sha1),
+            "sha224" => Ok(SnmpAuthProtocol::Sha224),
+            "sha256" => Ok(SnmpAuthProtocol::Sha256),
+            "sha384" => Ok(SnmpAuthProtocol::Sha384),
+            "sha512" => Ok(SnmpAuthProtocol::Sha512),
+            _ => Err(()),
+        }
+    }
+}
+
+/// SNMPv3 privacy (encryption) cipher, mirroring `snmp2::v3::Cipher`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SnmpPrivProtocol {
+    #[default]
+    Des,
+    Aes128,
+    Aes192,
+    Aes256,
+}
+
+impl SnmpPrivProtocol {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SnmpPrivProtocol::Des => "des",
+            SnmpPrivProtocol::Aes128 => "aes128",
+            SnmpPrivProtocol::Aes192 => "aes192",
+            SnmpPrivProtocol::Aes256 => "aes256",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SnmpPrivProtocol::Des => "DES",
+            SnmpPrivProtocol::Aes128 => "AES-128",
+            SnmpPrivProtocol::Aes192 => "AES-192",
+            SnmpPrivProtocol::Aes256 => "AES-256",
+        }
+    }
+
+    pub const ALL: &'static [SnmpPrivProtocol] = &[
+        SnmpPrivProtocol::Des,
+        SnmpPrivProtocol::Aes128,
+        SnmpPrivProtocol::Aes192,
+        SnmpPrivProtocol::Aes256,
+    ];
+}
+
+impl std::str::FromStr for SnmpPrivProtocol {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "des" => Ok(SnmpPrivProtocol::Des),
+            "aes128" => Ok(SnmpPrivProtocol::Aes128),
+            "aes192" => Ok(SnmpPrivProtocol::Aes192),
+            "aes256" => Ok(SnmpPrivProtocol::Aes256),
+            _ => Err(()),
+        }
+    }
+}
+
+/// A managed switch Panopticon polls over SNMP (v1, v2c, or v3 --
+/// `snmp_version`) for BRIDGE-MIB MAC-to-port data (`panopticon_snmp.rs`).
+/// `community_encrypted` (v1/v2c) and the `snmp_v3_*_password_encrypted`
+/// fields (v3) are ciphertext (`abyssal_core::crypto::EncryptionKey`) --
+/// callers that need to actually poll the switch decrypt them themselves
+/// at the point of use rather than this type ever carrying a plaintext
+/// secret. Exactly one of `community_encrypted` (v1/v2c) or the v3 fields
+/// is populated, per `snmp_version`; never both.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PanopticonSwitch {
     pub id: Uuid,
     pub name: String,
     pub ip_address: String,
     pub snmp_port: u16,
-    pub community_encrypted: String,
+    pub snmp_version: SnmpVersion,
+    pub community_encrypted: Option<String>,
+    pub snmp_v3_username: Option<String>,
+    pub snmp_v3_security_level: Option<SnmpSecurityLevel>,
+    pub snmp_v3_auth_protocol: Option<SnmpAuthProtocol>,
+    pub snmp_v3_auth_password_encrypted: Option<String>,
+    pub snmp_v3_priv_protocol: Option<SnmpPrivProtocol>,
+    pub snmp_v3_priv_password_encrypted: Option<String>,
     pub enabled: bool,
     pub last_polled_at: Option<DateTime<Utc>>,
     /// Set by the most recent poll if it failed (unreachable, wrong
@@ -227,4 +446,36 @@ pub struct PanopticonSwitch {
     /// silently in a background loop nobody's watching.
     pub last_poll_error: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod snmp_version_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_every_variant_through_as_str_and_from_str() {
+        for v in SnmpVersion::ALL {
+            assert_eq!(v.as_str().parse::<SnmpVersion>().unwrap(), *v);
+        }
+        for v in SnmpSecurityLevel::ALL {
+            assert_eq!(v.as_str().parse::<SnmpSecurityLevel>().unwrap(), *v);
+        }
+        for v in SnmpAuthProtocol::ALL {
+            assert_eq!(v.as_str().parse::<SnmpAuthProtocol>().unwrap(), *v);
+        }
+        for v in SnmpPrivProtocol::ALL {
+            assert_eq!(v.as_str().parse::<SnmpPrivProtocol>().unwrap(), *v);
+        }
+    }
+
+    #[test]
+    fn defaults_to_v2c_for_backward_compatibility() {
+        assert_eq!(SnmpVersion::default(), SnmpVersion::V2c);
+    }
+
+    #[test]
+    fn rejects_unrecognized_strings() {
+        assert!("v4".parse::<SnmpVersion>().is_err());
+        assert!("".parse::<SnmpVersion>().is_err());
+    }
 }
