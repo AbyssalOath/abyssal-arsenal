@@ -13,10 +13,9 @@
   var messageText = document.getElementById("deploy-status-message");
   var table = document.getElementById("deploy-status-table");
 
-  var metaRefresh = document.querySelector('meta[http-equiv="refresh"]');
-  if (metaRefresh && metaRefresh.parentNode) {
-    metaRefresh.parentNode.removeChild(metaRefresh);
-  }
+  // The no-JS fallback (a `<meta http-equiv="refresh">` full-page reload)
+  // lives inside <noscript> in the template, so a browser running this
+  // script never parses or arms that timer in the first place.
 
   function badge(text, cls) {
     var span = document.createElement("span");

@@ -40,8 +40,15 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// How long to wait, after the install command reports success, for the
 /// agent to actually connect back before giving up and reporting
-/// [`DeployFailureReason::NeverCheckedIn`].
-pub const CHECKIN_POLL_TIMEOUT: Duration = Duration::from_secs(60);
+/// [`DeployFailureReason::NeverCheckedIn`]. Generous on purpose: the
+/// agent's own reconnect loop (`crates/agent/src/main.rs`) backs off
+/// 1s/2s/4s/8s/16s/32s/60s/... after a failed connection attempt, so a
+/// rough first attempt (DNS not quite ready yet, a brief network hiccup
+/// right after the service starts) can genuinely take over a minute to
+/// recover from before the *next* retry even fires -- a shorter timeout
+/// here risks reporting `NeverCheckedIn` for a host that was actually
+/// about to connect fine on its own.
+pub const CHECKIN_POLL_TIMEOUT: Duration = Duration::from_secs(150);
 const CHECKIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// How many hosts a single deploy job SSHes into at once.
 pub const DEFAULT_CONCURRENCY: usize = 5;

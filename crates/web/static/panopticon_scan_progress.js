@@ -13,13 +13,13 @@
   var pctText = document.getElementById("scan-progress-pct");
   var countText = document.getElementById("scan-progress-count");
 
-  // JS is running, so the plain <meta http-equiv="refresh"> fallback (for
-  // when it isn't) would just cause a jarring full-page reload on top of
-  // the smooth updates below -- remove it once we know we don't need it.
-  var metaRefresh = document.querySelector('meta[http-equiv="refresh"]');
-  if (metaRefresh && metaRefresh.parentNode) {
-    metaRefresh.parentNode.removeChild(metaRefresh);
-  }
+  // The no-JS fallback (a `<meta http-equiv="refresh">` full-page reload)
+  // lives inside <noscript> in the template, so a browser running this
+  // script never parses or arms that timer in the first place -- nothing
+  // to cancel here. Removing the tag from the DOM after the fact used to
+  // be tried instead and didn't reliably work: several browsers keep an
+  // already-armed meta-refresh timer running even after the element that
+  // requested it is gone.
 
   var POLL_INTERVAL_MS = 1000;
   var consecutiveErrors = 0;
