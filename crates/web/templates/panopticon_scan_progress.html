@@ -1,0 +1,40 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Scan Progress — Abyssal Arsenal{% endblock %}
+{% block head_extra %}
+<meta http-equiv="refresh" content="2">
+{% endblock %}
+{% block heading %}Scanning {{ target }}{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Running an nmap discovery scan against <code>{{ target }}</code>. This page updates
+    on its own -- no need to refresh it yourself.
+  </p>
+
+  <div
+    id="scan-progress-bar"
+    class="progress-bar{% if hosts_total == 0 %} indeterminate{% endif %}"
+    role="progressbar"
+    aria-valuemin="0"
+    aria-valuemax="100"
+    aria-valuenow="{{ percent }}"
+    data-job-id="{{ job_id }}"
+  >
+    <div class="progress-bar-fill" style="width:{{ percent }}%;"></div>
+  </div>
+  <p class="progress-bar-caption">
+    <span id="scan-progress-pct">{{ percent }}%</span>
+    &mdash;
+    <span id="scan-progress-count">{{ hosts_scanned }} / {{ hosts_total }} hosts</span>
+  </p>
+
+  <div style="margin-top:14px;">
+    <a class="btn btn-secondary" href="/arsenals/panopticon">{% call macros::icon("network") %} Panopticon</a>
+  </div>
+</div>
+
+<script src="/static/panopticon_scan_progress.js" defer></script>
+
+{% endblock %}

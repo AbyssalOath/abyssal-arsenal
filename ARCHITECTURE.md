@@ -351,6 +351,59 @@ and neither does any individual action form):
   De-escalate button -- a status/control surface, not itself where
   elevation happens.
 
+## Panopticon discovery scanning
+
+An on-demand scan (`panopticon_ops::run_discovery_scan`) runs `nmap -sT`
+(a TCP connect scan -- this process is unprivileged, so it has no raw
+sockets to do anything fancier) against an admin-supplied target, upserts
+every device it finds into `panopticon_devices`, and runs as a detached
+background job so the browser can watch it progress (see "Live-updating
+progress pages" below) rather than the request blocking until nmap exits.
+The unattended active sweep (`spawn_panopticon_sweep`) shares the exact
+same scan function, just invoked on a timer instead of from a request.
+
+- **MAC address** comes from the control plane's own kernel neighbor table
+  (`ip neigh show`), not from nmap -- nmap can't do its own ARP-based MAC
+  detection without raw sockets either. This only ever has entries for
+  devices on the same L2 segment as the control plane; a routed subnet
+  shows no MAC, which is expected, not a bug.
+- **Vendor** is derived entirely from the MAC's OUI prefix
+  (`abyssal_core::oui`), a small hand-curated table (not the full ~30k-row
+  IEEE registry, by design) -- a MAC that resolves but whose vendor doesn't
+  show just means that specific prefix isn't in the table yet, not that
+  MAC resolution failed.
+- **Hostname** comes from nmap's own reverse-DNS detection first, falling
+  back to an explicit `getent hosts <ip>` lookup
+  (`panopticon_ops::reverse_dns_lookup`) when nmap found nothing -- common
+  on internal networks without a properly configured internal DNS server.
+  `network_devices::upsert`'s `hostname` column is `COALESCE`d on every
+  write, exactly like `mac_address` already was: a rescan that doesn't
+  happen to resolve a hostname this time (flaky reverse DNS is the normal
+  case, not the exception) must never blank out one an earlier scan
+  already found.
+
+**Rescanning an already-known target skips the "type the target to
+confirm" dialog.** `has_scan_history` (`routes/panopticon.rs`) treats a
+CIDR target as known once it already appears in the Topology table (some
+inventory device's own `/24` matches it exactly) and a single host as
+known once it's already in the inventory. The Topology page's own Rescan
+button is always a known target by construction (it only exists for
+subnets already listed there), so it posts straight to the scan endpoint
+with no intermediate confirm page at all; the dashboard's free-text scan
+form still shows a confirm step for a known target, just a lighter one
+(no typed confirmation). The typed-confirmation requirement itself is
+re-checked independently inside the scan handler, not just decided by
+which confirm page rendered -- a hand-crafted request can't skip it for a
+target that's genuinely new just because the UI didn't ask for it. Either
+way, the resulting scan produces a small "Rescan of X complete" banner
+(`ScanJob::rescan_notice`) so skipping the old dialog doesn't make a
+rescan look like nothing happened.
+
+**"Quick add"** on an already-discovered inventory row
+(`panopticon.html`) skips straight to the SSH deploy credentials step for
+that one host, reusing the exact same flow a post-scan picker selection
+does -- see "Deploying agents over SSH" below.
+
 ## Deploying agents over SSH ("Quick Add Host From Network Scan")
 
 Enrollment above assumes an operator SSHing into the target by hand and
@@ -366,13 +419,18 @@ this is entirely a new control-plane capability.
 **Flow** (`crates/web/src/routes/panopticon_deploy.rs`,
 `crates/web/src/ssh_deploy.rs`): scan results -> picker (checkboxes,
 "select all"/"none") -> SSH credentials (one shared set plus optional
-per-host overrides) -> host-key review -> deploy status. Every step is a
-plain server-rendered page, matching this app's no-client-JS house style
--- "select all"/"none" and the auto-refreshing status page
-(`<meta http-equiv="refresh">`) both work without any JavaScript. A
-discovery scan already upserts every device it finds into the inventory
-unconditionally (`panopticon_ops::run_discovery_scan`), so cancelling out
-of the picker loses nothing; only "Add Hosts" continues into this flow.
+per-host overrides) -> host-key review -> deploy status. The picker,
+credentials, and host-key review steps are plain server-rendered pages --
+"select all"/"none" works by resubmitting a normal HTML form, no
+JavaScript involved. The final deploy status page is one of only two pages
+in the whole app with any client-side JS: a small, scoped polling script
+(`deploy_status_json`) that updates a progress bar and each host's row in
+place instead of the page reloading itself every few seconds -- see
+"Live-updating progress pages" below for why this exists and how it
+degrades without JS. A discovery scan already upserts every device it
+finds into the inventory unconditionally
+(`panopticon_ops::run_discovery_scan`), so cancelling out of the picker
+loses nothing; only "Add Hosts" continues into this flow.
 
 **Host keys: trust-on-first-use, never silently disabled.** The
 credentials step's submit triggers a probe -- open an SSH connection far
@@ -419,6 +477,19 @@ enrollment above), so a deploy job generates and stores one fresh
 (`start_deploy_job`) -- reusing a single token across multiple hosts would
 only ever enroll the first one.
 
+**The host's own `hostname` output, not a pre-deploy guess, decides
+`--name`.** `deploy_one_host` runs `hostname` over the same SSH session
+right after confirming the architecture, before ever downloading anything,
+and uses that (validated as a real RFC 1123 name) as the agent's
+registered name -- falling back to whatever Panopticon's inventory already
+had on file, and only then to the bare IP. The SSH-confirmed hostname is
+also written straight back into `panopticon_devices` (fire-and-forget, so
+a slow database write can never stall the deploy), regardless of whether
+the install that follows actually succeeds. `HostDeployStatus::
+hostname_is_fallback` tracks which case applied and the deploy status page
+shows an explicit "IP fallback" badge when it's true, rather than letting
+an IP quietly stand in for a real name.
+
 **Orchestration** (`ssh_deploy::run_deploy_job`): a `tokio::sync::
 Semaphore`-gated `tokio::task::JoinSet`, default concurrency 5, so one
 host's failure or a hung connection can never block or delay the others.
@@ -446,6 +517,63 @@ so `ssh_deploy`'s own tests exercise every named failure mode (connection
 refused/timeout, auth failure, sudo denied, a changed host key, a failed
 download/install, and "exited 0 but the agent never checked in") against a
 fake implementation with no real network involved.
+
+## Live-updating progress pages
+
+This app is server-rendered HTML with no client-side JavaScript, almost
+everywhere -- a deliberate house style, not an oversight. Two pages are the
+deliberate exception: the discovery scan progress page
+(`routes/panopticon_scan.rs::scan_status`) and the SSH deploy status page
+(`routes/panopticon_deploy.rs::deploy_status`). Both watch a long-running
+background job and need to show it moving in real time (a percentage, a
+host count, per-host state changing from `Pending` through to `Succeeded`/
+`Failed`) -- a `<meta http-equiv="refresh">` full-page reload every few
+seconds, this app's usual answer to "keep a page current," makes that look
+like a slideshow rather than progress. Both pages still ship that same
+`<meta refresh>` tag as their fallback, and both pages' own small `<script>`
+block removes it the moment it confirms it's running, so nothing changes
+for a client with JS disabled or blocked -- it just gets the older,
+plainer experience instead of a hard failure.
+
+The shape is the same on both pages, and deliberately so:
+
+- A JSON endpoint (`scan_status_json`, `deploy_status_json`) reports the
+  job's current state -- percentage/counts for the scan, plus each host's
+  row for the deploy job. Both read from the same in-memory job registries
+  (`AppState.scan_jobs`/`deploy_jobs`) the page's own first, server-rendered
+  load already reads from, so the two never disagree about where a job
+  currently stands.
+- The page's `<script>` polls that endpoint on a short interval (1-1.5s),
+  updates the progress bar's width and the relevant page elements in
+  place, and polls again -- or, for the scan page, redirects to the
+  results page (`scan_view`) once the job leaves `Running`; the deploy
+  page instead just stops polling once `complete` comes back true, since
+  its per-host rows *are* the results, not a separate page.
+- Anything derived from data a remote system produced (SSH command output,
+  a resolved hostname) is written into the DOM with `textContent`/
+  `createElement`, never `innerHTML` -- the same reason the server-rendered
+  version of these pages relies on Askama's default HTML escaping. A
+  compromised or simply misbehaving scan target or deploy host putting
+  `<script>` in its own output must never get it executed in an admin's
+  browser just because that output ended up on a progress page.
+- Every request the polling script makes goes through the exact same
+  `abyssal_rbac::ensure` permission check as the page itself
+  (`network.scan` for the scan job, `hosts.manage` for the deploy job) --
+  the JSON endpoint is a new URL, not a new permission boundary.
+
+The scan progress bar's own percentage comes from reading nmap's stdout
+incrementally rather than only after the process exits
+(`panopticon_ops::run_nmap_streaming`): nmap prints one `Nmap scan report
+for ...` line per host the moment it finishes probing that host, well
+before the whole scan completes, so counting those lines as they stream by
+gives real per-host progress without switching to nmap's XML output mode
+or splitting one scan into many separate per-host nmap invocations (which
+would lose nmap's own internal scheduling efficiency for no benefit).
+`hosts_total` is computed upfront from the target's CIDR size
+(`panopticon_ops::target_host_count` -- the same literal address-by-address
+count nmap itself expands a CIDR into, including the network and broadcast
+addresses) so the bar has a real denominator from the very first paint,
+not just once the first host finishes.
 
 ## The second-gate pattern for catastrophic-risk operations
 
@@ -652,7 +780,9 @@ itself gets edited or transferred.
 
 - Server-rendered HTML via Askama, no separate JavaScript build pipeline.
   Interactivity is plain HTML forms, including a real confirmation page
-  (not a JS `confirm()` dialog) for destructive actions.
+  (not a JS `confirm()` dialog) for destructive actions. Two pages are a
+  deliberate, narrow exception -- see "Live-updating progress pages"
+  below.
 - Dark theme by default with a light theme toggle, both defined as CSS
   custom properties (`crates/web/static/style.css`) for contrast/WCAG
   purposes.

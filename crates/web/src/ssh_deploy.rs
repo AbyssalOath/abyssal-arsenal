@@ -489,6 +489,26 @@ pub struct HostDeployStatus {
     /// `SshCredentials`, since the credentials themselves are never
     /// placed in a command string or logged (see `deploy_one_host`).
     pub output: String,
+    /// `true` when `hostname` above is really just the IP address --
+    /// either the SSH session never got far enough to ask the host for
+    /// its own name, or it answered with something that didn't look like
+    /// a real hostname. Surfaced on the status page so an IP standing in
+    /// for a hostname is something to investigate, not mistaken for a
+    /// real name (see `deploy_one_host`'s hostname resolution).
+    pub hostname_is_fallback: bool,
+}
+
+/// What one host's deploy attempt produced -- `deploy_one_host`'s return
+/// type. `resolved_hostname`/`hostname_is_fallback` start from the
+/// inventory's pre-deploy guess (`DeployTarget::hostname`, or the IP if
+/// there wasn't one) and get replaced the moment the host answers its own
+/// `hostname` command, which is ground truth in a way a pre-scan guess
+/// never is.
+struct DeployOutcome {
+    state: HostDeployState,
+    output: String,
+    resolved_hostname: String,
+    hostname_is_fallback: bool,
 }
 
 pub struct DeployJob {
@@ -523,8 +543,27 @@ async fn deploy_one_host(
     control_plane_url: &str,
     enrollment_token: &str,
     agent_version: &str,
-) -> (HostDeployState, String) {
+) -> DeployOutcome {
     let mut output = String::new();
+    // Best guess before the SSH session confirms anything -- whatever the
+    // inventory already had on file, or the IP if it had nothing. Replaced
+    // below the moment the host answers `hostname` for itself.
+    let mut resolved_hostname = target
+        .hostname
+        .clone()
+        .unwrap_or_else(|| target.ip_address.clone());
+    let mut hostname_is_fallback = target.hostname.is_none();
+
+    macro_rules! finish {
+        ($state:expr) => {
+            return DeployOutcome {
+                state: $state,
+                output,
+                resolved_hostname,
+                hostname_is_fallback,
+            }
+        };
+    }
 
     let mut session = match client
         .connect(
@@ -536,14 +575,14 @@ async fn deploy_one_host(
         .await
     {
         Ok(s) => s,
-        Err(reason) => return (HostDeployState::Failed(reason), output),
+        Err(reason) => finish!(HostDeployState::Failed(reason)),
     };
 
     macro_rules! run {
         ($cmd:expr) => {{
             match session.exec($cmd, None).await {
                 Ok(result) => result,
-                Err(reason) => return (HostDeployState::Failed(reason), output),
+                Err(reason) => finish!(HostDeployState::Failed(reason)),
             }
         }};
     }
@@ -552,10 +591,51 @@ async fn deploy_one_host(
     output.push_str(&format!("$ uname -m\n{}\n", arch.stdout.trim()));
     let arch_name = arch.stdout.trim().to_string();
     if arch_name != "x86_64" {
-        return (
-            HostDeployState::Failed(DeployFailureReason::UnsupportedArchitecture(arch_name)),
-            output,
-        );
+        finish!(HostDeployState::Failed(
+            DeployFailureReason::UnsupportedArchitecture(arch_name)
+        ));
+    }
+
+    // Ask the host for its own hostname -- ground truth, and strictly more
+    // trustworthy than the inventory's pre-scan guess (stale, wrong, or,
+    // before Panopticon's PTR/OUI-vendor fixes, simply absent). Never
+    // fatal to the deploy: a failed or nonsensical answer just keeps
+    // whatever fallback we already had.
+    match session.exec("hostname", None).await {
+        Ok(result) if result.success() => {
+            let candidate = result.stdout.lines().next().unwrap_or("").trim();
+            output.push_str(&format!("$ hostname\n{candidate}\n"));
+            if abyssal_agent_protocol::is_valid_hostname(candidate) {
+                resolved_hostname = candidate.to_string();
+                hostname_is_fallback = false;
+                // Best-effort, spawned rather than awaited inline: feeds
+                // this ground-truth hostname straight back into the
+                // inventory regardless of how the rest of this deploy
+                // turns out (a failed install still taught us something
+                // real about this host), but a slow or unreachable
+                // database must never stall this task's own progress --
+                // same reasoning as `record_deploy_audit` in
+                // `run_deploy_job`.
+                let pool = pool.clone();
+                let ip_address = target.ip_address.clone();
+                let hostname_for_inventory = resolved_hostname.clone();
+                tokio::spawn(async move {
+                    let _ = repo::network_devices::upsert(
+                        &pool,
+                        &ip_address,
+                        None,
+                        Some(&hostname_for_inventory),
+                    )
+                    .await;
+                });
+            }
+        }
+        Ok(result) => {
+            output.push_str(&format!("$ hostname\n{}{}\n", result.stdout, result.stderr));
+        }
+        Err(_) => {
+            output.push_str("$ hostname\n(command failed, using a fallback name)\n");
+        }
     }
 
     let asset = format!("abyssal-agent-v{agent_version}-x86_64-unknown-linux-gnu");
@@ -575,27 +655,22 @@ async fn deploy_one_host(
         download.stdout, download.stderr
     ));
     if !download.success() {
-        return (
-            HostDeployState::Failed(DeployFailureReason::DownloadFailed(format!(
+        finish!(HostDeployState::Failed(
+            DeployFailureReason::DownloadFailed(format!(
                 "exit code {:?}: {}",
                 download.exit_code,
                 download.stderr.trim()
-            ))),
-            output,
-        );
+            ))
+        ));
     }
 
-    let host_name = target
-        .hostname
-        .clone()
-        .unwrap_or_else(|| target.ip_address.clone());
     let install_cmd = format!(
         "sudo -S /tmp/abyssal-agent-deploy/abyssal-agent install --control-plane-url {} \
          --enrollment-token {} --name {} ; \
          rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz",
         shell_quote(control_plane_url),
         shell_quote(enrollment_token),
-        shell_quote(&host_name)
+        shell_quote(&resolved_hostname)
     );
     let mut sudo_stdin = Zeroizing::new(String::with_capacity(
         target.credentials.sudo_password.len() + 1,
@@ -607,7 +682,7 @@ async fn deploy_one_host(
         .await
     {
         Ok(result) => result,
-        Err(reason) => return (HostDeployState::Failed(reason), output),
+        Err(reason) => finish!(HostDeployState::Failed(reason)),
     };
     drop(sudo_stdin);
     output.push_str(&format!(
@@ -619,20 +694,16 @@ async fn deploy_one_host(
     if install_stderr_lower.contains("incorrect password")
         || install_stderr_lower.contains("sorry, try again")
     {
-        return (
-            HostDeployState::Failed(DeployFailureReason::SudoDenied),
-            output,
-        );
+        finish!(HostDeployState::Failed(DeployFailureReason::SudoDenied));
     }
     if !install.success() {
-        return (
-            HostDeployState::Failed(DeployFailureReason::InstallFailed(format!(
+        finish!(HostDeployState::Failed(DeployFailureReason::InstallFailed(
+            format!(
                 "exit code {:?}: {}",
                 install.exit_code,
                 install.stderr.trim()
-            ))),
-            output,
-        );
+            )
+        )));
     }
 
     // Confirm real enrollment, not just exit code 0: poll for a host row
@@ -641,16 +712,13 @@ async fn deploy_one_host(
     let deadline = tokio::time::Instant::now() + CHECKIN_POLL_TIMEOUT;
     loop {
         if let Ok(hosts) = repo::hosts::list(pool).await
-            && let Some(host) = hosts.iter().find(|h| h.name == host_name)
+            && let Some(host) = hosts.iter().find(|h| h.name == resolved_hostname)
             && hosts_registry.is_connected(host.id)
         {
-            return (HostDeployState::Succeeded, output);
+            finish!(HostDeployState::Succeeded);
         }
         if tokio::time::Instant::now() >= deadline {
-            return (
-                HostDeployState::Failed(DeployFailureReason::NeverCheckedIn),
-                output,
-            );
+            finish!(HostDeployState::Failed(DeployFailureReason::NeverCheckedIn));
         }
         tokio::time::sleep(CHECKIN_POLL_INTERVAL).await;
     }
@@ -748,7 +816,7 @@ pub async fn run_deploy_job(
                 None,
             ));
 
-            let (state, output) = deploy_one_host(
+            let outcome = deploy_one_host(
                 client.as_ref(),
                 &pool,
                 hosts_registry.as_ref(),
@@ -760,6 +828,12 @@ pub async fn run_deploy_job(
             )
             .await;
             drop(enrollment_token);
+            let DeployOutcome {
+                state,
+                output,
+                resolved_hostname,
+                hostname_is_fallback,
+            } = outcome;
 
             let (action, outcome, metadata) = match &state {
                 HostDeployState::Succeeded => (
@@ -790,6 +864,8 @@ pub async fn run_deploy_job(
             if let Some(status) = job.hosts.iter_mut().find(|h| h.ip_address == ip_address) {
                 status.state = state;
                 status.output = output;
+                status.hostname = Some(resolved_hostname);
+                status.hostname_is_fallback = hostname_is_fallback;
             }
         });
     }
@@ -963,6 +1039,119 @@ mod tests {
         }
     }
 
+    /// Same as `target`, but with no inventory-guessed hostname on file --
+    /// the "this device is new to the inventory, or Panopticon never
+    /// resolved a hostname for it" case.
+    fn target_without_hostname(ip: &str) -> DeployTarget {
+        DeployTarget {
+            ip_address: ip.to_string(),
+            hostname: None,
+            ssh_port: 22,
+            credentials: password_creds(),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Remote hostname resolution (Phase 2b: the deploy must ask the host
+    // for its own hostname over SSH, not just trust whatever a pre-deploy
+    // scan happened to guess -- and must flag it clearly when it ends up
+    // showing the IP instead of a real name).
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn ssh_reported_hostname_overrides_missing_inventory_guess() {
+        let client = FakeClient::new().with_exec_sequence(
+            "10.0.2.1",
+            vec![
+                ok_result("x86_64"),
+                ok_result("real-host-name"),
+                err_result(
+                    1,
+                    "stop before download, this test only cares about hostname resolution",
+                ),
+            ],
+        );
+        let pool = unconfigured_pool();
+        let hosts_registry = HostConnectionRegistry::new();
+        let outcome = deploy_one_host(
+            &client,
+            &pool,
+            &hosts_registry,
+            &target_without_hostname("10.0.2.1"),
+            "SHA256:fake",
+            "https://cp.example.com",
+            "tok",
+            "0.1.2",
+        )
+        .await;
+        assert_eq!(outcome.resolved_hostname, "real-host-name");
+        assert!(!outcome.hostname_is_fallback);
+        assert!(matches!(
+            outcome.state,
+            HostDeployState::Failed(DeployFailureReason::DownloadFailed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_ip_when_hostname_command_fails_and_inventory_has_nothing() {
+        let client = FakeClient::new().with_exec_sequence(
+            "10.0.2.2",
+            vec![
+                ok_result("x86_64"),
+                err_result(127, "hostname: command not found"),
+                err_result(
+                    1,
+                    "stop before download, this test only cares about hostname resolution",
+                ),
+            ],
+        );
+        let pool = unconfigured_pool();
+        let hosts_registry = HostConnectionRegistry::new();
+        let outcome = deploy_one_host(
+            &client,
+            &pool,
+            &hosts_registry,
+            &target_without_hostname("10.0.2.2"),
+            "SHA256:fake",
+            "https://cp.example.com",
+            "tok",
+            "0.1.2",
+        )
+        .await;
+        assert_eq!(outcome.resolved_hostname, "10.0.2.2");
+        assert!(outcome.hostname_is_fallback);
+    }
+
+    #[tokio::test]
+    async fn inventory_guess_is_kept_when_ssh_hostname_lookup_fails() {
+        let client = FakeClient::new().with_exec_sequence(
+            "10.0.2.3",
+            vec![
+                ok_result("x86_64"),
+                err_result(127, "hostname: command not found"),
+                err_result(
+                    1,
+                    "stop before download, this test only cares about hostname resolution",
+                ),
+            ],
+        );
+        let pool = unconfigured_pool();
+        let hosts_registry = HostConnectionRegistry::new();
+        let outcome = deploy_one_host(
+            &client,
+            &pool,
+            &hosts_registry,
+            &target("10.0.2.3"),
+            "SHA256:fake",
+            "https://cp.example.com",
+            "tok",
+            "0.1.2",
+        )
+        .await;
+        assert_eq!(outcome.resolved_hostname, "host-10.0.2.3");
+        assert!(!outcome.hostname_is_fallback);
+    }
+
     #[tokio::test]
     async fn connection_refused_is_reported_without_any_exec() {
         let client = FakeClient::new()
@@ -1015,6 +1204,7 @@ mod tests {
             "10.0.0.5",
             vec![
                 ok_result("x86_64"),
+                ok_result("dev-host-5"),
                 err_result(22, "curl: (22) The requested URL returned error: 404"),
             ],
         );
@@ -1031,6 +1221,7 @@ mod tests {
             "10.0.0.6",
             vec![
                 ok_result("x86_64"),
+                ok_result("dev-host-6"),
                 ok_result("downloaded"),
                 err_result(1, "[sudo] password for admin: Sorry, try again.\nsudo: 1 incorrect password attempt"),
             ],
@@ -1048,6 +1239,7 @@ mod tests {
             "10.0.0.7",
             vec![
                 ok_result("x86_64"),
+                ok_result("dev-host-7"),
                 ok_result("downloaded"),
                 err_result(1, "enrollment rejected by control plane"),
             ],
@@ -1069,6 +1261,7 @@ mod tests {
             "10.0.0.8",
             vec![
                 ok_result("x86_64"),
+                ok_result("dev-host-8"),
                 ok_result("downloaded"),
                 ok_result("installed"),
             ],
@@ -1076,7 +1269,7 @@ mod tests {
         let pool = unconfigured_pool();
         let hosts_registry = HostConnectionRegistry::new();
         let started = tokio::time::Instant::now();
-        let (state, _) = deploy_one_host(
+        let outcome = deploy_one_host(
             &client,
             &pool,
             &hosts_registry,
@@ -1088,7 +1281,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            state,
+            outcome.state,
             HostDeployState::Failed(DeployFailureReason::NeverCheckedIn)
         );
         // Actually waited out the poll window (in virtual time) rather
@@ -1099,7 +1292,7 @@ mod tests {
     async fn deploy_one_host_test(client: &FakeClient, ip: &str) -> (HostDeployState, String) {
         let pool = unconfigured_pool();
         let hosts_registry = HostConnectionRegistry::new();
-        deploy_one_host(
+        let outcome = deploy_one_host(
             client,
             &pool,
             &hosts_registry,
@@ -1109,7 +1302,8 @@ mod tests {
             "tok",
             "0.1.2",
         )
-        .await
+        .await;
+        (outcome.state, outcome.output)
     }
 
     /// A `find_by_id`-style DB call is never reached on any failure path
@@ -1181,12 +1375,14 @@ mod tests {
                     hostname: None,
                     state: HostDeployState::Pending,
                     output: String::new(),
+                    hostname_is_fallback: true,
                 },
                 HostDeployStatus {
                     ip_address: "10.0.1.2".to_string(),
                     hostname: None,
                     state: HostDeployState::Pending,
                     output: String::new(),
+                    hostname_is_fallback: true,
                 },
             ],
         }));

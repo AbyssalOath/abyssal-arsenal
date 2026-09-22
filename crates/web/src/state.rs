@@ -13,6 +13,7 @@ use chrono::Duration;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use crate::panopticon_ops::ScanJob;
 use crate::ssh_deploy::DeployJob;
 use crate::update_check::UpdateStatus;
 
@@ -66,4 +67,7 @@ pub struct AppState {
     /// polling one job's status page never contends with starting or
     /// looking up another.
     pub deploy_jobs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<DeployJob>>>>>,
+    /// Same in-memory-only shape and reasoning as `deploy_jobs`, for
+    /// discovery scans -- see `panopticon_ops::ScanJob`.
+    pub scan_jobs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ScanJob>>>>>,
 }

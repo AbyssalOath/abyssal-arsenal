@@ -10,6 +10,78 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Added
+
+- **Quick Add Host From Network Scan**: lets an admin go from a Panopticon
+  discovery scan straight to enrolled managed hosts over SSH, instead of
+  SSHing into each one by hand. After a scan, a picker lets you select
+  which discovered devices to deploy the agent to (or add one later
+  straight from the Device Inventory's new "Quick add" action); a
+  credentials step collects one shared SSH login plus optional per-host
+  overrides (username, password or private key, sudo password, SSH port);
+  a host-key review step shows every fingerprint for trust-on-first-use
+  confirmation before any credential is used, and hard-stops (never
+  silently bypassed) if a previously-trusted host's key has changed since
+  last seen. Deployment runs concurrently (bounded, default 5 at once) so
+  one unreachable host never blocks the others, confirms success by
+  polling for the agent actually connecting back over its own WebSocket
+  rather than trusting the install command's exit code alone, and shows
+  clear, specific failure reasons (connection refused/timeout, auth
+  failed, sudo denied, host key changed, download/install error, agent
+  never checked in) with command output on the results page. Passwords,
+  private keys, and passphrases are never written to the database or a
+  log line, anywhere -- see [ARCHITECTURE.md](ARCHITECTURE.md#deploying-agents-over-ssh-quick-add-host-from-network-scan)
+  for the full design, including how a multi-step, no-persistent-session
+  web flow carries a credential forward without ever storing it.
+- **Live progress bars for long-running background jobs**: both the SSH
+  deploy status page and Panopticon's discovery scan now show a
+  determinate progress bar (percentage, plus supporting counts like
+  "142 / 254 hosts" or "3 / 5 hosts complete") that updates smoothly via a
+  small, page-scoped polling script, rather than the page reloading itself
+  every few seconds. These are the only two pages in the app with any
+  client-side JavaScript -- a deliberate, narrowly scoped exception to the
+  rest of the app's server-rendered-only house style, and both still fall
+  back to the old full-page-reload behavior if JavaScript is unavailable.
+  Discovery scans also now run as background jobs instead of blocking the
+  request that started them, which is what made a live progress bar
+  possible in the first place. See [ARCHITECTURE.md](ARCHITECTURE.md#live-updating-progress-pages).
+- Topology's Rescan button is now a single click for a subnet Panopticon
+  already knows about -- no confirmation dialog, no retyping the target,
+  just a small "Rescan of X complete" notice once it finishes. The typed
+  "confirm the target" safety dialog still applies in full for a target
+  that's never been scanned before.
+
+### Fixed
+
+- Panopticon's device inventory could lose a device's hostname on any
+  rescan that didn't happen to resolve one that particular time (flaky
+  reverse DNS is the normal case on most internal networks, not the
+  exception) -- the underlying `UPDATE` was overwriting a known-good
+  hostname with an empty result instead of keeping the old value, the
+  same mistake the MAC address column next to it didn't have. Also added
+  an explicit reverse-DNS (`getent hosts`) fallback for when nmap's own
+  hostname detection finds nothing, and a handful of real-world OUI vendor
+  prefixes verified against the IEEE registry.
+- Remote agent installs deployed via SSH were registering under the
+  target's IP address instead of its real hostname. The install now asks
+  the host directly for its own `hostname` right over the same SSH
+  session, which is authoritative in a way a pre-deploy guess never was,
+  and writes it back into the inventory immediately; the deploy status
+  page now shows an explicit "IP fallback" badge on the rare host where
+  even that couldn't be confirmed, rather than silently showing an IP as
+  if it were a real name.
+
+### Changed
+
+- The SSH deploy credentials form now labels its fields as "SSH Username"/
+  "SSH Password" (not just "Username"/"Password"), adds a one-line inline
+  explanation under each field, and only shows the Private key fields
+  when Auth method is set to Key (and vice versa for Password) -- all
+  without any client-side JavaScript beyond what "Live progress bars"
+  above already introduces, using CSS `:has()` selectors instead. A new
+  "Same as SSH password" checkbox next to Sudo password removes the need
+  to retype the same password into two fields.
+
 ## [0.1.1] - 2026-09-19
 
 ### Added

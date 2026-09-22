@@ -24,7 +24,6 @@ use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
-use crate::panopticon_ops::DiscoveryScanOperation;
 use crate::state::AppState;
 use crate::templates::{
     BaseCtx, NetworkDeviceRow, PanopticonClassifyTemplate, PanopticonTemplate, SubnetGroup,
@@ -44,7 +43,7 @@ fn subnet_of(ip: &str) -> String {
     }
 }
 
-async fn render(
+pub(crate) async fn render(
     state: &AppState,
     jar: &CookieJar,
     ctx: &AuthContext,
@@ -161,6 +160,7 @@ async fn render(
     let tpl = PanopticonTemplate {
         can_scan: ctx.has(Permission::NetworkScan),
         can_manage: ctx.has(Permission::NetworkManage),
+        can_deploy: ctx.has(Permission::HostsManage),
         base,
         devices: device_rows,
         subnets,
@@ -205,6 +205,33 @@ pub struct ScanQuery {
     ports: Option<String>,
 }
 
+/// Whether `ip` falls within `target`'s advertised `/24` -- the same
+/// coarse grouping the Topology table itself uses (`subnet_of`), not real
+/// CIDR arithmetic. Split out from `has_scan_history` purely so this
+/// matching logic has a unit test independent of the database.
+fn ip_matches_subnet_target(ip: &str, target: &str) -> bool {
+    subnet_of(ip) == target
+}
+
+/// Whether `target` has been scanned before -- a CIDR target counts as
+/// known when it already appears in the Topology table (some inventory
+/// device's own `/24` matches it exactly); a single host/IP counts as
+/// known when it's already in the inventory. Used to decide whether the
+/// heavy "type the target to confirm" dialog is warranted (a genuinely new
+/// target) or just friction (a rescan of something already vetted once).
+async fn has_scan_history(pool: &abyssal_database::DbPool, target: &str) -> Result<bool, WebError> {
+    if target.contains('/') {
+        let devices = repo::network_devices::list(pool).await?;
+        Ok(devices
+            .iter()
+            .any(|d| ip_matches_subnet_target(&d.ip_address, target)))
+    } else {
+        Ok(repo::network_devices::find_by_ip(pool, target)
+            .await?
+            .is_some())
+    }
+}
+
 fn validate_scan_query(q: &ScanQuery) -> Result<(String, Option<String>), WebError> {
     let target = q.target.trim().to_string();
     if !abyssal_agent_protocol::is_valid_network_target(&target) {
@@ -233,6 +260,7 @@ pub async fn scan_confirm(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::NetworkScan)?;
     let (target, ports) = validate_scan_query(&q)?;
+    let known = has_scan_history(&state.pool, &target).await?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -254,26 +282,53 @@ pub async fn scan_confirm(
         action_url.push_str(&format!("&ports={}", urlencoding_encode(p)));
     }
 
+    // Known targets (already in the inventory/topology) skip the "type the
+    // target to confirm" friction -- that's a real safety guardrail for a
+    // target nobody here has ever scanned before, not something a routine
+    // rescan needs every time. `scan()` itself independently re-checks
+    // `known` before honoring a plain `confirm=true` without confirm_text,
+    // so this is only a UI shortcut, not the actual safety boundary.
+    let (title, message, type_to_confirm) = if known {
+        (
+            "Rescan".to_string(),
+            format!(
+                "Rescan \"{target}\"{}? This re-sends real network traffic to a target already \
+                 in the inventory.",
+                match &ports {
+                    Some(p) => format!(" (ports: {p})"),
+                    None => String::new(),
+                }
+            ),
+            None,
+        )
+    } else {
+        (
+            "Run discovery scan".to_string(),
+            format!(
+                "This will run an nmap TCP connect scan from the control plane against \
+                 \"{target}\"{}. This sends real network traffic to that target and may trigger \
+                 intrusion detection there or in between -- only scan targets you're authorized \
+                 to scan. Discovered devices are added to the inventory below.",
+                match &ports {
+                    Some(p) => format!(" (ports: {p})"),
+                    None => String::new(),
+                }
+            ),
+            Some(crate::templates::TypeToConfirm {
+                label: "scan target".to_string(),
+                expected: target.clone(),
+            }),
+        )
+    };
+
     let tpl = crate::templates::ConfirmTemplate {
         base,
-        title: "Run discovery scan".to_string(),
-        message: format!(
-            "This will run an nmap TCP connect scan from the control plane against \"{target}\"{}. \
-             This sends real network traffic to that target and may trigger intrusion detection \
-             there or in between -- only scan targets you're authorized to scan. Discovered \
-             devices are added to the inventory below.",
-            match &ports {
-                Some(p) => format!(" (ports: {p})"),
-                None => String::new(),
-            }
-        ),
+        title,
+        message,
         action_url,
         cancel_url: "/arsenals/panopticon".to_string(),
         escalate_host_id: None,
-        type_to_confirm: Some(crate::templates::TypeToConfirm {
-            label: "scan target".to_string(),
-            expected: target.clone(),
-        }),
+        type_to_confirm,
         extra_hidden_fields: vec![],
     };
     let jar = match new_cookie {
@@ -292,6 +347,13 @@ pub struct ScanForm {
     confirm_text: String,
 }
 
+/// Starts the scan as a detached background job and redirects to its
+/// progress page instead of blocking this request until nmap finishes --
+/// see `routes/panopticon_scan.rs` for the progress/status/results
+/// handlers and `panopticon_ops::run_scan_job` for the job itself. Every
+/// entry point that posts here (the dashboard's own scan form, and the
+/// Topology page's one-click Rescan button) gets the progress bar for
+/// free, since they all funnel through this one handler.
 pub async fn scan(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -308,66 +370,33 @@ pub async fn scan(
         )));
     }
     let (target, ports) = validate_scan_query(&q)?;
-    crate::common::require_typed_confirmation(&form.confirm_text, &target)?;
+    // Re-checked independently of whatever the confirm page decided to
+    // show -- a crafted POST that skips straight here still only gets to
+    // skip the typed confirmation for a target that's genuinely already
+    // known, never for a brand-new one.
+    let known = has_scan_history(&state.pool, &target).await?;
+    if !known {
+        crate::common::require_typed_confirmation(&form.confirm_text, &target)?;
+    }
+    let rescan_notice = known.then(|| format!("Rescan of {target} complete."));
 
-    let result_label = Some(format!("Discovery Scan ({target})"));
-    let discovered_sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let op = DiscoveryScanOperation {
-        pool: state.pool.clone(),
+    let hosts_total = crate::panopticon_ops::target_host_count(&target);
+    let job_id = Uuid::new_v4();
+    let job = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::panopticon_ops::ScanJob::new(job_id, target.clone(), hosts_total, rescan_notice),
+    ));
+    state.scan_jobs.write().await.insert(job_id, job.clone());
+
+    tokio::spawn(crate::panopticon_ops::run_scan_job(
+        state.executor.clone(),
+        state.pool.clone(),
+        ctx,
+        job,
         target,
         ports,
-        discovered_sink: discovered_sink.clone(),
-    };
-    let result = state
-        .executor
-        .execute(
-            &ctx,
-            &op,
-            OperationParams {
-                confirm: true,
-                ..Default::default()
-            },
-            CancellationToken::new(),
-            None,
-        )
-        .await;
+    ));
 
-    match result {
-        Ok(output) => {
-            let discovered = discovered_sink
-                .lock()
-                .map(|g| g.clone())
-                .unwrap_or_default();
-            if ctx.has(Permission::HostsManage) && !discovered.is_empty() {
-                return super::panopticon_deploy::render_scan_picker_from_discovered(
-                    &state, &jar, &ctx, discovered,
-                )
-                .await;
-            }
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                result_label,
-                Some(output.stdout),
-                None,
-            )
-            .await
-        }
-        Err(e) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                result_label,
-                None,
-                Some(e.to_string()),
-            )
-            .await
-        }
-    }
+    Ok(Redirect::to(&format!("/arsenals/panopticon/scan/status/{job_id}")).into_response())
 }
 
 // ---------------------------------------------------------------------
@@ -1343,4 +1372,28 @@ pub async fn switch_traffic(
         None => jar,
     };
     Ok((jar, tpl).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subnet_of_groups_ipv4_into_its_24() {
+        assert_eq!(subnet_of("10.245.20.53"), "10.245.20.0/24");
+        assert_eq!(subnet_of("192.168.1.1"), "192.168.1.0/24");
+    }
+
+    #[test]
+    fn subnet_of_falls_back_to_other_for_non_ipv4() {
+        assert_eq!(subnet_of("not-an-ip"), "other");
+        assert_eq!(subnet_of("::1"), "other");
+    }
+
+    #[test]
+    fn ip_matches_subnet_target_matches_only_the_same_24() {
+        assert!(ip_matches_subnet_target("10.245.20.53", "10.245.20.0/24"));
+        assert!(!ip_matches_subnet_target("10.245.20.53", "10.245.21.0/24"));
+        assert!(!ip_matches_subnet_target("not-an-ip", "10.245.20.0/24"));
+    }
 }

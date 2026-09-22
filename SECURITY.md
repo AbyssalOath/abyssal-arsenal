@@ -75,7 +75,12 @@ The design principles this codebase follows are documented in
   record.
 - **Security headers** (`Content-Security-Policy`, `X-Frame-Options`,
   `X-Content-Type-Options`, `Referrer-Policy`) are applied to every
-  response.
+  response. `script-src` stays strict (`'self'`, no `'unsafe-inline'`) --
+  the two pages that need any client-side JavaScript at all (Panopticon's
+  scan progress page and the SSH deploy status page; see "Live-updating
+  progress pages" in [ARCHITECTURE.md](ARCHITECTURE.md)) load it from
+  same-origin `/static/*.js` files rather than an inline `<script>` block,
+  specifically so this directive never needs loosening.
 - **No secrets committed to source control.** `.env` and anything deriving
   from `.env.example` is gitignored; `install.sh` generates strong random
   secrets rather than shipping defaults.

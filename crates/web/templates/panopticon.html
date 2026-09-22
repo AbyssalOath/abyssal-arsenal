@@ -61,7 +61,11 @@
         {% if can_scan || can_manage %}
         <td class="actions">
           {% if can_scan && s.subnet != "other" %}
-          <a class="btn btn-secondary" href="/arsenals/panopticon/scan/confirm?target={{ s.subnet }}">{% call macros::icon("scan") %} Rescan</a>
+          <form method="post" action="/arsenals/panopticon/scan?target={{ s.subnet }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="confirm" value="true">
+            <button type="submit" class="btn btn-secondary">{% call macros::icon("scan") %} Rescan</button>
+          </form>
           {% endif %}
           {% if can_manage %}
           <a class="btn btn-danger" href="/arsenals/panopticon/subnets/remove/confirm?subnet={{ s.subnet }}">{% call macros::icon("danger") %} Remove</a>
@@ -102,7 +106,7 @@
         <th>IP address</th><th>MAC</th><th>Vendor</th><th>Hostname</th><th>Open ports</th>
         <th>Type</th><th>Trust</th><th>Notes</th><th>Switch / Port</th>
         <th>Status</th><th>First seen</th><th>Last seen</th>
-        {% if can_manage %}<th>Actions</th>{% endif %}
+        {% if can_manage || can_deploy %}<th>Actions</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -128,10 +132,19 @@
         </td>
         <td>{{ d.first_seen_at }}</td>
         <td>{{ d.last_seen_at }}</td>
-        {% if can_manage %}
+        {% if can_manage || can_deploy %}
         <td class="actions">
+          {% if can_deploy && d.managed_host_name.is_none() %}
+          <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="selected_ips" value="{{ d.ip_address }}">
+            <button type="submit" class="btn btn-secondary">{% call macros::icon("host") %} Quick add</button>
+          </form>
+          {% endif %}
+          {% if can_manage %}
           <a class="btn btn-secondary" href="/arsenals/panopticon/devices/{{ d.id }}/classify">{% call macros::icon("role") %} Classify</a>
           <a class="btn btn-danger" href="/arsenals/panopticon/devices/{{ d.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
+          {% endif %}
         </td>
         {% endif %}
       </tr>

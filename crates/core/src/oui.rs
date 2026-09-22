@@ -99,6 +99,16 @@ const OUI_TABLE: &[(&str, &str)] = &[
     ("000AE4", "Synology"),
     ("0011D9", "Synology"),
     ("001132", "Synology"),
+    // Verified against the IEEE OUI registry (via maclookup.app) while
+    // fixing Panopticon issue Phase 2a -- these specific prefixes came up
+    // empty against real devices on a live internal network, unlike the
+    // entries above (mostly cloud/virtualization platforms), which rarely
+    // show up on a physical office/campus LAN.
+    ("609532", "Zebra Technologies"),
+    ("B0416F", "Shenzhen Maxtang Computer"),
+    ("8CEC4B", "Dell"),
+    ("94F392", "Fortinet"),
+    ("184A53", "Apple"),
 ];
 
 /// Normalizes to bare uppercase hex (strips `:`/`-` separators) and matches
@@ -118,4 +128,42 @@ pub fn lookup_vendor(mac: &str) -> Option<&'static str> {
         .iter()
         .find(|(p, _)| *p == prefix)
         .map(|(_, vendor)| *vendor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_regardless_of_colon_or_hyphen_separators_or_case() {
+        assert_eq!(
+            lookup_vendor("60:95:32:06:e3:fd"),
+            Some("Zebra Technologies")
+        );
+        assert_eq!(
+            lookup_vendor("60-95-32-06-E3-FD"),
+            Some("Zebra Technologies")
+        );
+        assert_eq!(lookup_vendor("609532FFFFFF"), Some("Zebra Technologies"));
+    }
+
+    #[test]
+    fn unrecognized_prefix_returns_none_not_an_error() {
+        assert_eq!(lookup_vendor("00:00:00:00:00:00"), None);
+    }
+
+    #[test]
+    fn malformed_or_short_input_returns_none() {
+        assert_eq!(lookup_vendor(""), None);
+        assert_eq!(lookup_vendor("60:95"), None);
+    }
+
+    #[test]
+    fn a_locally_administered_randomized_mac_has_no_real_vendor() {
+        // The second-least-significant bit of the first octet set (7E =
+        // 0111_1110) marks a locally administered/randomized address --
+        // never a real IEEE OUI assignment, so no table (however large)
+        // could ever resolve one. Not in `OUI_TABLE` on purpose.
+        assert_eq!(lookup_vendor("7E:10:8D:75:E6:62"), None);
+    }
 }

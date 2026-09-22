@@ -1,9 +1,15 @@
 //! "Quick Add Host From Network Scan" (GitHub issue #5): picker -> SSH
-//! credentials -> host-key review -> deploy status. All four steps are
-//! plain server-rendered pages -- no client-side JS anywhere in this app,
-//! so "select all"/"none" on the picker and "confirm and deploy" on the
-//! host-key review page work by resubmitting a normal HTML form back to
-//! this crate rather than by DOM manipulation.
+//! credentials -> host-key review -> deploy status. The picker, credentials,
+//! and host-key review steps are plain server-rendered pages with no
+//! client-side JS at all, so "select all"/"none" on the picker and "confirm
+//! and deploy" on the host-key review page work by resubmitting a normal
+//! HTML form back to this crate rather than by DOM manipulation. The final
+//! deploy status page (`deploy_status`) is one of only two pages in this
+//! whole app with any client-side JS -- a small, scoped polling script that
+//! updates a progress bar and each host's row in place (`deploy_status_json`
+//! is what it polls), added deliberately as an exception to the
+//! server-rendered-only house style everywhere else; it still degrades to a
+//! `<meta http-equiv="refresh">` reload if JS never runs at all.
 //!
 //! Nothing here ever writes a password, private key, passphrase, or sudo
 //! password to the database or a log line. Between steps they exist only
@@ -139,6 +145,7 @@ pub(crate) async fn render_scan_picker_from_discovered(
     jar: &CookieJar,
     ctx: &abyssal_rbac::AuthContext,
     discovered: Vec<crate::panopticon_ops::DiscoveredHost>,
+    rescan_notice: Option<String>,
 ) -> Result<Response, WebError> {
     let hosts = discovered
         .into_iter()
@@ -149,7 +156,7 @@ pub(crate) async fn render_scan_picker_from_discovered(
             checked: true,
         })
         .collect();
-    render_picker_response(state, jar, ctx, hosts).await
+    render_picker_response(state, jar, ctx, hosts, rescan_notice).await
 }
 
 /// Called by "select all"/"none" (`scan_picker_refresh`), which only has
@@ -162,6 +169,7 @@ pub(crate) async fn render_scan_picker(
     ctx: &abyssal_rbac::AuthContext,
     ips: Vec<String>,
     all_checked: bool,
+    rescan_notice: Option<String>,
 ) -> Result<Response, WebError> {
     let mut hosts = Vec::with_capacity(ips.len());
     for ip in ips {
@@ -179,7 +187,7 @@ pub(crate) async fn render_scan_picker(
             checked: all_checked,
         });
     }
-    render_picker_response(state, jar, ctx, hosts).await
+    render_picker_response(state, jar, ctx, hosts, rescan_notice).await
 }
 
 async fn render_picker_response(
@@ -187,6 +195,7 @@ async fn render_picker_response(
     jar: &CookieJar,
     ctx: &abyssal_rbac::AuthContext,
     hosts: Vec<ScanPickerHostRow>,
+    rescan_notice: Option<String>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -200,7 +209,11 @@ async fn render_picker_response(
     )
     .await?;
 
-    let tpl = PanopticonScanPickerTemplate { base, hosts };
+    let tpl = PanopticonScanPickerTemplate {
+        base,
+        hosts,
+        rescan_notice,
+    };
     let jar = jar.clone();
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -219,8 +232,12 @@ pub async fn scan_picker_refresh(
     let fields = FormFields::parse(&body);
     require_csrf(&jar, &fields.one("csrf_token"))?;
     let all_ips = fields.many("all_ips");
+    let rescan_notice = {
+        let n = fields.one("rescan_notice");
+        if n.is_empty() { None } else { Some(n) }
+    };
     let all_checked = fields.one("select") == "all";
-    render_scan_picker(&state, &jar, &ctx, all_ips, all_checked).await
+    render_scan_picker(&state, &jar, &ctx, all_ips, all_checked, rescan_notice).await
 }
 
 // ---------------------------------------------------------------------
@@ -291,33 +308,38 @@ fn resolve_credentials(
     shared_pem: &str,
     shared_passphrase: &str,
     shared_sudo_password: &str,
+    shared_sudo_same_as_password: bool,
     override_username: &str,
     override_auth_method: &str,
     override_password: &str,
     override_pem: &str,
     override_passphrase: &str,
     override_sudo_password: &str,
+    override_sudo_same_as_password: bool,
 ) -> Result<SshCredentials, WebError> {
     let use_override = !override_username.trim().is_empty();
-    let (username, auth_method, password, pem, passphrase, sudo_password) = if use_override {
-        (
-            override_username,
-            override_auth_method,
-            override_password,
-            override_pem,
-            override_passphrase,
-            override_sudo_password,
-        )
-    } else {
-        (
-            shared_username,
-            shared_auth_method,
-            shared_password,
-            shared_pem,
-            shared_passphrase,
-            shared_sudo_password,
-        )
-    };
+    let (username, auth_method, password, pem, passphrase, sudo_password, sudo_same_as_password) =
+        if use_override {
+            (
+                override_username,
+                override_auth_method,
+                override_password,
+                override_pem,
+                override_passphrase,
+                override_sudo_password,
+                override_sudo_same_as_password,
+            )
+        } else {
+            (
+                shared_username,
+                shared_auth_method,
+                shared_password,
+                shared_pem,
+                shared_passphrase,
+                shared_sudo_password,
+                shared_sudo_same_as_password,
+            )
+        };
 
     if username.trim().is_empty() {
         return Err(WebError(AppError::Validation(
@@ -351,10 +373,20 @@ fn resolve_credentials(
         }
     };
 
+    // "Same as SSH password" only makes sense in Password auth mode --
+    // there's no SSH password to reuse when logging in with a key, so the
+    // checkbox is a no-op there and the dedicated sudo password field
+    // (possibly empty, for NOPASSWD sudo) still applies.
+    let resolved_sudo_password = if sudo_same_as_password && auth_method != "private_key" {
+        password
+    } else {
+        sudo_password
+    };
+
     Ok(SshCredentials {
         username: username.to_string(),
         auth,
-        sudo_password: Zeroizing::new(sudo_password.to_string()),
+        sudo_password: Zeroizing::new(resolved_sudo_password.to_string()),
     })
 }
 
@@ -371,6 +403,7 @@ pub struct DeployCredentialsSubmitForm {
     shared_pem: String,
     shared_passphrase: String,
     shared_sudo_password: String,
+    shared_sudo_same_as_password: bool,
     shared_ssh_port: String,
     override_username: Vec<String>,
     override_auth_method: Vec<String>,
@@ -378,28 +411,53 @@ pub struct DeployCredentialsSubmitForm {
     override_pem: Vec<String>,
     override_passphrase: Vec<String>,
     override_sudo_password: Vec<String>,
+    override_sudo_same_as_password: Vec<bool>,
     override_ssh_port: Vec<String>,
 }
 
 impl DeployCredentialsSubmitForm {
     fn from_fields(fields: &FormFields) -> Self {
+        let ip = fields.many("ip");
+        // Auth method and "same as SSH password" are radios/checkboxes,
+        // not text fields -- an unchecked control simply doesn't submit
+        // at all, so a same-named field repeated across host rows can't
+        // be positionally aligned back to `ip` the way the plain text
+        // override_* fields below are (see `FormFields`'s own doc
+        // comment). Each row's markup instead gives these two an
+        // index-suffixed name (`override_auth_method_0`, `_1`, ...), read
+        // back here by that same index.
+        let override_auth_method = (0..ip.len())
+            .map(|i| {
+                let value = fields.one(&format!("override_auth_method_{i}"));
+                if value.is_empty() {
+                    "password".to_string()
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let override_sudo_same_as_password = (0..ip.len())
+            .map(|i| fields.one(&format!("override_sudo_same_as_password_{i}")) == "true")
+            .collect();
         Self {
             csrf_token: fields.one("csrf_token"),
-            ip: fields.many("ip"),
             shared_username: fields.one("shared_username"),
             shared_auth_method: fields.one("shared_auth_method"),
             shared_password: fields.one("shared_password"),
             shared_pem: fields.one("shared_pem"),
             shared_passphrase: fields.one("shared_passphrase"),
             shared_sudo_password: fields.one("shared_sudo_password"),
+            shared_sudo_same_as_password: fields.one("shared_sudo_same_as_password") == "true",
             shared_ssh_port: fields.one("shared_ssh_port"),
             override_username: fields.many("override_username"),
-            override_auth_method: fields.many("override_auth_method"),
+            override_auth_method,
             override_password: fields.many("override_password"),
             override_pem: fields.many("override_pem"),
             override_passphrase: fields.many("override_passphrase"),
             override_sudo_password: fields.many("override_sudo_password"),
+            override_sudo_same_as_password,
             override_ssh_port: fields.many("override_ssh_port"),
+            ip,
         }
     }
 }
@@ -457,6 +515,11 @@ pub async fn deploy_hostkeys(
         let override_pem = get(&form.override_pem);
         let override_passphrase = get(&form.override_passphrase);
         let override_sudo_password = get(&form.override_sudo_password);
+        let override_sudo_same_as_password = form
+            .override_sudo_same_as_password
+            .get(i)
+            .copied()
+            .unwrap_or(false);
         let override_ssh_port = get(&form.override_ssh_port);
         let ssh_port = resolve_ssh_port(&form.shared_ssh_port, &override_ssh_port);
 
@@ -510,12 +573,14 @@ pub async fn deploy_hostkeys(
                 &form.shared_pem,
                 &form.shared_passphrase,
                 &form.shared_sudo_password,
+                form.shared_sudo_same_as_password,
                 &override_username,
                 &override_auth_method,
                 &override_password,
                 &override_pem,
                 &override_passphrase,
                 &override_sudo_password,
+                override_sudo_same_as_password,
             ) {
                 resolved.push(ResolvedTarget {
                     ip: ip.clone(),
@@ -541,6 +606,7 @@ pub async fn deploy_hostkeys(
             override_pem,
             override_passphrase,
             override_sudo_password,
+            override_sudo_same_as_password,
         });
     }
 
@@ -579,6 +645,7 @@ pub async fn deploy_hostkeys(
         shared_pem: form.shared_pem,
         shared_passphrase: form.shared_passphrase,
         shared_sudo_password: form.shared_sudo_password,
+        shared_sudo_same_as_password: form.shared_sudo_same_as_password,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -604,12 +671,14 @@ pub struct DeployConfirmForm {
     shared_pem: String,
     shared_passphrase: String,
     shared_sudo_password: String,
+    shared_sudo_same_as_password: bool,
     override_username: Vec<String>,
     override_auth_method: Vec<String>,
     override_password: Vec<String>,
     override_pem: Vec<String>,
     override_passphrase: Vec<String>,
     override_sudo_password: Vec<String>,
+    override_sudo_same_as_password: Vec<bool>,
 }
 
 impl DeployConfirmForm {
@@ -626,12 +695,18 @@ impl DeployConfirmForm {
             shared_pem: fields.one("shared_pem"),
             shared_passphrase: fields.one("shared_passphrase"),
             shared_sudo_password: fields.one("shared_sudo_password"),
+            shared_sudo_same_as_password: fields.one("shared_sudo_same_as_password") == "true",
             override_username: fields.many("override_username"),
             override_auth_method: fields.many("override_auth_method"),
             override_password: fields.many("override_password"),
             override_pem: fields.many("override_pem"),
             override_passphrase: fields.many("override_passphrase"),
             override_sudo_password: fields.many("override_sudo_password"),
+            override_sudo_same_as_password: fields
+                .many("override_sudo_same_as_password")
+                .iter()
+                .map(|v| v == "true")
+                .collect(),
         }
     }
 }
@@ -662,6 +737,11 @@ pub async fn deploy_confirm(
     for (i, ip) in form.ip.iter().enumerate() {
         let get = |v: &Vec<String>| v.get(i).cloned().unwrap_or_default();
         let device = repo::network_devices::find_by_ip(&state.pool, ip).await?;
+        let override_sudo_same_as_password = form
+            .override_sudo_same_as_password
+            .get(i)
+            .copied()
+            .unwrap_or(false);
         let credentials = resolve_credentials(
             &form.shared_username,
             &form.shared_auth_method,
@@ -669,12 +749,14 @@ pub async fn deploy_confirm(
             &form.shared_pem,
             &form.shared_passphrase,
             &form.shared_sudo_password,
+            form.shared_sudo_same_as_password,
             &get(&form.override_username),
             &get(&form.override_auth_method),
             &get(&form.override_password),
             &get(&form.override_pem),
             &get(&form.override_passphrase),
             &get(&form.override_sudo_password),
+            override_sudo_same_as_password,
         )?;
         resolved.push(ResolvedTarget {
             ip: ip.clone(),
@@ -726,6 +808,10 @@ async fn start_deploy_job(
             hostname: target.hostname.clone(),
             state: HostDeployState::Pending,
             output: String::new(),
+            // Provisional -- whatever the inventory had pre-deploy, or the
+            // IP if nothing. `deploy_one_host` replaces this the moment
+            // the host answers its own `hostname` command.
+            hostname_is_fallback: target.hostname.is_none(),
         });
         ssh_targets.push((
             DeployTarget {
@@ -763,7 +849,8 @@ async fn start_deploy_job(
 }
 
 // ---------------------------------------------------------------------
-// Step 5: status page (auto-refreshes until every host is terminal)
+// Step 5: status page (progress bar + live per-host updates via
+// deploy_status_json, until every host is terminal)
 // ---------------------------------------------------------------------
 
 pub async fn deploy_status(
@@ -794,6 +881,7 @@ pub async fn deploy_status(
             DeployStatusHostRow {
                 ip_address: h.ip_address.clone(),
                 hostname: h.hostname.clone(),
+                hostname_is_fallback: h.hostname_is_fallback,
                 state_label: h.state.label().to_string(),
                 state_class: state_badge_class(&h.state),
                 is_terminal: h.state.is_terminal(),
@@ -803,6 +891,7 @@ pub async fn deploy_status(
         })
         .collect();
     let complete = job.is_complete();
+    let (hosts_terminal, percent) = deploy_job_progress(&job.hosts);
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -820,6 +909,8 @@ pub async fn deploy_status(
         base,
         job_id: job_id.to_string(),
         hosts,
+        hosts_terminal,
+        percent,
         complete,
     };
     let jar = jar.clone();
@@ -830,6 +921,69 @@ pub async fn deploy_status(
     Ok((jar, tpl).into_response())
 }
 
+/// Polled by the status page's own `<script>` -- the second (after
+/// Panopticon's scan progress) and, per this app's house style, last JSON
+/// endpoint anywhere in it, both existing specifically so their pages can
+/// update smoothly instead of a full-page `<meta refresh>`.
+pub async fn deploy_status_json(
+    State(state): State<AppState>,
+    CurrentUser(ctx): CurrentUser,
+    Path(job_id): Path<Uuid>,
+) -> Result<axum::Json<serde_json::Value>, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+
+    let job = state
+        .deploy_jobs
+        .read()
+        .await
+        .get(&job_id)
+        .cloned()
+        .ok_or(AppError::NotFound)?;
+    let job = job.read().await;
+
+    let hosts: Vec<serde_json::Value> = job
+        .hosts
+        .iter()
+        .map(|h| {
+            let failure_detail = match &h.state {
+                HostDeployState::Failed(reason) => Some(reason.message()),
+                _ => None,
+            };
+            serde_json::json!({
+                "ip_address": h.ip_address,
+                "hostname": h.hostname,
+                "hostname_is_fallback": h.hostname_is_fallback,
+                "state_label": h.state.label(),
+                "state_class": state_badge_class(&h.state),
+                "is_terminal": h.state.is_terminal(),
+                "failure_detail": failure_detail,
+                "output": h.output,
+            })
+        })
+        .collect();
+    let (hosts_terminal, _) = deploy_job_progress(&job.hosts);
+
+    Ok(axum::Json(serde_json::json!({
+        "complete": job.is_complete(),
+        "hosts_total": job.hosts.len(),
+        "hosts_terminal": hosts_terminal,
+        "hosts": hosts,
+    })))
+}
+
+/// `(hosts that have reached a terminal state, 0-100 percent complete)`.
+/// Shared between the status page's own initial render and the JSON
+/// endpoint it polls, so the two never compute this differently.
+fn deploy_job_progress(hosts: &[HostDeployStatus]) -> (usize, u8) {
+    let total = hosts.len();
+    let terminal = hosts.iter().filter(|h| h.state.is_terminal()).count();
+    let percent = terminal
+        .checked_mul(100)
+        .and_then(|v| v.checked_div(total))
+        .unwrap_or(100) as u8;
+    (terminal, percent)
+}
+
 fn state_badge_class(state: &HostDeployState) -> String {
     match state {
         HostDeployState::Succeeded => "badge-success",
@@ -838,4 +992,187 @@ fn state_badge_class(state: &HostDeployState) -> String {
         _ => "badge-warning",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(clippy::too_many_arguments)]
+    fn shared_only(
+        username: &str,
+        auth_method: &str,
+        password: &str,
+        pem: &str,
+        passphrase: &str,
+        sudo_password: &str,
+        sudo_same_as_password: bool,
+    ) -> Result<SshCredentials, WebError> {
+        resolve_credentials(
+            username,
+            auth_method,
+            password,
+            pem,
+            passphrase,
+            sudo_password,
+            sudo_same_as_password,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            false,
+        )
+    }
+
+    // -------------------------------------------------------------
+    // "Same as SSH password" (Phase 3c)
+    // -------------------------------------------------------------
+
+    #[test]
+    fn sudo_same_as_password_reuses_the_ssh_password() {
+        let creds = shared_only(
+            "admin",
+            "password",
+            "hunter2",
+            "",
+            "",
+            "some-other-value-that-should-be-ignored",
+            true,
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(creds.sudo_password.as_str(), "hunter2");
+    }
+
+    #[test]
+    fn sudo_same_as_password_false_keeps_the_dedicated_field() {
+        let creds = shared_only("admin", "password", "hunter2", "", "", "realsudopw", false)
+            .ok()
+            .unwrap();
+        assert_eq!(creds.sudo_password.as_str(), "realsudopw");
+    }
+
+    #[test]
+    fn sudo_same_as_password_is_a_no_op_in_key_auth_mode() {
+        // No SSH password exists to reuse when logging in with a key -- the
+        // checkbox must not silently blank out sudo access in that mode.
+        let creds = shared_only(
+            "admin",
+            "private_key",
+            "",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----",
+            "",
+            "realsudopw",
+            true,
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(creds.sudo_password.as_str(), "realsudopw");
+    }
+
+    // -------------------------------------------------------------
+    // Per-host override precedence, now with the extra sudo_same_as_password
+    // field threaded alongside the rest (Phase 3d).
+    // -------------------------------------------------------------
+
+    #[test]
+    fn override_uses_its_own_sudo_same_as_password_not_the_shared_one() {
+        let creds = resolve_credentials(
+            "shared-user",
+            "password",
+            "shared-pw",
+            "",
+            "",
+            "shared-sudo",
+            false,
+            "override-user",
+            "password",
+            "override-pw",
+            "",
+            "",
+            "ignored-because-overridden",
+            true,
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(creds.username, "override-user");
+        assert_eq!(creds.sudo_password.as_str(), "override-pw");
+    }
+
+    #[test]
+    fn no_override_username_falls_back_to_shared_sudo_same_as_password() {
+        let creds = resolve_credentials(
+            "shared-user",
+            "password",
+            "shared-pw",
+            "",
+            "",
+            "ignored-because-same-as-password",
+            true,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            false,
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(creds.username, "shared-user");
+        assert_eq!(creds.sudo_password.as_str(), "shared-pw");
+    }
+
+    // -------------------------------------------------------------
+    // deploy_job_progress -- backs both the status page's own initial
+    // render and the JSON endpoint it polls (Phase 4's deploy status
+    // progress bar), so the two must always agree.
+    // -------------------------------------------------------------
+
+    fn host_status(state: HostDeployState) -> HostDeployStatus {
+        HostDeployStatus {
+            ip_address: "10.0.0.1".to_string(),
+            hostname: None,
+            state,
+            output: String::new(),
+            hostname_is_fallback: true,
+        }
+    }
+
+    #[test]
+    fn progress_is_zero_percent_with_nothing_terminal_yet() {
+        let hosts = vec![
+            host_status(HostDeployState::Pending),
+            host_status(HostDeployState::Connecting),
+        ];
+        assert_eq!(deploy_job_progress(&hosts), (0, 0));
+    }
+
+    #[test]
+    fn progress_counts_both_success_and_failure_as_terminal() {
+        let hosts = vec![
+            host_status(HostDeployState::Succeeded),
+            host_status(HostDeployState::Failed(
+                crate::ssh_deploy::DeployFailureReason::NeverCheckedIn,
+            )),
+            host_status(HostDeployState::Installing),
+        ];
+        assert_eq!(deploy_job_progress(&hosts), (2, 66));
+    }
+
+    #[test]
+    fn progress_is_100_percent_once_every_host_is_terminal() {
+        let hosts = vec![
+            host_status(HostDeployState::Succeeded),
+            host_status(HostDeployState::Succeeded),
+        ];
+        assert_eq!(deploy_job_progress(&hosts), (2, 100));
+    }
+
+    #[test]
+    fn progress_is_100_percent_for_an_empty_job_rather_than_dividing_by_zero() {
+        assert_eq!(deploy_job_progress(&[]), (0, 100));
+    }
 }

@@ -60,6 +60,15 @@ impl NetworkDeviceRow {
 /// touched by a scan -- only `classify` writes them -- so a re-scan doesn't
 /// clobber an admin's earlier classification of the device.
 ///
+/// `hostname` is `COALESCE`d exactly like `mac_address` -- a rescan that
+/// doesn't happen to resolve a hostname this time (flaky reverse DNS is
+/// the normal case on most internal networks, not the exception) must
+/// never blank out one an earlier scan already found. This previously
+/// used `VALUES(hostname)` unconditionally, which did exactly that: any
+/// device's resolved hostname would get wiped out the next time the
+/// continuous background sweep (`spawn_panopticon_sweep`) ran and PTR
+/// happened not to resolve that round.
+///
 /// Returns the device's id (fetched with a follow-up lookup by the unique
 /// `ip_address`, since `LAST_INSERT_ID()` isn't meaningful on an `ON
 /// DUPLICATE KEY UPDATE` that hit the update branch) so the caller can
@@ -75,7 +84,7 @@ pub async fn upsert(
          VALUES (?, ?, ?, ?) \
          ON DUPLICATE KEY UPDATE \
              mac_address = COALESCE(VALUES(mac_address), mac_address), \
-             hostname = VALUES(hostname), \
+             hostname = COALESCE(VALUES(hostname), hostname), \
              last_seen_at = CURRENT_TIMESTAMP(6)",
     )
     .bind(Uuid::new_v4().to_string())

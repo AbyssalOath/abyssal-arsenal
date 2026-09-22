@@ -1194,6 +1194,22 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/panopticon/deploy/status/:job_id",
             get(routes::panopticon_deploy::deploy_status),
         )
+        .route(
+            "/arsenals/panopticon/deploy/status/:job_id/json",
+            get(routes::panopticon_deploy::deploy_status_json),
+        )
+        .route(
+            "/arsenals/panopticon/scan/status/:job_id",
+            get(routes::panopticon_scan::scan_status),
+        )
+        .route(
+            "/arsenals/panopticon/scan/status/:job_id/json",
+            get(routes::panopticon_scan::scan_status_json),
+        )
+        .route(
+            "/arsenals/panopticon/scan/status/:job_id/view",
+            get(routes::panopticon_scan::scan_view),
+        )
         .route("/arsenals/thanatos", get(routes::thanatos::show))
         .route(
             "/arsenals/thanatos/:host_id",

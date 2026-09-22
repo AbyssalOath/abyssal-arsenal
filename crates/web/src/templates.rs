@@ -806,6 +806,10 @@ pub struct PanopticonTemplate {
     pub can_scan: bool,
     /// `network.manage` -- gates removing a device from the inventory.
     pub can_manage: bool,
+    /// `hosts.manage` -- gates the "Quick add" action (Quick Add Host From
+    /// Network Scan, `routes/panopticon_deploy.rs`), distinct from both
+    /// `can_scan`/`can_manage` above.
+    pub can_deploy: bool,
     pub devices: Vec<NetworkDeviceRow>,
     pub subnets: Vec<SubnetGroup>,
     /// The `?port=` query value echoed back into the filter input, empty
@@ -926,6 +930,28 @@ pub struct ScanPickerHostRow {
 pub struct PanopticonScanPickerTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<ScanPickerHostRow>,
+    /// Set when this picker follows a one-click rescan of an already-known
+    /// target (see `routes/panopticon.rs::has_scan_history`) -- shown as a
+    /// small banner so skipping the old confirm dialog doesn't leave the
+    /// rescan looking like nothing happened.
+    pub rescan_notice: Option<String>,
+}
+
+/// A running discovery scan's progress -- see
+/// `routes/panopticon_scan.rs::scan_status`. `percent`/`hosts_scanned`/
+/// `hosts_total` are this page's initial (server-rendered) values; the
+/// page's own `<script>` immediately starts polling
+/// `scan_status_json` for live updates and only falls back to this
+/// template's `<meta http-equiv="refresh">` if JS never runs at all.
+#[derive(Template)]
+#[template(path = "panopticon_scan_progress.html")]
+pub struct PanopticonScanProgressTemplate {
+    pub base: BaseCtx,
+    pub job_id: String,
+    pub target: String,
+    pub percent: u8,
+    pub hosts_scanned: usize,
+    pub hosts_total: usize,
 }
 
 pub struct DeployCredentialHostRow {
@@ -972,6 +998,7 @@ pub struct DeployHostKeyRow {
     pub override_pem: String,
     pub override_passphrase: String,
     pub override_sudo_password: String,
+    pub override_sudo_same_as_password: bool,
 }
 
 #[derive(Template)]
@@ -986,11 +1013,17 @@ pub struct PanopticonDeployHostKeysTemplate {
     pub shared_pem: String,
     pub shared_passphrase: String,
     pub shared_sudo_password: String,
+    pub shared_sudo_same_as_password: bool,
 }
 
 pub struct DeployStatusHostRow {
     pub ip_address: String,
     pub hostname: Option<String>,
+    /// `true` when `hostname` above is really just the IP standing in for
+    /// a name the deploy never managed to resolve -- see
+    /// `ssh_deploy::deploy_one_host`'s hostname resolution. Shown as a
+    /// badge so it reads as "go investigate," not "this is the real name."
+    pub hostname_is_fallback: bool,
     pub state_label: String,
     pub state_class: String,
     pub is_terminal: bool,
@@ -1006,6 +1039,8 @@ pub struct PanopticonDeployStatusTemplate {
     pub base: BaseCtx,
     pub job_id: String,
     pub hosts: Vec<DeployStatusHostRow>,
+    pub hosts_terminal: usize,
+    pub percent: u8,
     pub complete: bool,
 }
 

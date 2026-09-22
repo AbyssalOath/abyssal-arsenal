@@ -10,25 +10,43 @@
 {% block content %}
 
 <div class="card">
-  <p style="color:var(--text-muted); margin-top:0;">
+  <p id="deploy-status-message" style="color:var(--text-muted); margin-top:0;">
     {% if complete %}
     Every host in this job has reached a final state.
     {% else %}
-    This page refreshes automatically every few seconds until every host finishes.
+    This page updates on its own -- no need to refresh it yourself.
     {% endif %}
   </p>
 
-  <table>
+  <div
+    id="deploy-progress-bar"
+    class="progress-bar"
+    role="progressbar"
+    aria-valuemin="0"
+    aria-valuemax="100"
+    aria-valuenow="{{ percent }}"
+    data-job-id="{{ job_id }}"
+  >
+    <div class="progress-bar-fill" style="width:{{ percent }}%;"></div>
+  </div>
+  <p class="progress-bar-caption" id="deploy-progress-count">
+    {{ hosts_terminal }} / {{ hosts.len() }} hosts complete
+  </p>
+
+  <table id="deploy-status-table" style="margin-top:14px;">
     <thead>
       <tr><th>IP address</th><th>Hostname</th><th>Status</th><th>Details</th></tr>
     </thead>
     <tbody>
       {% for h in hosts %}
-      <tr>
+      <tr data-ip="{{ h.ip_address }}">
         <td>{{ h.ip_address }}</td>
-        <td>{% if let Some(n) = h.hostname %}{{ n }}{% else %}&mdash;{% endif %}</td>
-        <td><span class="badge {{ h.state_class }}">{{ h.state_label }}</span></td>
-        <td>
+        <td class="dh-hostname-cell">
+          {% if let Some(n) = h.hostname %}{{ n }}{% else %}&mdash;{% endif %}
+          {% if h.hostname_is_fallback %}<span class="badge badge-warning" title="Could not confirm a real hostname -- this is the IP address, showing here as a stand-in.">IP fallback</span>{% endif %}
+        </td>
+        <td class="dh-status-cell"><span class="badge {{ h.state_class }}">{{ h.state_label }}</span></td>
+        <td class="dh-details-cell">
           {% if let Some(detail) = h.failure_detail %}
           <div class="error-banner" style="margin:0;">{{ detail }}</div>
           {% endif %}
@@ -49,5 +67,7 @@
     <a class="btn btn-secondary" href="/arsenals/panopticon">{% call macros::icon("network") %} Panopticon</a>
   </div>
 </div>
+
+<script src="/static/panopticon_deploy_status.js" defer></script>
 
 {% endblock %}

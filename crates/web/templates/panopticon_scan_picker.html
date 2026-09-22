@@ -5,6 +5,9 @@
 {% block content %}
 
 <div class="card">
+  {% if let Some(notice) = rescan_notice %}
+  <div class="success-banner" style="margin-bottom:14px;">{% call macros::icon("check") %} {{ notice }}</div>
+  {% endif %}
   <p style="color:var(--text-muted); margin-top:0;">
     Every device this scan found is already saved to the inventory below, whether
     or not you add any of them here. Pick which ones to deploy the agent to over
@@ -17,6 +20,9 @@
   {% else %}
   <form method="post" action="/arsenals/panopticon/deploy/credentials">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    {% if let Some(notice) = rescan_notice %}
+    <input type="hidden" name="rescan_notice" value="{{ notice }}">
+    {% endif %}
     <table>
       <thead>
         <tr><th></th><th>IP address</th><th>Hostname</th><th>MAC</th></tr>

@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         )),
         encryption_key: encryption_key.clone(),
         deploy_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        scan_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());

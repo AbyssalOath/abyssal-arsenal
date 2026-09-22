@@ -62,6 +62,18 @@ cargo clippy --workspace --all-targets -- -D warnings
   correctly) and the update check's version comparison (parses `vX.Y.Z`
   and bare `X.Y.Z`, rejects malformed input, and only reports an update
   available when a strictly newer version has actually been confirmed).
+  The SSH deploy flow (`ssh_deploy.rs`, `routes/panopticon_deploy.rs`) has
+  its own large suite against a fake `SshClient`/`SshSession` -- every
+  named failure mode (connection refused/timeout, auth failure, sudo
+  denied, a changed host key, a failed download/install, "exited 0 but
+  the agent never checked in"), the hostname-resolution priority (SSH-
+  confirmed beats a stale inventory guess, which beats the bare IP), the
+  "same as SSH password" credential-resolution logic, and a
+  paused-virtual-time concurrency test proving one hung host never blocks
+  the others. Panopticon's discovery scan has unit tests for its nmap
+  output parser, the `getent hosts` PTR-fallback parser, CIDR host-count
+  arithmetic, and scan/deploy progress-percentage math (never divides by
+  zero, never overshoots 100%).
 
 ## What isn't covered yet
 
@@ -161,3 +173,15 @@ capability: real agent, real dispatch, real (but safe) target.
   business logic with a fake/trait boundary over standing up a real
   database in the test, unless you're specifically adding integration test
   infrastructure (see "What isn't covered yet").
+- If the logic you're adding wraps a real external tool or protocol (an
+  SSH client, `nmap`, anything else the fake/trait-boundary tests above
+  can't actually exercise), pair the fake-based unit tests with one real,
+  `#[ignore]`d test against the genuine tool -- see `ssh_deploy.rs`'s
+  `real_russh_client_against_local_sshd` and `panopticon_ops.rs`'s
+  `run_nmap_streaming_*` tests for the pattern. These don't run as part of
+  `cargo test --workspace` (nothing in CI depends on a local `sshd` or
+  loopback nmap access), but running them by hand
+  (`cargo test -p abyssal-web <name> -- --ignored`) once when you touch
+  that code is what actually proves the real integration works, not just
+  that your own assumptions about the tool's output are internally
+  consistent.

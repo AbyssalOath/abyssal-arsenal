@@ -717,3 +717,102 @@ th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transf
   width: 260px;
   margin-bottom: 0;
 }
+
+/* Small muted one-line explanation under a form field -- more visible
+   than a hover-only tooltip. Used on the SSH deploy credentials step
+   (panopticon_deploy_credentials.html). */
+.field-help {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  margin: 2px 0 var(--space-3);
+}
+
+/* Same collapsed/expanded chevron convention as .module-group's own
+   <summary> marker, reused for the "Override for this host" disclosure
+   on the SSH deploy credentials step -- closed by default. */
+.override-toggle > summary {
+  cursor: pointer;
+}
+.override-toggle > summary::-webkit-details-marker {
+  display: none;
+}
+.override-toggle > summary::before {
+  content: "\25BE ";
+}
+.override-toggle:not([open]) > summary::before {
+  content: "\25B8 ";
+}
+
+/* A `<label>` wrapping its own radio/checkbox plus text (e.g. "( )
+   Password") -- the base `label { display: block; }` rule is meant for a
+   field's own standalone caption, not this. */
+.inline-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 400;
+  margin-right: var(--space-4);
+}
+
+/* SSH deploy credentials step: Auth method and "same as SSH password"
+   entirely CSS-driven (no client-side JS anywhere in this app) --
+   `.creds-panel` scopes each instance (the shared panel, and each
+   per-host override panel), so the same rules apply to every one of
+   them regardless of how many host rows there are. */
+.creds-panel .auth-key-fields,
+.creds-panel .auth-password-fields {
+  margin: var(--space-2) 0;
+}
+.creds-panel:has(.auth-method-key:checked) .auth-password-fields {
+  display: none;
+}
+.creds-panel:has(.auth-method-password:checked) .auth-key-fields {
+  display: none;
+}
+.creds-panel:has(.sudo-same-checkbox:checked) .sudo-password-wrapper {
+  display: none;
+}
+
+/* Discovery scan progress bar (panopticon_scan_progress.html). Determinate
+   by default (a `width` set inline per the current percentage); `.
+   indeterminate` overrides that with a moving striped animation for the
+   brief window before the first host count is known (`hosts_total == 0`
+   only happens for a target this app can't happen to send -- in practice
+   this shows for a moment while the job has just started). */
+.progress-bar {
+  height: 20px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  overflow: hidden;
+  margin-top: var(--space-3);
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent, var(--success));
+  border-radius: inherit;
+  transition: width 0.4s ease;
+}
+.progress-bar.indeterminate .progress-bar-fill {
+  width: 40% !important;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--accent, var(--success)) 0,
+    var(--accent, var(--success)) 10px,
+    color-mix(in srgb, var(--accent, var(--success)) 60%, transparent) 10px,
+    color-mix(in srgb, var(--accent, var(--success)) 60%, transparent) 20px
+  );
+  animation: progress-bar-indeterminate 1.1s linear infinite;
+}
+@keyframes progress-bar-indeterminate {
+  from {
+    margin-left: -40%;
+  }
+  to {
+    margin-left: 100%;
+  }
+}
+.progress-bar-caption {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: var(--space-2) 0 0;
+}

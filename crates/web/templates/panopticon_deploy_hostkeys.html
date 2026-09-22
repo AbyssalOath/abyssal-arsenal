@@ -38,6 +38,7 @@
     <input type="hidden" name="shared_pem" value="{{ shared_pem }}">
     <input type="hidden" name="shared_passphrase" value="{{ shared_passphrase }}">
     <input type="hidden" name="shared_sudo_password" value="{{ shared_sudo_password }}">
+    <input type="hidden" name="shared_sudo_same_as_password" value="{{ shared_sudo_same_as_password }}">
     {% for r in rows %}
     {% if !r.blocked %}
     <input type="hidden" name="ip" value="{{ r.ip }}">
@@ -49,6 +50,7 @@
     <input type="hidden" name="override_pem" value="{{ r.override_pem }}">
     <input type="hidden" name="override_passphrase" value="{{ r.override_passphrase }}">
     <input type="hidden" name="override_sudo_password" value="{{ r.override_sudo_password }}">
+    <input type="hidden" name="override_sudo_same_as_password" value="{{ r.override_sudo_same_as_password }}">
     {% endif %}
     {% endfor %}
     <button type="submit" class="btn-danger">{% call macros::icon("host") %} Confirm and Deploy</button>
