@@ -50,6 +50,64 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
         }
     }
 
+    // `name` is unique on this table -- without this check, re-enrolling
+    // the same machine (retrying a failed deploy, or reinstalling after an
+    // uninstall, neither of which deregisters the old row here) would hit
+    // that constraint and fail with a bare 500 instead of either just
+    // working or explaining why not.
+    match repo::hosts::find_by_name(&state.pool, &req.name).await {
+        Ok(Some(existing)) if state.hosts.is_connected(existing.id) => {
+            return (
+                StatusCode::CONFLICT,
+                format!(
+                    "a host named \"{}\" is already connected -- remove it from \
+                     /admin/hosts first if you want to re-enroll a different machine \
+                     under this name",
+                    existing.name
+                ),
+            )
+                .into_response();
+        }
+        Ok(Some(stale)) => {
+            // Not currently connected -- almost always a prior enrollment
+            // never cleaned up server-side (uninstalling the agent
+            // locally doesn't deregister it here), most often hit
+            // retrying a failed deploy or re-enrolling the same machine
+            // by hand. Safe to supersede: nothing else references
+            // `hosts.id` by foreign key (see `repo::hosts::delete`), and
+            // reaching this point already required a real, single-use
+            // token an admin just generated -- that's the actual
+            // authorization for replacing it, not an extra confirmation
+            // this machine-to-machine endpoint has no session to ask for.
+            if let Err(e) = repo::hosts::delete(&state.pool, stale.id).await {
+                tracing::error!(
+                    error = %e,
+                    host_id = %stale.id,
+                    "failed to remove stale host record before re-enrollment"
+                );
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            if let Err(e) = abyssal_audit::record(
+                &state.pool,
+                AuditEvent::new(AuditAction::HostRemoved, AuditOutcome::Success)
+                    .resource(&stale.name)
+                    .metadata(serde_json::json!({
+                        "reason": "superseded by a new enrollment under the same name",
+                        "previous_host_id": stale.id,
+                    })),
+            )
+            .await
+            {
+                tracing::error!(error = %e, "failed to record audit event for superseded host");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "failed to check for an existing host with this name");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
     let credential = generate_token();
     let credential_hash = hash_token(&credential);
 

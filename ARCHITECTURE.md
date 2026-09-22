@@ -216,7 +216,17 @@ named backends worth their own enum and file the way firewalld/ufw/nftables
 3. The control plane creates a `Host` row, generates a long-lived opaque
    credential (same generate/hash pattern as sessions), and returns it once.
    The agent persists it locally (`/etc/abyssal-agent/credentials.json` by
-   default, `0600`).
+   default, `0600`). `hosts.name` is unique, and there's no path by which
+   uninstalling the agent (locally, on the host) ever deregisters its row
+   here -- so re-enrolling the same machine (retrying a failed deploy,
+   reinstalling after wiping local credentials) would otherwise hit that
+   constraint and fail with a bare 500. `enroll` checks for an existing
+   host with the same name first: a disconnected one is treated as stale
+   and superseded (deleted, with a `HostRemoved` audit row noting why,
+   then enrollment proceeds normally) since nothing else references
+   `hosts.id` by foreign key; a currently-connected one is a real conflict
+   and returns a clear 409 instead, asking the admin to remove it from
+   `/admin/hosts` first.
 4. The agent connects to `/ws/agent` with `Authorization: Bearer
    <credential>`. A dedicated extractor (`AgentAuth`,
    `crates/web/src/extract.rs`) validates the credential before the

@@ -55,6 +55,19 @@ pub async fn find_by_id(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<Host>>
     Ok(row.map(Into::into))
 }
 
+/// `name` is unique (`uq_hosts_name`) -- used to detect a name collision
+/// before `create` would otherwise fail on that constraint with a raw DB
+/// error (see `routes/agent.rs::enroll`, which turns that into either a
+/// clean re-enrollment over a stale, disconnected row or a clear "already
+/// connected" error instead of a bare 500).
+pub async fn find_by_name(pool: &DbPool, name: &str) -> anyhow::Result<Option<Host>> {
+    let row: Option<HostRow> = sqlx::query_as("SELECT * FROM hosts WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(Into::into))
+}
+
 pub async fn find_by_credential_hash(
     pool: &DbPool,
     credential_hash: &str,

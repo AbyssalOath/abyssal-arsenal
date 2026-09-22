@@ -70,6 +70,35 @@ for what that means for cloning and updating.
   page now shows an explicit "IP fallback" badge on the rare host where
   even that couldn't be confirmed, rather than silently showing an IP as
   if it were a real name.
+- The scan and deploy progress pages' `<meta http-equiv="refresh">`
+  fallback could keep firing full-page reloads even with JavaScript
+  running and successfully polling in the background -- removing that
+  `<meta>` tag from the page after the browser has already parsed and
+  armed it doesn't reliably cancel the reload in every browser. Moved the
+  fallback into `<noscript>` instead, so a JS-enabled browser never parses
+  or arms it in the first place.
+- Re-enrolling the same machine over SSH (retrying a failed deploy, or
+  reinstalling the agent locally after wiping its credentials) failed
+  with a bare 500 -- uninstalling the agent on a host never deregisters
+  its row here, and host names are unique, so the second enrollment
+  attempt collided with the first. Re-enrolling under a name that's
+  already on record now either supersedes a disconnected (stale) host
+  automatically or returns a clear "already connected" error, instead of
+  an opaque server error.
+- Panopticon's discovery scan now runs nmap at `-T4` ("Aggressive")
+  instead of the default `-T3` -- nmap's own recommendation for a fast,
+  reliable network you control. Without it, a subnet with many silent or
+  unreachable addresses (the common case for anything bigger than a
+  small, fully-populated LAN segment) spent most of its time waiting out
+  the much more conservative default per-host timeout, which is what made
+  the scan progress bar sit still for long stretches instead of moving
+  steadily.
+- Extended how long a deploy waits for the agent to check in after a
+  successful install (60s -> 150s) -- the agent's own reconnect backoff
+  (1s/2s/4s/8s/16s/32s/60s/...) means a rough first connection attempt can
+  genuinely take over a minute before the next retry even fires, and the
+  shorter window risked reporting a host as never having checked in when
+  it was actually about to connect fine on its own.
 
 ### Changed
 
