@@ -320,7 +320,16 @@ async fn run_discovery_scan(
         return Err(ExecutionError::Failed(NMAP_NOT_INSTALLED.to_string()));
     }
 
-    let mut args: Vec<&str> = vec!["-sT"];
+    // -T4 ("Aggressive") instead of nmap's own default (-T3, "Normal") --
+    // nmap's own docs recommend -T4 for exactly this case, a fast and
+    // reliable network you control. Without it, a subnet with many
+    // silent/unreachable addresses (the common case for anything larger
+    // than a small, fully-populated LAN segment) spends most of its time
+    // waiting out -T3's much more conservative per-host RTT timeout on
+    // hosts that were never going to answer, which is what makes the
+    // progress bar sit still for a long stretch rather than moving
+    // steadily -- confirmed against a real deploy, not just a guess.
+    let mut args: Vec<&str> = vec!["-sT", "-T4"];
     if let Some(spec) = ports {
         args.push("-p");
         args.push(spec);
