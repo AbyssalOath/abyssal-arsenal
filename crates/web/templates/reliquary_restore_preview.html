@@ -1,0 +1,76 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Restore Preview — Abyssal Arsenal{% endblock %}
+{% block heading %}Restore Preview{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    This is a dry run -- nothing changes until you confirm below.
+  </p>
+
+  {% if !is_verified %}
+  <div class="warning-banner">
+    {% call macros::icon("warning") %} This backup has not been verified. Verify it first from
+    the backup list, or explicitly override below.
+  </div>
+  {% endif %}
+
+  {% if mariadb_major_version_differs %}
+  <div class="warning-banner">
+    {% call macros::icon("warning") %} This backup was taken from MariaDB {{ backup_mariadb_version }};
+    the current server is {{ current_mariadb_version }}. A major-version difference can mean
+    incompatible on-disk formats or SQL behavior -- proceed with caution.
+  </div>
+  {% endif %}
+
+  {% if !schema_version_matches %}
+  <div class="error-banner">
+    This backup's manifest format ({{ backup_schema_version }}) doesn't match what this
+    deployment currently understands. Restoring is blocked until this is resolved.
+  </div>
+  {% else %}
+
+  <table>
+    <tbody>
+      <tr><th>Encrypted</th><td>{% if is_encrypted %}Yes -- a passphrase will be required{% else %}No{% endif %}</td></tr>
+      <tr><th>Components in this backup</th><td>{{ components.join(", ") }}</td></tr>
+      <tr><th>Backup schema version</th><td>{{ backup_schema_version }}</td></tr>
+      <tr><th>Current schema version</th><td>{{ current_schema_version }}</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warning-banner" style="margin-top:14px;">
+    {% call macros::icon("danger") %} Restoring replaces the live database with the contents of
+    this backup. An automatic safety backup of the current database is taken first, but this is
+    still a destructive, hard-to-reverse action -- make sure this is really what you want.
+  </div>
+
+  <form method="post" action="/arsenals/reliquary/backups/{{ job_id }}/restore" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label class="inline-radio"><input type="checkbox" name="component_database" checked> Restore database</label>
+
+    {% if is_encrypted %}
+    <label for="restore-passphrase">Passphrase</label>
+    <input type="password" id="restore-passphrase" name="passphrase" autocomplete="off" required style="max-width:360px;">
+    {% endif %}
+
+    {% if !is_verified %}
+    <label class="inline-radio">
+      <input type="checkbox" name="override_unverified" required> I understand this backup hasn't been verified, and want to restore it anyway
+    </label>
+    {% endif %}
+
+    <label for="restore-confirm-text">Type RESTORE to confirm</label>
+    <input type="text" id="restore-confirm-text" name="confirm_text" required style="max-width:200px;">
+    <input type="hidden" name="confirm" value="true">
+
+    <div class="actions" style="margin-top:14px;">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Restore now</button>
+      <a class="btn btn-secondary" href="/arsenals/reliquary/backups">Cancel</a>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+{% endblock %}

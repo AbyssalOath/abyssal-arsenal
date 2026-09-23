@@ -79,7 +79,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl nmap libcap2-bin \
+    ca-certificates curl nmap libcap2-bin mariadb-client \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /app --shell /usr/sbin/nologin abyssal
 
@@ -100,7 +100,21 @@ COPY crates/web/static /app/static
 # `cap_add: [NET_RAW]` makes that explicit rather than relying on it.
 RUN setcap cap_net_raw+eip /app/abyssal-arsenal
 RUN chown -R abyssal:abyssal /app
+
+# Reliquary backups (GitHub issue #9) default to /backups
+# (RELIQUARY_BACKUP_DESTINATION_PATH), which docker-compose.yml mounts as
+# a dedicated named volume. Docker seeds a fresh named volume's initial
+# content -- ownership included -- from whatever already exists at that
+# path in the image, so this directory has to exist and already belong to
+# `abyssal` here, or the volume comes up owned by root and this
+# unprivileged process can never write a backup into it.
+RUN mkdir -p /backups && chown abyssal:abyssal /backups
+
 USER abyssal
 
 EXPOSE 8080
-CMD ["/app/abyssal-arsenal"]
+# ENTRYPOINT (not CMD) so `docker compose run --rm app reliquary backup ...`
+# (the disaster-recovery CLI, crates/app/src/cli.rs -- GitHub issue #9)
+# appends its arguments to the binary instead of replacing it outright.
+# With no arguments at all this still just runs the server, unchanged.
+ENTRYPOINT ["/app/abyssal-arsenal"]

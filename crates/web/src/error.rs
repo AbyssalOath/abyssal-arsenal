@@ -18,6 +18,18 @@ impl From<anyhow::Error> for WebError {
     }
 }
 
+/// A `BackupError` reaching a route handler unconverted is always a
+/// genuine failure of the backup engine itself (a bad dump, a corrupted
+/// archive, a subprocess that wouldn't start) -- surfaced as a plain
+/// validation-shaped error rather than a raw 500, since the message is
+/// almost always meaningful to the admin looking at it (unlike a stack
+/// trace), not an internal implementation detail to hide.
+impl From<crate::reliquary_backup::BackupError> for WebError {
+    fn from(e: crate::reliquary_backup::BackupError) -> Self {
+        WebError(AppError::Validation(e.to_string()))
+    }
+}
+
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
         // Unauthenticated is special-cased to a redirect rather than a bare

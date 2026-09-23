@@ -1,0 +1,187 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Reliquary — Application Backups — Abyssal Arsenal{% endblock %}
+{% block heading %}Reliquary — Application Backups{% endblock %}
+{% block content %}
+
+{% if let Some(m) = message %}
+<div class="info-banner">{{ m }}</div>
+{% endif %}
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/reliquary">&larr; Remote (agent) host backups</a></p>
+
+<div class="card">
+  <h2>{% call macros::icon("database") %} Application Data</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Backs up this control plane's own persistent data: the MariaDB database (always), a
+    redacted snapshot of this process's own configuration, and -- opt-in, always encrypted --
+    the <code>ENCRYPTION_KEY</code> used for Panopticon/macro secrets. A database dump alone is
+    not enough for a real restore; this is the whole self-contained archive.
+  </p>
+  <div class="warning-banner">
+    {% call macros::icon("warning") %} Backups written here live on this same host/disk as the
+    application. That does <strong>not</strong> protect you against losing the whole host or
+    disk. Copy backups to a separate disk, NFS share, or off-host location on a regular basis.
+  </div>
+
+  {% if can_manage %}
+  <form method="post" action="/arsenals/reliquary/backups" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label>Components</label>
+    <div>
+      <label class="inline-radio"><input type="checkbox" name="component_database" checked> Database</label>
+      <label class="inline-radio"><input type="checkbox" name="component_configuration" checked> Configuration</label>
+      <label class="inline-radio"><input type="checkbox" name="component_encryption_keys"> Encryption keys (forces encryption)</label>
+      <label class="inline-radio"><input type="checkbox" name="component_audit_logs" {% if include_audit_logs_by_default %}checked{% endif %}> Audit logs</label>
+    </div>
+    <label class="inline-radio" style="margin-top:10px;">
+      <input type="checkbox" name="encrypt" {% if encrypt_by_default %}checked{% endif %}> Encrypt this backup
+    </label>
+    <label for="backup-passphrase">Passphrase</label>
+    <input type="password" id="backup-passphrase" name="passphrase" autocomplete="new-password" style="max-width:360px;">
+    <label for="backup-passphrase-confirm">Confirm passphrase</label>
+    <input type="password" id="backup-passphrase-confirm" name="passphrase_confirm" autocomplete="new-password" style="max-width:360px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Required if "Encrypt this backup" is checked. There is no way to recover an encrypted
+      backup without this passphrase -- store it somewhere safe and separate from the
+      backup itself.
+    </p>
+    <button type="submit" class="btn-warning">{% call macros::icon("database") %} Backup now</button>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted);">You don't have permission to create backups.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>{% call macros::icon("shield-check") %} Verification &amp; Recovery</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Every backup below, its integrity status, and the actions available on it. A backup should
+    be verified before you rely on it for restore.
+  </p>
+  {% if jobs.is_empty() %}
+  <p style="color:var(--text-muted);">No backups yet.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Created</th><th>Status</th><th>Trigger</th><th>Components</th><th>Encrypted</th>
+        <th>Size</th><th>Verification</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td>{{ j.created_at }}</td>
+        <td>
+          {% if j.status_key == "succeeded" || j.status_key == "verified" %}
+          <span class="badge badge-success">{{ j.status_label }}</span>
+          {% else if j.status_key == "failed" || j.status_key == "cancelled" %}
+          <span class="badge badge-muted">{{ j.status_label }}</span>
+          {% else %}
+          <span class="badge badge-warning">{{ j.status_label }}</span>
+          {% endif %}
+          {% if let Some(err) = j.error_message %}<br><span style="color:var(--danger); font-size:0.8rem;">{{ err }}</span>{% endif %}
+        </td>
+        <td>{{ j.trigger_label }}</td>
+        <td>{{ j.components }}</td>
+        <td>{% if j.encrypted %}Yes{% else %}No{% endif %}</td>
+        <td>{{ j.size_display }}</td>
+        <td>
+          {% if j.verification_passed %}<span class="badge badge-success">{{ j.verification_label }}</span>
+          {% else %}<span class="badge badge-muted">{{ j.verification_label }}</span>{% endif %}
+          {% if let Some(detail) = j.verification_failure_detail %}<br><span style="color:var(--text-muted); font-size:0.8rem;">{{ detail }}</span>{% endif %}
+        </td>
+        <td class="actions">
+          {% if j.can_download %}
+          <a class="btn btn-secondary" href="/arsenals/reliquary/backups/{{ j.id }}/download">Download</a>
+          {% endif %}
+          {% if can_manage && j.can_download %}
+          <form method="post" action="/arsenals/reliquary/backups/{{ j.id }}/verify" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn btn-secondary">{% call macros::icon("check") %} Verify</button>
+          </form>
+          {% endif %}
+          {% if can_restore && j.can_download %}
+          <a class="btn btn-warning" href="/arsenals/reliquary/backups/{{ j.id }}/restore">Restore&hellip;</a>
+          {% endif %}
+          {% if can_manage %}
+          <form method="post" action="/arsenals/reliquary/backups/{{ j.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete this backup permanently?');">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="confirm" value="true">
+            <button type="submit" class="btn btn-danger">{% call macros::icon("danger") %} Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h2>{% call macros::icon("settings") %} Control-Plane Configuration</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Schedule, retention, and destination for backups -- also this section's own settings panel
+    (GitHub issue #9's "Control-Plane Configuration" is functionally this settings form plus the
+    "Configuration" component above; there's nothing else runtime-configurable to separately
+    back up beyond what's already captured there).
+  </p>
+  <form method="post" action="/arsenals/reliquary/backups/settings">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label class="inline-radio">
+      <input type="checkbox" name="schedule_enabled" {% if schedule_enabled %}checked{% endif %}> Run scheduled backups automatically
+    </label>
+    <label for="schedule-interval">Interval (hours)</label>
+    <input type="text" id="schedule-interval" name="schedule_interval_hours" value="{{ schedule_interval_hours }}" style="max-width:160px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Scheduled backups are never encrypted (there's nobody present to supply a passphrase) --
+      back up Database + Configuration (+ Audit logs, per the setting below) only. Use manual
+      backups for anything encrypted.
+    </p>
+    <label for="retention-keep-last">Keep at least this many recent backups</label>
+    <input type="text" id="retention-keep-last" name="retention_keep_last" value="{{ retention_keep_last }}" style="max-width:160px;">
+    <label for="retention-days">Also prune backups older than (days, 0 = never)</label>
+    <input type="text" id="retention-days" name="retention_days" value="{{ retention_days }}" style="max-width:160px;">
+    <label for="destination-path">Destination path</label>
+    <input type="text" id="destination-path" name="destination_path" value="{{ destination_path }}" style="max-width:420px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Must be a path inside this container -- mount it to a dedicated volume separate from the
+      database's own (see <code>docker-compose.yml</code>'s <code>abyssal_backups</code> volume).
+    </p>
+    <label class="inline-radio">
+      <input type="checkbox" name="encrypt_by_default" {% if encrypt_by_default %}checked{% endif %}> Encrypt manual backups by default
+    </label>
+    <label class="inline-radio">
+      <input type="checkbox" name="include_audit_logs_by_default" {% if include_audit_logs_by_default %}checked{% endif %}> Include audit logs by default
+    </label>
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Controls the "Audit logs" checkbox's default on the form above, and whether scheduled
+      backups include the <code>audit_log</code> table. Unchecking this excludes only that
+      table's rows (via <code>mariadb-dump --ignore-table</code>) -- the rest of the database is
+      unaffected either way.
+    </p>
+    {% if !encryption_key_available %}
+    <div class="error-banner" style="margin-top:10px;">
+      <code>ENCRYPTION_KEY</code> isn't set -- the "Encryption keys" component can't be included
+      in any backup until it is.
+    </div>
+    {% endif %}
+    <button type="submit" class="btn-secondary" style="margin-top:14px;">Save settings</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>{% call macros::icon("cloud") %} Managed Systems</h2>
+  <p style="color:var(--text-muted);">
+    Backups of remote managed hosts' own data, via the agent. <span class="badge badge-muted">Coming soon</span>
+  </p>
+</div>
+
+{% endblock %}

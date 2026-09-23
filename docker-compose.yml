@@ -77,6 +77,23 @@ services:
       # community strings (crates/core/src/crypto.rs). Optional -- only
       # needed if you add a switch. Generate with `openssl rand -base64 32`.
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      # Reliquary native backups (crates/web/src/reliquary_backup) -- see
+      # docs/reliquary-backups.md. Archives land in the abyssal_backups
+      # volume below, deliberately separate from abyssal_db_data so a
+      # restore that goes wrong can't also take out the backups that would
+      # fix it, and so the destination is never web-served. That volume is
+      # local to this Docker host: back it up (or mount it from) somewhere
+      # else off-host, or a host-level failure takes the backups with it.
+      RELIQUARY_BACKUP_DESTINATION_PATH: /backups
+      # Optional dedicated least-privilege DB user for `mariadb-dump`
+      # (SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES; see
+      # docs/reliquary-backups.md for the grant script). Falls back to the
+      # app's own MARIADB_USER/MARIADB_PASSWORD, with a startup warning,
+      # if left unset.
+      RELIQUARY_BACKUP_DB_USER: ${RELIQUARY_BACKUP_DB_USER:-}
+      RELIQUARY_BACKUP_DB_PASSWORD: ${RELIQUARY_BACKUP_DB_PASSWORD:-}
+    volumes:
+      - abyssal_backups:/backups
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 10s
@@ -104,6 +121,7 @@ services:
 
 volumes:
   abyssal_db_data:
+  abyssal_backups:
   abyssal_caddy_data:
   abyssal_caddy_config:
 

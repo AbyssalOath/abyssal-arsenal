@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
-use crate::middleware::security_headers;
+use crate::middleware::{maintenance_mode, security_headers};
 use crate::routes;
 use crate::state::AppState;
 
@@ -391,6 +391,30 @@ pub fn build(state: AppState) -> Router {
             post(routes::obituary::elevate),
         )
         .route("/arsenals/reliquary", get(routes::reliquary::show))
+        .route(
+            "/arsenals/reliquary/backups",
+            get(routes::reliquary_backup::page).post(routes::reliquary_backup::create),
+        )
+        .route(
+            "/arsenals/reliquary/backups/settings",
+            post(routes::reliquary_backup::update_settings),
+        )
+        .route(
+            "/arsenals/reliquary/backups/:id/download",
+            get(routes::reliquary_backup::download),
+        )
+        .route(
+            "/arsenals/reliquary/backups/:id/verify",
+            post(routes::reliquary_backup::verify_quick),
+        )
+        .route(
+            "/arsenals/reliquary/backups/:id/delete",
+            post(routes::reliquary_backup::delete),
+        )
+        .route(
+            "/arsenals/reliquary/backups/:id/restore",
+            get(routes::reliquary_backup::restore_preview).post(routes::reliquary_backup::restore),
+        )
         .route(
             "/arsenals/reliquary/:host_id",
             get(routes::reliquary::show_host),
@@ -1277,6 +1301,10 @@ pub fn build(state: AppState) -> Router {
         .route("/ws/agent", get(routes::agent::ws_upgrade))
         .nest_service("/static", ServeDir::new(static_dir()))
         .layer(axum::middleware::from_fn(security_headers::apply))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            maintenance_mode::guard,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

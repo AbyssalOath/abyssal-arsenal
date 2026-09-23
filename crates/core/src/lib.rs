@@ -6,6 +6,7 @@ pub mod module;
 pub mod network_device;
 pub mod oui;
 pub mod permission;
+pub mod reliquary_backup;
 pub mod role;
 pub mod secret;
 pub mod security_event;
@@ -24,6 +25,10 @@ pub use network_device::{
 };
 pub use oui::lookup_vendor;
 pub use permission::Permission;
+pub use reliquary_backup::{
+    BackupComponent, BackupJob, BackupJobType, BackupManifest, BackupStatus, BackupTrigger,
+    EncryptionMetadata, ManifestEntry, VerificationStatus,
+};
 pub use role::{BUILT_IN_ROLES, MAX_ROLE_DEPTH, Role};
 pub use security_event::{SecurityEvent, Severity};
 pub use session::Session;

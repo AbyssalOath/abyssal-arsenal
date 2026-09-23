@@ -908,6 +908,91 @@ below for what that implies for toggling them).
   read-only: a failed check (offline, rate-limited, self-hosted with no
   egress allowed) just leaves the last-known status in place -- see
   "Version tracking and update notice" below.
+- **Reliquary scheduled backup loop**
+  (`reliquary_backup::orchestrator::spawn_scheduled_backup_loop`, every 15
+  minutes): off by default (`reliquary.backup_schedule_enabled`), re-checked
+  every tick. When due (tracked from the most recent successful backup's
+  own timestamp, not an in-process timer), runs one unencrypted
+  Database+Configuration(+Audit logs, per its own setting) backup under
+  the same `GET_LOCK`-based lock a manual backup or restore uses, then
+  runs retention pruning. See "Reliquary native backups" below for the
+  full feature.
+
+## Reliquary native backups (GitHub issue #9)
+
+The control plane's own backup/restore/disaster-recovery system for its
+Docker Compose install -- a MariaDB logical dump, a redacted snapshot of
+this process's own configuration, and (opt-in, always encrypted) the
+`ENCRYPTION_KEY` used for Panopticon/macro secrets, sealed into one
+compressed, checksummed, optionally-encrypted archive with a versioned
+`manifest.json`. Full detail (what is/isn't backed up, DB grants,
+scheduling, off-host storage, the disaster-recovery CLI walkthrough) lives
+in [docs/reliquary-backups.md](docs/reliquary-backups.md); this section is
+the architectural summary.
+
+- **`BackupProvider`/`StorageDestination` traits**
+  (`crates/web/src/reliquary_backup/provider.rs`,`storage.rs`) exist
+  specifically so a future `Remote`/S3-backed implementation can be added
+  without touching the job model, orchestrator, or UI -- only
+  `NativeProvider`/`LocalFs` exist today, same reasoning as `AuthProvider`
+  existing before there's a second auth backend.
+- **Dump**: `mariadb-dump` (added to the runtime image via the Dockerfile's
+  `mariadb-client` package), run as a real subprocess (never through a
+  shell), credentials passed via a `0600` `--defaults-extra-file` -- never
+  a `-p` flag or a `ps`-visible environment variable. `--databases <db>`
+  embeds the dump's own `CREATE DATABASE`/`USE` statements, which is why a
+  real restore needs no extra logic to recreate the database by name, and
+  is also exactly why deep verification (below) is unimplemented.
+- **Archive**: `tar` + `zstd`, composed in one `spawn_blocking` closure
+  (both are sync crates; tar itself is sync regardless, so this is simpler
+  and more correct than bridging to an async compression crate). Every
+  entry's path is validated against traversal before extraction
+  (`archive::validate_entry_path`), and only regular files/directories are
+  ever unpacked -- symlink and hardlink tar entries are rejected outright.
+- **Encryption**: AES-256-GCM in streaming mode (`aes-gcm`'s STREAM
+  construction, 512KB chunks, bounded memory regardless of archive size),
+  keyed by Argon2id-deriving an operator-supplied passphrase (same KDF
+  style as this app's own password hashing). The passphrase is never
+  stored anywhere; losing it means losing the ability to restore that
+  archive, by design.
+- **Job model**: `reliquary_backups` table
+  (`migrations/0018_reliquary_backups.sql`) with a status lifecycle
+  (queued/running/succeeded/failed/verifying/verified/cancelled), a
+  MariaDB session-scoped named lock (`GET_LOCK('reliquary_backup', 0)`,
+  non-blocking) serializing backups/restores against each other on one
+  dedicated connection, and a startup sweep
+  (`orchestrator::recover_interrupted_jobs`) that marks any job still
+  non-terminal as failed (a crash releases the lock automatically, but not
+  the job row).
+- **Retention**: keep-last-N and/or keep-X-days, computed by a pure
+  function (`orchestrator::select_prune_candidates`, unit-tested without a
+  database) that never selects the only remaining backup whose
+  verification is passing, even past its own age/count limits.
+- **Verification**: quick verify (checksum, manifest sanity, archive
+  readability) is implemented. Deep verify (scratch-database restore,
+  `CHECK TABLE`, row-count comparison) is a documented, flagged gap --
+  `verify::deep_verify` returns a clear "not implemented" error rather
+  than a false pass; see docs/reliquary-backups.md for why.
+- **Restore**: dry-run preview (schema-version and MariaDB-major-version
+  comparison, refuses on a manifest-version mismatch) before any
+  destructive action; requires the backup to be verified unless explicitly
+  overridden; takes an automatic unencrypted safety backup of the current
+  database first (its *file* survives a successful restore, but not its
+  `reliquary_backups` row -- the restore overwrites that whole table too;
+  recover it by file via the disaster-recovery CLI if needed, see
+  docs/reliquary-backups.md); and enters **maintenance mode**
+  (`middleware::maintenance_mode`, `reliquary_backup::restore::
+  MaintenanceMode`) for its duration -- every request except static assets
+  and the backups page itself gets a 503 page, cleared automatically via
+  an RAII guard even on panic or early return.
+- **Disaster-recovery CLI**: `crates/app/src/cli.rs`, the same binary as
+  the server (`docker compose run --rm app reliquary backup
+  list|verify|restore ...`), works against a totally fresh install with no
+  web UI, session, or even an existing `reliquary_backups` row -- it
+  operates directly on an archive file. The Dockerfile uses `ENTRYPOINT`
+  (not `CMD`) specifically so this appends its arguments rather than
+  replacing the binary outright; with no arguments at all, the same image
+  still just runs the server, unchanged.
 
 ## Version tracking and update notice
 
@@ -1061,6 +1146,14 @@ Twelve migrations so far:
   (`routes/roles.rs::delete_role`), but the FK is a second, structural
   backstop against ever silently orphaning a role's children. See
   "Delegated custom roles" above for the full model.
+- `0018_reliquary_backups.sql` -- adds `reliquary_backups` (GitHub issue
+  #9: native backup/restore). One row per backup job: status lifecycle,
+  trigger source, selected components (JSON), encryption flags,
+  destination path/file name, size, SHA-256, the full manifest (JSON),
+  verification status/details, and timing columns. `created_by` is
+  `ON DELETE SET NULL` -- a deleted user's past backups stay listed, not
+  silently disappear. See "Reliquary native backups" above for the full
+  model.
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time
@@ -1096,6 +1189,19 @@ maintained offline query cache.
   docker-compose.yml's `cap_add: [NET_RAW]` and the published `5353/udp`
   (for the mDNS listener, also off by default) exist for these two
   opt-in features and do nothing while both stay disabled.
+- `mariadb-client` is included in the runtime image for Reliquary's native
+  backups (`mariadb-dump`/`mariadb` -- GitHub issue #9). A dedicated
+  `abyssal_backups` volume, mounted at `/backups` and deliberately separate
+  from `abyssal_db_data`, is where archives land; `RELIQUARY_BACKUP_DB_USER`/
+  `_DB_PASSWORD` optionally point the dump at a least-privilege user instead
+  of the app's own database credentials (see
+  [scripts/reliquary-backup-grants.sql](scripts/reliquary-backup-grants.sql)).
+  The Dockerfile uses `ENTRYPOINT` rather than `CMD` so the disaster-recovery
+  CLI's arguments (`docker compose run --rm app reliquary backup ...`) append
+  to the binary instead of replacing it -- see "Reliquary native backups"
+  above and [docs/reliquary-backups.md](docs/reliquary-backups.md) for the
+  full picture, including the off-host-storage caveat: that volume is still
+  local to this Docker host.
 
 ## Known limitations
 
@@ -1127,3 +1233,12 @@ model, not oversights:
   back to showing the current version alone, nothing else in the app
   depends on it, and there's no other outbound network dependency
   anywhere in the control plane.
+- Reliquary's native backups have no deep verify (scratch-database
+  restore + `CHECK TABLE` + row-count comparison) -- only quick verify
+  (checksum/manifest/readability). No remote/cloud storage destination
+  exists yet (`StorageDestination`/`BackupProvider` are traits so one can
+  be added without a refactor). Scheduled/unattended backups are always
+  unencrypted, since there's nobody present to supply a passphrase. A
+  restored archive's Configuration/Encryption-keys components are only
+  extracted to disk, never automatically re-applied. All flagged, not
+  oversights -- see [docs/reliquary-backups.md](docs/reliquary-backups.md).

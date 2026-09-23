@@ -126,3 +126,64 @@ pub const PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS: u32 = 90;
 /// looking at).
 pub const PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS: &str = "panopticon.traffic_daily_retention_days";
 pub const PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS: u32 = 365;
+
+// ---------------------------------------------------------------------
+// Reliquary native (control-plane) backups -- GitHub issue #9. All
+// admin-configurable via the Reliquary "Application Data" settings panel
+// (`routes/reliquary_backup.rs`), not `/admin/settings` -- these are
+// specific to one arsenal, same reasoning `THANATOS_ALERT_RECIPIENTS` etc.
+// already follow for arsenal-scoped settings living outside the global
+// settings page.
+// ---------------------------------------------------------------------
+
+/// Whether the unattended scheduled backup loop is on at all. Off by
+/// default -- same "an admin has to deliberately opt in before an
+/// unattended background job starts touching anything" posture as
+/// `THANATOS_MONITORING_ENABLED`/`PANOPTICON_SWEEP_ENABLED` above, doubly
+/// so here since this one writes a multi-gigabyte file to disk on its own
+/// schedule.
+pub const RELIQUARY_BACKUP_SCHEDULE_ENABLED: &str = "reliquary.backup_schedule_enabled";
+
+/// Interval between scheduled backups, in hours. Checked against `0` the
+/// same way `PANOPTICON_ARP_INTERFACE` guards an empty interface -- the
+/// scheduler no-ops on a tick where this is `0` even if the toggle above
+/// is on, rather than guessing an interval.
+pub const RELIQUARY_BACKUP_SCHEDULE_INTERVAL_HOURS: &str =
+    "reliquary.backup_schedule_interval_hours";
+pub const RELIQUARY_BACKUP_SCHEDULE_DEFAULT_INTERVAL_HOURS: u32 = 24;
+
+/// Keep at least this many of the most recent backups regardless of age --
+/// pruning (`reliquary_backup::retention`) never deletes past this floor,
+/// and never deletes the only remaining *verified* backup even if that
+/// means keeping more than this number.
+pub const RELIQUARY_BACKUP_RETENTION_KEEP_LAST: &str = "reliquary.backup_retention_keep_last";
+pub const RELIQUARY_BACKUP_RETENTION_DEFAULT_KEEP_LAST: u32 = 7;
+
+/// Also prune anything older than this many days, subject to the same
+/// keep-last and keep-the-only-verified-backup floors above. `0` disables
+/// age-based pruning entirely (count-based retention only).
+pub const RELIQUARY_BACKUP_RETENTION_DAYS: &str = "reliquary.backup_retention_days";
+pub const RELIQUARY_BACKUP_RETENTION_DEFAULT_DAYS: u32 = 30;
+
+/// Directory backup archives are written to -- must be outside the
+/// MariaDB data volume (documented requirement, not enforced in code: this
+/// process has no visibility into the `mariadb` container's own mount
+/// table to check against). Defaults to `/backups`, matching the
+/// dedicated volume `docker-compose.yml` mounts there.
+pub const RELIQUARY_BACKUP_DESTINATION_PATH: &str = "reliquary.backup_destination_path";
+pub const RELIQUARY_BACKUP_DEFAULT_DESTINATION_PATH: &str = "/backups";
+
+/// Whether new backups are encrypted at rest by default (the create-backup
+/// form can still override this per backup). Strongly recommended on;
+/// forced on regardless of this setting whenever "include encryption
+/// keys" is selected for a given backup.
+pub const RELIQUARY_BACKUP_ENCRYPT_BY_DEFAULT: &str = "reliquary.backup_encrypt_by_default";
+
+/// Whether scheduled (unattended) backups include audit logs. Manual
+/// backups choose this per-run; the schedule needs its own fixed answer
+/// since nobody's there to pick each time. Audit logs are already part of
+/// the database dump either way (see `reliquary_backup::manifest`) --
+/// this only controls whether the `audit_log` table is included in a
+/// dump whose other rows exclude it, for a deployment that wants its
+/// backups to exclude potentially sensitive audit detail by default.
+pub const RELIQUARY_BACKUP_INCLUDE_AUDIT_LOGS: &str = "reliquary.backup_include_audit_logs";

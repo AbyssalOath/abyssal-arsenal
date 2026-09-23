@@ -1688,3 +1688,66 @@ pub struct ObituaryHostTemplate {
     pub result_error: Option<String>,
     pub suggested_actions: Vec<SuggestedActionView>,
 }
+
+// -----------------------------------------------------------------------
+// Reliquary native (control-plane) backups -- GitHub issue #9. See
+// `routes/reliquary_backup.rs` and `crate::reliquary_backup`. Kept apart
+// from `reliquary_host.html`/`ReliquaryHostTemplate` above (the existing
+// Remote/Agent-mode UI), which this doesn't touch.
+// -----------------------------------------------------------------------
+
+pub struct BackupJobRow {
+    pub id: String,
+    pub status_label: &'static str,
+    pub status_key: &'static str,
+    pub trigger_label: &'static str,
+    pub components: String,
+    pub encrypted: bool,
+    pub size_display: String,
+    pub created_at: String,
+    pub verification_label: String,
+    pub verification_passed: bool,
+    /// Only populated when verification failed -- `quick_verify`'s reason,
+    /// shown inline so an admin doesn't have to guess or query the
+    /// database directly to find out why.
+    pub verification_failure_detail: Option<String>,
+    pub can_download: bool,
+    pub error_message: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "reliquary_backup.html")]
+pub struct ReliquaryBackupTemplate {
+    pub base: BaseCtx,
+    /// `backups.create` -- gates Backup Now, settings, verify, delete.
+    pub can_manage: bool,
+    /// `backups.restore` -- gates the restore flow specifically.
+    pub can_restore: bool,
+    pub jobs: Vec<BackupJobRow>,
+    pub message: Option<String>,
+    pub error: Option<String>,
+    pub schedule_enabled: bool,
+    pub schedule_interval_hours: u32,
+    pub retention_keep_last: u32,
+    pub retention_days: u32,
+    pub destination_path: String,
+    pub encrypt_by_default: bool,
+    pub encryption_key_available: bool,
+    pub include_audit_logs_by_default: bool,
+}
+
+#[derive(Template)]
+#[template(path = "reliquary_restore_preview.html")]
+pub struct ReliquaryRestorePreviewTemplate {
+    pub base: BaseCtx,
+    pub job_id: String,
+    pub is_encrypted: bool,
+    pub is_verified: bool,
+    pub schema_version_matches: bool,
+    pub current_schema_version: i64,
+    pub backup_schema_version: i64,
+    pub mariadb_major_version_differs: bool,
+    pub current_mariadb_version: String,
+    pub backup_mariadb_version: String,
+    pub components: Vec<String>,
+}

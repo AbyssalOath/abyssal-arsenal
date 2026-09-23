@@ -14,6 +14,9 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::panopticon_ops::ScanJob;
+use crate::reliquary_backup::provider::BackupProvider;
+use crate::reliquary_backup::restore::MaintenanceMode;
+use crate::reliquary_backup::storage::StorageDestination;
 use crate::ssh_deploy::DeployJob;
 use crate::update_check::UpdateStatus;
 
@@ -70,4 +73,14 @@ pub struct AppState {
     /// Same in-memory-only shape and reasoning as `deploy_jobs`, for
     /// discovery scans -- see `panopticon_ops::ScanJob`.
     pub scan_jobs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ScanJob>>>>>,
+    /// Native (control-plane) backups -- GitHub issue #9. Job *records*
+    /// live durably in `reliquary_backups` (unlike `deploy_jobs`/
+    /// `scan_jobs` above); what's here is just the engine + destination
+    /// needed to run one, shared across every request the same way
+    /// `executor`/`hosts` already are.
+    pub reliquary_backup_provider: Arc<dyn BackupProvider>,
+    pub reliquary_backup_storage: Arc<dyn StorageDestination>,
+    /// Set for the duration of a restore -- see
+    /// `reliquary_backup::restore::MaintenanceMode`.
+    pub maintenance_mode: MaintenanceMode,
 }

@@ -111,6 +111,37 @@ for what that means for cloning and updating.
   just a small "Rescan of X complete" notice once it finishes. The typed
   "confirm the target" safety dialog still applies in full for a target
   that's never been scanned before.
+- **Reliquary native backups**: the control plane can now back up and
+  restore its own database and configuration, from `/arsenals/reliquary/backups`
+  (`backups.view`/`backups.create`/`backups.restore`, already-existing
+  permissions this feature now actually uses). A backup selects any of
+  Database (a `mariadb-dump` logical dump -- routines, triggers, events,
+  hex-encoded blobs, utf8mb4), Configuration (a redacted snapshot of this
+  process's own environment), Encryption keys (opt-in, always forces
+  encryption), and Audit logs (whether the `audit_log` table's rows are
+  included in the dump, on by default), sealed into one compressed
+  (`tar`+`zstd`), checksummed, optionally AES-256-GCM-encrypted (streaming,
+  Argon2id-derived passphrase, 512KB chunks) archive with a versioned
+  `manifest.json`. Quick verify checks integrity and manifest sanity; deep
+  verify (scratch-database restore) is a documented, flagged gap, not a
+  silent one. Restore is a dry-run-preview-then-typed-confirmation flow
+  that refuses an unverified backup unless explicitly overridden, takes an
+  automatic safety backup first, and runs under a new maintenance-mode
+  middleware that blocks the rest of the app for its short duration.
+  Backups land in a dedicated `abyssal_backups` Docker volume, deliberately
+  separate from the database's own volume, with an explicit off-host-
+  storage warning in the UI (that volume is still local to this Docker
+  host). Optional scheduling (off by default, unencrypted, since nobody's
+  present to supply a passphrase) and retention (keep-last-N and/or
+  keep-X-days, never pruning the only remaining verified backup) are
+  configurable from the same page. A new disaster-recovery CLI subcommand
+  (`docker compose run --rm app reliquary backup list|verify|restore`)
+  works against a totally fresh install -- empty database, brand-new
+  containers, no web UI or session required. See
+  [ARCHITECTURE.md](ARCHITECTURE.md#reliquary-native-backups-github-issue-9)
+  and [docs/reliquary-backups.md](docs/reliquary-backups.md) for the full
+  picture, including what's deliberately deferred (deep verify, remote/cloud
+  storage, encrypted unattended backups).
 
 ### Fixed
 
@@ -824,3 +855,11 @@ for what that means for cloning and updating.
   Thanatos changelog entry above), not an oversight.
 - No Tauri desktop client yet; `/api/health` and `/api/me` establish the
   API seam it would use.
+- Reliquary's native backups (GitHub issue #9) have no deep verify
+  (scratch-database restore + `CHECK TABLE` + row-count comparison), only
+  quick verify (checksum/manifest/readability); no remote/cloud storage
+  destination yet, though `StorageDestination`/`BackupProvider` are traits
+  specifically so one can be added later without a refactor; and scheduled/
+  unattended backups are always unencrypted, since there's nobody present
+  to supply a passphrase. See
+  [docs/reliquary-backups.md](docs/reliquary-backups.md).

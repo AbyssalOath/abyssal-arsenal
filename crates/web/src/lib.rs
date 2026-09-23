@@ -10,6 +10,7 @@ mod panopticon_mdns;
 mod panopticon_ops;
 mod panopticon_snmp;
 mod panopticon_traffic;
+pub mod reliquary_backup;
 pub mod router;
 pub mod routes;
 pub mod ssh_deploy;

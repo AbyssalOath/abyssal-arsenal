@@ -1,4 +1,5 @@
 mod arsenals;
+mod cli;
 mod config;
 
 use std::net::SocketAddr;
@@ -15,10 +16,33 @@ use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
 use abyssal_notifications::{NotificationDispatcher, SmtpProvider};
+use abyssal_web::reliquary_backup::provider::NativeProvider;
+use abyssal_web::reliquary_backup::restore::MaintenanceMode;
+use abyssal_web::reliquary_backup::storage::LocalFs;
 use abyssal_web::{AppState, WebConfig};
 use abyssal_workflows::WorkflowRegistry;
+use clap::{Parser, Subcommand};
 use config::Config;
 use std::time::Duration;
+
+/// Disaster-recovery CLI lives on this same binary -- GitHub issue #9 --
+/// so `docker compose run --rm app reliquary backup restore <path> ...`
+/// works with nothing else to install. No subcommand (the default, and
+/// everything before this feature) still just runs the server.
+#[derive(Parser)]
+#[command(name = "abyssal-arsenal")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Reliquary {
+        #[command(subcommand)]
+        action: cli::ReliquaryCommand,
+    },
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,6 +50,10 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    if let Some(Command::Reliquary { action }) = Cli::parse().command {
+        return cli::run(action).await;
+    }
 
     let mut config = Config::from_env()?;
 
@@ -50,6 +78,40 @@ async fn main() -> anyhow::Result<()> {
     let executor = Executor::new(pool.clone(), Duration::from_secs(30 * 60));
     let encryption_key = config.encryption_key.take().map(Arc::new);
 
+    let backup_destination = std::env::var("RELIQUARY_BACKUP_DESTINATION_PATH")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            abyssal_core::settings::RELIQUARY_BACKUP_DEFAULT_DESTINATION_PATH.to_string()
+        });
+    let local_fs = LocalFs::new(&backup_destination);
+    local_fs.ensure_root_exists().await?;
+    let backup_storage: Arc<dyn abyssal_web::reliquary_backup::storage::StorageDestination> =
+        Arc::new(local_fs);
+    let backup_provider: Arc<dyn abyssal_web::reliquary_backup::provider::BackupProvider> =
+        Arc::new(NativeProvider {
+            pool: pool.clone(),
+            database_url: config.database_url.clone(),
+            work_dir: std::env::temp_dir(),
+            storage: backup_storage.clone(),
+            arsenal_version: abyssal_web::update_check::CURRENT_VERSION
+                .trim()
+                .to_string(),
+        });
+
+    let interrupted = abyssal_web::reliquary_backup::orchestrator::recover_interrupted_jobs(&pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to sweep interrupted reliquary backup jobs");
+            0
+        });
+    if interrupted > 0 {
+        tracing::warn!(
+            count = interrupted,
+            "reliquary: marked backup job(s) left running by a previous crash/restart as failed"
+        );
+    }
+
     let state = AppState {
         pool,
         modules: Arc::new(registry),
@@ -71,7 +133,17 @@ async fn main() -> anyhow::Result<()> {
         encryption_key: encryption_key.clone(),
         deploy_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         scan_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        reliquary_backup_provider: backup_provider.clone(),
+        reliquary_backup_storage: backup_storage.clone(),
+        maintenance_mode: MaintenanceMode::default(),
     };
+
+    abyssal_web::reliquary_backup::orchestrator::spawn_scheduled_backup_loop(
+        state.pool.clone(),
+        backup_provider,
+        backup_storage,
+        backup_destination,
+    );
 
     spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());
     abyssal_web::spawn_thanatos_sweep(state.clone());
