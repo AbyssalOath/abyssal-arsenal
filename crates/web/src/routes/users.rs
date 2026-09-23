@@ -292,13 +292,16 @@ async fn render_edit(
     // Changing this user's role at all requires: the viewer can assign
     // roles in the first place, this isn't the viewer editing their own
     // role (GitHub issue #8's "users can't edit their own role"), and
+    // either the viewer has no delegation ceiling (Super Admin can always
+    // fix a user's role, including one with no role assigned at all) or
     // the user's *current* role is itself within the viewer's delegated
     // subtree -- otherwise a scoped admin could reach into an account
     // outside their scope just because they happen to know its URL.
     let can_change_role = user_id != ctx.user.id
-        && current_role
-            .as_ref()
-            .is_some_and(|r| assignable.iter().any(|a| a.id == r.id));
+        && (crate::common::has_no_ceiling(ctx)
+            || current_role
+                .as_ref()
+                .is_some_and(|r| assignable.iter().any(|a| a.id == r.id)));
     let roles = crate::common::sorted_role_options(&state.pool, assignable)
         .await?
         .into_iter()
@@ -464,9 +467,14 @@ pub async fn change_role(
         .next();
 
     let assignable = crate::common::assignable_roles(&state.pool, &ctx).await?;
-    let target_in_scope = previous_role
-        .as_ref()
-        .is_some_and(|r| assignable.iter().any(|a| a.id == r.id));
+    // A no-ceiling (Super Admin) viewer can always fix a user's role,
+    // including one who currently has none assigned at all (e.g. stale
+    // data); a scoped admin is still confined to targets whose *current*
+    // role is within their own delegated subtree.
+    let target_in_scope = crate::common::has_no_ceiling(&ctx)
+        || previous_role
+            .as_ref()
+            .is_some_and(|r| assignable.iter().any(|a| a.id == r.id));
     let new_role_assignable = assignable.iter().any(|r| r.id == form.role_id);
     if !target_in_scope || !new_role_assignable {
         return Err(WebError(AppError::Forbidden));
