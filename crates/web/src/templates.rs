@@ -278,9 +278,15 @@ pub struct UserRow {
     pub roles: String,
 }
 
+/// One role a user can be picked from a `<select>` -- `depth` (1 = root,
+/// 2 = its direct child, ...) drives indentation so a flat dropdown still
+/// shows the hierarchy, standing in for a true cascading "role, then
+/// sub-role" pair of selects without needing client-side JS to filter
+/// the second one.
 pub struct RoleOption {
     pub id: String,
     pub name: String,
+    pub depth: u8,
 }
 
 #[derive(Template)]
@@ -288,6 +294,9 @@ pub struct RoleOption {
 pub struct UsersTemplate {
     pub base: BaseCtx,
     pub users: Vec<UserRow>,
+    /// Only roles the viewing admin may assign -- see
+    /// `common::assignable_roles`. Never the full role catalogue for a
+    /// scoped (non-no-ceiling) admin.
     pub roles: Vec<RoleOption>,
     pub message: Option<String>,
     pub error: Option<String>,
@@ -314,6 +323,19 @@ pub struct UserEditTemplate {
     pub error: Option<String>,
     pub generated_password: Option<String>,
     pub password_prefill: String,
+    /// Only roles the viewing admin may assign -- see
+    /// `common::assignable_roles`. If this user's *current* role isn't
+    /// in that set (a scoped admin viewing someone outside their
+    /// subtree), it's added anyway so the dropdown doesn't silently
+    /// misrepresent their current role, but see `can_change_role`.
+    pub roles: Vec<RoleOption>,
+    pub current_role_id: String,
+    /// False when the viewing admin isn't allowed to change this user's
+    /// role at all (their current role is outside the viewer's subtree,
+    /// or the target is the viewer themselves) -- the role selector
+    /// renders disabled/read-only rather than letting a submit silently
+    /// no-op or a raw POST attempt succeed unexpectedly.
+    pub can_change_role: bool,
 }
 
 pub struct PermissionRow {
@@ -335,13 +357,33 @@ pub struct RoleDetail {
     pub name: String,
     pub description: String,
     pub is_system: bool,
+    /// 1 for a root role, 2 for its direct child, 3 for a grandchild --
+    /// drives the indentation in the hierarchy list.
+    pub depth: u8,
+    pub parent_name: Option<String>,
+    /// Only the permissions the *viewing* user is allowed to grant on
+    /// this role are included -- see `common::grantable_permissions` and
+    /// `RoleDetail`'s construction in `routes/roles.rs::list`. The rest
+    /// exist on the role (or not) but are neither shown nor editable by
+    /// this viewer.
     pub permissions: Vec<PermissionRow>,
+    /// How many of this role's actual permissions were left out of
+    /// `permissions` above because the viewer isn't allowed to grant (or
+    /// see) them -- shown as a one-line note so a scoped admin isn't left
+    /// wondering where a permission went.
+    pub hidden_permission_count: usize,
     pub module_visibility: Vec<ModuleVisibilityRow>,
     /// Whether this role has an explicit dashboard-visibility override.
     /// When false, `module_visibility` reflects today's plain
     /// permission-based visibility as a starting point for editing, not a
     /// saved customization yet.
     pub visibility_customized: bool,
+    /// Whether the viewing user may edit/delete this role at all -- see
+    /// `common::ensure_can_manage_role`. `false` hides every editing
+    /// control for this role (view-only card).
+    pub can_manage: bool,
+    pub user_count: i64,
+    pub child_count: i64,
 }
 
 #[derive(Template)]
@@ -349,6 +391,17 @@ pub struct RoleDetail {
 pub struct RolesTemplate {
     pub base: BaseCtx,
     pub roles: Vec<RoleDetail>,
+    /// Roles the viewing user may create a new role/sub-role under --
+    /// see `common::assignable_roles`. Empty (and the create-role form
+    /// hidden) for a `roles.manage` holder with no assignable parent,
+    /// which shouldn't normally happen since a scoped admin always has at
+    /// least their own role.
+    pub creatable_parents: Vec<RoleOption>,
+    /// Whether the viewing user has no delegation ceiling (Super Admin)
+    /// -- only they may create a brand new root role with no parent at
+    /// all; everyone else must nest under `creatable_parents`.
+    pub can_create_root: bool,
+    pub create_error: Option<String>,
 }
 
 pub struct AuditRow {

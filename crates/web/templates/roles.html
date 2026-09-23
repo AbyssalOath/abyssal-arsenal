@@ -3,14 +3,81 @@
 {% block heading %}Roles & Permissions{% endblock %}
 {% block content %}
 
+{% if let Some(err) = create_error %}
+<div class="error-banner">{{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Create role</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    A sub-role's permissions can only be a subset of its parent's -- and only permissions
+    you yourself currently hold can be granted to any role you create. Delegation, never
+    escalation.
+  </p>
+  {% if creatable_parents.is_empty() && !can_create_root %}
+  <p style="color:var(--text-muted);">You don't have a role to create sub-roles under.</p>
+  {% else %}
+  <form method="post" action="/admin/roles">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="new-role-name">Name</label>
+    <input type="text" id="new-role-name" name="name" required style="max-width:360px;">
+    <label for="new-role-description">Description</label>
+    <input type="text" id="new-role-description" name="description" style="max-width:480px;">
+    <label for="new-role-parent">Parent role</label>
+    <select id="new-role-parent" name="parent_role_id" style="max-width:360px;">
+      {% if can_create_root %}
+      <option value="">(none -- a new top-level role)</option>
+      {% endif %}
+      {% for role in creatable_parents %}
+      {% if role.depth == 1 %}
+      <option value="{{ role.id }}">{{ role.name }}</option>
+      {% else if role.depth == 2 %}
+      <option value="{{ role.id }}">&nbsp;&nbsp;&#8627; {{ role.name }}</option>
+      {% else %}
+      <option value="{{ role.id }}">&nbsp;&nbsp;&nbsp;&nbsp;&#8627; {{ role.name }}</option>
+      {% endif %}
+      {% endfor %}
+    </select>
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-10px 0 16px;">
+      The new role's permission checklist (shown after creating it) is capped to whatever
+      the chosen parent -- and you yourself -- both already allow.
+    </p>
+    <button type="submit" class="btn-warning">Create role</button>
+  </form>
+  {% endif %}
+</div>
+
 {% for role in roles %}
 <div class="card">
-  <h2>{{ role.name }}
-    {% if role.is_system %}<span class="badge badge-muted">System role</span>{% endif %}
+  <h2>
+    {% if role.depth == 2 %}&nbsp;&nbsp;&#8627;&nbsp;{% else if role.depth == 3 %}&nbsp;&nbsp;&nbsp;&nbsp;&#8627;&nbsp;{% endif %}
+    {{ role.name }}
+    {% if role.is_system %}<span class="badge badge-muted">System role</span>
+    {% else %}<span class="badge badge-success">Custom</span>{% endif %}
   </h2>
-  <p style="color:var(--text-muted);">{{ role.description }}</p>
-  <form method="post" action="/admin/roles/{{ role.id }}/permissions">
+  <p style="color:var(--text-muted);">
+    {{ role.description }}
+    {% if let Some(parent) = role.parent_name %}<br>Sub-role of <strong>{{ parent }}</strong>.{% endif %}
+    {{ role.user_count }} user(s), {{ role.child_count }} child role(s) assigned.
+  </p>
+
+  {% if role.can_manage && !role.is_system %}
+  <details>
+    <summary>Rename / re-describe</summary>
+    <form method="post" action="/admin/roles/{{ role.id }}/edit" style="margin-top:10px;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="edit-name-{{ role.id }}">Name</label>
+      <input type="text" id="edit-name-{{ role.id }}" name="name" value="{{ role.name }}" required style="max-width:360px;">
+      <label for="edit-description-{{ role.id }}">Description</label>
+      <input type="text" id="edit-description-{{ role.id }}" name="description" value="{{ role.description }}" style="max-width:480px;">
+      <button type="submit" class="btn-secondary" style="margin-top:10px;">Save</button>
+    </form>
+  </details>
+  {% endif %}
+
+  <form method="post" action="/admin/roles/{{ role.id }}/permissions" style="margin-top:14px;">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    {% if role.can_manage %}
     <div class="action-grid">
       {% for perm in role.permissions %}
       <label style="display:flex; align-items:center; gap:8px; background:var(--surface-raised); padding:8px 10px; border-radius:5px; border:1px solid var(--border); margin-bottom:0;">
@@ -19,7 +86,22 @@
       </label>
       {% endfor %}
     </div>
+    {% if role.hidden_permission_count > 0 %}
+    <p style="color:var(--text-muted); font-size:0.8rem;">
+      {{ role.hidden_permission_count }} permission(s) on this role aren't shown -- they're
+      outside what you can grant, and are left untouched by anything you save here.
+    </p>
+    {% endif %}
+    {% if role.parent_name.is_some() %}
+    <p style="color:var(--text-muted); font-size:0.8rem;">
+      A permission checked here only actually takes effect if every ancestor role also has
+      it.
+    </p>
+    {% endif %}
     <button type="submit" class="btn-warning" style="margin-top:14px;">Review &amp; save permissions</button>
+    {% else %}
+    <p style="color:var(--text-muted);">You can't edit this role's permissions.</p>
+    {% endif %}
   </form>
 
   <h3 style="margin-top:20px;">Dashboard arsenals</h3>
@@ -31,6 +113,7 @@
     <span class="badge badge-muted">Not customized -- showing everything permissions currently allow</span>
     {% endif %}
   </p>
+  {% if role.can_manage %}
   <form method="post" action="/admin/roles/{{ role.id }}/visibility">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <div class="action-grid">
@@ -43,6 +126,13 @@
     </div>
     <button type="submit" class="btn-secondary" style="margin-top:14px;">Save dashboard arsenals</button>
   </form>
+  {% endif %}
+
+  {% if role.can_manage && !role.is_system %}
+  <div class="actions" style="margin-top:14px;">
+    <a class="btn btn-danger" href="/admin/roles/{{ role.id }}/remove/confirm">Delete role&hellip;</a>
+  </div>
+  {% endif %}
 </div>
 {% endfor %}
 

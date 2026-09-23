@@ -24,7 +24,7 @@ pub use network_device::{
 };
 pub use oui::lookup_vendor;
 pub use permission::Permission;
-pub use role::{BUILT_IN_ROLES, Role};
+pub use role::{BUILT_IN_ROLES, MAX_ROLE_DEPTH, Role};
 pub use security_event::{SecurityEvent, Severity};
 pub use session::Session;
 pub use user::{AuthProviderKind, User};

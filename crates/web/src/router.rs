@@ -67,6 +67,7 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/:id/edit",
             get(routes::users::edit_form).post(routes::users::edit),
         )
+        .route("/admin/users/:id/role", post(routes::users::change_role))
         .route(
             "/admin/users/:id/reset-password",
             post(routes::users::reset_password),
@@ -89,7 +90,16 @@ pub fn build(state: AppState) -> Router {
             get(routes::users::delete_confirm),
         )
         .route("/admin/users/:id/delete", post(routes::users::delete))
-        .route("/admin/roles", get(routes::roles::list))
+        .route(
+            "/admin/roles",
+            get(routes::roles::list).post(routes::roles::create_role),
+        )
+        .route("/admin/roles/:id/edit", post(routes::roles::edit_role))
+        .route(
+            "/admin/roles/:id/remove/confirm",
+            get(routes::roles::delete_role_confirm),
+        )
+        .route("/admin/roles/:id/remove", post(routes::roles::delete_role))
         .route(
             "/admin/roles/:id/permissions",
             post(routes::roles::update_permissions),

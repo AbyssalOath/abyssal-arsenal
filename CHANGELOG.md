@@ -12,6 +12,28 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Custom roles with delegated sub-roles**: an admin holding
+  `roles.manage` (Super Admin, or anyone a Super Admin grants it to) can
+  now create custom sub-roles nested under any role, up to 3 levels deep
+  (e.g. Network Admin -> Network Tech). A sub-role's permissions and
+  dashboard arsenals are always a subset of its parent's, computed fresh
+  on every check rather than cached -- if a parent role loses a
+  permission, every descendant loses it immediately, with no stale
+  grants anywhere. A creator can only grant permissions they currently
+  hold themselves; Super Admin can grant anything. Delegated
+  role-management is scoped to your own subtree -- a Network Admin can
+  manage roles descending from Network Admin, never a role under a
+  different parent -- and nobody can edit their own role's permissions
+  or assign a role outside their own delegated authority, enforced
+  server-side on every request, not just hidden in the UI. The Add/Edit
+  User flow gets a role picker restricted to what the admin may actually
+  assign. Deleting a role with users or child roles still assigned is
+  blocked with a clear error rather than silently reassigning them.
+  System roles (Super Admin, System Admin, Network Admin, Security/OPSEC
+  Admin, Regular User) are unchanged -- still can't be renamed or
+  deleted, and existing users and roles keep working exactly as before.
+  See [ARCHITECTURE.md](ARCHITECTURE.md#delegated-custom-roles-github-issue-8)
+  for the full delegation model.
 - **Macros for Grimoire scheduled tasks**: save a scheduled-task ("cron
   job") template's job name, schedule, run-as user, and command as a
   reusable macro instead of retyping it on every host. "Save as Macro"

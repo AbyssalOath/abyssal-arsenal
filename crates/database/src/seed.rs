@@ -103,7 +103,7 @@ async fn seed_role(
 ) -> anyhow::Result<()> {
     let role = match repo::roles::find_by_name(pool, name).await? {
         Some(existing) => existing,
-        None => repo::roles::create(pool, name, description, true).await?,
+        None => repo::roles::create(pool, name, description, true, None, None).await?,
     };
 
     // Only set the permission set the first time it's created; an admin may have

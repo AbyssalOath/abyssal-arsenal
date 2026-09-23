@@ -84,6 +84,123 @@ pub fn safe_return_to<'a>(return_to: &'a str, default: &'a str) -> &'a str {
     }
 }
 
+// -----------------------------------------------------------------------
+// Custom-role delegation (GitHub issue #8). There is deliberately no
+// hard-coded "is Super Admin" flag anywhere -- `has_no_ceiling` derives
+// the same idea purely from holding every known permission, matching
+// this platform's existing rule that "a role is just a named collection
+// of permissions, nothing more" (see ARCHITECTURE.md#authorization-rbac).
+// -----------------------------------------------------------------------
+
+/// True for a user who holds every permission the platform knows about
+/// (in practice, today, only Super Admin) -- the computed stand-in for
+/// "no delegation ceiling applies to this user" used throughout the rest
+/// of this section, rather than a hard-coded role-name check.
+pub fn has_no_ceiling(ctx: &AuthContext) -> bool {
+    Permission::ALL.iter().all(|p| ctx.has(*p))
+}
+
+/// Only a user with no ceiling, or someone holding `roles.manage` whose
+/// own assigned role's subtree contains `role`, may create, edit, or
+/// delete it. System roles are always root roles with no parent for a
+/// delegated admin's subtree to descend from, so editing one -- same as
+/// today -- requires no ceiling. A user can never manage the role they
+/// themselves are currently assigned (stops widening your own grants by
+/// editing your own role), except a no-ceiling user, who already has
+/// nothing to gain by it. Enforced here (not just by hiding the
+/// create/edit/delete controls in the template), since the UI check
+/// alone would be bypassable by visiting the URL directly.
+pub async fn ensure_can_manage_role(
+    pool: &abyssal_database::DbPool,
+    ctx: &AuthContext,
+    role: &abyssal_core::Role,
+) -> Result<(), WebError> {
+    if !ctx.has(Permission::RolesManage) {
+        return Err(WebError(AppError::Forbidden));
+    }
+    if has_no_ceiling(ctx) {
+        return Ok(());
+    }
+    if role.is_system {
+        return Err(WebError(AppError::Forbidden));
+    }
+
+    let own_roles = repo::roles::roles_for_user(pool, ctx.user.id).await?;
+    if own_roles.iter().any(|r| r.id == role.id) {
+        return Err(WebError(AppError::Forbidden));
+    }
+    for own_role in &own_roles {
+        if repo::roles::is_within_subtree(pool, role.id, own_role.id).await? {
+            return Ok(());
+        }
+    }
+    Err(WebError(AppError::Forbidden))
+}
+
+/// Depth-and-name-sorted view of `roles`, each paired with its nesting
+/// depth (1 = root) -- shared shaping for every role `<select>` in the
+/// app (Add/Edit User's role picker, the Roles page's "create under"
+/// parent picker), so a flat dropdown still shows the hierarchy without
+/// needing a true cascading pair of selects and their own JS.
+pub async fn sorted_role_options(
+    pool: &abyssal_database::DbPool,
+    roles: Vec<abyssal_core::Role>,
+) -> anyhow::Result<Vec<(Uuid, String, u8)>> {
+    let mut options = Vec::with_capacity(roles.len());
+    for role in roles {
+        let depth = repo::roles::depth_of(pool, role.id).await?;
+        options.push((role.id, role.name, depth));
+    }
+    options.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
+    Ok(options)
+}
+
+/// The permission ceiling `ctx` may grant to any role right now: every
+/// known permission for a no-ceiling user (Super Admin can grant
+/// anything), or exactly their own current effective permissions
+/// otherwise -- "a creator can only grant permissions they currently
+/// hold themselves." Callers building/validating a role's requested
+/// permission set additionally intersect this with the chosen parent's
+/// own effective set (`repo::roles::effective_permissions_for_role`),
+/// since a role's grants must fit under its parent too, not just under
+/// its creator's ceiling.
+pub fn grantable_permissions(ctx: &AuthContext) -> std::collections::HashSet<Permission> {
+    if has_no_ceiling(ctx) {
+        Permission::ALL.iter().copied().collect()
+    } else {
+        ctx.permissions.clone()
+    }
+}
+
+/// Which roles `ctx` may assign to a user right now, as either the
+/// top-level role or the sub-role in the Add/Edit User picker -- a
+/// no-ceiling user may assign any role; otherwise, `ctx`'s own assigned
+/// role plus everything descending from it, since assigning a role is
+/// itself a form of granting whatever permissions that role carries, and
+/// assigning your own (unchanged) role never grants more than you
+/// already have.
+pub async fn assignable_roles(
+    pool: &abyssal_database::DbPool,
+    ctx: &AuthContext,
+) -> anyhow::Result<Vec<abyssal_core::Role>> {
+    if has_no_ceiling(ctx) {
+        return repo::roles::list(pool).await;
+    }
+    let own_roles = repo::roles::roles_for_user(pool, ctx.user.id).await?;
+    let mut seen = std::collections::HashSet::new();
+    let mut assignable = Vec::new();
+    for own_role in own_roles {
+        let mut candidates = repo::roles::descendants_of(pool, own_role.id).await?;
+        candidates.push(own_role);
+        for role in candidates {
+            if seen.insert(role.id) {
+                assignable.push(role);
+            }
+        }
+    }
+    Ok(assignable)
+}
+
 /// Builds the session cookie. Deliberately left without an explicit
 /// `Max-Age`/`Expires`, making it a browser "session cookie" (cleared on
 /// browser close) in addition to the server-side TTL enforced on every
@@ -370,6 +487,8 @@ pub async fn suggested_actions_for(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -526,5 +645,61 @@ mod tests {
         );
         assert_eq!(safe_return_to("//evil.example/", "/account"), "/account");
         assert_eq!(safe_return_to("", "/account"), "/account");
+    }
+
+    // -- Custom-role delegation (GitHub issue #8): escalation-prevention --
+
+    #[test]
+    fn user_holding_every_permission_has_no_ceiling() {
+        let ctx = ctx_with(Uuid::new_v4(), Permission::ALL);
+        assert!(has_no_ceiling(&ctx));
+    }
+
+    #[test]
+    fn user_missing_even_one_permission_has_a_ceiling() {
+        let held: Vec<Permission> = Permission::ALL
+            .iter()
+            .copied()
+            .filter(|p| *p != Permission::RolesManage)
+            .collect();
+        let ctx = ctx_with(Uuid::new_v4(), &held);
+        assert!(!has_no_ceiling(&ctx));
+    }
+
+    #[test]
+    fn no_ceiling_user_can_grant_every_permission() {
+        let ctx = ctx_with(Uuid::new_v4(), Permission::ALL);
+        assert_eq!(
+            grantable_permissions(&ctx),
+            Permission::ALL.iter().copied().collect::<HashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn scoped_user_can_only_grant_permissions_they_hold() {
+        // GitHub issue #8: "a creator can only grant permissions they
+        // currently hold themselves." A Network Admin-shaped user must
+        // never be able to grant, say, `users.delete`, which they don't
+        // have -- `grantable_permissions` is exactly what every
+        // permission-editing route checks the submission against.
+        let held = [
+            Permission::NetworkView,
+            Permission::NetworkManage,
+            Permission::RolesManage,
+        ];
+        let ctx = ctx_with(Uuid::new_v4(), &held);
+        let cap = grantable_permissions(&ctx);
+        assert_eq!(cap, held.iter().copied().collect::<HashSet<_>>());
+        assert!(!cap.contains(&Permission::UsersDelete));
+
+        // The actual enforcement every route performs: a requested set
+        // that reaches outside the cap must fail the subset check.
+        let requested: HashSet<Permission> = [Permission::NetworkManage, Permission::UsersDelete]
+            .into_iter()
+            .collect();
+        assert!(
+            !requested.is_subset(&cap),
+            "a request naming a permission outside the holder's own grants must be rejected"
+        );
     }
 }

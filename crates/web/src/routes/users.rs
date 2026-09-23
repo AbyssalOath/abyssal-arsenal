@@ -58,12 +58,14 @@ async fn render_list(
         });
     }
 
-    let roles = repo::roles::list(&state.pool)
+    let assignable = crate::common::assignable_roles(&state.pool, ctx).await?;
+    let roles = crate::common::sorted_role_options(&state.pool, assignable)
         .await?
         .into_iter()
-        .map(|r| RoleOption {
-            id: r.id.to_string(),
-            name: r.name,
+        .map(|(id, name, depth)| RoleOption {
+            id: id.to_string(),
+            name,
+            depth,
         })
         .collect();
 
@@ -147,6 +149,16 @@ pub async fn create(
         .await;
     }
 
+    // Server-side re-check, not just an offer-only dropdown: the role
+    // picker only ever *lists* roles within the admin's own delegated
+    // subtree, but a raw POST could still name anything. GitHub issue
+    // #8's "users can't assign roles above their own scope" is enforced
+    // here, not just by what the form happens to render.
+    let assignable = crate::common::assignable_roles(&state.pool, &ctx).await?;
+    if !assignable.iter().any(|r| r.id == form.role_id) {
+        return Err(WebError(AppError::Forbidden));
+    }
+
     if let Err(message) = abyssal_auth::password::validate_strength(&form.password) {
         return render_list(
             &state,
@@ -171,7 +183,8 @@ pub async fn create(
         true,
     )
     .await?;
-    repo::roles::assign_role_to_user(&state.pool, user.id, form.role_id).await?;
+    repo::roles::set_user_role(&state.pool, user.id, form.role_id).await?;
+    let role = repo::roles::find_by_id(&state.pool, form.role_id).await?;
 
     let welcome_email_sent = send_welcome_email(&state, &user, &form.password).await;
 
@@ -184,6 +197,20 @@ pub async fn create(
             })
             .resource(&user.username)
             .metadata(serde_json::json!({ "welcome_email_sent": welcome_email_sent })),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::UserRoleAssigned, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&user.username)
+            .metadata(serde_json::json!({
+                "role": role.map(|r| r.name).unwrap_or_default(),
+                "previous_role": serde_json::Value::Null,
+            })),
     )
     .await?;
 
@@ -257,6 +284,31 @@ async fn render_edit(
 
     let password_prefill = generated_password.clone().unwrap_or_default();
 
+    let assignable = crate::common::assignable_roles(&state.pool, ctx).await?;
+    let current_role = repo::roles::roles_for_user(&state.pool, user_id)
+        .await?
+        .into_iter()
+        .next();
+    // Changing this user's role at all requires: the viewer can assign
+    // roles in the first place, this isn't the viewer editing their own
+    // role (GitHub issue #8's "users can't edit their own role"), and
+    // the user's *current* role is itself within the viewer's delegated
+    // subtree -- otherwise a scoped admin could reach into an account
+    // outside their scope just because they happen to know its URL.
+    let can_change_role = user_id != ctx.user.id
+        && current_role
+            .as_ref()
+            .is_some_and(|r| assignable.iter().any(|a| a.id == r.id));
+    let roles = crate::common::sorted_role_options(&state.pool, assignable)
+        .await?
+        .into_iter()
+        .map(|(id, name, depth)| crate::templates::RoleOption {
+            id: id.to_string(),
+            name,
+            depth,
+        })
+        .collect();
+
     let tpl = crate::templates::UserEditTemplate {
         base,
         user_id: user_id.to_string(),
@@ -265,6 +317,9 @@ async fn render_edit(
         error,
         generated_password,
         password_prefill,
+        roles,
+        current_role_id: current_role.map(|r| r.id.to_string()).unwrap_or_default(),
+        can_change_role,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -371,6 +426,73 @@ pub async fn edit(
     Ok(Redirect::to(&format!(
         "/admin/users?message={}",
         crate::common::urlencoding_encode(&format!("Updated {username}."))
+    ))
+    .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ChangeRoleForm {
+    csrf_token: String,
+    role_id: Uuid,
+}
+
+/// A separate action from `edit` above (same split `reset_password`
+/// already uses) -- GitHub issue #8. Every escalation guard applies here,
+/// not just at user-creation time: a scoped admin can't reach outside
+/// their own delegated subtree, and nobody can change their own role
+/// this way (self-escalation via re-assigning yourself a broader role).
+pub async fn change_role(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<ChangeRoleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if id == ctx.user.id {
+        return Err(WebError(AppError::Forbidden));
+    }
+
+    let target = repo::users::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let previous_role = repo::roles::roles_for_user(&state.pool, id)
+        .await?
+        .into_iter()
+        .next();
+
+    let assignable = crate::common::assignable_roles(&state.pool, &ctx).await?;
+    let target_in_scope = previous_role
+        .as_ref()
+        .is_some_and(|r| assignable.iter().any(|a| a.id == r.id));
+    let new_role_assignable = assignable.iter().any(|r| r.id == form.role_id);
+    if !target_in_scope || !new_role_assignable {
+        return Err(WebError(AppError::Forbidden));
+    }
+
+    repo::roles::set_user_role(&state.pool, id, form.role_id).await?;
+    let new_role = repo::roles::find_by_id(&state.pool, form.role_id).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::UserRoleAssigned, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&target.username)
+            .metadata(serde_json::json!({
+                "role": new_role.map(|r| r.name).unwrap_or_default(),
+                "previous_role": previous_role.map(|r| r.name),
+            })),
+    )
+    .await?;
+
+    Ok(Redirect::to(&format!(
+        "/admin/users?message={}",
+        crate::common::urlencoding_encode(&format!("Updated {}'s role.", target.username))
     ))
     .into_response())
 }

@@ -107,6 +107,107 @@ across the control-plane / agent boundary except through
   everything else about "who can see/use/edit a macro" is ordinary
   ownership plus existing role membership.
 
+## Delegated custom roles (GitHub issue #8)
+
+Every role beyond the five built-in ones is a *custom role*, created by
+whoever holds `roles.manage` -- typically not just Super Admin anymore,
+since a Super Admin can grant `roles.manage` to any built-in or custom
+role to turn it into a delegated admin. The whole feature rests on one
+new column and one rule.
+
+- **`roles.parent_role_id`** (nullable FK to `roles.id`) makes a role
+  either a *root* (`NULL` -- every system role, always) or a *sub-role*
+  of some other role, system or custom. Nesting is capped at
+  `abyssal_core::MAX_ROLE_DEPTH` (3: root, child, grandchild), enforced
+  in the route handlers at create/reparent time, not the schema (MariaDB
+  can't express a bounded-depth tree constraint declaratively). A cycle
+  (reparenting a role under its own descendant) is rejected the same way
+  -- `repo::roles::would_create_cycle`.
+- **Effective permissions are computed at check time, never cached or
+  materialized**: a role's effective set is its own `role_permissions`
+  grants intersected with every ancestor's own grants, all the way to
+  the root (`repo::roles::effective_permissions_for_role`). A root role's
+  effective set is just its own grants -- unchanged from today's
+  behavior for every existing role and user, confirmed by
+  `migrations/0017_custom_roles.sql` giving every pre-existing role
+  `parent_role_id = NULL`. Because nothing is cached, an admin revoking a
+  permission from a parent role takes effect for every descendant's next
+  permission check immediately, with no stale grant anywhere -- the
+  tradeoff (documented, deliberate) is one extra ancestor-chain walk per
+  check rather than a single-row lookup.
+- **A user holds exactly one assigned role at a time** (`user_roles`
+  stays a many-to-many table unchanged, but `repo::roles::set_user_role`
+  always replaces whatever was there). The Add/Edit User "role, then
+  sub-role" picker is a two-step *UI* affordance for choosing that one
+  role -- pick a top-level role, optionally narrow to one of its
+  children -- not two simultaneous assignments; unioning a parent and its
+  own (always-narrower-or-equal) sub-role would just collapse back to the
+  parent's full set and defeat the sub-role's entire purpose. In this
+  app's UI a flat, indented `<select>` stands in for a true cascading
+  pair of selects, since there's no client-side JS to filter the second
+  one -- see "Live-updating progress pages" above for the (unrelated,
+  narrowly-scoped) exceptions to that rule.
+- **Delegation scope, all enforced server-side**
+  (`crates/web/src/common.rs`):
+  - `has_no_ceiling(ctx)` -- true for a user holding every known
+    permission (in practice, Super Admin). Deliberately *not* a
+    hard-coded role-name check, matching "a role is just a named
+    collection of permissions" above; it's the computed stand-in for "no
+    delegation ceiling," used everywhere below instead of asking "is
+    this Super Admin?" by name.
+  - `grantable_permissions(ctx)` -- every permission for a no-ceiling
+    user, or exactly `ctx`'s own current effective permissions
+    otherwise. Every route that accepts a requested permission set
+    (role creation, permission edits) intersects this with the chosen
+    parent's own effective set before accepting anything, so a role's
+    grants always fit under *both* its creator's ceiling and its
+    parent's actual grants.
+  - `ensure_can_manage_role(pool, ctx, role)` -- a no-ceiling user
+    manages any role; otherwise `roles.manage` plus `role` being within
+    the subtree rooted at `ctx`'s own assigned role
+    (`repo::roles::is_within_subtree`), never a system role (those have
+    no parent for a delegated admin's subtree to descend from, so
+    editing one -- unchanged from today -- requires no ceiling), and
+    never the role `ctx` is themselves currently assigned (stops
+    widening your own grants by editing your own role).
+  - `assignable_roles(pool, ctx)` -- a no-ceiling user may assign any
+    role to a user; otherwise, `ctx`'s own role plus every descendant of
+    it (`repo::roles::descendants_of`). Assigning your own unchanged
+    role to someone else is always safe (they get exactly your own
+    capped set, never more), which is what makes onboarding work for a
+    delegated admin at all.
+- **Permission-checklist UI capping.** A role's permission checkboxes
+  only ever show permissions within the *viewer's* cap (their own
+  ceiling intersected with the role's parent); anything the role
+  actually has outside that cap is neither shown nor editable, and is
+  explicitly *preserved* (never silently dropped) when a scoped admin
+  saves a change to the fields they can see --
+  `routes/roles.rs::apply_permissions` unions the submitted
+  (already-capped) set back with whatever fell outside the editor's own
+  cap before writing. The dashboard-arsenals picker is capped
+  differently: by the role's own *effective* permission set (visible to
+  anyone who can manage the role at all), not the viewer's personal
+  ceiling, since "an arsenal never grants access on its own" already
+  applied uniformly before this feature and keeps doing so per role.
+- **Deletion is blocked, not auto-reassigned**, if a role has any users
+  or child roles still assigned to it (documented, deliberate tradeoff:
+  friendlier auto-reassignment risks silently changing what a real
+  account can do). `routes/roles.rs::delete_role`/`delete_role_confirm`
+  report the exact counts in the error.
+- **Audit**: `RoleCreated`, `RoleDeleted`, and `UserRoleAssigned` are new
+  `AuditAction` entries; permission and dashboard-visibility edits keep
+  using the existing `RoleChanged`. Every one of these records a
+  before/after diff in `metadata`, not just the actor and resource.
+- **Known, deliberate scope boundary**: the built-in System
+  Admin/Network Admin/Security-OPSEC Admin roles are *not* seeded with
+  `roles.manage` or `users.create` by this change (seeding built-in role
+  defaults was explicitly out of scope for GitHub issue #8). A Super
+  Admin who wants, say, Network Admin to actually delegate sub-roles and
+  onboard people has to grant it those two permissions through the
+  existing permission editor first -- the delegation *mechanism* works
+  the moment a role holds `roles.manage`, but no built-in role holds it
+  out of the box beyond Super Admin.
+
 ## Audit logging
 
 - `AuditAction` (`crates/audit/src/action.rs`) is a fixed, typed catalog
@@ -949,6 +1050,17 @@ Twelve migrations so far:
   shared with Panopticon's add-switch macro list via a `return_to`
   parameter (`crates/web/src/common.rs::safe_return_to`), since the macro
   itself isn't tied to either page.
+- `0017_custom_roles.sql` -- adds `parent_role_id`, `created_by`,
+  `created_at`/`updated_at` to `roles` (GitHub issue #8: delegated
+  custom sub-roles). Every pre-existing role gets `parent_role_id =
+  NULL` -- a root, exactly its prior behavior -- and `created_by = NULL`
+  (nothing "creates" the five seeded system roles at runtime).
+  `parent_role_id` is `ON DELETE RESTRICT`, not `CASCADE`: this
+  feature's chosen deletion-guard behavior (block, don't
+  auto-reassign) is enforced at the application layer
+  (`routes/roles.rs::delete_role`), but the FK is a second, structural
+  backstop against ever silently orphaning a role's children. See
+  "Delegated custom roles" above for the full model.
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time

@@ -47,6 +47,9 @@ pub enum AuditAction {
     MacroCreated,
     MacroUpdated,
     MacroDeleted,
+    RoleCreated,
+    RoleDeleted,
+    UserRoleAssigned,
 }
 
 impl AuditAction {
@@ -96,6 +99,9 @@ impl AuditAction {
             AuditAction::MacroCreated => "MACRO_CREATED",
             AuditAction::MacroUpdated => "MACRO_UPDATED",
             AuditAction::MacroDeleted => "MACRO_DELETED",
+            AuditAction::RoleCreated => "ROLE_CREATED",
+            AuditAction::RoleDeleted => "ROLE_DELETED",
+            AuditAction::UserRoleAssigned => "USER_ROLE_ASSIGNED",
         }
     }
 
@@ -144,6 +150,9 @@ impl AuditAction {
         AuditAction::MacroCreated,
         AuditAction::MacroUpdated,
         AuditAction::MacroDeleted,
+        AuditAction::RoleCreated,
+        AuditAction::RoleDeleted,
+        AuditAction::UserRoleAssigned,
     ];
 }
 

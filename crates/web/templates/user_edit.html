@@ -23,6 +23,36 @@
 </div>
 
 <div class="card">
+  <h2>Role</h2>
+  {% if can_change_role %}
+  <form method="post" action="/admin/users/{{ user_id }}/role">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="role_id">Role</label>
+    <select id="role_id" name="role_id" required>
+      {% for role in roles %}
+      {% if role.depth == 1 %}
+      <option value="{{ role.id }}" {% if role.id == current_role_id %}selected{% endif %}>{{ role.name }}</option>
+      {% else if role.depth == 2 %}
+      <option value="{{ role.id }}" {% if role.id == current_role_id %}selected{% endif %}>&nbsp;&nbsp;&#8627; {{ role.name }}</option>
+      {% else %}
+      <option value="{{ role.id }}" {% if role.id == current_role_id %}selected{% endif %}>&nbsp;&nbsp;&nbsp;&nbsp;&#8627; {{ role.name }}</option>
+      {% endif %}
+      {% endfor %}
+    </select>
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-10px 0 16px;">
+      Only roles within your own delegated authority are offered.
+    </p>
+    <button type="submit" class="btn-warning">Change role</button>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    You can't change this user's role -- either it's outside your delegated authority, or
+    this is your own account (nobody can change their own role).
+  </p>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Reset password</h2>
   <p style="color:var(--text-muted); margin-top:0;">
     Generates a temporary password, forces a new one to be set at next login, and signs
