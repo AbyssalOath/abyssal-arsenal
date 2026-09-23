@@ -16,7 +16,7 @@ pub mod user;
 pub use crypto::{CryptoError, EncryptionKey};
 pub use error::AppError;
 pub use host::Host;
-pub use macros::{Macro, MacroScope};
+pub use macros::{Macro, MacroScope, MacroType};
 pub use module::ModuleCategory;
 pub use network_device::{
     DeviceType, NetworkDevice, NetworkDevicePort, PanopticonSwitch, SnmpAuthProtocol,

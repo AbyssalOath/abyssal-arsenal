@@ -54,6 +54,36 @@ pub fn require_typed_confirmation(submitted: &str, expected: &str) -> Result<(),
     }
 }
 
+/// Only the owner of a macro, or someone with `Permission::MacrosManageAll`,
+/// may edit/delete it -- a role-mate can use a shared role macro but never
+/// change or remove it. Shared by every macro surface (Grimoire's
+/// scheduled-task macros, Panopticon's/Account's SNMP community-string
+/// macros) since the rule is the same regardless of macro type. Enforced
+/// here (not just by hiding the Edit/Delete links in the template), since
+/// the UI check alone would be bypassable by visiting the URL directly.
+pub fn ensure_can_edit_macro(ctx: &AuthContext, m: &abyssal_core::Macro) -> Result<(), WebError> {
+    if m.owner_user_id == ctx.user.id || ctx.has(Permission::MacrosManageAll) {
+        Ok(())
+    } else {
+        Err(WebError(AppError::Forbidden))
+    }
+}
+
+/// Validates a `return_to` value carried through a macro edit/remove
+/// step (e.g. back to `/arsenals/panopticon/switches` or `/account`,
+/// depending on where the admin came from) before it's ever handed to
+/// `Redirect::to`. Only a same-origin, absolute path is accepted --
+/// anything else (an absolute URL, a protocol-relative `//evil.example`,
+/// an empty string) falls back to `default` rather than becoming an open
+/// redirect.
+pub fn safe_return_to<'a>(return_to: &'a str, default: &'a str) -> &'a str {
+    if return_to.starts_with('/') && !return_to.starts_with("//") {
+        return_to
+    } else {
+        default
+    }
+}
+
 /// Builds the session cookie. Deliberately left without an explicit
 /// `Max-Age`/`Expires`, making it a browser "session cookie" (cleared on
 /// browser close) in addition to the server-side TTL enforced on every
@@ -416,5 +446,85 @@ mod tests {
         let view = workflow_suggested_action_view(matched, host_id);
 
         assert_eq!(view.url, format!("/arsenals/resurrection/{host_id}"));
+    }
+
+    fn ctx_with(user_id: Uuid, permissions: &[Permission]) -> AuthContext {
+        AuthContext {
+            user: abyssal_core::User {
+                id: user_id,
+                username: "test".into(),
+                email: "test@example.com".into(),
+                password_hash: None,
+                auth_provider: abyssal_core::AuthProviderKind::local(),
+                is_active: true,
+                must_change_password: false,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                last_login_at: None,
+                timezone: "UTC".into(),
+            },
+            permissions: permissions
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>(),
+        }
+    }
+
+    fn macro_owned_by(owner_user_id: Uuid) -> abyssal_core::Macro {
+        abyssal_core::Macro {
+            id: Uuid::new_v4(),
+            name: "Nightly backup".into(),
+            owner_user_id,
+            scope: abyssal_core::MacroScope::Personal,
+            role_id: None,
+            macro_type: abyssal_core::MacroType::CronJob,
+            job_name: Some("nightly-backup".into()),
+            schedule: Some("@daily".into()),
+            run_as_user: Some("root".into()),
+            command: Some("/usr/local/bin/backup.sh".into()),
+            secret_value_encrypted: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn owner_can_edit_their_own_macro() {
+        let owner = Uuid::new_v4();
+        let ctx = ctx_with(owner, &[]);
+        assert!(ensure_can_edit_macro(&ctx, &macro_owned_by(owner)).is_ok());
+    }
+
+    #[test]
+    fn non_owner_without_manage_all_cannot_edit() {
+        let ctx = ctx_with(Uuid::new_v4(), &[]);
+        assert!(matches!(
+            ensure_can_edit_macro(&ctx, &macro_owned_by(Uuid::new_v4())),
+            Err(WebError(AppError::Forbidden))
+        ));
+    }
+
+    #[test]
+    fn non_owner_with_manage_all_can_edit() {
+        let ctx = ctx_with(Uuid::new_v4(), &[Permission::MacrosManageAll]);
+        assert!(ensure_can_edit_macro(&ctx, &macro_owned_by(Uuid::new_v4())).is_ok());
+    }
+
+    #[test]
+    fn safe_return_to_accepts_a_same_origin_path() {
+        assert_eq!(
+            safe_return_to("/arsenals/panopticon/switches", "/account"),
+            "/arsenals/panopticon/switches"
+        );
+    }
+
+    #[test]
+    fn safe_return_to_rejects_absolute_and_protocol_relative_urls() {
+        assert_eq!(
+            safe_return_to("https://evil.example/", "/account"),
+            "/account"
+        );
+        assert_eq!(safe_return_to("//evil.example/", "/account"), "/account");
+        assert_eq!(safe_return_to("", "/account"), "/account");
     }
 }

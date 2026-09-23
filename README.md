@@ -83,15 +83,18 @@ arsenal above can use). See [ARCHITECTURE.md](ARCHITECTURE.md) for how an
 arsenal is wired up and [CHANGELOG.md](CHANGELOG.md) for the detail behind
 each one's capabilities.
 
-**Macros**: Grimoire's scheduled-task ("cron job") form lets you save a
-job's name/schedule/user/command as a reusable macro instead of retyping
-it on every host -- "Save as Macro" next to the normal submit button, and
-"Load" on any saved macro to refill the form. A macro is either
-**Personal** (visible only to you) or scoped to one of your **roles**
-(visible to, and usable by, every other member of that role too -- handy
-for a small team that shares the same job templates). Only the macro's
-owner (or an account with the `macros.manage_all` permission) can edit or
-delete it; anyone in a role a role-scoped macro is shared with can use it.
+**Macros**: save a value or form you'd otherwise retype as a reusable
+macro. Grimoire's scheduled-task ("cron job") form lets you save a job's
+name/schedule/user/command; Panopticon's "add managed switch" form lets
+you save an SNMP community string (also manageable directly from your
+own Account page). Either way it's "Save as Macro" next to the
+normal submit button, and "Load" on any saved macro to refill the form. A
+macro is either **Personal** (visible only to you) or scoped to one of
+your **roles** (visible to, and usable by, every other member of that
+role too -- handy for a small team that shares the same templates or
+credentials). Only the macro's owner (or an account with the
+`macros.manage_all` permission) can edit or delete it; anyone in a role a
+role-scoped macro is shared with can use it.
 
 ## Quickstart
 

@@ -1,4 +1,5 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
 {% block title %}Account — Abyssal Arsenal{% endblock %}
 {% block heading %}Account{% endblock %}
 {% block content %}
@@ -53,6 +54,67 @@
       {% endfor %}
     </select>
     <button type="submit" class="btn-secondary">Save timezone</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>{% call macros::icon("network") %} SNMP Community String Macros</h2>
+  <p style="color:var(--text-muted);">
+    Saved community strings for Panopticon's "add managed switch" form, reusable instead of
+    retyped -- "Personal" macros are visible only to you, "Role: X" macros to every member of
+    that role too.
+  </p>
+  {% if let Some(err) = macro_error %}
+  <div class="error-banner">{{ err }}</div>
+  {% endif %}
+  {% if !community_macros.is_empty() %}
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Visible to</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for m in community_macros %}
+      <tr>
+        <td>{{ m.name }}</td>
+        <td>{{ m.scope_label }}</td>
+        <td class="actions">
+          <a class="btn btn-secondary" href="/account/macros/{{ m.id }}/edit?return_to=%2Faccount">Edit</a>
+          <a class="btn btn-danger" href="/account/macros/{{ m.id }}/remove/confirm?return_to=%2Faccount">Delete</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <form method="post" action="/account/macros" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="macro-name">Macro name</label>
+    <input type="text" id="macro-name" name="name" placeholder="e.g. Standard read-only community" required style="max-width:360px;">
+    <label for="macro-value">Community string</label>
+    <input type="password" id="macro-value" name="value" autocomplete="new-password" required style="max-width:360px;">
+    <label>Visible to</label>
+    <div>
+      <label class="inline-radio">
+        <input type="radio" name="scope" value="personal" checked>
+        Just me
+      </label>
+      {% for (role_id, role_name) in macro_roles %}
+      <label class="inline-radio">
+        <input type="radio" name="scope" value="role">
+        My role: {{ role_name }}
+      </label>
+      {% endfor %}
+    </div>
+    {% if !macro_roles.is_empty() %}
+    <label for="macro-role-id">Role (if "My role" selected above)</label>
+    <select id="macro-role-id" name="role_id" style="max-width:360px;">
+      {% for (role_id, role_name) in macro_roles %}
+      <option value="{{ role_id }}">{{ role_name }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <button type="submit" class="btn-secondary">{% call macros::icon("network") %} Add macro</button>
   </form>
 </div>
 

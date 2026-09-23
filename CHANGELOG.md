@@ -24,6 +24,19 @@ for what that means for cloning and updating.
   can edit or delete a macro. Reuses the existing role system end to end
   (no new "team" concept invented) -- see
   [ARCHITECTURE.md](ARCHITECTURE.md#authorization-rbac).
+- **Macros for SNMP community strings**: Panopticon's "add managed
+  switch" form gets the same macro treatment -- a "Community String
+  Macros" list with a "Load" link per saved macro refills the community
+  string field, and "Save Community String as Macro" (next to "Add
+  switch") saves whatever's currently typed without needing a switch
+  added first. Personal vs. role scoping, and edit/delete permissions,
+  work exactly like the scheduled-task macros above -- the two share the
+  same underlying `macros` table and access-control rule, just a
+  different payload. Macros can also be created and managed directly from
+  the Account page (`/account`), independent of adding a switch. Every
+  community-string macro's value is encrypted at rest with the same
+  `ENCRYPTION_KEY` already used for a switch's own stored SNMP
+  credentials.
 - **SNMP version selection for managed switches**: adding or editing a
   switch under Panopticon's managed-switches page now lets you pick SNMP
   v1, v2c, or v3 instead of always polling v2c. v3 adds its own fields

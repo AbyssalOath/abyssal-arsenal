@@ -29,6 +29,31 @@
 
   {% if can_manage %}
     {% if encryption_configured %}
+    {% if !macros.is_empty() %}
+    <div style="margin-top:14px;">
+      <h4 style="margin-bottom:4px;">Community String Macros</h4>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Visible to</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          {% for m in macros %}
+          <tr>
+            <td>{{ m.name }}</td>
+            <td>{{ m.scope_label }}</td>
+            <td class="actions">
+              <a class="btn btn-secondary" href="/arsenals/panopticon/switches?load_macro={{ m.id }}">Load</a>
+              {% if m.can_edit %}
+              <a class="btn btn-secondary" href="/account/macros/{{ m.id }}/edit?return_to=%2Farsenals%2Fpanopticon%2Fswitches">Edit</a>
+              <a class="btn btn-danger" href="/account/macros/{{ m.id }}/remove/confirm?return_to=%2Farsenals%2Fpanopticon%2Fswitches">Delete</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
     <form method="post" action="/arsenals/panopticon/switches" style="margin-top:14px;">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="switch-name">Name</label>
@@ -49,7 +74,32 @@
 
         <div class="snmp-community-fields">
           <label for="switch-community">Community string</label>
-          <input type="password" id="switch-community" name="community" autocomplete="new-password" style="max-width:360px;">
+          <input type="password" id="switch-community" name="community" value="{{ prefilled_community }}" autocomplete="new-password" style="max-width:360px;">
+
+          <label for="switch-community-macro-name">Macro name (optional -- also save this community string as a reusable macro)</label>
+          <input type="text" id="switch-community-macro-name" name="macro_name" placeholder="e.g. Standard read-only community">
+          <label>Visible to (if saving as a macro)</label>
+          <div>
+            <label class="inline-radio">
+              <input type="radio" name="macro_scope" value="personal" checked>
+              Just me
+            </label>
+            {% for (role_id, role_name) in macro_roles %}
+            <label class="inline-radio">
+              <input type="radio" name="macro_scope" value="role">
+              My role: {{ role_name }}
+            </label>
+            {% endfor %}
+          </div>
+          {% if !macro_roles.is_empty() %}
+          <label for="switch-community-macro-role">Role (if "My role" selected above)</label>
+          <select id="switch-community-macro-role" name="macro_role_id">
+            {% for (role_id, role_name) in macro_roles %}
+            <option value="{{ role_id }}">{{ role_name }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <button type="submit" formaction="/arsenals/panopticon/macros" formnovalidate class="btn-secondary">{% call macros::icon("network") %} Save Community String as Macro</button>
         </div>
 
         <div class="snmp-v3-fields">

@@ -42,16 +42,59 @@ impl std::str::FromStr for MacroScope {
     }
 }
 
-/// A saved, reusable Grimoire scheduled-task ("cron job") template --
-/// GitHub issue #7's first (and, for now, only) macro payload: the exact
+/// Which of `Macro`'s two payload shapes is populated. `CronJob` was the
+/// first (GitHub issue #7): a saved Grimoire scheduled-task template.
+/// `CommunityString` is the second: a saved SNMP community string for
+/// Panopticon's "add managed switch" form. Exactly one of the two field
+/// groups on `Macro` is populated, per this discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MacroType {
+    CronJob,
+    CommunityString,
+}
+
+impl MacroType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MacroType::CronJob => "cron_job",
+            MacroType::CommunityString => "community_string",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            MacroType::CronJob => "Scheduled task",
+            MacroType::CommunityString => "SNMP community string",
+        }
+    }
+
+    pub const ALL: &'static [MacroType] = &[MacroType::CronJob, MacroType::CommunityString];
+}
+
+impl std::str::FromStr for MacroType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "cron_job" => Ok(MacroType::CronJob),
+            "community_string" => Ok(MacroType::CommunityString),
+            _ => Err(()),
+        }
+    }
+}
+
+/// A saved, reusable value or action template -- GitHub issue #7. A
+/// `Personal` macro (`scope`) is visible only to `owner_user_id`; a
+/// `Role` macro is visible to every member of `role_id` (`None` iff
+/// `scope` is `Personal`). `macro_type` picks which payload is populated:
+/// `CronJob` uses `job_name`/`schedule`/`run_as_user`/`command` (the exact
 /// fields `AgentOperation::SetCronJob` needs, minus a target host, since a
-/// macro is reused across hosts rather than tied to one. A `Personal`
-/// macro (`scope`) is visible only to `owner_user_id`; a `Role` macro is
-/// visible to every member of `role_id` (`None` iff `scope` is
-/// `Personal`). Extending macros to a second action type later is an
-/// additive change (a discriminator column plus new payload fields), not
-/// something this shape tries to anticipate -- see
-/// `ARCHITECTURE.md#macros` for why v1 is scoped to just this one action.
+/// macro is reused across hosts rather than tied to one);
+/// `CommunityString` uses `secret_value_encrypted` (AES-256-GCM
+/// ciphertext, `abyssal_core::crypto::EncryptionKey` -- same key already
+/// used for a Panopticon switch's own stored SNMP credentials). Extending
+/// macros to a third payload later is the same additive shape this second
+/// one was -- see `ARCHITECTURE.md#authorization-rbac`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Macro {
     pub id: Uuid,
@@ -59,10 +102,12 @@ pub struct Macro {
     pub owner_user_id: Uuid,
     pub scope: MacroScope,
     pub role_id: Option<Uuid>,
-    pub job_name: String,
-    pub schedule: String,
-    pub run_as_user: String,
-    pub command: String,
+    pub macro_type: MacroType,
+    pub job_name: Option<String>,
+    pub schedule: Option<String>,
+    pub run_as_user: Option<String>,
+    pub command: Option<String>,
+    pub secret_value_encrypted: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -82,5 +127,12 @@ mod tests {
     fn rejects_unrecognized_strings() {
         assert!("".parse::<MacroScope>().is_err());
         assert!("everyone".parse::<MacroScope>().is_err());
+    }
+
+    #[test]
+    fn round_trips_every_macro_type_through_as_str_and_from_str() {
+        for t in MacroType::ALL {
+            assert_eq!(t.as_str().parse::<MacroType>().unwrap(), *t);
+        }
     }
 }

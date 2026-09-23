@@ -433,6 +433,20 @@ pub struct StyleGuideTemplate {
     pub base: BaseCtx,
 }
 
+/// One saved SNMP community-string macro, as shown either on the Account
+/// page (the macros this user owns) or on Panopticon's add-switch form
+/// (every macro of this type visible to them -- their own personal ones
+/// plus their roles'). `can_edit` is only true for the macro's owner or
+/// someone with `Permission::MacrosManageAll`. The secret value itself is
+/// never rendered anywhere -- there's no plaintext to show, only
+/// ciphertext is on hand.
+pub struct CommunityMacroRow {
+    pub id: String,
+    pub name: String,
+    pub scope_label: String,
+    pub can_edit: bool,
+}
+
 #[derive(Template)]
 #[template(path = "account.html")]
 pub struct AccountTemplate {
@@ -442,6 +456,32 @@ pub struct AccountTemplate {
     /// keeps redirecting here from every other page until it's resolved.
     pub must_change_password: bool,
     pub password_error: Option<String>,
+    /// SNMP community-string macros this user owns -- see
+    /// `routes/account.rs::add_community_macro`.
+    pub community_macros: Vec<CommunityMacroRow>,
+    /// (role_id, role_name) for every role this user belongs to -- the
+    /// "My role: X" options on the Add Macro scope picker.
+    pub macro_roles: Vec<(String, String)>,
+    pub macro_error: Option<String>,
+}
+
+/// Edit form for one SNMP community-string macro -- see
+/// `routes/account.rs::community_macro_edit_*`. Shared by every surface
+/// that links here (the Account page's own list, Panopticon's add-switch
+/// macro list) via `return_to`, since a community-string macro isn't tied
+/// to any one of them. The secret value is deliberately never prefilled
+/// -- leaving it blank on submit means "keep the existing one".
+#[derive(Template)]
+#[template(path = "account_macro_edit.html")]
+pub struct AccountMacroEditTemplate {
+    pub base: BaseCtx,
+    pub macro_id: String,
+    pub return_to: String,
+    pub name: String,
+    pub is_personal: bool,
+    /// (role_id, role_name, is this macro's current role)
+    pub macro_roles: Vec<(String, String, bool)>,
+    pub error: Option<String>,
 }
 
 #[derive(Template)]
@@ -913,6 +953,17 @@ pub struct PanopticonSwitchesTemplate {
     pub snmp_security_levels: Vec<(&'static str, &'static str, bool)>,
     pub snmp_auth_protocols: Vec<(&'static str, &'static str, bool)>,
     pub snmp_priv_protocols: Vec<(&'static str, &'static str, bool)>,
+    /// SNMP community-string macros visible to this user -- their own
+    /// personal ones plus their roles' -- see
+    /// `routes/panopticon.rs::visible_community_macro_rows`.
+    pub macros: Vec<CommunityMacroRow>,
+    /// (role_id, role_name) for every role this user belongs to -- the
+    /// "My role: X" options on the add-switch form's Save as Macro scope
+    /// picker.
+    pub macro_roles: Vec<(String, String)>,
+    /// Prefills the add-switch form's community-string field -- blank
+    /// unless a `?load_macro=` picked one.
+    pub prefilled_community: String,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,

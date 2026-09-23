@@ -8,8 +8,8 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
 };
 use abyssal_core::{
-    AppError, DeviceType, Permission, SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel,
-    SnmpVersion, TrustState,
+    AppError, DeviceType, MacroScope, Permission, SnmpAuthProtocol, SnmpPrivProtocol,
+    SnmpSecurityLevel, SnmpVersion, TrustState,
 };
 use abyssal_database::repo;
 use abyssal_execution::OperationParams;
@@ -774,13 +774,60 @@ fn validate_snmp_fields(
     }
 }
 
+/// Every SNMP community-string macro visible to this user (their own
+/// personal ones plus their roles') -- Panopticon's add-switch "Load"
+/// list. `can_edit` is only true for the macro's owner or someone with
+/// `Permission::MacrosManageAll`.
+async fn visible_community_macro_rows(
+    state: &AppState,
+    ctx: &AuthContext,
+) -> anyhow::Result<Vec<crate::templates::CommunityMacroRow>> {
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let role_ids: Vec<Uuid> = user_roles.iter().map(|r| r.id).collect();
+    let macros = repo::macros::list_visible_to_user(
+        &state.pool,
+        ctx.user.id,
+        &role_ids,
+        abyssal_core::MacroType::CommunityString,
+    )
+    .await?;
+
+    let all_roles = repo::roles::list(&state.pool).await?;
+    let role_name = |id: Uuid| -> String {
+        all_roles
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| "unknown role".to_string())
+    };
+
+    Ok(macros
+        .into_iter()
+        .map(|m| {
+            let can_edit = m.owner_user_id == ctx.user.id || ctx.has(Permission::MacrosManageAll);
+            let scope_label = match m.scope {
+                MacroScope::Personal => "Personal".to_string(),
+                MacroScope::Role => format!("Role: {}", role_name(m.role_id.unwrap_or_default())),
+            };
+            crate::templates::CommunityMacroRow {
+                id: m.id.to_string(),
+                name: m.name,
+                scope_label,
+                can_edit,
+            }
+        })
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn render_switches(
     state: &AppState,
     jar: &CookieJar,
     ctx: &AuthContext,
     result_label: Option<String>,
     result_output: Option<String>,
-    result_error: Option<String>,
+    mut result_error: Option<String>,
+    load_macro: Option<Uuid>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -793,6 +840,40 @@ async fn render_switches(
         host_context::current(jar),
     )
     .await?;
+
+    let macros = visible_community_macro_rows(state, ctx).await?;
+    let mut prefilled_community = String::new();
+    if let Some(macro_id) = load_macro {
+        let macro_id_str = macro_id.to_string();
+        if macros.iter().any(|m| m.id == macro_id_str) {
+            match (
+                &state.encryption_key,
+                repo::macros::find_by_id(&state.pool, macro_id).await?,
+            ) {
+                (Some(key), Some(m)) => match m.secret_value_encrypted.as_deref() {
+                    Some(encrypted) => match key.decrypt(encrypted) {
+                        Ok(value) => prefilled_community = value.to_string(),
+                        Err(_) => result_error = Some("Could not decrypt that macro.".to_string()),
+                    },
+                    None => result_error = Some("That macro has no stored value.".to_string()),
+                },
+                (None, _) => {
+                    result_error = Some(
+                        "ENCRYPTION_KEY isn't configured -- can't decrypt that macro.".to_string(),
+                    );
+                }
+                (_, None) => result_error = Some("That macro isn't available.".to_string()),
+            }
+        } else {
+            result_error = Some("That macro isn't available.".to_string());
+        }
+    }
+
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let macro_roles = user_roles
+        .into_iter()
+        .map(|r| (r.id.to_string(), r.name))
+        .collect();
 
     let switches = repo::panopticon_switches::list(&state.pool).await?;
     let switch_rows = switches
@@ -841,6 +922,9 @@ async fn render_switches(
             SnmpPrivProtocol::as_str,
             SnmpPrivProtocol::label,
         ),
+        macros,
+        macro_roles,
+        prefilled_community,
         result_label,
         result_output,
         result_error,
@@ -853,13 +937,20 @@ async fn render_switches(
     Ok((jar, tpl).into_response())
 }
 
+#[derive(Deserialize)]
+pub struct SwitchesShowQuery {
+    #[serde(default)]
+    load_macro: Option<Uuid>,
+}
+
 pub async fn switches_show(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
+    Query(q): Query<SwitchesShowQuery>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
-    render_switches(&state, &jar, &ctx, None, None, None).await
+    render_switches(&state, &jar, &ctx, None, None, None, q.load_macro).await
 }
 
 #[derive(Deserialize)]
@@ -998,6 +1089,115 @@ pub async fn switch_add(
                 username: &ctx.user.username,
             })
             .resource(name),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/switches").into_response())
+}
+
+// ---------------------------------------------------------------------
+// SNMP community-string macros -- GitHub issue #7 follow-up. A macro is
+// host-independent (just the community string, no switch it's tied to),
+// so "save as macro" is a second submit button on the same add-switch
+// form (`formaction`/`formmethod`, no client-side JS) rather than a
+// separate page: the browser submits the exact same `community` field
+// value either way. Editing/removing a saved macro is shared with the
+// Account page -- see `routes/account.rs::community_macro_edit_*`.
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SaveCommunityMacroForm {
+    csrf_token: String,
+    community: String,
+    macro_name: String,
+    #[serde(default)]
+    macro_scope: String,
+    #[serde(default)]
+    macro_role_id: String,
+}
+
+pub async fn save_community_macro(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<SaveCommunityMacroForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let Some(encryption_key) = &state.encryption_key else {
+        return Err(WebError(AppError::Validation(
+            "Set ENCRYPTION_KEY in the environment before saving a macro -- its value can't \
+             be stored safely without it."
+                .into(),
+        )));
+    };
+
+    let community = form.community.trim();
+    if community.is_empty() {
+        return Err(WebError(AppError::Validation(
+            "Community string is required.".into(),
+        )));
+    }
+    let macro_name = form.macro_name.trim();
+    if macro_name.is_empty() || macro_name.len() > 128 {
+        return Err(WebError(AppError::Validation(
+            "Macro name must be 1-128 characters.".into(),
+        )));
+    }
+
+    let scope: MacroScope = form
+        .macro_scope
+        .trim()
+        .parse()
+        .unwrap_or(MacroScope::Personal);
+    let role_id = match scope {
+        MacroScope::Personal => None,
+        MacroScope::Role => {
+            let role_id: Uuid = form.macro_role_id.trim().parse().map_err(|_| {
+                WebError(AppError::Validation(
+                    "Pick a role for a role-scoped macro.".into(),
+                ))
+            })?;
+            let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+            if !user_roles.iter().any(|r| r.id == role_id) {
+                return Err(WebError(AppError::Validation(
+                    "You can only save a role macro for a role you belong to.".into(),
+                )));
+            }
+            Some(role_id)
+        }
+    };
+
+    let secret_value_encrypted = encryption_key
+        .encrypt(community)
+        .map_err(|e| WebError(AppError::Validation(format!("Encryption failed: {e}"))))?;
+
+    repo::macros::create(
+        &state.pool,
+        repo::macros::MacroFields {
+            name: macro_name,
+            owner_user_id: ctx.user.id,
+            scope,
+            role_id,
+            macro_type: abyssal_core::MacroType::CommunityString,
+            job_name: None,
+            schedule: None,
+            run_as_user: None,
+            command: None,
+            secret_value_encrypted: Some(&secret_value_encrypted),
+        },
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::MacroCreated, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(macro_name),
     )
     .await?;
 
@@ -1506,10 +1706,28 @@ pub async fn switch_poll_now(
 
     match result {
         Ok(output) => {
-            render_switches(&state, &jar, &ctx, result_label, Some(output.stdout), None).await
+            render_switches(
+                &state,
+                &jar,
+                &ctx,
+                result_label,
+                Some(output.stdout),
+                None,
+                None,
+            )
+            .await
         }
         Err(e) => {
-            render_switches(&state, &jar, &ctx, result_label, None, Some(e.to_string())).await
+            render_switches(
+                &state,
+                &jar,
+                &ctx,
+                result_label,
+                None,
+                Some(e.to_string()),
+                None,
+            )
+            .await
         }
     }
 }

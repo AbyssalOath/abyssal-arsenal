@@ -934,6 +934,21 @@ Twelve migrations so far:
   (`0001_init.sql`) rather than inventing a second role concept. See
   `crates/core/src/macros.rs::Macro` and
   `crates/database/src/repo/macros.rs::list_visible_to_user`.
+- `0016_macro_types.sql` -- adds `macro_type` to `macros` (default
+  `'cron_job'`, so every pre-existing macro keeps its original meaning)
+  and a second payload: `secret_value_encrypted`, a saved SNMP community
+  string for Panopticon's "add managed switch" form (`crates/core/src/
+  macros.rs::MacroType`). The `job_name`/`schedule`/`run_as_user`/
+  `command` columns become nullable, since a community-string macro has
+  none of them, for the same reason `secret_value_encrypted` is nullable
+  for a cron-job macro. `secret_value_encrypted` is AES-256-GCM
+  ciphertext -- the same `ENCRYPTION_KEY` already used for a Panopticon
+  switch's own stored SNMP credentials, not a second secret to manage.
+  Account (`/account`) is where a community-string macro can be created
+  directly, independent of adding a switch; its edit/remove pages are
+  shared with Panopticon's add-switch macro list via a `return_to`
+  parameter (`crates/web/src/common.rs::safe_return_to`), since the macro
+  itself isn't tied to either page.
 
 `crates/database` uses runtime-checked `sqlx::query`/`query_as` (still
 fully parameterized, not string-built SQL) rather than the compile-time

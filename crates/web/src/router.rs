@@ -39,6 +39,23 @@ pub fn build(state: AppState) -> Router {
         .route("/account", get(routes::account::show))
         .route("/account/timezone", post(routes::account::set_timezone))
         .route("/account/password", post(routes::account::change_password))
+        .route(
+            "/account/macros",
+            post(routes::account::add_community_macro),
+        )
+        .route(
+            "/account/macros/:macro_id/edit",
+            get(routes::account::community_macro_edit_form)
+                .post(routes::account::community_macro_edit),
+        )
+        .route(
+            "/account/macros/:macro_id/remove/confirm",
+            get(routes::account::community_macro_remove_confirm),
+        )
+        .route(
+            "/account/macros/:macro_id/remove",
+            post(routes::account::community_macro_remove),
+        )
         .route("/modules/:key/pin", post(routes::dashboard::pin))
         .route("/modules/:key/unpin", post(routes::dashboard::unpin))
         .route("/host-context/select", post(routes::host_context::select))
@@ -1165,6 +1182,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/switches",
             get(routes::panopticon::switches_show).post(routes::panopticon::switch_add),
+        )
+        .route(
+            "/arsenals/panopticon/macros",
+            post(routes::panopticon::save_community_macro),
         )
         .route(
             "/arsenals/panopticon/switches/:id/edit",

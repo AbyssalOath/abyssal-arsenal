@@ -13,7 +13,7 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::common::{maybe_elevate, require_csrf, urlencoding_encode};
+use crate::common::{ensure_can_edit_macro, maybe_elevate, require_csrf, urlencoding_encode};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
@@ -80,7 +80,13 @@ async fn visible_macro_rows(
 ) -> anyhow::Result<Vec<crate::templates::GrimoireMacroRow>> {
     let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
     let role_ids: Vec<Uuid> = user_roles.iter().map(|r| r.id).collect();
-    let macros = repo::macros::list_visible_to_user(&state.pool, ctx.user.id, &role_ids).await?;
+    let macros = repo::macros::list_visible_to_user(
+        &state.pool,
+        ctx.user.id,
+        &role_ids,
+        abyssal_core::MacroType::CronJob,
+    )
+    .await?;
 
     let all_roles = repo::roles::list(&state.pool).await?;
     let role_name = |id: Uuid| -> String {
@@ -103,10 +109,10 @@ async fn visible_macro_rows(
                 id: m.id.to_string(),
                 name: m.name,
                 scope_label,
-                job_name: m.job_name,
-                schedule: m.schedule,
-                run_as_user: m.run_as_user,
-                command: m.command,
+                job_name: m.job_name.unwrap_or_default(),
+                schedule: m.schedule.unwrap_or_default(),
+                run_as_user: m.run_as_user.unwrap_or_default(),
+                command: m.command.unwrap_or_default(),
                 can_edit,
             }
         })
@@ -608,10 +614,12 @@ pub async fn save_cron_macro(
             owner_user_id: ctx.user.id,
             scope,
             role_id,
-            job_name: &job_name,
-            schedule: &form.schedule,
-            run_as_user: &run_as_user,
-            command: &form.command,
+            macro_type: abyssal_core::MacroType::CronJob,
+            job_name: Some(&job_name),
+            schedule: Some(&form.schedule),
+            run_as_user: Some(&run_as_user),
+            command: Some(&form.command),
+            secret_value_encrypted: None,
         },
     )
     .await?;
@@ -688,19 +696,6 @@ async fn render_macro_edit(
     Ok((jar, tpl).into_response())
 }
 
-/// Only the owner, or someone with `MacrosManageAll`, may edit/delete a
-/// macro -- a role-mate can use a shared role macro but never change or
-/// remove it. Enforced here (not just by hiding the Edit/Delete links in
-/// the template), since the UI check alone would be bypassable by
-/// visiting the URL directly.
-fn ensure_can_edit_macro(ctx: &AuthContext, m: &abyssal_core::Macro) -> Result<(), WebError> {
-    if m.owner_user_id == ctx.user.id || ctx.has(Permission::MacrosManageAll) {
-        Ok(())
-    } else {
-        Err(WebError(AppError::Forbidden))
-    }
-}
-
 #[derive(Deserialize)]
 pub struct MacroHostQuery {
     host_id: Uuid,
@@ -727,10 +722,10 @@ pub async fn macro_edit_form(
         m.name,
         m.scope,
         m.role_id,
-        m.job_name,
-        m.schedule,
-        m.run_as_user,
-        m.command,
+        m.job_name.unwrap_or_default(),
+        m.schedule.unwrap_or_default(),
+        m.run_as_user.unwrap_or_default(),
+        m.command.unwrap_or_default(),
         None,
     )
     .await
@@ -850,10 +845,12 @@ pub async fn macro_edit(
             owner_user_id: existing.owner_user_id,
             scope,
             role_id,
-            job_name: &job_name,
-            schedule: &form.schedule,
-            run_as_user: &run_as_user,
-            command: &form.command,
+            macro_type: abyssal_core::MacroType::CronJob,
+            job_name: Some(&job_name),
+            schedule: Some(&form.schedule),
+            run_as_user: Some(&run_as_user),
+            command: Some(&form.command),
+            secret_value_encrypted: None,
         },
     )
     .await?;
@@ -1333,73 +1330,5 @@ pub async fn elevate(
             )
             .await
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use abyssal_core::{AuthProviderKind, Macro, MacroScope, User};
-    use chrono::Utc;
-    use uuid::Uuid;
-
-    use super::*;
-
-    fn ctx_with(user_id: Uuid, permissions: &[Permission]) -> AuthContext {
-        AuthContext {
-            user: User {
-                id: user_id,
-                username: "test".into(),
-                email: "test@example.com".into(),
-                password_hash: None,
-                auth_provider: AuthProviderKind::local(),
-                is_active: true,
-                must_change_password: false,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                last_login_at: None,
-                timezone: "UTC".into(),
-            },
-            permissions: permissions.iter().copied().collect::<HashSet<_>>(),
-        }
-    }
-
-    fn macro_owned_by(owner_user_id: Uuid) -> Macro {
-        Macro {
-            id: Uuid::new_v4(),
-            name: "Nightly backup".into(),
-            owner_user_id,
-            scope: MacroScope::Personal,
-            role_id: None,
-            job_name: "nightly-backup".into(),
-            schedule: "@daily".into(),
-            run_as_user: "root".into(),
-            command: "/usr/local/bin/backup.sh".into(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-
-    #[test]
-    fn owner_can_edit_their_own_macro() {
-        let owner = Uuid::new_v4();
-        let ctx = ctx_with(owner, &[]);
-        assert!(ensure_can_edit_macro(&ctx, &macro_owned_by(owner)).is_ok());
-    }
-
-    #[test]
-    fn non_owner_without_manage_all_cannot_edit() {
-        let ctx = ctx_with(Uuid::new_v4(), &[]);
-        assert!(matches!(
-            ensure_can_edit_macro(&ctx, &macro_owned_by(Uuid::new_v4())),
-            Err(WebError(AppError::Forbidden))
-        ));
-    }
-
-    #[test]
-    fn non_owner_with_manage_all_can_edit() {
-        let ctx = ctx_with(Uuid::new_v4(), &[Permission::MacrosManageAll]);
-        assert!(ensure_can_edit_macro(&ctx, &macro_owned_by(Uuid::new_v4())).is_ok());
     }
 }
