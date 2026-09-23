@@ -352,6 +352,26 @@ pub struct ModuleVisibilityRow {
     pub visible: bool,
 }
 
+/// Lightweight per-role summary -- the roles list page's cards, and a
+/// role detail page's list of its own children, both just need
+/// name/description/counts and a link, never the full permission/
+/// visibility computation `RoleDetail` below carries. Kept separate so
+/// listing every role in the system doesn't run a permissions-capping
+/// and module-visibility query for each one just to render a summary
+/// card that immediately links elsewhere for the real editing UI.
+pub struct RoleSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub is_system: bool,
+    /// 1 for a root role, 2 for its direct child, 3 for a grandchild --
+    /// drives the indentation in the hierarchy list.
+    pub depth: u8,
+    pub parent_name: Option<String>,
+    pub user_count: i64,
+    pub child_count: i64,
+}
+
 pub struct RoleDetail {
     pub id: String,
     pub name: String,
@@ -361,11 +381,14 @@ pub struct RoleDetail {
     /// drives the indentation in the hierarchy list.
     pub depth: u8,
     pub parent_name: Option<String>,
+    /// Paired with `parent_name` so the detail page can link up to the
+    /// parent role's own page -- `None` exactly when `parent_name` is.
+    pub parent_id: Option<String>,
     /// Only the permissions the *viewing* user is allowed to grant on
     /// this role are included -- see `common::grantable_permissions` and
-    /// `RoleDetail`'s construction in `routes/roles.rs::list`. The rest
-    /// exist on the role (or not) but are neither shown nor editable by
-    /// this viewer.
+    /// `RoleDetail`'s construction in `routes/roles.rs::build_role_detail`.
+    /// The rest exist on the role (or not) but are neither shown nor
+    /// editable by this viewer.
     pub permissions: Vec<PermissionRow>,
     /// How many of this role's actual permissions were left out of
     /// `permissions` above because the viewer isn't allowed to grant (or
@@ -380,7 +403,10 @@ pub struct RoleDetail {
     pub visibility_customized: bool,
     /// Whether the viewing user may edit/delete this role at all -- see
     /// `common::ensure_can_manage_role`. `false` hides every editing
-    /// control for this role (view-only card).
+    /// control for this role (view-only card) -- note this can still be
+    /// `true` for a system role, since a no-ceiling (Super Admin) viewer
+    /// may always adjust a system role's permissions; only rename/delete
+    /// stay hard-blocked for system roles regardless of `can_manage`.
     pub can_manage: bool,
     pub user_count: i64,
     pub child_count: i64,
@@ -390,17 +416,39 @@ pub struct RoleDetail {
 #[template(path = "roles.html")]
 pub struct RolesTemplate {
     pub base: BaseCtx,
-    pub roles: Vec<RoleDetail>,
-    /// Roles the viewing user may create a new role/sub-role under --
-    /// see `common::assignable_roles`. Empty (and the create-role form
-    /// hidden) for a `roles.manage` holder with no assignable parent,
-    /// which shouldn't normally happen since a scoped admin always has at
-    /// least their own role.
-    pub creatable_parents: Vec<RoleOption>,
+    pub roles: Vec<RoleSummary>,
     /// Whether the viewing user has no delegation ceiling (Super Admin)
     /// -- only they may create a brand new root role with no parent at
-    /// all; everyone else must nest under `creatable_parents`.
+    /// all; shown as a small form directly on this list page, since a
+    /// root role (by definition) has no parent role's own page for that
+    /// form to live on instead. Every other role's "create a sub-role
+    /// here" form lives on that role's own detail page
+    /// (`RoleDetailPageTemplate`) -- see GitHub issue #8 follow-up.
     pub can_create_root: bool,
+    pub create_error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "role_detail.html")]
+pub struct RoleDetailPageTemplate {
+    pub base: BaseCtx,
+    pub role: RoleDetail,
+    pub children: Vec<RoleSummary>,
+    /// Whether this role may serve as the parent of a new sub-role the
+    /// viewing user creates -- see `common::assignable_roles` and
+    /// `abyssal_core::MAX_ROLE_DEPTH`. Independent of `role.can_manage`:
+    /// a user's own role is always in their `assignable_roles` (they may
+    /// create a sub-role under it) even though they can never manage
+    /// (edit permissions on) their own role directly -- exactly how
+    /// delegation bootstraps.
+    pub can_create_sub_role: bool,
+    /// Every permission the viewer could grant a brand-new sub-role
+    /// created directly under `role` right now -- `grantable_permissions
+    /// (ctx) ∩ role`'s own effective permissions, the exact cap
+    /// `routes::roles::create_role` itself enforces server-side. Always
+    /// unchecked (`granted: false`) since nothing has been decided yet;
+    /// left empty when `can_create_sub_role` is false.
+    pub sub_role_permission_options: Vec<PermissionRow>,
     pub create_error: Option<String>,
 }
 

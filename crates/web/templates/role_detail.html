@@ -1,0 +1,178 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}{{ role.name }} — Roles — Abyssal Arsenal{% endblock %}
+{% block heading %}{{ role.name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/admin/roles">&larr; All roles</a></p>
+
+{% if let Some(err) = create_error %}
+<div class="error-banner">{{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>
+    {{ role.name }}
+    {% if role.is_system %}<span class="badge badge-muted">System role</span>
+    {% else %}<span class="badge badge-success">Custom</span>{% endif %}
+  </h2>
+  <p style="color:var(--text-muted);">
+    {{ role.description }}
+    {% if let Some(parent) = role.parent_name %}
+    <br>Sub-role of
+    {% if let Some(parent_id) = role.parent_id %}<a href="/admin/roles/{{ parent_id }}">{{ parent }}</a>
+    {% else %}<strong>{{ parent }}</strong>{% endif %}.
+    {% endif %}
+    <br>{{ role.user_count }} user(s), {{ role.child_count }} child role(s) assigned.
+  </p>
+
+  {% if role.can_manage && !role.is_system %}
+  <details>
+    <summary>Rename / re-describe</summary>
+    <form method="post" action="/admin/roles/{{ role.id }}/edit" style="margin-top:10px;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <input type="hidden" name="parent_role_id" value="{% if let Some(parent_id) = role.parent_id %}{{ parent_id }}{% endif %}">
+      <label for="edit-name">Name</label>
+      <input type="text" id="edit-name" name="name" value="{{ role.name }}" required style="max-width:360px;">
+      <label for="edit-description">Description</label>
+      <input type="text" id="edit-description" name="description" value="{{ role.description }}" style="max-width:480px;">
+      <button type="submit" class="btn-secondary" style="margin-top:10px;">Save</button>
+    </form>
+  </details>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Permissions</h2>
+  <form method="post" action="/admin/roles/{{ role.id }}/permissions">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    {% if role.can_manage %}
+    <div class="actions" style="margin-bottom:10px;">
+      <button type="button" class="btn-secondary" data-select-all="perm-grid">Select all</button>
+      <button type="button" class="btn-secondary" data-deselect-all="perm-grid">Deselect all</button>
+    </div>
+    <div class="action-grid" id="perm-grid">
+      {% for perm in role.permissions %}
+      <label style="display:flex; align-items:center; gap:8px; background:var(--surface-raised); padding:8px 10px; border-radius:5px; border:1px solid var(--border); margin-bottom:0;">
+        <input type="checkbox" name="permissions" value="{{ perm.key }}" {% if perm.granted %}checked{% endif %} style="width:auto; margin:0;">
+        {{ perm.key }}
+      </label>
+      {% endfor %}
+    </div>
+    {% if role.hidden_permission_count > 0 %}
+    <p style="color:var(--text-muted); font-size:0.8rem;">
+      {{ role.hidden_permission_count }} permission(s) on this role aren't shown -- they're
+      outside what you can grant, and are left untouched by anything you save here.
+    </p>
+    {% endif %}
+    {% if role.parent_name.is_some() %}
+    <p style="color:var(--text-muted); font-size:0.8rem;">
+      A permission checked here only actually takes effect if every ancestor role also has
+      it.
+    </p>
+    {% endif %}
+    <button type="submit" class="btn-warning" style="margin-top:14px;">Review &amp; save permissions</button>
+    {% else %}
+    <p style="color:var(--text-muted);">You can't edit this role's permissions.</p>
+    {% endif %}
+  </form>
+</div>
+
+<div class="card">
+  <h2>Dashboard arsenals</h2>
+  <p style="color:var(--text-muted);">
+    Which arsenals members of this role see on the dashboard. Never grants
+    access on its own -- an arsenal checked here still only actually shows
+    if the role also has the permission it requires above.
+    {% if !role.visibility_customized %}
+    <span class="badge badge-muted">Not customized -- showing everything permissions currently allow</span>
+    {% endif %}
+  </p>
+  {% if role.can_manage %}
+  <form method="post" action="/admin/roles/{{ role.id }}/visibility">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div class="actions" style="margin-bottom:10px;">
+      <button type="button" class="btn-secondary" data-select-all="visibility-grid">Select all</button>
+      <button type="button" class="btn-secondary" data-deselect-all="visibility-grid">Deselect all</button>
+    </div>
+    <div class="action-grid" id="visibility-grid">
+      {% for m in role.module_visibility %}
+      <label style="display:flex; align-items:center; gap:8px; background:var(--surface-raised); padding:8px 10px; border-radius:5px; border:1px solid var(--border); margin-bottom:0;">
+        <input type="checkbox" name="modules" value="{{ m.key }}" {% if m.visible %}checked{% endif %} style="width:auto; margin:0;">
+        {{ m.display_name }}
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn-secondary" style="margin-top:14px;">Save dashboard arsenals</button>
+  </form>
+  {% endif %}
+
+  {% if role.can_manage && !role.is_system %}
+  <div class="actions" style="margin-top:14px;">
+    <a class="btn btn-danger" href="/admin/roles/{{ role.id }}/remove/confirm">Delete role&hellip;</a>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Sub-roles</h2>
+  {% if children.is_empty() %}
+  <p style="color:var(--text-muted);">No sub-roles yet.</p>
+  {% else %}
+  <div class="action-grid">
+    {% for child in children %}
+    <a href="/admin/roles/{{ child.id }}"
+       style="display:block; text-decoration:none; color:inherit; background:var(--surface-raised);
+              padding:12px 14px; border-radius:6px; border:1px solid var(--border);">
+      <strong>{{ child.name }}</strong>
+      {% if child.is_system %}<span class="badge badge-muted">System role</span>
+      {% else %}<span class="badge badge-success">Custom</span>{% endif %}
+      <p style="color:var(--text-muted); margin:6px 0 0;">
+        {{ child.description }}
+        <br>{{ child.user_count }} user(s), {{ child.child_count }} child role(s) assigned.
+      </p>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if can_create_sub_role %}
+<div class="card">
+  <h2>Create a sub-role under {{ role.name }}</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    A sub-role's permissions can only be a subset of {{ role.name }}'s -- and only permissions
+    you yourself currently hold can be granted. Delegation, never escalation. Nothing is
+    checked by default; pick exactly what this sub-role needs, or use Select all and remove
+    what it doesn't.
+  </p>
+  <form method="post" action="/admin/roles">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="parent_role_id" value="{{ role.id }}">
+    <label for="new-subrole-name">Name</label>
+    <input type="text" id="new-subrole-name" name="name" required style="max-width:360px;">
+    <label for="new-subrole-description">Description</label>
+    <input type="text" id="new-subrole-description" name="description" style="max-width:480px;">
+    {% if !sub_role_permission_options.is_empty() %}
+    <label style="margin-top:14px;">Permissions</label>
+    <div class="actions" style="margin-bottom:10px;">
+      <button type="button" class="btn-secondary" data-select-all="new-subrole-perm-grid">Select all</button>
+      <button type="button" class="btn-secondary" data-deselect-all="new-subrole-perm-grid">Deselect all</button>
+    </div>
+    <div class="action-grid" id="new-subrole-perm-grid">
+      {% for perm in sub_role_permission_options %}
+      <label style="display:flex; align-items:center; gap:8px; background:var(--surface-raised); padding:8px 10px; border-radius:5px; border:1px solid var(--border); margin-bottom:0;">
+        <input type="checkbox" name="permissions" value="{{ perm.key }}" style="width:auto; margin:0;">
+        {{ perm.key }}
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <button type="submit" class="btn-warning" style="margin-top:14px;">Create sub-role</button>
+  </form>
+</div>
+{% endif %}
+
+<script src="/static/role_checkboxes.js" defer></script>
+
+{% endblock %}

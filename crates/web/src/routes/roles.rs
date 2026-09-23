@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 use crate::common::{
     assignable_roles, ensure_can_manage_role, grantable_permissions, has_no_ceiling, require_csrf,
-    sorted_role_options,
 };
 use crate::csrf;
 use crate::error::WebError;
@@ -22,8 +21,8 @@ use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{
-    BaseCtx, ConfirmTemplate, ModuleVisibilityRow, PermissionRow, RoleDetail, RoleOption,
-    RolesTemplate,
+    BaseCtx, ConfirmTemplate, ModuleVisibilityRow, PermissionRow, RoleDetail,
+    RoleDetailPageTemplate, RoleSummary, RolesTemplate,
 };
 use crate::theme;
 
@@ -52,6 +51,114 @@ async fn viewer_capped_permissions(
     Ok((cap, own, hidden_count))
 }
 
+/// Cheap per-role summary for the list page's cards and a detail page's
+/// list of its own children -- neither needs the permission-capping or
+/// module-visibility computation `build_role_detail` below does, just
+/// counts and a name to link from.
+async fn role_summary(
+    state: &AppState,
+    role: &abyssal_core::Role,
+    depth: u8,
+    parent_name: Option<String>,
+) -> anyhow::Result<RoleSummary> {
+    let user_count = repo::roles::user_count(&state.pool, role.id).await?;
+    let child_count = repo::roles::children_of(&state.pool, role.id).await?.len() as i64;
+    Ok(RoleSummary {
+        id: role.id.to_string(),
+        name: role.name.clone(),
+        description: role.description.clone(),
+        is_system: role.is_system,
+        depth,
+        parent_name,
+        user_count,
+        child_count,
+    })
+}
+
+/// The full detail view of a single role from this *viewer*'s
+/// perspective: its permission grid (capped to what the viewer may
+/// grant -- see `viewer_capped_permissions`), dashboard-visibility grid,
+/// and whether the viewer may manage it at all. Shared by the role
+/// detail page and (historically) the list page before it was split into
+/// per-role pages.
+async fn build_role_detail(
+    state: &AppState,
+    ctx: &AuthContext,
+    role: &abyssal_core::Role,
+) -> Result<RoleDetail, WebError> {
+    let depth = repo::roles::depth_of(&state.pool, role.id).await?;
+    let parent = match role.parent_role_id {
+        Some(parent_id) => repo::roles::find_by_id(&state.pool, parent_id).await?,
+        None => None,
+    };
+    let parent_name = parent.as_ref().map(|r| r.name.clone());
+    let parent_id = parent.as_ref().map(|r| r.id.to_string());
+
+    let (cap, own, hidden_permission_count) = viewer_capped_permissions(state, ctx, role).await?;
+    // Only permissions within the viewer's own cap are shown at all
+    // (checked if the role already has them, unchecked if they're
+    // grantable but not yet given) -- anything the role has outside
+    // that cap is summarized by `hidden_permission_count` instead of
+    // rendered as an uneditable/confusing row.
+    let permissions: Vec<PermissionRow> = Permission::ALL
+        .iter()
+        .filter(|p| cap.contains(p))
+        .map(|p| PermissionRow {
+            key: p.as_key().to_string(),
+            granted: own.contains(p),
+        })
+        .collect();
+
+    // Dashboard visibility is capped by the role's own *effective*
+    // (ancestor-capped) permissions -- never the viewer's personal
+    // ceiling, since anyone allowed to manage this role can already
+    // see its full effective grant set on this same page.
+    let all_modules = state.modules.list(&state.pool).await?;
+    let role_effective = repo::roles::effective_permissions_for_role(&state.pool, role.id).await?;
+    let customization =
+        repo::role_module_visibility::visibility_for_role(&state.pool, role.id).await?;
+    let module_visibility = all_modules
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| {
+            let has_permission = m.view_permissions.is_empty()
+                || m.view_permissions
+                    .iter()
+                    .any(|p| role_effective.contains(p));
+            let visible = match &customization {
+                Some(set) => set.contains(m.key),
+                None => has_permission,
+            };
+            ModuleVisibilityRow {
+                key: m.key,
+                display_name: m.display_name,
+                visible,
+            }
+        })
+        .collect();
+
+    let can_manage = ensure_can_manage_role(&state.pool, ctx, role).await.is_ok();
+    let user_count = repo::roles::user_count(&state.pool, role.id).await?;
+    let child_count = repo::roles::children_of(&state.pool, role.id).await?.len() as i64;
+
+    Ok(RoleDetail {
+        id: role.id.to_string(),
+        name: role.name.clone(),
+        description: role.description.clone(),
+        is_system: role.is_system,
+        depth,
+        parent_name,
+        parent_id,
+        permissions,
+        hidden_permission_count,
+        module_visibility,
+        visibility_customized: customization.is_some(),
+        can_manage,
+        user_count,
+        child_count,
+    })
+}
+
 async fn render_roles_list(
     state: &AppState,
     jar: &CookieJar,
@@ -70,9 +177,7 @@ async fn render_roles_list(
     )
     .await?;
 
-    let all_modules = state.modules.list(&state.pool).await?;
     let all_roles = repo::roles::list(&state.pool).await?;
-
     let mut roles = Vec::new();
     for role in &all_roles {
         let depth = repo::roles::depth_of(&state.pool, role.id).await?;
@@ -82,88 +187,13 @@ async fn render_roles_list(
                 .map(|r| r.name),
             None => None,
         };
-
-        let (cap, own, hidden_permission_count) =
-            viewer_capped_permissions(state, ctx, role).await?;
-        // Only permissions within the viewer's own cap are shown at all
-        // (checked if the role already has them, unchecked if they're
-        // grantable but not yet given) -- anything the role has outside
-        // that cap is summarized by `hidden_permission_count` instead of
-        // rendered as an uneditable/confusing row.
-        let permissions: Vec<PermissionRow> = Permission::ALL
-            .iter()
-            .filter(|p| cap.contains(p))
-            .map(|p| PermissionRow {
-                key: p.as_key().to_string(),
-                granted: own.contains(p),
-            })
-            .collect();
-
-        // Dashboard visibility is capped by the role's own *effective*
-        // (ancestor-capped) permissions -- never the viewer's personal
-        // ceiling, since anyone allowed to manage this role can already
-        // see its full effective grant set on this same page.
-        let role_effective =
-            repo::roles::effective_permissions_for_role(&state.pool, role.id).await?;
-        let customization =
-            repo::role_module_visibility::visibility_for_role(&state.pool, role.id).await?;
-        let module_visibility = all_modules
-            .iter()
-            .filter(|m| m.enabled)
-            .map(|m| {
-                let has_permission = m.view_permissions.is_empty()
-                    || m.view_permissions
-                        .iter()
-                        .any(|p| role_effective.contains(p));
-                let visible = match &customization {
-                    Some(set) => set.contains(m.key),
-                    None => has_permission,
-                };
-                ModuleVisibilityRow {
-                    key: m.key,
-                    display_name: m.display_name,
-                    visible,
-                }
-            })
-            .collect();
-
-        let can_manage = ensure_can_manage_role(&state.pool, ctx, role).await.is_ok();
-        let user_count = repo::roles::user_count(&state.pool, role.id).await?;
-        let child_count = repo::roles::children_of(&state.pool, role.id).await?.len() as i64;
-
-        roles.push(RoleDetail {
-            id: role.id.to_string(),
-            name: role.name.clone(),
-            description: role.description.clone(),
-            is_system: role.is_system,
-            depth,
-            parent_name,
-            permissions,
-            hidden_permission_count,
-            module_visibility,
-            visibility_customized: customization.is_some(),
-            can_manage,
-            user_count,
-            child_count,
-        });
+        roles.push(role_summary(state, role, depth, parent_name).await?);
     }
     roles.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.name.cmp(&b.name)));
-
-    let creatable = assignable_roles(&state.pool, ctx).await?;
-    let creatable_parents = sorted_role_options(&state.pool, creatable)
-        .await?
-        .into_iter()
-        .map(|(id, name, depth)| RoleOption {
-            id: id.to_string(),
-            name,
-            depth,
-        })
-        .collect();
 
     let tpl = RolesTemplate {
         base,
         roles,
-        creatable_parents,
         can_create_root: has_no_ceiling(ctx),
         create_error,
     };
@@ -175,13 +205,142 @@ async fn render_roles_list(
     Ok((jar, tpl).into_response())
 }
 
+/// One role's own page: its permission/visibility grids (from
+/// `build_role_detail`), its child roles (each linking to their own page
+/// in turn), and -- if `role` is within the viewer's delegation scope and
+/// under `MAX_ROLE_DEPTH` -- a form to create a new sub-role directly
+/// under it. This is where "Create role" now lives for every role except
+/// a brand new top-level one (which has no parent page to live on, so it
+/// stays on the list page -- see `RolesTemplate`).
+async fn render_role_detail(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    role: &abyssal_core::Role,
+    create_error: Option<String>,
+) -> Result<Response, WebError> {
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
+
+    let detail = build_role_detail(state, ctx, role).await?;
+
+    let depth = repo::roles::depth_of(&state.pool, role.id).await?;
+    let mut children = Vec::new();
+    for child in repo::roles::children_of(&state.pool, role.id).await? {
+        children.push(role_summary(state, &child, depth + 1, Some(role.name.clone())).await?);
+    }
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let assignable = assignable_roles(&state.pool, ctx).await?;
+    let can_create_sub_role =
+        assignable.iter().any(|r| r.id == role.id) && depth < abyssal_core::MAX_ROLE_DEPTH;
+
+    // Exactly the cap `create_role` itself enforces for a sub-role
+    // created under `role`: the viewer's own ceiling, further narrowed to
+    // what `role` itself effectively has (a sub-role's grants must fit
+    // under its parent, not just under its creator).
+    let sub_role_permission_options: Vec<PermissionRow> = if can_create_sub_role {
+        let role_effective =
+            repo::roles::effective_permissions_for_role(&state.pool, role.id).await?;
+        let cap: HashSet<Permission> = grantable_permissions(ctx)
+            .intersection(&role_effective)
+            .copied()
+            .collect();
+        Permission::ALL
+            .iter()
+            .filter(|p| cap.contains(p))
+            .map(|p| PermissionRow {
+                key: p.as_key().to_string(),
+                granted: false,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let tpl = RoleDetailPageTemplate {
+        base,
+        role: detail,
+        children,
+        can_create_sub_role,
+        sub_role_permission_options,
+        create_error,
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+/// Renders whichever page a `create_role` validation failure should
+/// reappear on: the role named by `parent_role_id_raw`'s own detail page
+/// if it's a real, existing role (a sub-role creation attempt), or the
+/// list page otherwise (a top-level-role creation attempt, or a
+/// malformed/empty parent). Mirrors, but doesn't replace, `create_role`'s
+/// own server-side validation of that same value -- this only decides
+/// where to show the error, never whether the request is allowed.
+async fn render_source_page(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    parent_role_id_raw: &str,
+    error: String,
+) -> Result<Response, WebError> {
+    let parent_role_id_raw = parent_role_id_raw.trim();
+    if !parent_role_id_raw.is_empty()
+        && let Ok(parent_id) = parent_role_id_raw.parse::<Uuid>()
+        && let Some(parent_role) = repo::roles::find_by_id(&state.pool, parent_id).await?
+    {
+        return render_role_detail(state, jar, ctx, &parent_role, Some(error)).await;
+    }
+    render_roles_list(state, jar, ctx, Some(error)).await
+}
+
 pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::RolesManage)?;
+    // A no-ceiling (Super Admin) viewer always sees the full list --
+    // they manage every role in the system, so there's no single "their
+    // own role" to jump to. Everyone else lands on their own role's page
+    // directly (GitHub issue #8 follow-up: "when a Network Admin clicks
+    // Roles, it takes them to the Network Admin page"), unless they hold
+    // more than one role, in which case there's no single unambiguous
+    // target and the full (delegation-scoped by the template's own
+    // `can_manage` checks) list is the safer fallback.
+    if !has_no_ceiling(&ctx) {
+        let own_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+        if let [only_role] = own_roles.as_slice() {
+            return Ok(Redirect::to(&format!("/admin/roles/{}", only_role.id)).into_response());
+        }
+    }
     render_roles_list(&state, &jar, &ctx, None).await
+}
+
+pub async fn detail(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::RolesManage)?;
+    let role = repo::roles::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    render_role_detail(&state, &jar, &ctx, &role, None).await
 }
 
 /// Creates a custom role (GitHub issue #8). Parses the raw body by hand
@@ -218,7 +377,8 @@ pub async fn create_role(
 
     macro_rules! fail {
         ($msg:expr) => {
-            return render_roles_list(&state, &jar, &ctx, Some($msg.to_string())).await
+            return render_source_page(&state, &jar, &ctx, &parent_role_id_raw, $msg.to_string())
+                .await
         };
     }
 
@@ -316,7 +476,7 @@ pub async fn create_role(
     )
     .await?;
 
-    Ok(Redirect::to("/admin/roles").into_response())
+    Ok(Redirect::to(&format!("/admin/roles/{}", role.id)).into_response())
 }
 
 #[derive(Deserialize)]
@@ -354,19 +514,21 @@ pub async fn edit_role(
     let name = form.name.trim().to_string();
     let description = form.description.trim().to_string();
     if name.is_empty() || name.len() > 100 {
-        return render_roles_list(
+        return render_role_detail(
             &state,
             &jar,
             &ctx,
+            &role,
             Some("Role name must be 1-100 characters.".to_string()),
         )
         .await;
     }
     if description.len() > 500 {
-        return render_roles_list(
+        return render_role_detail(
             &state,
             &jar,
             &ctx,
+            &role,
             Some("Description must be 500 characters or fewer.".to_string()),
         )
         .await;
@@ -374,10 +536,11 @@ pub async fn edit_role(
     if let Some(existing) = repo::roles::find_by_name(&state.pool, &name).await?
         && existing.id != id
     {
-        return render_roles_list(
+        return render_role_detail(
             &state,
             &jar,
             &ctx,
+            &role,
             Some("A role named that already exists.".to_string()),
         )
         .await;
@@ -390,10 +553,11 @@ pub async fn edit_role(
         match parent_role_id_raw.parse::<Uuid>() {
             Ok(parent_id) => Some(parent_id),
             Err(_) => {
-                return render_roles_list(
+                return render_role_detail(
                     &state,
                     &jar,
                     &ctx,
+                    &role,
                     Some("Not a recognized parent role.".to_string()),
                 )
                 .await;
@@ -410,10 +574,11 @@ pub async fn edit_role(
             }
             Some(new_parent_id) => {
                 if repo::roles::would_create_cycle(&state.pool, role.id, new_parent_id).await? {
-                    return render_roles_list(
+                    return render_role_detail(
                         &state,
                         &jar,
                         &ctx,
+                        &role,
                         Some("That would create a cycle in the role hierarchy.".to_string()),
                     )
                     .await;
@@ -424,10 +589,11 @@ pub async fn edit_role(
                 }
                 let parent_depth = repo::roles::depth_of(&state.pool, new_parent_id).await?;
                 if parent_depth + 1 > abyssal_core::MAX_ROLE_DEPTH {
-                    return render_roles_list(
+                    return render_role_detail(
                         &state,
                         &jar,
                         &ctx,
+                        &role,
                         Some(format!(
                             "That parent is already at the maximum nesting depth ({}).",
                             abyssal_core::MAX_ROLE_DEPTH
@@ -458,7 +624,7 @@ pub async fn edit_role(
     )
     .await?;
 
-    Ok(Redirect::to("/admin/roles").into_response())
+    Ok(Redirect::to(&format!("/admin/roles/{id}")).into_response())
 }
 
 pub async fn delete_role_confirm(
@@ -507,7 +673,7 @@ pub async fn delete_role_confirm(
             role.name
         ),
         action_url: format!("/admin/roles/{id}/remove"),
-        cancel_url: "/admin/roles".to_string(),
+        cancel_url: format!("/admin/roles/{id}"),
         escalate_host_id: None,
         type_to_confirm: Some(crate::templates::TypeToConfirm {
             label: "role name".to_string(),
@@ -690,7 +856,7 @@ pub async fn update_permissions(
             final_set.len()
         ),
         action_url: format!("/admin/roles/{id}/permissions/apply"),
-        cancel_url: "/admin/roles".to_string(),
+        cancel_url: format!("/admin/roles/{id}"),
         escalate_host_id: None,
         type_to_confirm: None,
         extra_hidden_fields: vec![("permissions_json".to_string(), permissions_json)],
@@ -793,7 +959,7 @@ pub async fn apply_permissions(
     )
     .await?;
 
-    Ok(Redirect::to("/admin/roles").into_response())
+    Ok(Redirect::to(&format!("/admin/roles/{id}")).into_response())
 }
 
 /// Saves a role's dashboard-visibility customization -- a single step, no
@@ -862,5 +1028,5 @@ pub async fn update_visibility(
     )
     .await?;
 
-    Ok(Redirect::to("/admin/roles").into_response())
+    Ok(Redirect::to(&format!("/admin/roles/{id}")).into_response())
 }

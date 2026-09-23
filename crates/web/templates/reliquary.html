@@ -3,6 +3,15 @@
 {% block heading %}Reliquary — Backups{% endblock %}
 {% block content %}
 
+<div class="card">
+  <h2>Application Data</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Back up and restore this control plane's own database and configuration -- separate from
+    the per-host backups below, which back up a managed host's own filesystem via its agent.
+  </p>
+  <a class="btn btn-warning" href="/arsenals/reliquary/backups">Control-plane backups&hellip;</a>
+</div>
+
 {% if hosts.is_empty() %}
 <div class="card">
   <p style="color:var(--text-muted);">

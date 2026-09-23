@@ -94,6 +94,7 @@ pub fn build(state: AppState) -> Router {
             "/admin/roles",
             get(routes::roles::list).post(routes::roles::create_role),
         )
+        .route("/admin/roles/:id", get(routes::roles::detail))
         .route("/admin/roles/:id/edit", post(routes::roles::edit_role))
         .route(
             "/admin/roles/:id/remove/confirm",
