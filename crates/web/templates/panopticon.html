@@ -44,9 +44,13 @@
 <div class="card">
   <h3>{% call macros::icon("network") %} Device Inventory</h3>
   <p style="color:var(--text-muted); margin-top:0;">
-    {{ total_device_count }} device(s) total, grouped by subnet
-    ({{ render_budget }}-device render budget -- groups auto-expand under that,
-    otherwise use "Load devices" per group).
+    {{ total_device_count }} device(s) total, grouped by subnet.
+    {% if render_budget > 0 %}
+    Groups auto-expand while the inventory is under {{ render_budget }} devices;
+    otherwise use "Load devices" per group.
+    {% else %}
+    Groups start collapsed -- use "Load devices" per group to view its devices.
+    {% endif %}
     {% if can_manage %}
     <form method="post" action="/arsenals/panopticon/subnets/rederive" style="display:inline; margin-left:8px;">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">

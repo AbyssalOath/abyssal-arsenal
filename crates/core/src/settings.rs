@@ -207,9 +207,12 @@ pub const PANOPTICON_SUBNET_PREFIX_V4_DEFAULT: u32 = 24;
 pub const PANOPTICON_SUBNET_PREFIX_V6: &str = "panopticon.subnet_prefix_v6";
 pub const PANOPTICON_SUBNET_PREFIX_V6_DEFAULT: u32 = 64;
 
-/// Below this many total devices, every subnet group's body renders
-/// open by default (paginated internally); at or above it, only groups
-/// named in the `?open=` query param render their rows -- see
-/// `docs/device-inventory.md`'s "render budget" section.
+/// Below this many total devices, every subnet group's body renders open
+/// by default (paginated internally); at or above it, only groups named
+/// in the `?open=` query param render their rows -- see
+/// `docs/device-inventory.md`'s "render budget" section. Defaults to `0`
+/// (every group starts collapsed, regardless of inventory size) --
+/// operators who'd rather small inventories auto-expand can raise this
+/// setting explicitly.
 pub const PANOPTICON_INVENTORY_RENDER_BUDGET: &str = "panopticon.inventory_render_budget";
-pub const PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT: u32 = 500;
+pub const PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT: u32 = 0;
