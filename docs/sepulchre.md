@@ -431,15 +431,25 @@ on every single write attempt until fixed.
   refused with a clear message for a Sepulchre-backed job. See "How
   Reliquary consumes a Sepulchre connection today" above for the full
   detail and the manual workaround.
-- **New Super Admin permissions need a manual re-grant on an existing
-  deployment.** `seed_role()` only sets a role's permission set the first
-  time that role is created -- it never tops up an already-existing role
-  with newly-added `Permission` variants on a later restart (a
-  pre-existing, intentional tradeoff: startup shouldn't silently clobber
-  an admin's customized permission set). A fresh install seeds
-  `storage_connections.view`/`storage_connections.manage` automatically;
-  an existing deployment needs a Super Admin to grant them once from the
-  Roles page after upgrading.
+- **Fixed, not just documented**: an existing deployment's Super Admin
+  role used to need a manual permission re-grant after an upgrade added
+  new `Permission` variants (`seed_role()` only ever sets a role's
+  permission set the first time that role is created, so Super Admin's
+  stored grants silently fell behind `Permission::ALL` every time a new
+  arsenal shipped). This actually happened here: Super Admin was missing
+  the two new Sepulchre permissions, which is worse than it sounds --
+  `has_no_ceiling()` (`crates/web/src/common.rs`) requires holding
+  *every* permission, so that one gap also broke Super Admin's ability to
+  edit any role's permissions, including its own, a chicken-and-egg
+  lockout. Fixed by giving Super Admin specifically (not the other system
+  roles, where an admin narrowing them down is legitimate) different
+  seeding treatment: `seed_super_admin()` in `crates/database/src/seed.rs`
+  unions its stored grants with `Permission::ALL` on every startup, not
+  just the first. Takes effect on the next restart of the control plane;
+  confirmed live in this sandbox (Super Admin went from 34 held
+  permissions to the full 35, and "You can't edit this role's
+  permissions" changed to an editable checklist, without touching the
+  database directly).
 - **SMB's streaming is disk-buffered, not memory-buffered** -- see "Crate
   choices" above.
 

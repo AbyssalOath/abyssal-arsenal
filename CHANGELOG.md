@@ -200,6 +200,23 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **Super Admin could silently fall out of "no ceiling" status, locking
+  itself out of the Roles page entirely.** `has_no_ceiling()` (the
+  computed stand-in for "this is Super Admin," deliberately not a
+  hard-coded role-name check) requires holding *every* known permission;
+  startup seeding only ever set a role's permission set the first time
+  that role was created, so Super Admin's stored grants silently fell
+  behind `Permission::ALL` every time a later release added a new
+  permission (most recently, Sepulchre's two). One missing permission was
+  enough to flip Super Admin to a normal, ceilinged user for role
+  management purposes -- unable to edit *any* role's permissions,
+  including its own, since only a no-ceiling user may edit a system role
+  at all. Fixed by giving Super Admin specifically different seeding
+  treatment: its stored grants are unioned with `Permission::ALL` on
+  every startup, not just its first creation (every other system role
+  keeps the original behavior, since an admin deliberately narrowing one
+  of those down is legitimate). Takes effect on the control plane's next
+  restart.
 - Panopticon's device inventory could lose a device's hostname on any
   rescan that didn't happen to resolve one that particular time (flaky
   reverse DNS is the normal case on most internal networks, not the

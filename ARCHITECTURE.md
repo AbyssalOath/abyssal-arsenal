@@ -154,7 +154,20 @@ new column and one rule.
     hard-coded role-name check, matching "a role is just a named
     collection of permissions" above; it's the computed stand-in for "no
     delegation ceiling," used everywhere below instead of asking "is
-    this Super Admin?" by name.
+    this Super Admin?" by name. This makes keeping Super Admin's stored
+    grants genuinely complete load-bearing, not cosmetic: one missing
+    permission flips `has_no_ceiling` to `false` for that user, which
+    cascades into `ensure_can_manage_role` treating Super Admin like any
+    other non-ceiling user -- unable to edit *any* system role's
+    permissions, including Super Admin's own, since only a no-ceiling
+    user may. This actually happened (Super Admin's row predated a couple
+    of newer `Permission` variants) and is why `seed::seed_super_admin`
+    (`crates/database/src/seed.rs`) gives Super Admin different seeding
+    treatment from every other role: it unions its stored grants with
+    `Permission::ALL` on *every* startup, not just the role's first
+    creation. Every other system role keeps the original "only seed the
+    first time" behavior, since an admin deliberately narrowing one of
+    those down is legitimate in a way it never is for Super Admin.
   - `grantable_permissions(ctx)` -- every permission for a no-ceiling
     user, or exactly `ctx`'s own current effective permissions
     otherwise. Every route that accepts a requested permission set
