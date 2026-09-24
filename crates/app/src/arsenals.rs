@@ -28,5 +28,6 @@ pub fn all() -> Vec<Box<dyn Arsenal>> {
         Box::new(arsenal_inquest::InquestArsenal),
         Box::new(arsenal_thanatos::ThanatosArsenal),
         Box::new(arsenal_panopticon::PanopticonArsenal),
+        Box::new(arsenal_sepulchre::SepulchreArsenal),
     ]
 }

@@ -54,6 +54,23 @@ pub enum AuditAction {
     RoleCreated,
     RoleDeleted,
     UserRoleAssigned,
+
+    /// Sepulchre: storage connection definitions, shares, mounts, and
+    /// their credentials. Secret-touching variants never carry the
+    /// secret/key material itself in `metadata` -- only who/what/when/
+    /// which connection, per GitHub issue #9's own established
+    /// convention for backup encryption metadata.
+    StorageConnectionCreated,
+    StorageConnectionChanged,
+    StorageConnectionDeleted,
+    StorageConnectionValidated,
+    StorageSecretReplaced,
+    StorageKeypairGenerated,
+    StorageKeypairImported,
+    StorageShareProvisioned,
+    StorageShareRemoved,
+    StorageMountProvisioned,
+    StorageMountRemoved,
 }
 
 impl AuditAction {
@@ -110,6 +127,18 @@ impl AuditAction {
             AuditAction::RoleCreated => "ROLE_CREATED",
             AuditAction::RoleDeleted => "ROLE_DELETED",
             AuditAction::UserRoleAssigned => "USER_ROLE_ASSIGNED",
+
+            AuditAction::StorageConnectionCreated => "STORAGE_CONNECTION_CREATED",
+            AuditAction::StorageConnectionChanged => "STORAGE_CONNECTION_CHANGED",
+            AuditAction::StorageConnectionDeleted => "STORAGE_CONNECTION_DELETED",
+            AuditAction::StorageConnectionValidated => "STORAGE_CONNECTION_VALIDATED",
+            AuditAction::StorageSecretReplaced => "STORAGE_SECRET_REPLACED",
+            AuditAction::StorageKeypairGenerated => "STORAGE_KEYPAIR_GENERATED",
+            AuditAction::StorageKeypairImported => "STORAGE_KEYPAIR_IMPORTED",
+            AuditAction::StorageShareProvisioned => "STORAGE_SHARE_PROVISIONED",
+            AuditAction::StorageShareRemoved => "STORAGE_SHARE_REMOVED",
+            AuditAction::StorageMountProvisioned => "STORAGE_MOUNT_PROVISIONED",
+            AuditAction::StorageMountRemoved => "STORAGE_MOUNT_REMOVED",
         }
     }
 
@@ -165,6 +194,17 @@ impl AuditAction {
         AuditAction::RoleCreated,
         AuditAction::RoleDeleted,
         AuditAction::UserRoleAssigned,
+        AuditAction::StorageConnectionCreated,
+        AuditAction::StorageConnectionChanged,
+        AuditAction::StorageConnectionDeleted,
+        AuditAction::StorageConnectionValidated,
+        AuditAction::StorageSecretReplaced,
+        AuditAction::StorageKeypairGenerated,
+        AuditAction::StorageKeypairImported,
+        AuditAction::StorageShareProvisioned,
+        AuditAction::StorageShareRemoved,
+        AuditAction::StorageMountProvisioned,
+        AuditAction::StorageMountRemoved,
     ];
 }
 

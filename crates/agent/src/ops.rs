@@ -6,7 +6,7 @@ use crate::init_system::{self, InitSystem};
 use crate::{
     apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, incarnation, inquest,
     mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem,
-    process::run_command, reanimation, reliquary, resurrection, thanatos, vivisection,
+    process::run_command, reanimation, reliquary, resurrection, sepulchre, thanatos, vivisection,
 };
 
 /// Executes one of the fixed, whitelisted operations. This match is
@@ -350,6 +350,51 @@ pub async fn run(
             cryptkeeper::delete_ssh_keypair(path, elevation).await
         }
         AgentOperation::ScanSecurityEvents => thanatos::scan_security_events(elevation).await,
+        AgentOperation::DetectPackageBackend => sepulchre::detect_package_backend(elevation).await,
+        AgentOperation::RenderSepulchreConfig { target, content } => {
+            sepulchre::render_sepulchre_config(target, content, elevation).await
+        }
+        AgentOperation::ClearSepulchreConfig { target } => {
+            sepulchre::clear_sepulchre_config(target, elevation).await
+        }
+        AgentOperation::CheckSepulchreConfigIncludeDirective { target } => {
+            sepulchre::check_config_include_directive(target, elevation).await
+        }
+        AgentOperation::CreateSftpChrootAccount {
+            username,
+            chroot_dir,
+        } => sepulchre::create_sftp_chroot_account(username, chroot_dir, elevation).await,
+        AgentOperation::InstallSepulchreAuthorizedKey {
+            username,
+            public_key,
+        } => sepulchre::install_sepulchre_authorized_key(username, public_key, elevation).await,
+        AgentOperation::RemoveSftpChrootAccount { username } => {
+            sepulchre::remove_sftp_chroot_account(username, elevation).await
+        }
+        AgentOperation::CreateSambaServiceUser { username, password } => {
+            sepulchre::create_samba_service_user(username, password, elevation).await
+        }
+        AgentOperation::RemoveSambaServiceUser { username } => {
+            sepulchre::remove_samba_service_user(username, elevation).await
+        }
+        AgentOperation::RenderMountUnit {
+            unit_name,
+            mount_point,
+            content,
+        } => sepulchre::render_mount_unit(unit_name, mount_point, content, elevation).await,
+        AgentOperation::RemoveMountUnit {
+            unit_name,
+            mount_point,
+        } => sepulchre::remove_mount_unit(unit_name, mount_point, elevation).await,
+        AgentOperation::CheckMountStatus { mount_point } => {
+            sepulchre::check_mount_status(mount_point, elevation).await
+        }
+        AgentOperation::WriteSepulchreMountCredentials { path, contents } => {
+            sepulchre::write_mount_credentials(path, contents, elevation).await
+        }
+        AgentOperation::CreateSepulchreShareDirectory { path, owner } => {
+            sepulchre::create_share_directory(path, owner, elevation).await
+        }
     }
 }
 

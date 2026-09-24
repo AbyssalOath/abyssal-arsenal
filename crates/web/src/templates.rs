@@ -1761,6 +1761,9 @@ pub struct BackupJobRow {
     pub verification_failure_detail: Option<String>,
     pub can_download: bool,
     pub error_message: Option<String>,
+    /// "Local" or "Sepulchre: &lt;connection name&gt;" (or a note that the
+    /// connection has since been deleted).
+    pub destination_label: String,
 }
 
 #[derive(Template)]
@@ -1779,6 +1782,16 @@ pub struct ReliquaryBackupTemplate {
     pub retention_keep_last: u32,
     pub retention_days: u32,
     pub destination_path: String,
+    /// (connection id, connection name, is the scheduled-backup default)
+    /// for every connection eligible as a backup destination -- enabled,
+    /// holding the `backup_destination` role. Offered in both the manual
+    /// "Backup now" form (which ignores the third element) and the
+    /// scheduled-backup settings' own destination picker (which uses it
+    /// to preselect the current default).
+    pub destination_connections: Vec<(String, String, bool)>,
+    /// The scheduled-backup loop's configured destination connection id,
+    /// or empty for local -- preselects the settings form's picker.
+    pub default_destination_connection_id: String,
     pub encrypt_by_default: bool,
     pub encryption_key_available: bool,
     pub include_audit_logs_by_default: bool,
@@ -1798,4 +1811,181 @@ pub struct ReliquaryRestorePreviewTemplate {
     pub current_mariadb_version: String,
     pub backup_mariadb_version: String,
     pub components: Vec<String>,
+}
+
+// -----------------------------------------------------------------------
+// Sepulchre: storage & file-sharing connectivity. See
+// `routes/sepulchre.rs` and `crate::sepulchre`.
+// -----------------------------------------------------------------------
+
+pub struct ConnectionRow {
+    pub id: String,
+    pub name: String,
+    pub protocol_label: &'static str,
+    pub origin_label: &'static str,
+    pub enabled: bool,
+    pub roles: String,
+    pub validation_label: String,
+    pub validation_passed: bool,
+    pub host_name: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "sepulchre.html")]
+pub struct SepulchreTemplate {
+    pub base: BaseCtx,
+    pub connections: Vec<ConnectionRow>,
+    pub can_manage: bool,
+    pub protocol_filter: String,
+    pub role_filter: String,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "sepulchre_new_connection.html")]
+pub struct SepulchreNewConnectionTemplate {
+    pub base: BaseCtx,
+    pub protocol: String,
+    pub protocol_label: &'static str,
+    pub error: Option<String>,
+}
+
+pub struct CapabilityRow {
+    pub key: String,
+    pub label: String,
+    pub declared: bool,
+    pub verified: bool,
+}
+
+pub struct AccessMethodRow {
+    pub method_label: &'static str,
+    pub context_label: &'static str,
+    pub host_name: Option<String>,
+}
+
+pub struct ConsumerRow {
+    pub arsenal: String,
+    pub purpose: String,
+    pub role_label: &'static str,
+}
+
+#[derive(Clone)]
+pub struct ValidationCheckRow {
+    pub check: String,
+    pub status_label: &'static str,
+    pub status_passed: bool,
+    pub status_skipped: bool,
+    pub error_kind: Option<String>,
+    pub message: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone)]
+pub struct ValidationRunRow {
+    pub id: String,
+    pub mode_label: &'static str,
+    pub overall_label: &'static str,
+    pub overall_passed: bool,
+    pub started_at: String,
+    pub checks: Vec<ValidationCheckRow>,
+}
+
+#[derive(Template)]
+#[template(path = "sepulchre_connection_detail.html")]
+pub struct SepulchreConnectionDetailTemplate {
+    pub base: BaseCtx,
+    pub id: String,
+    pub name: String,
+    pub protocol: String,
+    pub protocol_label: &'static str,
+    pub origin_label: &'static str,
+    pub enabled: bool,
+    pub host_id: Option<String>,
+    pub host_name: Option<String>,
+    pub config_summary: Vec<(String, String)>,
+    pub roles: Vec<(&'static str, &'static str, bool)>,
+    pub capabilities: Vec<CapabilityRow>,
+    pub access_methods: Vec<AccessMethodRow>,
+    pub consumers: Vec<ConsumerRow>,
+    pub latest_run: Option<ValidationRunRow>,
+    pub run_history: Vec<ValidationRunRow>,
+    pub needs_host_key_pin: bool,
+    pub pinned_fingerprint: Option<String>,
+    pub public_key: Option<String>,
+    pub secret_updated_at: Option<String>,
+    pub can_manage: bool,
+    pub can_manage_secrets: bool,
+    pub suggested_actions: Vec<SuggestedActionView>,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "sepulchre_probe_host_key.html")]
+pub struct SepulchreProbeHostKeyTemplate {
+    pub base: BaseCtx,
+    pub id: String,
+    pub name: String,
+    pub fingerprint: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct ShareRow {
+    pub id: String,
+    pub protocol_label: &'static str,
+    pub local_path: String,
+    pub label: String,
+    pub connection_name: Option<String>,
+}
+
+pub struct MountRow {
+    pub id: String,
+    pub mount_point: String,
+    pub state_label: &'static str,
+    pub connection_name: String,
+}
+
+#[derive(Template)]
+#[template(path = "sepulchre_host.html")]
+pub struct SepulchreHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub package_backend: Option<String>,
+    pub shares: Vec<ShareRow>,
+    pub mounts: Vec<MountRow>,
+    pub can_manage: bool,
+    pub can_manage_keys: bool,
+    pub message: Option<String>,
+    pub error: Option<String>,
+    pub context: Vec<WorkflowContextRow>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+#[derive(Template)]
+#[template(path = "sepulchre_new_share.html")]
+pub struct SepulchreNewShareTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub protocol: String,
+    pub protocol_label: &'static str,
+    pub reachable_host_default: String,
+    pub error: Option<String>,
+}
+
+pub struct MountableConnectionOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Template)]
+#[template(path = "sepulchre_new_mount.html")]
+pub struct SepulchreNewMountTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub connections: Vec<MountableConnectionOption>,
+    pub error: Option<String>,
 }

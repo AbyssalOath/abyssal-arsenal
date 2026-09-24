@@ -375,6 +375,9 @@ const KNOWN_CONTEXT_FIELDS: &[(&str, &str)] = &[
     ("persisted_count", "New events"),
     ("days_until_expiry", "Days until expiry"),
     ("path", "Path"),
+    ("connection_id", "Connection"),
+    ("connection_name", "Connection name"),
+    ("method", "Access method"),
 ];
 
 /// Picks out whichever of the workflow registry's known context fields are

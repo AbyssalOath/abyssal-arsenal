@@ -30,7 +30,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 
 ## Arsenals
 
-All 23 arsenals are fully implemented -- each gated by its own
+All 24 arsenals are fully implemented -- each gated by its own
 permission(s) and, where the blast radius warrants it, a second layer of
 admin opt-in on top of the usual confirmation. Grouped by function:
 
@@ -47,6 +47,7 @@ admin opt-in on top of the usual confirmation. Grouped by function:
 | Necropolis | Container and container-runtime administration |
 | Parish | User, group, account, and access management |
 | Reanimation | Process and service management |
+| Sepulchre | Storage and file-sharing connectivity (SFTP, SMB/CIFS, local paths) shared across arsenals |
 
 **Observe**
 

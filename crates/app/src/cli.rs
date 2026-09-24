@@ -167,16 +167,27 @@ async fn list() -> anyhow::Result<()> {
         return Ok(());
     }
     println!(
-        "{:<38} {:<10} {:<20} {:>12}  FILE",
-        "ID", "STATUS", "CREATED", "SIZE"
+        "{:<38} {:<10} {:<20} {:>12}  {:<10}  FILE",
+        "ID", "STATUS", "CREATED", "SIZE", "DESTINATION"
     );
     for job in jobs {
+        // Only a `local` destination has a real file this CLI's own
+        // `verify`/`restore` subcommands can actually point at -- a
+        // Sepulchre-backed job is listed for visibility, but downloading
+        // its archive back off the connection isn't supported yet (see
+        // docs/sepulchre.md).
+        let destination = if job.destination_connection_id.is_some() {
+            "sepulchre"
+        } else {
+            "local"
+        };
         println!(
-            "{:<38} {:<10} {:<20} {:>12}  {}",
+            "{:<38} {:<10} {:<20} {:>12}  {:<10}  {}",
             job.id,
             job.status.as_str(),
             job.created_at.format("%Y-%m-%d %H:%M:%S"),
             job.size_bytes.map(|b| b.to_string()).unwrap_or_default(),
+            destination,
             job.file_name.unwrap_or_default(),
         );
     }

@@ -1,0 +1,33 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Confirm Host Key — {{ name }} — Sepulchre{% endblock %}
+{% block heading %}Confirm Host Key — {{ name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/sepulchre/connections/{{ id }}">&larr; {{ name }}</a></p>
+
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Trust-on-first-use: the server's host key fingerprint below is pinned only once you
+    explicitly confirm it. A later connection presenting a <em>different</em> key is always
+    refused, never auto-accepted.
+  </p>
+
+  {% if let Some(fp) = fingerprint %}
+  <p style="font-size:1.1rem;"><code>{{ fp }}</code></p>
+  <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/host-key">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="fingerprint" value="{{ fp }}">
+    <label class="inline-radio">
+      <input type="checkbox" required> I've verified this fingerprint matches the server and trust it
+    </label>
+    <button type="submit" class="btn-warning" style="margin-top:10px;">{% call macros::icon("check") %} Pin this host key</button>
+  </form>
+  {% endif %}
+</div>
+
+{% endblock %}

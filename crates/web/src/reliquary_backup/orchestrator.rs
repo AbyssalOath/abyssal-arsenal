@@ -10,18 +10,60 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use abyssal_core::settings::{
-    RELIQUARY_BACKUP_INCLUDE_AUDIT_LOGS, RELIQUARY_BACKUP_RETENTION_DAYS,
-    RELIQUARY_BACKUP_RETENTION_DEFAULT_DAYS, RELIQUARY_BACKUP_RETENTION_DEFAULT_KEEP_LAST,
-    RELIQUARY_BACKUP_RETENTION_KEEP_LAST, RELIQUARY_BACKUP_SCHEDULE_DEFAULT_INTERVAL_HOURS,
-    RELIQUARY_BACKUP_SCHEDULE_ENABLED, RELIQUARY_BACKUP_SCHEDULE_INTERVAL_HOURS,
+    RELIQUARY_BACKUP_DESTINATION_CONNECTION_ID, RELIQUARY_BACKUP_INCLUDE_AUDIT_LOGS,
+    RELIQUARY_BACKUP_RETENTION_DAYS, RELIQUARY_BACKUP_RETENTION_DEFAULT_DAYS,
+    RELIQUARY_BACKUP_RETENTION_DEFAULT_KEEP_LAST, RELIQUARY_BACKUP_RETENTION_KEEP_LAST,
+    RELIQUARY_BACKUP_SCHEDULE_DEFAULT_INTERVAL_HOURS, RELIQUARY_BACKUP_SCHEDULE_ENABLED,
+    RELIQUARY_BACKUP_SCHEDULE_INTERVAL_HOURS,
 };
 use abyssal_core::{BackupComponent, BackupJob, BackupTrigger};
 use abyssal_database::{DbPool, repo};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::BackupError;
 use super::provider::{BackupProvider, BackupRequest};
+use super::storage::StorageDestination;
+use crate::sepulchre::reliquary_adapter::SepulchreDestination;
+use crate::state::AppState;
+
+/// Resolves which [`StorageDestination`] a job actually writes to/reads
+/// from, and a human-readable label for it (stored in the job row's own
+/// `destination_path` column, which predates connection-based
+/// destinations and still doubles as a display label for either kind).
+/// `None` is always the control plane's own local destination -- exactly
+/// today's behavior, unchanged; `Some` resolves a Sepulchre connection
+/// the same way any other consumer does (`backup_destination` role, every
+/// capability verified, validated recently), so a connection that isn't
+/// actually usable is refused here with a clear reason rather than
+/// discovered as a confusing failure partway through a backup.
+pub async fn resolve_destination(
+    state: &AppState,
+    connection_id: Option<Uuid>,
+) -> Result<(Arc<dyn StorageDestination>, String), BackupError> {
+    match connection_id {
+        None => {
+            let label = repo::settings::get_string(
+                &state.pool,
+                abyssal_core::settings::RELIQUARY_BACKUP_DESTINATION_PATH,
+                abyssal_core::settings::RELIQUARY_BACKUP_DEFAULT_DESTINATION_PATH,
+            )
+            .await
+            .unwrap_or_else(|_| {
+                abyssal_core::settings::RELIQUARY_BACKUP_DEFAULT_DESTINATION_PATH.to_string()
+            });
+            Ok((state.reliquary_backup_storage.clone(), label))
+        }
+        Some(id) => {
+            let dest = SepulchreDestination::resolve(state, id)
+                .await
+                .map_err(|e| BackupError::Config(e.to_string()))?;
+            let label = format!("sepulchre://{}", dest.connection_name());
+            Ok((Arc::new(dest), label))
+        }
+    }
+}
 
 /// MariaDB named lock GET_LOCK()/RELEASE_LOCK() key -- session-scoped, so
 /// it's automatically released if the connection holding it drops (a
@@ -77,10 +119,18 @@ pub struct RunBackupOptions {
 /// result rather than this function returning it directly, so every
 /// caller (the web route, the scheduler, the CLI) sees the exact same
 /// "go look at the job" shape.
+///
+/// `storage`/`destination_connection_id` are already resolved by the
+/// caller (see [`resolve_destination`]) -- this function just uses and
+/// records them, so it stays agnostic to *how* a destination gets picked
+/// (a form field today, conceivably something else later).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_backup(
     pool: &DbPool,
     provider: &dyn BackupProvider,
+    storage: &dyn StorageDestination,
     destination_path: &str,
+    destination_connection_id: Option<Uuid>,
     options: RunBackupOptions,
     cancel: &CancellationToken,
 ) -> Result<uuid::Uuid, BackupError> {
@@ -101,6 +151,7 @@ pub async fn run_backup(
             encrypted: options.encrypt,
             includes_encryption_keys: includes_keys,
             destination_path,
+            destination_connection_id,
             created_by: options.created_by,
         },
     )
@@ -113,7 +164,7 @@ pub async fn run_backup(
             encrypt: options.encrypt,
             passphrase: options.passphrase,
         };
-        provider.create(request, cancel).await
+        provider.create(request, storage, cancel).await
     })
     .await;
 
@@ -173,10 +224,15 @@ pub async fn recover_interrupted_jobs(pool: &DbPool) -> anyhow::Result<usize> {
 /// -- never delete the only remaining backup whose `verification_status`
 /// is passing. Every prune is logged (`tracing::info!`) with the job ID
 /// and why.
-pub async fn prune_retention(
-    pool: &DbPool,
-    storage: &dyn super::storage::StorageDestination,
-) -> anyhow::Result<usize> {
+///
+/// Each job's own destination is resolved individually (jobs can now be
+/// spread across the local destination and any number of Sepulchre
+/// connections) -- a connection that's since become unusable (disabled,
+/// deleted, no longer verified) fails that one job's prune with a
+/// warning and moves on, rather than aborting the whole sweep and
+/// leaving every other, perfectly prunable local job un-pruned too.
+pub async fn prune_retention(state: &AppState) -> anyhow::Result<usize> {
+    let pool = &state.pool;
     let keep_last = repo::settings::get_u32(
         pool,
         RELIQUARY_BACKUP_RETENTION_KEEP_LAST,
@@ -201,7 +257,28 @@ pub async fn prune_retention(
     let mut pruned = 0usize;
     for job in &to_prune {
         if let Some(file_name) = &job.file_name {
-            storage.delete(file_name).await?;
+            match resolve_destination(state, job.destination_connection_id).await {
+                Ok((storage, _label)) => {
+                    if let Err(e) = storage.delete(file_name).await {
+                        tracing::warn!(
+                            job_id = %job.id,
+                            error = %e,
+                            "reliquary retention: could not delete the archive file; leaving \
+                             this job's row in place"
+                        );
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        job_id = %job.id,
+                        error = %e,
+                        "reliquary retention: could not resolve this job's destination; \
+                         leaving it in place"
+                    );
+                    continue;
+                }
+            }
         }
         repo::reliquary_backups::delete(pool, job.id).await?;
         tracing::info!(job_id = %job.id, created_at = %job.created_at, "reliquary retention: pruned backup");
@@ -278,14 +355,13 @@ fn select_prune_candidates(
 /// `interval_hours`, tracked by looking at the most recent successful
 /// backup's own timestamp rather than an in-process timer, so a control-
 /// plane restart doesn't cause an immediate extra backup nor lose track
-/// of when the last one actually happened.
-pub fn spawn_scheduled_backup_loop(
-    pool: DbPool,
-    provider: Arc<dyn BackupProvider>,
-    storage: Arc<dyn super::storage::StorageDestination>,
-    destination_path: String,
-) {
+/// of when the last one actually happened. Destination is resolved fresh
+/// every run from `RELIQUARY_BACKUP_DESTINATION_CONNECTION_ID` (empty =
+/// local), so changing that setting takes effect on the next scheduled
+/// run without a restart, same as every other setting here.
+pub fn spawn_scheduled_backup_loop(state: AppState, provider: Arc<dyn BackupProvider>) {
     tokio::spawn(async move {
+        let pool = state.pool.clone();
         let mut interval = tokio::time::interval(Duration::from_secs(15 * 60));
         loop {
             interval.tick().await;
@@ -331,11 +407,34 @@ pub fn spawn_scheduled_backup_loop(
                 components.push(BackupComponent::AuditLogs);
             }
 
+            let connection_id =
+                repo::settings::get_string(&pool, RELIQUARY_BACKUP_DESTINATION_CONNECTION_ID, "")
+                    .await
+                    .unwrap_or_default();
+            let connection_id = (!connection_id.trim().is_empty())
+                .then(|| Uuid::parse_str(connection_id.trim()).ok())
+                .flatten();
+
+            let (storage, destination_label) =
+                match resolve_destination(&state, connection_id).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "reliquary: scheduled backup's destination isn't usable; skipping \
+                             this run"
+                        );
+                        continue;
+                    }
+                };
+
             let cancel = CancellationToken::new();
             let result = run_backup(
                 &pool,
                 provider.as_ref(),
-                &destination_path,
+                storage.as_ref(),
+                &destination_label,
+                connection_id,
                 RunBackupOptions {
                     trigger_source: BackupTrigger::Scheduled,
                     components,
@@ -345,10 +444,10 @@ pub fn spawn_scheduled_backup_loop(
                     // scheduled use is a real feature but not one this
                     // pass builds (see docs/reliquary-backups.md). A
                     // scheduled backup is exactly as sensitive as the
-                    // database it dumps either way; the destination
-                    // directory's own permissions (0600 files, admin-only
-                    // access) are what protect it, same as an
-                    // unencrypted manual backup would be.
+                    // database it dumps either way; the destination's own
+                    // access controls (0600 local files, or Sepulchre's
+                    // own connection-level permissions) are what protect
+                    // it, same as an unencrypted manual backup would be.
                     encrypt: false,
                     passphrase: None,
                     created_by: None,
@@ -363,7 +462,7 @@ pub fn spawn_scheduled_backup_loop(
                 }
             }
 
-            if let Err(e) = prune_retention(&pool, storage.as_ref()).await {
+            if let Err(e) = prune_retention(&state).await {
                 tracing::error!(error = %e, "reliquary: retention pruning failed");
             }
         }
@@ -388,6 +487,7 @@ mod tests {
             encrypted: false,
             includes_encryption_keys: false,
             destination_path: "/backups".to_string(),
+            destination_connection_id: None,
             file_name: Some(format!("backup-{}.tar.zst", Uuid::new_v4())),
             size_bytes: Some(1024),
             sha256: Some("deadbeef".to_string()),

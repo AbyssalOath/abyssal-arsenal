@@ -12,6 +12,7 @@ pub mod secret;
 pub mod security_event;
 pub mod session;
 pub mod settings;
+pub mod storage;
 pub mod user;
 
 pub use crypto::{CryptoError, EncryptionKey};
@@ -32,4 +33,10 @@ pub use reliquary_backup::{
 pub use role::{BUILT_IN_ROLES, MAX_ROLE_DEPTH, Role};
 pub use security_event::{SecurityEvent, Severity};
 pub use session::Session;
+pub use storage::{
+    AccessMethod, Capability, ConnectionAccessMethod, ConnectionCapability, ConnectionOrigin,
+    ConnectionRole, ErrorKind, ExecutionContext, LocalConfig, NotUsableReason, Protocol,
+    ProtocolConfig, SftpAuthMethod, SftpConfig, SmbConfig, SmbEncryption, SmbMinProtocol,
+    StorageConnection, ValidationCheckResult, ValidationMode, ValidationRun, ValidationStatus,
+};
 pub use user::{AuthProviderKind, User};

@@ -72,10 +72,54 @@ and the destination is never served over HTTP.
 
 That volume is still local to this Docker host. **A host-level failure (disk
 failure, host lost, ransomware) takes the backups with it unless you copy them
-somewhere else.** This feature deliberately doesn't implement remote/cloud
-storage destinations yet (see "Deferred / not implemented" below) -- for now,
+somewhere else.** For a genuinely off-host destination without copying files
+around by hand, see "Sepulchre-backed destinations" just below; otherwise,
 periodically copy `/backups` (or the Docker volume it maps to) off-host
 yourself, the same way `scripts/backup-db.sh`'s output already should be.
+
+## Sepulchre-backed destinations
+
+A backup can be written directly to an SFTP server, an SMB share, or an
+allowlisted local path managed by the [Sepulchre arsenal](sepulchre.md),
+instead of (or alongside, across different jobs) the local destination
+above -- genuinely off-host, with no manual copy step, once a connection is
+set up.
+
+**Setup**: create a Sepulchre connection (`/arsenals/sepulchre`) with the
+`Backup destination` role, then validate it (read/write) so every
+capability shows verified -- only a connection that's enabled, holds that
+role, and has all four capabilities (read/list/write/delete) verified
+recently is actually usable here.
+
+**Manual backups**: the "Backup now" form on this page gets a Destination
+picker listing every eligible connection alongside "Local." Pick one per
+run.
+
+**Scheduled backups**: the Control-Plane Configuration section's own
+"Scheduled backup destination" picker sets the schedule's fixed answer
+(there's nobody present on an unattended run to choose each time).
+
+**What works today**: writing a backup -- the archive streams straight to
+the connection, never touching this container's local disk first.
+
+**What doesn't work today, on purpose**: downloading, verifying, or
+restoring a backup that was written to a Sepulchre connection. Those three
+operations need a real local file to hash/extract/stream from
+(`storage.resolve(file_name)`), which only the local destination can give
+them -- a Sepulchre connection's `resolve()` returns a synthetic,
+display-only string, not a real path. Attempting any of the three against
+a Sepulchre-backed job is refused with a clear message rather than failing
+confusingly partway through. Retention pruning, by contrast, *does* work
+for Sepulchre-backed jobs (it only ever calls `delete`, which every
+destination implements for real).
+
+If you need to actually restore from a Sepulchre-backed backup today,
+retrieve the archive file yourself through whatever tool the connection's
+protocol supports (an SFTP client, `smbclient`, etc.), then hand it to the
+disaster-recovery CLI (`docker compose run --rm app reliquary backup
+restore <path-to-the-file>`) the same way you would for any other archive
+file -- the CLI operates on a raw file path, not a database-tracked job,
+so it works regardless of where that file came from.
 
 ## Database grants
 
@@ -257,9 +301,15 @@ restore is recorded via the existing audit log
 Flagged deliberately, not silent scope cuts:
 
 - **Deep verify** -- see above.
-- **Remote/cloud storage destinations** (S3, etc.) -- `StorageDestination` and
-  `BackupProvider` are traits specifically so this can be added later without
-  refactoring the engine; only `LocalFs`/`NativeProvider` exist today.
+- **Reading a backup back from a Sepulchre-backed destination** --
+  download, verify, and restore all still require the local destination;
+  see "Sepulchre-backed destinations" above for exactly what's missing
+  and the manual workaround.
+- **S3/cloud-object-storage destinations specifically** -- `StorageDestination`
+  and `BackupProvider` remain traits precisely so this (or any other
+  destination kind) can be added later without refactoring the engine;
+  `LocalFs` and a Sepulchre-backed destination are the two implementations
+  that exist today.
 - **Encrypted, unattended scheduled backups** -- would need a way to store a
   passphrase (or a KMS-style key) for the scheduler to use without an
   operator present; scheduled backups are unencrypted today by design (see

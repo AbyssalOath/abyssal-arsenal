@@ -19,6 +19,7 @@ struct BackupRow {
     encrypted: bool,
     includes_encryption_keys: bool,
     destination_path: String,
+    destination_connection_id: Option<String>,
     file_name: Option<String>,
     size_bytes: Option<u64>,
     sha256: Option<String>,
@@ -60,6 +61,9 @@ impl From<BackupRow> for BackupJob {
             encrypted: row.encrypted,
             includes_encryption_keys: row.includes_encryption_keys,
             destination_path: row.destination_path,
+            destination_connection_id: row
+                .destination_connection_id
+                .and_then(|id| Uuid::parse_str(&id).ok()),
             file_name: row.file_name,
             size_bytes: row.size_bytes,
             sha256: row.sha256,
@@ -88,6 +92,7 @@ pub struct NewBackupJob<'a> {
     pub encrypted: bool,
     pub includes_encryption_keys: bool,
     pub destination_path: &'a str,
+    pub destination_connection_id: Option<Uuid>,
     pub created_by: Option<Uuid>,
 }
 
@@ -106,8 +111,8 @@ pub async fn create(pool: &DbPool, job: NewBackupJob<'_>) -> anyhow::Result<Uuid
     sqlx::query(
         "INSERT INTO reliquary_backups \
          (id, job_type, status, trigger_source, components, encrypted, includes_encryption_keys, \
-          destination_path, created_by) \
-         VALUES (?, 'native', ?, ?, ?, ?, ?, ?, ?)",
+          destination_path, destination_connection_id, created_by) \
+         VALUES (?, 'native', ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(BackupStatus::Queued.as_str())
@@ -116,6 +121,7 @@ pub async fn create(pool: &DbPool, job: NewBackupJob<'_>) -> anyhow::Result<Uuid
     .bind(job.encrypted)
     .bind(job.includes_encryption_keys)
     .bind(job.destination_path)
+    .bind(job.destination_connection_id.map(|c| c.to_string()))
     .bind(job.created_by.map(|u| u.to_string()))
     .execute(pool)
     .await?;

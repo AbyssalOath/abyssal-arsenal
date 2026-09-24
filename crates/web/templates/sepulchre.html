@@ -1,0 +1,78 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Sepulchre — Storage Connections — Abyssal Arsenal{% endblock %}
+{% block heading %}Sepulchre — Storage &amp; File-Sharing Connectivity{% endblock %}
+{% block content %}
+
+{% if let Some(m) = message %}
+<div class="info-banner">{{ m }}</div>
+{% endif %}
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+{% if can_manage %}
+<div class="card">
+  <h2>{% call macros::icon("connection") %} Add a connection</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    A connection is never inherently a backup connection -- what it's used for is a role you
+    assign after it's set up. Choose a protocol to get started.
+  </p>
+  <div class="actions">
+    <a class="btn btn-warning" href="/arsenals/sepulchre/connections/new?protocol=sftp">SFTP&hellip;</a>
+    <a class="btn btn-warning" href="/arsenals/sepulchre/connections/new?protocol=smb">SMB&hellip;</a>
+    <a class="btn btn-warning" href="/arsenals/sepulchre/connections/new?protocol=local">Local filesystem&hellip;</a>
+  </div>
+  <p style="color:var(--text-muted); font-size:0.8rem; margin-top:10px;">
+    Host-side SFTP/SMB server provisioning (setting a managed host up to <em>serve</em> a share)
+    starts from that host's own page under <a href="/admin/hosts">Hosts</a>.
+  </p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Connections</h2>
+  <form method="get" action="/arsenals/sepulchre" class="actions" style="margin-bottom:14px;">
+    <label class="sr-only" for="filter-protocol">Protocol</label>
+    <select id="filter-protocol" name="protocol">
+      <option value="" {% if protocol_filter.is_empty() %}selected{% endif %}>All protocols</option>
+      <option value="sftp" {% if protocol_filter == "sftp" %}selected{% endif %}>SFTP</option>
+      <option value="smb" {% if protocol_filter == "smb" %}selected{% endif %}>SMB</option>
+      <option value="local" {% if protocol_filter == "local" %}selected{% endif %}>Local</option>
+    </select>
+    <label class="sr-only" for="filter-role">Role</label>
+    <select id="filter-role" name="role">
+      <option value="" {% if role_filter.is_empty() %}selected{% endif %}>All roles</option>
+      <option value="backup_destination" {% if role_filter == "backup_destination" %}selected{% endif %}>Backup destination</option>
+      <option value="file_transfer" {% if role_filter == "file_transfer" %}selected{% endif %}>File transfer</option>
+      <option value="remote_storage" {% if role_filter == "remote_storage" %}selected{% endif %}>Remote storage</option>
+      <option value="other" {% if role_filter == "other" %}selected{% endif %}>Other</option>
+    </select>
+    <button type="submit" class="btn-secondary">Filter</button>
+  </form>
+
+  {% if connections.is_empty() %}
+  <p style="color:var(--text-muted);">No connections yet.</p>
+  {% else %}
+  <div class="action-grid">
+    {% for c in connections %}
+    <a href="/arsenals/sepulchre/connections/{{ c.id }}"
+       style="display:block; text-decoration:none; color:inherit; background:var(--surface-raised);
+              padding:12px 14px; border-radius:6px; border:1px solid var(--border);">
+      <strong>{{ c.name }}</strong>
+      <span class="badge badge-muted">{{ c.protocol_label }}</span>
+      {% if !c.enabled %}<span class="badge badge-muted">Disabled</span>{% endif %}
+      {% if c.validation_passed %}<span class="badge badge-success">{{ c.validation_label }}</span>
+      {% else %}<span class="badge badge-muted">{{ c.validation_label }}</span>{% endif %}
+      <p style="color:var(--text-muted); margin:6px 0 0;">
+        {{ c.origin_label }}
+        {% if let Some(host) = c.host_name %} on {{ host }}{% endif %}
+        <br>Roles: {{ c.roles }}
+      </p>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -92,6 +92,15 @@ services:
       # if left unset.
       RELIQUARY_BACKUP_DB_USER: ${RELIQUARY_BACKUP_DB_USER:-}
       RELIQUARY_BACKUP_DB_PASSWORD: ${RELIQUARY_BACKUP_DB_PASSWORD:-}
+      # Sepulchre's `local` protocol connections (docs/sepulchre.md) may
+      # only read/write inside this comma-separated allowlist of absolute
+      # host paths -- never anywhere else, even if misconfigured. Left
+      # unset, it defaults to just RELIQUARY_BACKUP_DESTINATION_PATH above
+      # (i.e. the abyssal_backups volume) so Reliquary can be pointed at a
+      # Sepulchre connection without any extra configuration; set this
+      # explicitly to allow additional paths, or to an empty string to
+      # disable the `local` protocol entirely.
+      SEPULCHRE_LOCAL_ROOTS: ${SEPULCHRE_LOCAL_ROOTS:-}
     volumes:
       - abyssal_backups:/backups
     healthcheck:

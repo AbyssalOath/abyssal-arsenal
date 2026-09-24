@@ -7,11 +7,11 @@
 //! implementation this pass builds.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use abyssal_core::{BackupComponent, BackupManifest, ManifestEntry};
 use abyssal_database::DbPool;
 use chrono::Utc;
+use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -37,9 +37,15 @@ pub struct BackupOutcome {
 
 #[async_trait::async_trait]
 pub trait BackupProvider: Send + Sync {
+    /// `storage` is resolved by the caller (the local default, or a
+    /// Sepulchre connection an admin picked) rather than baked into the
+    /// provider at construction time -- the same `NativeProvider`
+    /// instance backs every job regardless of which destination that
+    /// particular job actually uses.
     async fn create(
         &self,
         request: BackupRequest,
+        storage: &dyn StorageDestination,
         cancel: &CancellationToken,
     ) -> Result<BackupOutcome, BackupError>;
 
@@ -64,7 +70,6 @@ pub struct NativeProvider {
     pub pool: DbPool,
     pub database_url: String,
     pub work_dir: PathBuf,
-    pub storage: Arc<dyn StorageDestination>,
     pub arsenal_version: String,
 }
 
@@ -118,6 +123,7 @@ impl BackupProvider for NativeProvider {
     async fn create(
         &self,
         request: BackupRequest,
+        storage: &dyn StorageDestination,
         cancel: &CancellationToken,
     ) -> Result<BackupOutcome, BackupError> {
         let backup_id = Uuid::new_v4();
@@ -292,13 +298,16 @@ impl BackupProvider for NativeProvider {
         // just the unencrypted one.
         let final_sha256 = super::verify::hash_file(&final_path).await?;
 
-        let dest_path = self.storage.resolve(&final_name);
-        tokio::fs::copy(&final_path, &dest_path).await?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(0o600)).await?;
-        }
+        // Streamed through the destination's own `open_write` -- never a
+        // direct filesystem copy to `storage.resolve(...)` -- so this
+        // works unchanged whether `storage` is `LocalFs` or a genuinely
+        // remote destination (e.g. Sepulchre's adapter) with no local
+        // path at all. Permissions on the written file (0600) are each
+        // destination's own responsibility (see `LocalFs::open_write`).
+        let mut source = tokio::fs::File::open(&final_path).await?;
+        let mut dest = storage.open_write(&final_name).await?;
+        tokio::io::copy(&mut source, &mut dest).await?;
+        dest.shutdown().await?;
 
         Ok(BackupOutcome {
             file_name: final_name,

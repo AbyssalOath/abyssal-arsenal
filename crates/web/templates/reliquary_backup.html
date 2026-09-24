@@ -32,13 +32,31 @@
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label>Components</label>
     <div>
-      <label class="inline-radio"><input type="checkbox" name="component_database" checked> Database</label>
-      <label class="inline-radio"><input type="checkbox" name="component_configuration" checked> Configuration</label>
-      <label class="inline-radio"><input type="checkbox" name="component_encryption_keys"> Encryption keys (forces encryption)</label>
-      <label class="inline-radio"><input type="checkbox" name="component_audit_logs" {% if include_audit_logs_by_default %}checked{% endif %}> Audit logs</label>
+      <label class="inline-radio"><input type="checkbox" name="component_database" value="true" checked> Database</label>
+      <label class="inline-radio"><input type="checkbox" name="component_configuration" value="true" checked> Configuration</label>
+      <label class="inline-radio"><input type="checkbox" name="component_encryption_keys" value="true"> Encryption keys (forces encryption)</label>
+      <label class="inline-radio"><input type="checkbox" name="component_audit_logs" value="true" {% if include_audit_logs_by_default %}checked{% endif %}> Audit logs</label>
     </div>
+    <label for="backup-destination">Destination</label>
+    <select id="backup-destination" name="destination_connection_id" style="max-width:360px;">
+      <option value="">Local ({{ destination_path }})</option>
+      {% for (id, name, _is_default) in destination_connections %}
+      <option value="{{ id }}">Sepulchre: {{ name }}</option>
+      {% endfor %}
+    </select>
+    {% if destination_connections.is_empty() %}
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      No Sepulchre connections are currently eligible (enabled, holding the "Backup
+      destination" role) -- see <a href="/arsenals/sepulchre">Sepulchre</a> to add one.
+    </p>
+    {% else %}
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      A Sepulchre-backed destination is write-only today -- downloading, verifying, and
+      restoring a backup written there isn't supported yet, only the local destination.
+    </p>
+    {% endif %}
     <label class="inline-radio" style="margin-top:10px;">
-      <input type="checkbox" name="encrypt" {% if encrypt_by_default %}checked{% endif %}> Encrypt this backup
+      <input type="checkbox" name="encrypt" value="true" {% if encrypt_by_default %}checked{% endif %}> Encrypt this backup
     </label>
     <label for="backup-passphrase">Passphrase</label>
     <input type="password" id="backup-passphrase" name="passphrase" autocomplete="new-password" style="max-width:360px;">
@@ -68,7 +86,7 @@
   <table>
     <thead>
       <tr>
-        <th>Created</th><th>Status</th><th>Trigger</th><th>Components</th><th>Encrypted</th>
+        <th>Created</th><th>Status</th><th>Trigger</th><th>Destination</th><th>Components</th><th>Encrypted</th>
         <th>Size</th><th>Verification</th><th>Actions</th>
       </tr>
     </thead>
@@ -87,6 +105,7 @@
           {% if let Some(err) = j.error_message %}<br><span style="color:var(--danger); font-size:0.8rem;">{{ err }}</span>{% endif %}
         </td>
         <td>{{ j.trigger_label }}</td>
+        <td>{{ j.destination_label }}</td>
         <td>{{ j.components }}</td>
         <td>{% if j.encrypted %}Yes{% else %}No{% endif %}</td>
         <td>{{ j.size_display }}</td>
@@ -135,7 +154,7 @@
   <form method="post" action="/arsenals/reliquary/backups/settings">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label class="inline-radio">
-      <input type="checkbox" name="schedule_enabled" {% if schedule_enabled %}checked{% endif %}> Run scheduled backups automatically
+      <input type="checkbox" name="schedule_enabled" value="true" {% if schedule_enabled %}checked{% endif %}> Run scheduled backups automatically
     </label>
     <label for="schedule-interval">Interval (hours)</label>
     <input type="text" id="schedule-interval" name="schedule_interval_hours" value="{{ schedule_interval_hours }}" style="max-width:160px;">
@@ -148,17 +167,28 @@
     <input type="text" id="retention-keep-last" name="retention_keep_last" value="{{ retention_keep_last }}" style="max-width:160px;">
     <label for="retention-days">Also prune backups older than (days, 0 = never)</label>
     <input type="text" id="retention-days" name="retention_days" value="{{ retention_days }}" style="max-width:160px;">
-    <label for="destination-path">Destination path</label>
+    <label for="destination-path">Local destination path</label>
     <input type="text" id="destination-path" name="destination_path" value="{{ destination_path }}" style="max-width:420px;">
     <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
       Must be a path inside this container -- mount it to a dedicated volume separate from the
       database's own (see <code>docker-compose.yml</code>'s <code>abyssal_backups</code> volume).
     </p>
+    <label for="schedule-destination">Scheduled backup destination</label>
+    <select id="schedule-destination" name="schedule_destination_connection_id" style="max-width:360px;">
+      <option value="" {% if default_destination_connection_id.is_empty() %}selected{% endif %}>Local (path above)</option>
+      {% for (id, name, is_default) in destination_connections %}
+      <option value="{{ id }}" {% if is_default %}selected{% endif %}>Sepulchre: {{ name }}</option>
+      {% endfor %}
+    </select>
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Where the unattended schedule above writes to -- a manual "Backup now" always lets you
+      pick per-run instead, from the Application Data card.
+    </p>
     <label class="inline-radio">
-      <input type="checkbox" name="encrypt_by_default" {% if encrypt_by_default %}checked{% endif %}> Encrypt manual backups by default
+      <input type="checkbox" name="encrypt_by_default" value="true" {% if encrypt_by_default %}checked{% endif %}> Encrypt manual backups by default
     </label>
     <label class="inline-radio">
-      <input type="checkbox" name="include_audit_logs_by_default" {% if include_audit_logs_by_default %}checked{% endif %}> Include audit logs by default
+      <input type="checkbox" name="include_audit_logs_by_default" value="true" {% if include_audit_logs_by_default %}checked{% endif %}> Include audit logs by default
     </label>
     <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
       Controls the "Audit logs" checkbox's default on the form above, and whether scheduled

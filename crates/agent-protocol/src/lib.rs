@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -974,6 +974,149 @@ pub enum AgentOperation {
     /// `OperationOutput` every other read op returns. Read: never
     /// modifies anything on the host.
     ScanSecurityEvents,
+
+    // -------------------------------------------------------------
+    // Sepulchre: host-side SFTP/SMB share provisioning and mounts.
+    // "Never edit the main sshd_config/smb.conf in place" -- every
+    // write here touches only a Sepulchre-owned drop-in/include file,
+    // the same managed-file idiom `SetPersistentSysctl`/`SetCronJob`
+    // above already use, extended with a validate-before-reload step
+    // (`sshd -t` / `testparm -s`) and a rollback-on-failure restore of
+    // the previous file content.
+    // -------------------------------------------------------------
+    /// Live-probes for `apt-get`/`dnf`/`yum`/`pacman`/`zypper` (the same
+    /// detection `Backend::detect()` in `apothecary.rs` already does for
+    /// package install/remove) so the control plane can pick the right
+    /// package names and show "this host uses apt" before offering to
+    /// install prerequisites. Read: no state is read or changed beyond
+    /// checking which binaries exist on `PATH`.
+    DetectPackageBackend,
+    /// Renders `content` into the Sepulchre-owned drop-in/include file
+    /// for `target`, validates it (`sshd -t` / `testparm -s`) *before*
+    /// reloading, and restores the previous content and reloads again if
+    /// validation fails -- a bad render can never be left half-applied.
+    /// Write.
+    RenderSepulchreConfig {
+        target: SepulchreConfigTarget,
+        content: String,
+    },
+    /// Empties (not deletes -- keeps the file present but content-only
+    /// the managed header) the drop-in/include file for `target`,
+    /// validates, and reloads. Destructive: removes every share/account
+    /// directive Sepulchre had configured there.
+    ClearSepulchreConfig {
+        target: SepulchreConfigTarget,
+    },
+    /// Whether the host's own main config (`sshd_config`/`smb.conf`)
+    /// actually includes the directory/file Sepulchre's drop-in lives
+    /// in -- a prerequisite check, surfaced as a finding rather than
+    /// silently assumed. Read.
+    CheckSepulchreConfigIncludeDirective {
+        target: SepulchreConfigTarget,
+    },
+    /// Creates a dedicated, restricted SFTP account: `ChrootDirectory`-
+    /// ready (the chroot dir itself is created root-owned, not group/
+    /// world-writable, with a writable subdirectory inside it), nologin
+    /// shell, no password login. Write.
+    CreateSftpChrootAccount {
+        username: String,
+        chroot_dir: String,
+    },
+    /// Installs `public_key` into a Sepulchre-owned
+    /// `AuthorizedKeysFile` location (e.g.
+    /// `/etc/ssh/sepulchre/authorized_keys/<username>`), never the
+    /// account's own `~/.ssh/authorized_keys` -- keeps the chroot
+    /// directory's required root-owned, non-writable-by-the-user
+    /// permissions from ever conflicting with where its authorized keys
+    /// live. Write. Public key material only, never a private key.
+    InstallSepulchreAuthorizedKey {
+        username: String,
+        public_key: String,
+    },
+    /// Removes an SFTP chroot account and its home/chroot directory.
+    /// Destructive: data under the chroot directory is removed with the
+    /// account unless a caller has already relocated it -- Sepulchre's
+    /// own web-layer confirmation flow is what actually enforces "never
+    /// deletes data unless separately, explicitly requested" (see
+    /// `docs/sepulchre.md`); this operation itself just does what it's
+    /// asked.
+    RemoveSftpChrootAccount {
+        username: String,
+    },
+    /// Creates (or resets the password of) a Samba service account: a
+    /// matching nologin system account plus an `smbpasswd`/`pdbedit`
+    /// entry. `password` travels only as a field on this already-
+    /// encrypted WebSocket operation -- never as an argument to the
+    /// `smbpasswd`/`pdbedit` subprocess the agent runs, which receives it
+    /// over stdin instead (same "never argv, never a log line" rule
+    /// `Elevate`'s sudo password already follows). Write.
+    CreateSambaServiceUser {
+        username: String,
+        password: String,
+    },
+    /// Removes a Samba service account (both the `smbpasswd`/`pdbedit`
+    /// entry and the matching system account). Destructive.
+    RemoveSambaServiceUser {
+        username: String,
+    },
+    /// Writes and enables a systemd mount unit (SSHFS or CIFS,
+    /// depending on `content`) -- credentials, if any, live in a
+    /// separate root-owned `0600` file `content` references, never
+    /// inline in the unit itself. Write.
+    RenderMountUnit {
+        unit_name: String,
+        mount_point: String,
+        content: String,
+    },
+    /// Stops, disables, and removes a previously-rendered mount unit
+    /// (and unmounts `mount_point` if still mounted). Destructive: the
+    /// remote data itself is untouched, only the local mount goes away.
+    RemoveMountUnit {
+        unit_name: String,
+        mount_point: String,
+    },
+    /// Confirms `mount_point` is actually mounted (parses
+    /// `/proc/mounts`) -- the apply-then-verify half of Sepulchre's
+    /// plan/preview/apply/verify host-side flow. Read.
+    CheckMountStatus {
+        mount_point: String,
+    },
+    /// Creates a directory at `path`, owned by `owner` (the Samba service
+    /// account that will actually read/write through the share) and mode
+    /// `0750`, if it doesn't already exist -- used to prepare the on-disk
+    /// location an SMB share stanza points at before the share is
+    /// announced (unlike an SFTP chroot, a Samba share has no dedicated
+    /// account-creation step that would otherwise create it). Deliberately
+    /// *not* root-owned the way an SFTP `ChrootDirectory` must be --
+    /// `smbd` still enforces real filesystem permissions underneath its
+    /// own `valid users` ACL, so a root-owned directory would make every
+    /// write fail with `NT_STATUS_ACCESS_DENIED` regardless of what the
+    /// share stanza allows (caught live against a real Samba server).
+    /// Write, but idempotent: safe to call again against a directory
+    /// that's already there.
+    CreateSepulchreShareDirectory {
+        path: String,
+        owner: String,
+    },
+    /// Writes a CIFS mount's `credentials=` file -- `path` must be under
+    /// the Sepulchre-reserved `/etc/sepulchre/mounts/` directory (checked
+    /// both here and again by the agent, never trusting the caller
+    /// already did), created root-owned `0600`, referenced by
+    /// `RenderMountUnit`'s own `Options=` rather than ever embedding
+    /// credentials in the unit file itself. `contents` travels only as a
+    /// field on this already-encrypted WebSocket operation. Write.
+    WriteSepulchreMountCredentials {
+        path: String,
+        contents: String,
+    },
+}
+
+/// Which Sepulchre-owned config drop-in/include an operation targets --
+/// see `AgentOperation::RenderSepulchreConfig` and friends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SepulchreConfigTarget {
+    SshdDropIn,
+    SambaInclude,
 }
 
 impl AgentOperation {
@@ -1137,6 +1280,39 @@ impl AgentOperation {
                 format!("Removed authorized key for {username}")
             }
             AgentOperation::DeleteSshKeypair { path } => format!("Deleted SSH keypair {path}"),
+            AgentOperation::RenderSepulchreConfig { target, .. } => {
+                format!("Updated Sepulchre {target:?} configuration")
+            }
+            AgentOperation::ClearSepulchreConfig { target } => {
+                format!("Cleared Sepulchre {target:?} configuration")
+            }
+            AgentOperation::CreateSftpChrootAccount { username, .. } => {
+                format!("Created SFTP chroot account {username}")
+            }
+            AgentOperation::InstallSepulchreAuthorizedKey { username, .. } => {
+                format!("Installed an authorized key for {username}")
+            }
+            AgentOperation::RemoveSftpChrootAccount { username } => {
+                format!("Removed SFTP chroot account {username}")
+            }
+            AgentOperation::CreateSambaServiceUser { username, .. } => {
+                format!("Created Samba service user {username}")
+            }
+            AgentOperation::RemoveSambaServiceUser { username } => {
+                format!("Removed Samba service user {username}")
+            }
+            AgentOperation::RenderMountUnit { mount_point, .. } => {
+                format!("Mounted {mount_point}")
+            }
+            AgentOperation::RemoveMountUnit { mount_point, .. } => {
+                format!("Unmounted {mount_point}")
+            }
+            AgentOperation::WriteSepulchreMountCredentials { path, .. } => {
+                format!("Wrote mount credentials file {path}")
+            }
+            AgentOperation::CreateSepulchreShareDirectory { path, .. } => {
+                format!("Created share directory {path}")
+            }
             other => humanize_variant_name(&variant_debug_name(other)),
         }
     }
@@ -1641,6 +1817,81 @@ impl fmt::Debug for AgentOperation {
                 .field("path", path)
                 .finish(),
             AgentOperation::ScanSecurityEvents => write!(f, "ScanSecurityEvents"),
+            AgentOperation::DetectPackageBackend => write!(f, "DetectPackageBackend"),
+            AgentOperation::RenderSepulchreConfig { target, content } => f
+                .debug_struct("RenderSepulchreConfig")
+                .field("target", target)
+                .field("content_len", &content.len())
+                .finish(),
+            AgentOperation::ClearSepulchreConfig { target } => f
+                .debug_struct("ClearSepulchreConfig")
+                .field("target", target)
+                .finish(),
+            AgentOperation::CheckSepulchreConfigIncludeDirective { target } => f
+                .debug_struct("CheckSepulchreConfigIncludeDirective")
+                .field("target", target)
+                .finish(),
+            AgentOperation::CreateSftpChrootAccount {
+                username,
+                chroot_dir,
+            } => f
+                .debug_struct("CreateSftpChrootAccount")
+                .field("username", username)
+                .field("chroot_dir", chroot_dir)
+                .finish(),
+            AgentOperation::InstallSepulchreAuthorizedKey {
+                username,
+                public_key,
+            } => f
+                .debug_struct("InstallSepulchreAuthorizedKey")
+                .field("username", username)
+                .field("public_key", public_key)
+                .finish(),
+            AgentOperation::RemoveSftpChrootAccount { username } => f
+                .debug_struct("RemoveSftpChrootAccount")
+                .field("username", username)
+                .finish(),
+            AgentOperation::CreateSambaServiceUser { username, .. } => f
+                .debug_struct("CreateSambaServiceUser")
+                .field("username", username)
+                .field("password", &"[REDACTED]")
+                .finish(),
+            AgentOperation::RemoveSambaServiceUser { username } => f
+                .debug_struct("RemoveSambaServiceUser")
+                .field("username", username)
+                .finish(),
+            AgentOperation::RenderMountUnit {
+                unit_name,
+                mount_point,
+                content,
+            } => f
+                .debug_struct("RenderMountUnit")
+                .field("unit_name", unit_name)
+                .field("mount_point", mount_point)
+                .field("content_len", &content.len())
+                .finish(),
+            AgentOperation::RemoveMountUnit {
+                unit_name,
+                mount_point,
+            } => f
+                .debug_struct("RemoveMountUnit")
+                .field("unit_name", unit_name)
+                .field("mount_point", mount_point)
+                .finish(),
+            AgentOperation::CheckMountStatus { mount_point } => f
+                .debug_struct("CheckMountStatus")
+                .field("mount_point", mount_point)
+                .finish(),
+            AgentOperation::WriteSepulchreMountCredentials { path, .. } => f
+                .debug_struct("WriteSepulchreMountCredentials")
+                .field("path", path)
+                .field("contents", &"[REDACTED]")
+                .finish(),
+            AgentOperation::CreateSepulchreShareDirectory { path, owner } => f
+                .debug_struct("CreateSepulchreShareDirectory")
+                .field("path", path)
+                .field("owner", owner)
+                .finish(),
         }
     }
 }

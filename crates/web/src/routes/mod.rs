@@ -35,6 +35,7 @@ pub mod reliquary;
 pub mod reliquary_backup;
 pub mod resurrection;
 pub mod roles;
+pub mod sepulchre;
 pub mod settings;
 pub mod setup;
 pub mod style_guide;

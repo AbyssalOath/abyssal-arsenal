@@ -30,6 +30,12 @@ impl From<crate::reliquary_backup::BackupError> for WebError {
     }
 }
 
+impl From<crate::sepulchre::SepulchreError> for WebError {
+    fn from(e: crate::sepulchre::SepulchreError) -> Self {
+        WebError(AppError::Validation(e.to_string()))
+    }
+}
+
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
         // Unauthenticated is special-cased to a redirect rather than a bare

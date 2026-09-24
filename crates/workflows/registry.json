@@ -133,5 +133,84 @@
     "target_action": "list_services",
     "label": "Restart the Affected Service with Incarnation",
     "context_fields": ["path", "days_until_expiry"]
+  },
+  {
+    "source_arsenal": "sepulchre",
+    "source_action": "connection_validation",
+    "condition": {
+      "all": [
+        { "field": "error_kind", "operator": "equals", "value": "auth_failed" },
+        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+      ]
+    },
+    "target_arsenal": "cryptkeeper",
+    "target_action": "show_host",
+    "label": "Review Keys and Authorized Keys with Cryptkeeper",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "sepulchre",
+    "source_action": "connection_validation",
+    "condition": {
+      "all": [
+        { "field": "error_kind", "operator": "equals", "value": "host_key_mismatch" },
+        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+      ]
+    },
+    "target_arsenal": "cryptkeeper",
+    "target_action": "show_host",
+    "label": "Review Host Keys with Cryptkeeper",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "sepulchre",
+    "source_action": "connection_validation",
+    "condition": {
+      "all": [
+        { "field": "error_kind", "operator": "equals", "value": "method_unavailable" },
+        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+      ]
+    },
+    "target_arsenal": "sepulchre",
+    "target_action": "show_host",
+    "label": "Install Prerequisites on Host",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "sepulchre",
+    "source_action": "connection_validation",
+    "condition": {
+      "all": [
+        { "field": "error_kind", "operator": "equals", "value": "read_only" },
+        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+      ]
+    },
+    "target_arsenal": "resurrection",
+    "target_action": "read_only_filesystems",
+    "label": "Check Read-Only Filesystems with Resurrection",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "sepulchre",
+    "source_action": "mount_status",
+    "condition": { "field": "read_only", "operator": "equals", "value": true },
+    "target_arsenal": "resurrection",
+    "target_action": "read_only_filesystems",
+    "label": "Check Read-Only Filesystems with Resurrection",
+    "context_fields": ["mount_point", "source"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "read_only_filesystems",
+    "condition": {
+      "all": [
+        { "field": "mount_point", "operator": "exists" },
+        { "field": "fstype", "operator": "matches", "value": "^(nfs4?|cifs|smb3|fuse\\.sshfs)$" }
+      ]
+    },
+    "target_arsenal": "sepulchre",
+    "target_action": "show_host",
+    "label": "Check Network Storage with Sepulchre",
+    "context_fields": ["mount_point"]
   }
 ]

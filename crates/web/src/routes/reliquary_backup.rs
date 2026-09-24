@@ -32,9 +32,21 @@ use crate::templates::{
 };
 use crate::theme;
 
-fn job_row(job: abyssal_core::BackupJob, tz: &str) -> BackupJobRow {
+fn job_row(
+    job: abyssal_core::BackupJob,
+    tz: &str,
+    connection_names: &std::collections::HashMap<Uuid, String>,
+) -> BackupJobRow {
+    let destination_label = match job.destination_connection_id {
+        None => "Local".to_string(),
+        Some(id) => connection_names
+            .get(&id)
+            .map(|name| format!("Sepulchre: {name}"))
+            .unwrap_or_else(|| "Sepulchre (connection deleted)".to_string()),
+    };
     BackupJobRow {
         id: job.id.to_string(),
+        destination_label,
         status_label: job.status.label(),
         status_key: job.status.as_str(),
         trigger_label: match job.trigger_source {
@@ -114,11 +126,50 @@ async fn render_page(
     )
     .await?;
 
+    // All connections, not just eligible ones -- a job's `destination_label`
+    // needs to resolve even for a connection that's since been disabled or
+    // had its role changed, not just ones currently pickable for a new
+    // backup.
+    let all_connections = repo::storage_connections::list(
+        &state.pool,
+        &repo::storage_connections::ConnectionFilter::default(),
+        0,
+        500,
+    )
+    .await?;
+    let connection_names: std::collections::HashMap<Uuid, String> = all_connections
+        .iter()
+        .map(|c| (c.id, c.name.clone()))
+        .collect();
+
     let jobs = repo::reliquary_backups::list(&state.pool)
         .await?
         .into_iter()
-        .map(|j| job_row(j, &ctx.user.timezone))
+        .map(|j| job_row(j, &ctx.user.timezone, &connection_names))
         .collect();
+
+    let default_destination_connection_id = repo::settings::get_string(
+        &state.pool,
+        abyssal_core::settings::RELIQUARY_BACKUP_DESTINATION_CONNECTION_ID,
+        "",
+    )
+    .await?;
+
+    // Only connections actually eligible as a backup destination --
+    // enabled and holding the `backup_destination` role. `resolve_destination`
+    // still re-checks full usability (every capability verified, validated
+    // recently) at submit time; this is just what's worth offering in the
+    // dropdown at all.
+    let mut destination_connections = Vec::new();
+    for connection in all_connections.iter().filter(|c| c.enabled) {
+        let roles =
+            repo::storage_connections::roles_for_connection(&state.pool, connection.id).await?;
+        if roles.contains(&abyssal_core::ConnectionRole::BackupDestination) {
+            let id = connection.id.to_string();
+            let is_default = id == default_destination_connection_id;
+            destination_connections.push((id, connection.name.clone(), is_default));
+        }
+    }
 
     let schedule_enabled = repo::settings::get_bool(
         &state.pool,
@@ -175,6 +226,8 @@ async fn render_page(
         retention_keep_last,
         retention_days,
         destination_path,
+        destination_connections,
+        default_destination_connection_id,
         encrypt_by_default,
         encryption_key_available: state.encryption_key.is_some(),
         include_audit_logs_by_default,
@@ -204,6 +257,10 @@ pub struct CreateBackupForm {
     passphrase: String,
     #[serde(default)]
     passphrase_confirm: String,
+    /// A Sepulchre connection's UUID, or empty for the local destination
+    /// -- see `orchestrator::resolve_destination`.
+    #[serde(default)]
+    destination_connection_id: String,
 }
 
 pub async fn create(
@@ -292,18 +349,46 @@ pub async fn create(
         None
     };
 
-    let destination_path = repo::settings::get_string(
-        &state.pool,
-        abyssal_core::settings::RELIQUARY_BACKUP_DESTINATION_PATH,
-        abyssal_core::settings::RELIQUARY_BACKUP_DEFAULT_DESTINATION_PATH,
-    )
-    .await?;
+    let connection_id = form.destination_connection_id.trim();
+    let connection_id = if connection_id.is_empty() {
+        None
+    } else {
+        match Uuid::parse_str(connection_id) {
+            Ok(id) => Some(id),
+            Err(_) => {
+                return render_page(
+                    &state,
+                    &jar,
+                    &ctx,
+                    None,
+                    Some("Not a valid destination.".to_string()),
+                )
+                .await;
+            }
+        }
+    };
+    let (storage, destination_label) =
+        match orchestrator::resolve_destination(&state, connection_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                return render_page(
+                    &state,
+                    &jar,
+                    &ctx,
+                    None,
+                    Some(format!("That destination isn't usable right now: {e}")),
+                )
+                .await;
+            }
+        };
 
     let cancel = CancellationToken::new();
     let job_id = orchestrator::run_backup(
         &state.pool,
         state.reliquary_backup_provider.as_ref(),
-        &destination_path,
+        storage.as_ref(),
+        &destination_label,
+        connection_id,
         RunBackupOptions {
             trigger_source: abyssal_core::BackupTrigger::Manual,
             components,
@@ -355,6 +440,25 @@ pub async fn create(
     }
 }
 
+/// Download/verify/restore all read the archive back from a real local
+/// path (`storage.resolve(file_name)` + direct filesystem I/O) -- true
+/// for `LocalFs` but not for a Sepulchre-backed destination, whose
+/// `resolve()` is a synthetic, display-only string (see
+/// `sepulchre::reliquary_adapter`'s doc comment). Refused here with a
+/// clear reason rather than left to fail as a confusing "file not found"
+/// partway through one of those operations.
+fn require_local_destination(job: &abyssal_core::BackupJob) -> Result<(), WebError> {
+    if job.destination_connection_id.is_some() {
+        return Err(WebError(AppError::Validation(
+            "This backup was written to a Sepulchre connection -- downloading, verifying, and \
+             restoring from a Sepulchre-backed destination isn't supported yet, only writing to \
+             one. See docs/sepulchre.md."
+                .into(),
+        )));
+    }
+    Ok(())
+}
+
 pub async fn download(
     State(state): State<AppState>,
     CurrentUser(ctx): CurrentUser,
@@ -365,6 +469,7 @@ pub async fn download(
     let job = repo::reliquary_backups::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
+    require_local_destination(&job)?;
     let file_name = job.file_name.ok_or(AppError::NotFound)?;
     // The file name comes from the DB row for this specific job ID, never
     // directly from the request -- there's no user-controlled path here
@@ -411,6 +516,7 @@ pub async fn verify_quick(
     let job = repo::reliquary_backups::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
+    require_local_destination(&job)?;
     let Some(file_name) = &job.file_name else {
         return render_page(
             &state,
@@ -496,7 +602,23 @@ pub async fn delete(
         .await?
         .ok_or(AppError::NotFound)?;
     if let Some(file_name) = &job.file_name {
-        state.reliquary_backup_storage.delete(file_name).await?;
+        // Best-effort: the connection this job used may since have been
+        // disabled or deleted entirely (the FK is `ON DELETE SET NULL`
+        // specifically so that's never blocked) -- an admin explicitly
+        // asking to delete this job record should still succeed even if
+        // the remote file underneath it can no longer be reached to
+        // clean up, rather than getting stuck forever on an
+        // unresolvable destination.
+        match orchestrator::resolve_destination(&state, job.destination_connection_id).await {
+            Ok((storage, _label)) => {
+                if let Err(e) = storage.delete(file_name).await {
+                    tracing::warn!(job_id = %id, error = %e, "could not delete the archive file for a deleted backup job");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(job_id = %id, error = %e, "could not resolve this job's destination to delete its archive file");
+            }
+        }
     }
     repo::reliquary_backups::delete(&state.pool, id).await?;
 
@@ -527,6 +649,11 @@ pub struct SettingsForm {
     retention_days: String,
     #[serde(default)]
     destination_path: String,
+    /// A Sepulchre connection's UUID, or empty for the local destination
+    /// -- the scheduled backup loop's own fixed answer (a manual "Backup
+    /// now" always lets the operator pick per-run instead).
+    #[serde(default)]
+    schedule_destination_connection_id: String,
     #[serde(default)]
     encrypt_by_default: bool,
     #[serde(default)]
@@ -553,6 +680,19 @@ pub async fn update_settings(
             &ctx,
             None,
             Some("Destination path must be an absolute path.".to_string()),
+        )
+        .await;
+    }
+    let schedule_destination_connection_id = form.schedule_destination_connection_id.trim();
+    if !schedule_destination_connection_id.is_empty()
+        && Uuid::parse_str(schedule_destination_connection_id).is_err()
+    {
+        return render_page(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            Some("Not a valid scheduled-backup destination.".to_string()),
         )
         .await;
     }
@@ -590,6 +730,13 @@ pub async fn update_settings(
         &state.pool,
         abyssal_core::settings::RELIQUARY_BACKUP_DESTINATION_PATH,
         serde_json::json!(destination_path),
+        by,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        abyssal_core::settings::RELIQUARY_BACKUP_DESTINATION_CONNECTION_ID,
+        serde_json::json!(schedule_destination_connection_id),
         by,
     )
     .await?;
@@ -640,6 +787,7 @@ pub async fn restore_preview(
     let job = repo::reliquary_backups::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
+    require_local_destination(&job)?;
     let Some(manifest) = &job.manifest else {
         return Err(WebError(AppError::Validation(
             "This backup has no manifest -- it can't be restored.".into(),
@@ -727,6 +875,7 @@ pub async fn restore(
     let job = repo::reliquary_backups::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
+    require_local_destination(&job)?;
     let Some(manifest) = job.manifest.clone() else {
         return Err(WebError(AppError::Validation(
             "This backup has no manifest -- it can't be restored.".into(),
@@ -751,18 +900,19 @@ pub async fn restore(
 
     // Automatic pre-restore safety backup, unencrypted (there's no
     // passphrase collection step for this one -- it exists purely so
-    // "the restore itself went wrong" has a way back).
-    let destination_path = repo::settings::get_string(
-        &state.pool,
-        abyssal_core::settings::RELIQUARY_BACKUP_DESTINATION_PATH,
-        abyssal_core::settings::RELIQUARY_BACKUP_DEFAULT_DESTINATION_PATH,
-    )
-    .await?;
+    // "the restore itself went wrong" has a way back). Always the local
+    // destination, deliberately -- restoring is exactly the moment a
+    // remote Sepulchre connection's own reachability is least trustworthy
+    // to depend on, and a safety net that might itself be unreachable
+    // defeats the point of having one.
+    let (safety_storage, safety_label) = orchestrator::resolve_destination(&state, None).await?;
     let safety_cancel = CancellationToken::new();
     let _ = orchestrator::run_backup(
         &state.pool,
         state.reliquary_backup_provider.as_ref(),
-        &destination_path,
+        safety_storage.as_ref(),
+        &safety_label,
+        None,
         RunBackupOptions {
             trigger_source: abyssal_core::BackupTrigger::Manual,
             components: vec![BackupComponent::Database],
@@ -824,4 +974,68 @@ pub async fn restore(
 fn database_url_from_env() -> Result<String, WebError> {
     std::env::var("DATABASE_URL")
         .map_err(|_| WebError(AppError::Internal(anyhow::anyhow!("DATABASE_URL not set"))))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn job(destination_connection_id: Option<Uuid>) -> abyssal_core::BackupJob {
+        abyssal_core::BackupJob {
+            id: Uuid::new_v4(),
+            job_type: abyssal_core::BackupJobType::Native,
+            status: abyssal_core::BackupStatus::Succeeded,
+            trigger_source: abyssal_core::BackupTrigger::Manual,
+            components: vec![BackupComponent::Database],
+            encrypted: false,
+            includes_encryption_keys: false,
+            destination_path: "/backups".to_string(),
+            destination_connection_id,
+            file_name: Some("backup-test.tar.zst".to_string()),
+            size_bytes: Some(1024),
+            sha256: Some("deadbeef".to_string()),
+            manifest: None,
+            error_message: None,
+            verification_status: None,
+            verification_at: None,
+            verification_details: None,
+            started_at: None,
+            finished_at: None,
+            created_by: None,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_local_job_is_allowed_for_read_operations() {
+        assert!(require_local_destination(&job(None)).is_ok());
+    }
+
+    #[test]
+    fn a_sepulchre_backed_job_is_refused_for_read_operations() {
+        assert!(require_local_destination(&job(Some(Uuid::new_v4()))).is_err());
+    }
+
+    #[test]
+    fn destination_label_is_local_when_no_connection_is_set() {
+        let row = job_row(job(None), "UTC", &HashMap::new());
+        assert_eq!(row.destination_label, "Local");
+    }
+
+    #[test]
+    fn destination_label_names_a_known_connection() {
+        let id = Uuid::new_v4();
+        let mut names = HashMap::new();
+        names.insert(id, "my-sftp".to_string());
+        let row = job_row(job(Some(id)), "UTC", &names);
+        assert_eq!(row.destination_label, "Sepulchre: my-sftp");
+    }
+
+    #[test]
+    fn destination_label_notes_a_deleted_connection() {
+        let row = job_row(job(Some(Uuid::new_v4())), "UTC", &HashMap::new());
+        assert_eq!(row.destination_label, "Sepulchre (connection deleted)");
+    }
 }

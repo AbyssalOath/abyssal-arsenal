@@ -48,13 +48,14 @@ COPY crates/arsenals/vivisection/Cargo.toml crates/arsenals/vivisection/Cargo.to
 COPY crates/arsenals/inquest/Cargo.toml crates/arsenals/inquest/Cargo.toml
 COPY crates/arsenals/thanatos/Cargo.toml crates/arsenals/thanatos/Cargo.toml
 COPY crates/arsenals/panopticon/Cargo.toml crates/arsenals/panopticon/Cargo.toml
+COPY crates/arsenals/sepulchre/Cargo.toml crates/arsenals/sepulchre/Cargo.toml
 
 RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol web \
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \
         arsenals/apothecary arsenals/grimoire arsenals/cryptkeeper arsenals/defleshing arsenals/vivisection \
-        arsenals/inquest arsenals/thanatos arsenals/panopticon; do \
+        arsenals/inquest arsenals/thanatos arsenals/panopticon arsenals/sepulchre; do \
         mkdir -p crates/$crate/src && echo "// stub" > crates/$crate/src/lib.rs; \
     done \
     && mkdir -p crates/app/src && echo "fn main() {}" > crates/app/src/main.rs \
@@ -79,7 +80,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl nmap libcap2-bin mariadb-client \
+    ca-certificates curl nmap libcap2-bin mariadb-client smbclient \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /app --shell /usr/sbin/nologin abyssal
 

@@ -932,10 +932,12 @@ the architectural summary.
 
 - **`BackupProvider`/`StorageDestination` traits**
   (`crates/web/src/reliquary_backup/provider.rs`,`storage.rs`) exist
-  specifically so a future `Remote`/S3-backed implementation can be added
-  without touching the job model, orchestrator, or UI -- only
-  `NativeProvider`/`LocalFs` exist today, same reasoning as `AuthProvider`
-  existing before there's a second auth backend.
+  specifically so a second destination could be added without touching
+  the job model, orchestrator, or UI -- `LocalFs` and a Sepulchre-backed
+  destination are exactly that today (see "Sepulchre storage
+  connectivity" below), chosen per job rather than fixed at startup; only
+  `NativeProvider` exists as a `BackupProvider`, same reasoning as
+  `AuthProvider` existing before there's a second auth backend.
 - **Dump**: `mariadb-dump` (added to the runtime image via the Dockerfile's
   `mariadb-client` package), run as a real subprocess (never through a
   shell), credentials passed via a `0600` `--defaults-extra-file` -- never
@@ -993,6 +995,93 @@ the architectural summary.
   (not `CMD`) specifically so this appends its arguments rather than
   replacing the binary outright; with no arguments at all, the same image
   still just runs the server, unchanged.
+
+## Sepulchre storage connectivity
+
+A shared storage-connection layer -- SFTP, SMB/CIFS, and allowlisted local
+paths -- so other Arsenals (Reliquary first) consume a named connection
+instead of each building its own SFTP/SMB client and credential handling.
+Full detail lives in [docs/sepulchre.md](docs/sepulchre.md); this section
+is the architectural summary.
+
+- **Three separate concepts, not one**: `Protocol` (`sftp`/`smb`/`local`,
+  `#[non_exhaustive]`), `AccessMethod` (*how* -- `native_client`/
+  `diagnostic_client` are control-plane-only, `mount`/`rsync_ssh` are
+  managed-host-only; the control-plane container never performs a kernel
+  mount), and `ConnectionRole` (*what for* -- `backup_destination`/
+  `file_transfer`/`remote_storage`/`other`, many-to-many). A connection is
+  never inherently "a backup connection" -- consumers ask the resolver by
+  role and required capability, never by protocol.
+- **`StorageConnectionResolver::resolve(connection_id, RequiredUse)`**
+  (`crates/web/src/sepulchre/backend/mod.rs`) is the only way a consumer
+  gets a usable backend: enabled, holds the role, every required
+  capability *verified* (not just declared) by a recent, passing
+  validation run -- otherwise a typed `NotUsableReason`, never a bare
+  error string. Capabilities are re-proven every validation run and
+  cleared, not left stale, if a run doesn't re-verify them.
+- **`StorageBackend` trait** -- `stat`/`list`/`open_read`/`open_write`/
+  `delete`/`ensure_dir`/`free_space`, all async and streaming
+  (`AsyncRead`/`AsyncWrite`, never a whole file buffered in memory on the
+  SFTP/Local backends). Three implementations: `LocalBackend` (`cap-std`-
+  rooted, TOCTOU-safe, allowlisted via `SEPULCHRE_LOCAL_ROOTS`),
+  `SftpBackend` (`russh`+`russh-sftp`, mandatory pinned host-key
+  verification -- a later mismatch is a hard `host_key_mismatch`, never a
+  silent re-pin), and `SmbBackend` (shells out to `smbclient`, disk-
+  buffered rather than a true zero-copy stream -- a documented trade-off,
+  see docs/sepulchre.md).
+- **Secrets** are Sepulchre's own, not Cryptkeeper's -- Cryptkeeper is a
+  host-side security-inspection Arsenal with no credential vault of its
+  own. `storage_connection_secrets` reuses the same
+  `abyssal_core::crypto::EncryptionKey` (AES-256-GCM) Panopticon's switch
+  SNMP strings already use; secret fields are write-only in every form
+  (blank on submit means "keep the existing value"). Generating or
+  importing an SFTP keypair, and any other key-material action, requires
+  *both* `storage_connections.manage` and `security.manage` --
+  deliberately distinct permissions from the pre-existing `StorageView`/
+  `StorageManage` (Ossuary/Catacomb disk features), so holding one never
+  silently grants the other.
+- **Host-side provisioning** goes through the same agent-executor channel
+  every other Arsenal uses (no new remote-execution mechanism), only ever
+  edits a Sepulchre-owned drop-in/include file (never the distro's main
+  `sshd_config`/`smb.conf`), validates (`sshd -t`/`testparm -s`) before
+  every reload, and restores-and-reloads the previous config on any
+  validation or reload failure -- a bad config is never left applied.
+  Every SFTP directive is scoped inside a `Match User`/`Match Group`
+  block. Cryptkeeper can generate a host-side SSH keypair and list/remove
+  an `authorized_keys` entry, but never add one; Sepulchre writes its own,
+  into a Sepulchre-reserved `AuthorizedKeysFile` path, to avoid ownership
+  conflicts with a chrooted SFTP account. A host page wizard
+  (`/arsenals/sepulchre/hosts/:id`) drives this end to end -- provisioning
+  an SFTP or SMB share creates the host-side account, applies the config,
+  and creates the matching Sepulchre connection (generating and installing
+  a keypair for SFTP) in one step; a separate mount wizard creates or
+  removes a CIFS mount backed by an existing SMB connection. Verified live
+  against a real connected managed host, not just unit-tested.
+- **Validation** is an ordered check list producing a stable `error_kind`
+  per check (`unreachable`, `auth_failed`, `host_key_mismatch`,
+  `permission_denied`, `method_unavailable`, `path_not_allowed`, ...),
+  feeding the workflow registry the same way every other Arsenal's
+  checks do.
+- **Reliquary can write a backup directly to a Sepulchre connection**,
+  picked per manual run (a Destination dropdown) or configured as the
+  scheduled loop's own fixed answer. `NativeProvider` no longer holds a
+  fixed `storage` field -- `BackupProvider::create()` takes
+  `storage: &dyn StorageDestination` per call, resolved by
+  `reliquary_backup::orchestrator::resolve_destination(state,
+  connection_id)` (`None` = local, `Some` = a Sepulchre connection
+  resolved the same way any other consumer is: `backup_destination`
+  role, every capability verified). Every job row records its own
+  `destination_connection_id` (`ON DELETE SET NULL`), so retention
+  pruning and deletion each resolve the *right* destination per job
+  rather than assuming one destination for everything. Reading a backup
+  back from a Sepulchre connection (download/verify/restore) remains a
+  documented, deliberate gap -- all three refuse cleanly for a
+  Sepulchre-backed job rather than failing confusingly against a
+  synthetic, non-real path. See docs/sepulchre.md's "How Reliquary
+  consumes a Sepulchre connection today" for the full detail, including
+  a real bug this wiring caught and fixed live
+  (`LocalBackend::ensure_dir("")` rejecting the exact call
+  `SepulchreDestination::open_write` always makes first).
 
 ## Version tracking and update notice
 
@@ -1235,9 +1324,12 @@ model, not oversights:
   anywhere in the control plane.
 - Reliquary's native backups have no deep verify (scratch-database
   restore + `CHECK TABLE` + row-count comparison) -- only quick verify
-  (checksum/manifest/readability). No remote/cloud storage destination
-  exists yet (`StorageDestination`/`BackupProvider` are traits so one can
-  be added without a refactor). Scheduled/unattended backups are always
+  (checksum/manifest/readability), and quick verify (along with download
+  and restore) doesn't work against a Sepulchre-backed destination yet,
+  only the local one -- writing to one works today, reading one back
+  doesn't. No S3/cloud-object-storage destination exists
+  (`StorageDestination`/`BackupProvider` are traits so one can be added
+  without a refactor). Scheduled/unattended backups are always
   unencrypted, since there's nobody present to supply a passphrase. A
   restored archive's Configuration/Encryption-keys components are only
   extracted to disk, never automatically re-applied. All flagged, not

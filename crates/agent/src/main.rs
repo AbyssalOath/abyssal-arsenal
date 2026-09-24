@@ -22,6 +22,7 @@ mod process;
 mod reanimation;
 mod reliquary;
 mod resurrection;
+mod sepulchre;
 mod thanatos;
 mod transport;
 mod vivisection;

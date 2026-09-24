@@ -12,6 +12,57 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Sepulchre: storage and file-sharing connectivity**, a new Arsenal
+  under Operate providing a shared connection layer -- SFTP, SMB/CIFS,
+  and allowlisted local paths -- that other Arsenals consume instead of
+  each building its own SFTP/SMB client and credential handling.
+  Reliquary's native backups can now write directly to a Sepulchre
+  connection -- picked per manual run from a Destination dropdown, or
+  configured as the scheduled loop's own fixed destination -- verified
+  live against a real connection (the archive was confirmed to land in
+  that connection's own directory, not just via a success message).
+  Reading a backup back from a Sepulchre connection (download/verify/
+  restore) is a documented, deliberate gap for now -- refused with a
+  clear message rather than failing confusingly; see
+  docs/reliquary-backups.md's "Sepulchre-backed destinations" section. A
+  connection's *protocol* (SFTP/SMB/local),
+  *access method* (native client, mount, rsync-over-ssh, diagnostic
+  client -- the control plane itself never performs a kernel mount), and
+  *role* (backup destination, file transfer, remote storage, other) are
+  three independent, many-to-many concepts, so a consumer always asks
+  for a connection by role and capability, never by protocol. Every
+  capability (read/list/write/delete) is only ever marked verified by an
+  actual passing validation check, never left stale. Secrets (passwords,
+  SSH keys) are Sepulchre's own -- encrypted at rest with the same
+  `ENCRYPTION_KEY`-based mechanism Panopticon's switch credentials
+  already use, write-only in every form -- not Cryptkeeper's, which
+  remains a host-side security-inspection Arsenal with no credential
+  vault. SFTP host-key verification is mandatory and pinned (a later
+  mismatch is a hard failure, never a silent re-pin); host-side
+  provisioning (SFTP chroot accounts, Samba shares, mount units) only
+  ever touches a Sepulchre-owned drop-in config file, validates before
+  every reload, and rolls back automatically on failure. A host page
+  wizard (`/arsenals/sepulchre/hosts/:id`) provisions an SFTP chroot
+  share or an SMB share end to end -- account creation, a control-plane
+  keypair generated and installed as the account's authorized key (SFTP)
+  or a Samba service user (SMB), the config drop-in applied, and the
+  matching Sepulchre connection created and automatically validated, all
+  in one step -- plus creating and removing a CIFS mount backed by an
+  existing SMB connection. Verified end to end against real standalone
+  SFTP/SMB servers and a real connected managed host (a disposable,
+  systemd-enabled container, never the control plane's own host), which
+  is also how a `smbclient` NT_STATUS-code gap in `error_kind` mapping,
+  an SFTP chroot's base path colliding with `trim_end_matches`, an SMB
+  share directory created root-owned (blocking the very account meant to
+  write to it), a systemd mount-unit name that didn't escape a literal
+  hyphen, and (once Reliquary was wired to it) `LocalBackend::ensure_dir`
+  rejecting the empty-path call every Sepulchre-backed write makes first
+  -- were all actually caught and fixed. See
+  [ARCHITECTURE.md](ARCHITECTURE.md#sepulchre-storage-connectivity) and
+  [docs/sepulchre.md](docs/sepulchre.md) for the full picture, including
+  what's deliberately deferred (a control-plane rsync method, SSHFS
+  mounts of an SFTP connection, and reading a backup back from a
+  Sepulchre-backed destination).
 - **Custom roles with delegated sub-roles**: an admin holding
   `roles.manage` (Super Admin, or anyone a Super Admin grants it to) can
   now create custom sub-roles nested under any role, up to 3 levels deep
@@ -140,8 +191,12 @@ for what that means for cloning and updating.
   containers, no web UI or session required. See
   [ARCHITECTURE.md](ARCHITECTURE.md#reliquary-native-backups-github-issue-9)
   and [docs/reliquary-backups.md](docs/reliquary-backups.md) for the full
-  picture, including what's deliberately deferred (deep verify, remote/cloud
-  storage, encrypted unattended backups).
+  picture. A genuinely off-host destination (an SFTP/SMB server or an
+  allowlisted local path via a Sepulchre connection, not just S3/cloud
+  storage specifically) was added later in this same changelog, once
+  Sepulchre existed -- see that entry above for what's deferred there
+  (reading a backup back from one) versus what's deferred here (deep
+  verify, encrypted unattended backups).
 
 ### Fixed
 

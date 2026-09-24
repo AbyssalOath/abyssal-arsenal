@@ -1,0 +1,79 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}New {{ protocol_label }} Share — {{ host_name }} — Sepulchre{% endblock %}
+{% block heading %}New {{ protocol_label }} Share on {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/sepulchre/hosts/{{ host_id }}">&larr; {{ host_name }}</a></p>
+
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+<div class="warning-banner">
+  {% call macros::icon("warning") %} This creates a system account and applies a Sepulchre-owned
+  config drop-in on this host. The config is validated (<code>sshd -t</code>/<code>testparm -s</code>)
+  before it's reloaded, and rolled back automatically if validation or reload fails -- see
+  docs/sepulchre.md.
+</div>
+
+<div class="card">
+  <form method="post" action="/arsenals/sepulchre/hosts/{{ host_id }}/shares">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="protocol" value="{{ protocol }}">
+
+    <label for="connection_name">Connection name</label>
+    <input type="text" id="connection_name" name="connection_name" required style="max-width:360px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      A new Sepulchre connection by this name is created alongside the host-side share, so other
+      arsenals can consume it the same way as any control-plane connection.
+    </p>
+
+    <label for="reachable_host">Address the control plane will use to reach this host</label>
+    <input type="text" id="reachable_host" name="reachable_host" value="{{ reachable_host_default }}" required style="max-width:360px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Pre-filled from the last address this host's agent connected from -- confirm it's actually
+      reachable from the control plane on the port below (that may differ from the agent's own
+      WebSocket connection).
+    </p>
+
+    {% if protocol == "sftp" %}
+    <label for="username">Chroot account username</label>
+    <input type="text" id="username" name="username" required placeholder="sepulchre-sftp1" style="max-width:280px;">
+    <label for="chroot_dir">Chroot directory (optional)</label>
+    <input type="text" id="chroot_dir" name="chroot_dir" placeholder="/srv/sftp/&lt;username&gt;" style="max-width:480px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Left blank, defaults to <code>/srv/sftp/&lt;username&gt;</code>. A control-plane SSH keypair
+      is generated automatically and its public half installed as this account's authorized key --
+      the private key never leaves the control plane, and Cryptkeeper's own host-side key
+      generation is never used for it.
+    </p>
+    {% else %}
+    <label for="username">Samba service account username</label>
+    <input type="text" id="username" name="username" required placeholder="svc-sepulchre1" style="max-width:280px;">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="new-password" required style="max-width:360px;">
+    <label for="share_name">Share name</label>
+    <input type="text" id="share_name" name="share_name" required style="max-width:280px;">
+    <label for="local_path">Directory on the host</label>
+    <input type="text" id="local_path" name="local_path" required placeholder="/srv/smb/&lt;share_name&gt;" style="max-width:480px;">
+    <label class="inline-radio"><input type="checkbox" name="read_only" value="true"> Read-only share</label>
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:10px 0;">
+      The directory is created automatically (root-owned, <code>0755</code>) if it doesn't exist.
+      Guest/anonymous access is never enabled; SMB3 minimum and signing are always required.
+    </p>
+    {% endif %}
+
+    <label style="margin-top:14px;">Roles (what this connection is for)</label>
+    <div class="action-grid">
+      <label class="inline-radio"><input type="checkbox" name="role_backup_destination" value="true"> Backup destination</label>
+      <label class="inline-radio"><input type="checkbox" name="role_file_transfer" value="true" checked> File transfer</label>
+      <label class="inline-radio"><input type="checkbox" name="role_remote_storage" value="true"> Remote storage</label>
+      <label class="inline-radio"><input type="checkbox" name="role_other" value="true"> Other</label>
+    </div>
+
+    <button type="submit" class="btn-warning" style="margin-top:14px;">Provision share</button>
+  </form>
+</div>
+
+{% endblock %}

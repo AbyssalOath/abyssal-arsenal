@@ -1,0 +1,259 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}{{ name }} — Sepulchre — Abyssal Arsenal{% endblock %}
+{% block heading %}{{ name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/sepulchre">&larr; Connections</a></p>
+
+{% if let Some(m) = message %}
+<div class="info-banner">{{ m }}</div>
+{% endif %}
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>
+    {{ name }}
+    <span class="badge badge-muted">{{ protocol_label }}</span>
+    {% if !enabled %}<span class="badge badge-muted">Disabled</span>{% endif %}
+  </h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Origin: {{ origin_label }}
+    {% if let Some(host) = host_name %}{% if let Some(hid) = host_id %} &middot; Host: <a href="/arsenals/sepulchre/hosts/{{ hid }}">{{ host }}</a>{% endif %}{% endif %}
+  </p>
+  <table>
+    <tbody>
+      {% for (label, value) in config_summary %}
+      <tr><th>{{ label }}</th><td>{{ value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if needs_host_key_pin %}
+  <div class="warning-banner" style="margin-top:14px;">
+    {% call macros::icon("warning") %} This SFTP server's host key isn't pinned yet -- validation
+    and use are blocked until you do.
+    <a href="/arsenals/sepulchre/connections/{{ id }}/host-key">Review and pin the host key&hellip;</a>
+  </div>
+  {% else if let Some(fp) = pinned_fingerprint %}
+  <p style="color:var(--text-muted); font-size:0.85rem;">Pinned host key: <code>{{ fp }}</code></p>
+  {% endif %}
+
+  {% if let Some(pubkey) = public_key %}
+  <details>
+    <summary>Public key (install this on the remote server)</summary>
+    <pre style="white-space:pre-wrap; word-break:break-all; background:var(--surface-raised); padding:10px; border-radius:5px;">{{ pubkey }}</pre>
+  </details>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Roles</h2>
+  <p style="color:var(--text-muted); margin-top:0;">What this connection is for -- a consumer (e.g. Reliquary) asks for a connection by role, never by protocol.</p>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/roles">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div class="action-grid">
+      {% for (key, label, held) in roles %}
+      <label class="inline-radio"><input type="checkbox" name="role_{{ key }}" value="true" {% if held %}checked{% endif %}> {{ label }}</label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn-secondary" style="margin-top:10px;">Save roles</button>
+  </form>
+  {% else %}
+  <div class="action-grid">
+    {% for (_key, label, held) in roles %}
+    {% if held %}<span class="badge badge-success">{{ label }}</span>{% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Capabilities</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Declared is what you've indicated this connection should be able to do; verified is only
+    ever set by a successful validation run's own test, and a consumer may only rely on
+    verified capabilities.
+  </p>
+  <table>
+    <thead><tr><th>Capability</th><th>Declared</th><th>Verified</th></tr></thead>
+    <tbody>
+      {% for cap in capabilities %}
+      <tr>
+        <td>{{ cap.label }}</td>
+        <td>{% if cap.declared %}<span class="badge badge-success">Yes</span>{% else %}<span class="badge badge-muted">No</span>{% endif %}</td>
+        <td>{% if cap.verified %}<span class="badge badge-success">Verified</span>{% else %}<span class="badge badge-muted">Unverified</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Access methods</h2>
+  {% if access_methods.is_empty() %}
+  <p style="color:var(--text-muted);">None configured.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Method</th><th>Context</th><th>Host</th></tr></thead>
+    <tbody>
+      {% for m in access_methods %}
+      <tr><td>{{ m.method_label }}</td><td>{{ m.context_label }}</td><td>{% if let Some(h) = m.host_name %}{{ h }}{% else %}&mdash;{% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Used by</h2>
+  {% if consumers.is_empty() %}
+  <p style="color:var(--text-muted);">Not currently used by any consumer.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Arsenal</th><th>Purpose</th><th>Role used</th></tr></thead>
+    <tbody>
+      {% for c in consumers %}
+      <tr><td>{{ c.arsenal }}</td><td>{{ c.purpose }}</td><td>{{ c.role_label }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Validation</h2>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/validate" class="actions">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="mode" value="read_only">
+    <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Validate (read-only)</button>
+  </form>
+  <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/validate" class="actions" style="margin-top:8px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="mode" value="read_write">
+    <button type="submit" class="btn-warning">{% call macros::icon("check") %} Validate (read/write test)</button>
+  </form>
+  <p style="color:var(--text-muted); font-size:0.8rem;">
+    The read/write test writes, reads back, checksum-verifies, and deletes a small scratch file
+    under a reserved subdirectory -- never touches your real data.
+  </p>
+  {% endif %}
+
+  {% if let Some(run) = latest_run %}
+  <h3>Latest result
+    {% if run.overall_passed %}<span class="badge badge-success">{{ run.overall_label }}</span>
+    {% else %}<span class="badge badge-muted">{{ run.overall_label }}</span>{% endif %}
+    <span class="badge badge-muted">{{ run.mode_label }}</span>
+  </h3>
+  <table>
+    <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for check in run.checks %}
+      <tr>
+        <td>{{ check.check }}</td>
+        <td>
+          {% if check.status_passed %}<span class="badge badge-success">{{ check.status_label }}</span>
+          {% else if check.status_skipped %}<span class="badge badge-muted">{{ check.status_label }}</span>
+          {% else %}<span class="badge badge-muted">{{ check.status_label }}</span>{% endif %}
+          {% if let Some(kind) = check.error_kind %}<br><span style="color:var(--text-muted); font-size:0.75rem;">{{ kind }}</span>{% endif %}
+        </td>
+        <td>{{ check.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-muted);">Never validated.</p>
+  {% endif %}
+
+  {% if run_history.len() > 1 %}
+  <details class="results-panel" style="margin-top:14px;">
+    <summary>Validation history ({{ run_history.len() }})</summary>
+    {% for run in run_history %}
+    <p>
+      {{ run.started_at }} &mdash;
+      {% if run.overall_passed %}<span class="badge badge-success">{{ run.overall_label }}</span>
+      {% else %}<span class="badge badge-muted">{{ run.overall_label }}</span>{% endif %}
+      <span class="badge badge-muted">{{ run.mode_label }}</span>
+    </p>
+    {% endfor %}
+  </details>
+  {% endif %}
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h2>{% call macros::icon("connection") %} Credentials &amp; keys</h2>
+  {% if protocol == "sftp" %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    {% if let Some(updated) = secret_updated_at %}Secret last updated {{ updated }}.{% else %}No secret stored yet.{% endif %}
+  </p>
+  <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/secret">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="action" value="password">
+    <label for="new-password">Replace password</label>
+    <input type="password" id="new-password" name="password" autocomplete="new-password" style="max-width:360px;">
+    <button type="submit" class="btn-secondary" style="margin-top:6px;">Replace password</button>
+  </form>
+  {% if can_manage_secrets %}
+  <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/secret" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="action" value="generate_key">
+    <button type="submit" class="btn-warning">Generate a new SSH keypair</button>
+  </form>
+  <details style="margin-top:10px;">
+    <summary>Import an existing private key instead</summary>
+    <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/secret" style="margin-top:10px;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <input type="hidden" name="action" value="import_key">
+      <label for="private-key">Private key (OpenSSH format)</label>
+      <textarea id="private-key" name="private_key" rows="6" style="max-width:480px; font-family:monospace;"></textarea>
+      <label for="key-passphrase">Passphrase (if the key is encrypted)</label>
+      <input type="password" id="key-passphrase" name="passphrase" autocomplete="off" style="max-width:360px;">
+      <button type="submit" class="btn-warning" style="margin-top:6px;">Import key</button>
+    </form>
+  </details>
+  {% else %}
+  <p style="color:var(--text-muted); font-size:0.8rem;">
+    Generating or importing a key requires both Sepulchre and Cryptkeeper manage permissions.
+  </p>
+  {% endif %}
+  {% else if protocol == "smb" %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    {% if let Some(updated) = secret_updated_at %}Password last updated {{ updated }}.{% endif %}
+  </p>
+  <form method="post" action="/arsenals/sepulchre/connections/{{ id }}/secret">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="action" value="password">
+    <label for="new-password">Replace password</label>
+    <input type="password" id="new-password" name="password" autocomplete="new-password" style="max-width:360px;">
+    <button type="submit" class="btn-secondary" style="margin-top:6px;">Replace password</button>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">Local connections have no credentials.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="actions">
+    <a class="btn btn-danger" href="/arsenals/sepulchre/connections/{{ id }}/delete/confirm">Delete connection&hellip;</a>
+  </div>
+</div>
+{% endif %}
+
+{% if !suggested_actions.is_empty() %}
+<div class="card suggested-actions-panel">
+  <h2>Suggested next steps</h2>
+  <div class="actions">
+    {% for action in suggested_actions %}
+    <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

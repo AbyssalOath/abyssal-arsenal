@@ -13,6 +13,7 @@ mod panopticon_traffic;
 pub mod reliquary_backup;
 pub mod router;
 pub mod routes;
+pub mod sepulchre;
 pub mod ssh_deploy;
 pub mod state;
 pub mod templates;

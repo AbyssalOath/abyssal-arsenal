@@ -173,6 +173,14 @@ pub const RELIQUARY_BACKUP_RETENTION_DEFAULT_DAYS: u32 = 30;
 pub const RELIQUARY_BACKUP_DESTINATION_PATH: &str = "reliquary.backup_destination_path";
 pub const RELIQUARY_BACKUP_DEFAULT_DESTINATION_PATH: &str = "/backups";
 
+/// Which Sepulchre connection scheduled backups write to -- a UUID
+/// string, or empty/unset for the local destination above (the default).
+/// A manual "Backup now" always lets the operator pick per-run instead;
+/// this is only the schedule's own fixed answer, since nobody's present
+/// to choose each time. See docs/sepulchre.md.
+pub const RELIQUARY_BACKUP_DESTINATION_CONNECTION_ID: &str =
+    "reliquary.backup_destination_connection_id";
+
 /// Whether new backups are encrypted at rest by default (the create-backup
 /// form can still override this per backup). Strongly recommended on;
 /// forced on regardless of this setting whenever "include encryption

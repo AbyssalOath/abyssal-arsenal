@@ -1,0 +1,115 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Sepulchre — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Sepulchre — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/sepulchre">&larr; Connections</a></p>
+
+{% if let Some(m) = message %}
+<div class="info-banner">{{ m }}</div>
+{% endif %}
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+{% if !context.is_empty() %}
+<div class="info-banner">
+  Arrived here from a suggested next step, with:
+  {% for row in context %}{{ row.label }}: {{ row.value }}{% if !loop.last %}, {% endif %}{% endfor %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Prerequisites</h2>
+  {% if let Some(backend) = package_backend %}
+  <p>This host uses <strong>{{ backend }}</strong> for package management.</p>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">Package manager not detected yet.</p>
+  {% endif %}
+  {% if can_manage %}
+  <form method="post" action="/arsenals/sepulchre/hosts/{{ host_id }}/detect-backend">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">Detect package manager</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>{% call macros::icon("host") %} Shares</h2>
+  {% if shares.is_empty() %}
+  <p style="color:var(--text-muted);">No shares provisioned on this host yet.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Protocol</th><th>Path</th><th>Name/Account</th><th>Connection</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for s in shares %}
+      <tr>
+        <td>{{ s.protocol_label }}</td>
+        <td>{{ s.local_path }}</td>
+        <td>{{ s.label }}</td>
+        <td>{% if let Some(c) = s.connection_name %}{{ c }}{% else %}&mdash;{% endif %}</td>
+        {% if can_manage %}<td><a href="/arsenals/sepulchre/hosts/{{ host_id }}/shares/{{ s.id }}/delete/confirm">Remove&hellip;</a></td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if can_manage %}
+  <div class="actions" style="margin-top:10px;">
+    {% if can_manage_keys %}
+    <a class="btn-secondary" href="/arsenals/sepulchre/hosts/{{ host_id }}/shares/new?protocol=sftp">New SFTP share</a>
+    {% endif %}
+    <a class="btn-secondary" href="/arsenals/sepulchre/hosts/{{ host_id }}/shares/new?protocol=smb">New SMB share</a>
+  </div>
+  {% if !can_manage_keys %}
+  <p style="color:var(--text-muted); font-size:0.8rem;">
+    Provisioning an SFTP share generates a control-plane keypair, which also requires
+    Cryptkeeper's <code>security.manage</code> permission.
+  </p>
+  {% endif %}
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Mounts</h2>
+  {% if mounts.is_empty() %}
+  <p style="color:var(--text-muted);">No mounts on this host yet.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Mount point</th><th>State</th><th>Connection</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for m in mounts %}
+      <tr>
+        <td>{{ m.mount_point }}</td>
+        <td>{{ m.state_label }}</td>
+        <td>{{ m.connection_name }}</td>
+        {% if can_manage %}<td><a href="/arsenals/sepulchre/hosts/{{ host_id }}/mounts/{{ m.id }}/delete/confirm">Remove&hellip;</a></td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if can_manage %}
+  <div class="actions" style="margin-top:10px;">
+    <a class="btn-secondary" href="/arsenals/sepulchre/hosts/{{ host_id }}/mounts/new">New mount</a>
+  </div>
+  <p style="color:var(--text-muted); font-size:0.8rem;">
+    Only SMB/CIFS connections can be mounted from here today -- SSHFS mounts of an SFTP
+    connection are a documented, deferred gap (see docs/sepulchre.md).
+  </p>
+  {% endif %}
+</div>
+
+{% if !suggested_actions.is_empty() %}
+<div class="card suggested-actions-panel">
+  <h2>Suggested next steps</h2>
+  <div class="actions">
+    {% for action in suggested_actions %}
+    <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

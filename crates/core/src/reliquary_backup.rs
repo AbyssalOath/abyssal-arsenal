@@ -250,6 +250,10 @@ pub struct BackupJob {
     pub encrypted: bool,
     pub includes_encryption_keys: bool,
     pub destination_path: String,
+    /// `None` means the local destination
+    /// (`RELIQUARY_BACKUP_DESTINATION_PATH`); `Some` is the Sepulchre
+    /// connection this backup was actually written through.
+    pub destination_connection_id: Option<Uuid>,
     pub file_name: Option<String>,
     pub size_bytes: Option<u64>,
     pub sha256: Option<String>,

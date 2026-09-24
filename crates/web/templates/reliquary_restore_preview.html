@@ -48,7 +48,7 @@
 
   <form method="post" action="/arsenals/reliquary/backups/{{ job_id }}/restore" style="margin-top:14px;">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <label class="inline-radio"><input type="checkbox" name="component_database" checked> Restore database</label>
+    <label class="inline-radio"><input type="checkbox" name="component_database" value="true" checked> Restore database</label>
 
     {% if is_encrypted %}
     <label for="restore-passphrase">Passphrase</label>
@@ -57,7 +57,7 @@
 
     {% if !is_verified %}
     <label class="inline-radio">
-      <input type="checkbox" name="override_unverified" required> I understand this backup hasn't been verified, and want to restore it anyway
+      <input type="checkbox" name="override_unverified" value="true" required> I understand this backup hasn't been verified, and want to restore it anyway
     </label>
     {% endif %}
 

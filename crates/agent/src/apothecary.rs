@@ -12,7 +12,7 @@ use crate::elevation::ElevationState;
 use crate::process::{command_exists, present, truncate_lines};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Backend {
+pub(crate) enum Backend {
     Apt,
     Dnf,
     Yum,
@@ -21,7 +21,7 @@ enum Backend {
 }
 
 impl Backend {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Backend::Apt => "apt",
             Backend::Dnf => "dnf",
@@ -35,7 +35,7 @@ impl Backend {
 /// Checked in an order that reflects which distro families are more
 /// common among the hosts this app targets; on a real system only one of
 /// these will ever be present at all.
-async fn detect() -> Option<Backend> {
+pub(crate) async fn detect() -> Option<Backend> {
     if command_exists("apt-get").await {
         return Some(Backend::Apt);
     }

@@ -93,7 +93,6 @@ async fn main() -> anyhow::Result<()> {
             pool: pool.clone(),
             database_url: config.database_url.clone(),
             work_dir: std::env::temp_dir(),
-            storage: backup_storage.clone(),
             arsenal_version: abyssal_web::update_check::CURRENT_VERSION
                 .trim()
                 .to_string(),
@@ -139,10 +138,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     abyssal_web::reliquary_backup::orchestrator::spawn_scheduled_backup_loop(
-        state.pool.clone(),
+        state.clone(),
         backup_provider,
-        backup_storage,
-        backup_destination,
     );
 
     spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());

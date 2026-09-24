@@ -75,6 +75,17 @@ pub enum Permission {
     /// role except Super Admin -- the owner of a macro (or a role member,
     /// for using/viewing a role macro) never needs it for their own.
     MacrosManageAll,
+
+    /// Sepulchre: storage connection definitions (SFTP/SMB/local),
+    /// shares, mounts, and validation. Deliberately its own
+    /// `storage_connections.*` pair, distinct from `StorageView`/
+    /// `StorageManage` above (which gate Ossuary's block-device/RAID
+    /// management and Catacomb's directory-usage tooling) -- those are a
+    /// different, unrelated domain, and reusing their key would silently
+    /// hand out connection-credential access to anyone already holding
+    /// disk-management permission.
+    StorageConnectionsView,
+    StorageConnectionsManage,
 }
 
 impl Permission {
@@ -126,6 +137,9 @@ impl Permission {
             Permission::HostsElevate => "hosts.elevate",
 
             Permission::MacrosManageAll => "macros.manage_all",
+
+            Permission::StorageConnectionsView => "storage_connections.view",
+            Permission::StorageConnectionsManage => "storage_connections.manage",
         }
     }
 
@@ -168,6 +182,8 @@ impl Permission {
         Permission::HostsManage,
         Permission::HostsElevate,
         Permission::MacrosManageAll,
+        Permission::StorageConnectionsView,
+        Permission::StorageConnectionsManage,
     ];
 }
 

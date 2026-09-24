@@ -1,0 +1,91 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}New {{ protocol_label }} Connection — Sepulchre — Abyssal Arsenal{% endblock %}
+{% block heading %}New {{ protocol_label }} Connection{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/sepulchre">&larr; Connections</a></p>
+
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="/arsenals/sepulchre/connections">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="protocol" value="{{ protocol }}">
+
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" required style="max-width:360px;">
+
+    {% if protocol == "local" %}
+    <label for="path">Path</label>
+    <input type="text" id="path" name="path" required placeholder="/backups/my-connection" style="max-width:480px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Must resolve inside an allowed root (<code>SEPULCHRE_LOCAL_ROOTS</code>) -- see
+      <a href="/arsenals/sepulchre">docs/sepulchre.md</a> for the default and how to configure it.
+      Created automatically if it doesn't exist yet.
+    </p>
+    {% else %}
+    <label for="host">Host</label>
+    <input type="text" id="host" name="host" required style="max-width:360px;">
+    <label for="port">Port</label>
+    <input type="text" id="port" name="port" placeholder="{% if protocol == "sftp" %}22{% else %}445{% endif %}" style="max-width:160px;">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" required style="max-width:280px;">
+    {% endif %}
+
+    {% if protocol == "sftp" %}
+    <label for="base_path">Base path</label>
+    <input type="text" id="base_path" name="base_path" placeholder="/" style="max-width:480px;">
+    <label for="auth_method">Authentication</label>
+    <select id="auth_method" name="auth_method" style="max-width:280px;">
+      <option value="password">Password</option>
+      <option value="ssh_key">SSH key (generate or import after creating)</option>
+    </select>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="new-password" style="max-width:360px;">
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      Only used if Authentication is Password. If you choose SSH key, generate or import one on
+      the connection's own page after creating it -- the control plane holds the private key,
+      never a managed host.
+    </p>
+    <div class="warning-banner">
+      {% call macros::icon("warning") %} The server's host key isn't pinned yet -- you'll be
+      asked to confirm its fingerprint before this connection can be validated or used.
+    </div>
+    {% endif %}
+
+    {% if protocol == "smb" %}
+    <label for="share_name">Share name</label>
+    <input type="text" id="share_name" name="share_name" required style="max-width:280px;">
+    <label for="subpath">Subpath within the share</label>
+    <input type="text" id="subpath" name="subpath" placeholder="(none)" style="max-width:360px;">
+    <label for="domain">Domain (optional)</label>
+    <input type="text" id="domain" name="domain" style="max-width:280px;">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="new-password" required style="max-width:360px;">
+    <label for="encryption">Encryption</label>
+    <select id="encryption" name="encryption" style="max-width:280px;">
+      <option value="if_supported" selected>If supported by the server</option>
+      <option value="required">Required</option>
+      <option value="off">Off</option>
+    </select>
+    <p style="color:var(--text-muted); font-size:0.8rem; margin:-6px 0 10px;">
+      SMB3 minimum and signing are always required -- SMB1/NTLMv1 are never used.
+    </p>
+    {% endif %}
+
+    <label style="margin-top:14px;">Roles (what this connection is for)</label>
+    <div class="action-grid">
+      <label class="inline-radio"><input type="checkbox" name="role_backup_destination" value="true"> Backup destination</label>
+      <label class="inline-radio"><input type="checkbox" name="role_file_transfer" value="true"> File transfer</label>
+      <label class="inline-radio"><input type="checkbox" name="role_remote_storage" value="true" checked> Remote storage</label>
+      <label class="inline-radio"><input type="checkbox" name="role_other" value="true"> Other</label>
+    </div>
+
+    <button type="submit" class="btn-warning" style="margin-top:14px;">Create connection</button>
+  </form>
+</div>
+
+{% endblock %}

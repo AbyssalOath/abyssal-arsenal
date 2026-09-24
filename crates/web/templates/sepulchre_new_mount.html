@@ -1,0 +1,49 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}New Mount — {{ host_name }} — Sepulchre{% endblock %}
+{% block heading %}New Mount on {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/sepulchre/hosts/{{ host_id }}">&larr; {{ host_name }}</a></p>
+
+{% if let Some(e) = error %}
+<div class="error-banner">{{ e }}</div>
+{% endif %}
+
+{% if connections.is_empty() %}
+<div class="card">
+  <p style="color:var(--text-muted);">
+    No enabled SMB connections are available to mount. Create one from
+    <a href="/arsenals/sepulchre">Sepulchre's connection list</a> first.
+  </p>
+</div>
+{% else %}
+<div class="warning-banner">
+  {% call macros::icon("warning") %} This writes a root-owned <code>0600</code> credentials file
+  and a systemd mount unit on this host, then mounts it immediately
+  (<code>_netdev,nofail</code>). Only SMB/CIFS connections can be mounted from here today --
+  SSHFS mounts of an SFTP connection are a documented, deferred gap (see docs/sepulchre.md).
+</div>
+
+<div class="card">
+  <form method="post" action="/arsenals/sepulchre/hosts/{{ host_id }}/mounts">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+    <label for="connection_id">Connection</label>
+    <select id="connection_id" name="connection_id" required style="max-width:360px;">
+      {% for c in connections %}
+      <option value="{{ c.id }}">{{ c.label }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="mount_point">Mount point (absolute path on this host)</label>
+    <input type="text" id="mount_point" name="mount_point" required placeholder="/mnt/sepulchre/my-share" style="max-width:480px;">
+
+    <label class="inline-radio"><input type="checkbox" name="read_only" value="true"> Mount read-only</label>
+
+    <button type="submit" class="btn-warning" style="margin-top:14px;">Create mount</button>
+  </form>
+</div>
+{% endif %}
+
+{% endblock %}
