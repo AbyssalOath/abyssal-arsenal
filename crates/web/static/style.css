@@ -833,3 +833,137 @@ th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transf
   font-size: 0.85rem;
   margin: var(--space-2) 0 0;
 }
+
+/* Device Inventory subnet grouping (GitHub issue #10). Each group is a
+   `<details>`; `summary` carries the chevron, label, counts, and actions
+   in one flex row so it stays readable both collapsed and open. */
+.inventory-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: var(--space-3);
+  background: var(--surface-raised);
+}
+.inventory-group > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.inventory-group > summary::-webkit-details-marker { display: none; }
+.inventory-group-label { font-weight: 600; }
+.inventory-group-actions { margin-left: auto; }
+
+/* The chevron rotates 90deg open, matching the native disclosure triangle
+   convention used elsewhere in this app (`.module-group`) but as an
+   inline SVG so it shares the same `currentColor` icon style as every
+   other icon on the page. `prefers-reduced-motion` drops the transition
+   (it still ends up in the right final orientation, just without the
+   animated turn) -- see `crates/web/static/style.css`'s only other motion,
+   `.tile:hover`/`.update-notice-alert`, which aren't gated the same way
+   since they're decorative pulses rather than a state change a user is
+   about to read; this one accompanies content appearing, so reduced-
+   motion users still get the instant state change without an
+   unrequested animation. */
+.icon-chevron {
+  transition: transform 0.15s ease;
+}
+.inventory-group[open] > summary .icon-chevron {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .icon-chevron { transition: none; }
+}
+
+/* Scroll region for a group's (or the filtered view's) device table --
+   `max-height` + `overflow-y: auto` so a large group never pushes the
+   rest of the page down arbitrarily far, `overscroll-behavior: contain`
+   so scrolling past the end of the table doesn't also scroll the page
+   behind it, and a sticky header so column labels stay visible while
+   scrolling. The inset box-shadow is the "there's more below" scroll
+   affordance -- subtle at rest, more visible while actually scrolled
+   thanks to the browser's native scrollbar appearing alongside it. */
+.table-scroll {
+  max-height: min(60vh, 32rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: inset 0 -8px 8px -8px rgba(0, 0, 0, 0.3);
+}
+.table-scroll table { margin: 0; }
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-solid);
+  z-index: 1;
+}
+.table-scroll:focus-visible {
+  outline: none;
+  box-shadow: inset 0 -8px 8px -8px rgba(0, 0, 0, 0.3), 0 0 0 3px color-mix(in srgb, var(--focus) 45%, transparent);
+}
+
+/* The active `?subnet=` filter's removable chip. */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  margin-bottom: var(--space-3);
+  font-size: 0.85rem;
+}
+.filter-chip-clear {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.filter-chip-clear:hover { color: var(--danger); }
+
+/* Shared numbered/compact pagination widgets (`templates/_pagination.html`). */
+.pagination-range { color: var(--text-muted); }
+.pagination-links { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.pagination-link, .pagination-page {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid transparent;
+}
+.pagination-link:hover, .pagination-page:hover { background: var(--surface-raised); }
+.pagination-link:focus-visible, .pagination-page:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 45%, transparent);
+}
+.pagination-page-current {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.pagination-disabled {
+  color: var(--text-muted);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.pagination-ellipsis {
+  color: var(--text-muted);
+  padding: 4px 4px;
+}
+.pagination-compact .pagination-page-current {
+  background: none;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.btn-sm { padding: 5px 10px; font-size: 0.82rem; }

@@ -5,6 +5,7 @@ pub mod extract;
 mod health_ops;
 pub mod host_context;
 mod middleware;
+pub mod pagination;
 mod panopticon_arp;
 mod panopticon_mdns;
 mod panopticon_ops;

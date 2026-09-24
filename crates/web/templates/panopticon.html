@@ -1,5 +1,6 @@
 {% extends "app_base.html" %}
 {% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
 {% block title %}Panopticon — Abyssal Arsenal{% endblock %}
 {% block heading %}Panopticon — Network Visibility{% endblock %}
 {% block content %}
@@ -41,58 +42,113 @@
 </div>
 
 <div class="card">
-  <h3>{% call macros::icon("route") %} Topology (by /24)</h3>
-  {% if subnets.is_empty() %}
-  <p style="color:var(--text-muted); margin-top:0;">No devices in the inventory yet -- run a discovery scan.</p>
-  {% else %}
-  <table>
-    <thead>
-      <tr>
-        <th>Subnet</th><th>Devices</th><th>Managed</th>
-        {% if can_scan || can_manage %}<th>Actions</th>{% endif %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for s in subnets %}
-      <tr>
-        <td>{{ s.subnet }}</td>
-        <td>{{ s.device_count }}</td>
-        <td>{{ s.managed_count }} / {{ s.device_count }}</td>
-        {% if can_scan || can_manage %}
-        <td class="actions">
-          {% if can_scan && s.subnet != "other" %}
-          <form method="post" action="/arsenals/panopticon/scan?target={{ s.subnet }}" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <input type="hidden" name="confirm" value="true">
-            <button type="submit" class="btn btn-secondary">{% call macros::icon("scan") %} Rescan</button>
-          </form>
-          {% endif %}
-          {% if can_manage %}
-          <a class="btn btn-danger" href="/arsenals/panopticon/subnets/remove/confirm?subnet={{ s.subnet }}">{% call macros::icon("danger") %} Remove</a>
-          {% endif %}
-        </td>
-        {% endif %}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-</div>
-
-<div class="card">
   <h3>{% call macros::icon("network") %} Device Inventory</h3>
-
-  <form method="get" action="/arsenals/panopticon" style="margin-bottom:14px;">
-    <label for="port-filter">Filter by open port</label>
-    <input type="text" id="port-filter" name="port" placeholder="e.g. 22" value="{{ port_filter }}" style="max-width:160px;">
-    <button type="submit" class="btn-secondary">Filter</button>
-    {% if !port_filter.is_empty() %}
-    <a class="btn btn-secondary" href="/arsenals/panopticon">Clear</a>
+  <p style="color:var(--text-muted); margin-top:0;">
+    {{ total_device_count }} device(s) total, grouped by subnet
+    ({{ render_budget }}-device render budget -- groups auto-expand under that,
+    otherwise use "Load devices" per group).
+    {% if can_manage %}
+    <form method="post" action="/arsenals/panopticon/subnets/rederive" style="display:inline; margin-left:8px;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn btn-secondary">{% call macros::icon("reboot") %} Re-derive subnets</button>
+    </form>
     {% endif %}
+  </p>
+
+  <form method="get" action="/arsenals/panopticon" class="action-grid" style="margin-bottom:14px;">
+    <div>
+      <label for="port-filter">Filter by open port</label>
+      <input type="text" id="port-filter" name="port" placeholder="e.g. 22" value="{{ port_filter }}">
+    </div>
+    <div>
+      <label for="subnet-filter">Filter to one subnet (CIDR)</label>
+      <input type="text" id="subnet-filter" name="subnet" placeholder="e.g. 10.0.1.0/24" value="{{ subnet_filter_input }}">
+    </div>
+    <div style="align-self:end;">
+      <button type="submit" class="btn-secondary">Filter</button>
+      {% if !port_filter.is_empty() || !subnet_filter_input.is_empty() %}
+      <a class="btn btn-secondary" href="/arsenals/panopticon">Clear all</a>
+      {% endif %}
+    </div>
   </form>
 
-  {% if devices.is_empty() %}
-  <p style="color:var(--text-muted); margin-top:0;">
+  {% if let Some(err) = subnet_filter_error %}
+  <div class="error-banner">{{ err }}</div>
+  {% endif %}
+
+  {% if let Some(subnet) = filtered_subnet %}
+  {# ---- Ad-hoc single-subnet filtered view -- replaces the grouped view entirely. ---- #}
+  <div class="filter-chip">
+    Showing devices in <strong>{{ subnet }}</strong>
+    {% if let Some(href) = clear_subnet_href %}
+    <a href="{{ href }}" class="filter-chip-clear" aria-label="Clear subnet filter">&times;</a>
+    {% endif %}
+  </div>
+  {% if filtered_devices.is_empty() %}
+  <p class="results-empty">No devices found in {{ subnet }}.</p>
+  {% else %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Devices in {{ subnet }}">
+    <table>
+      <thead>
+        <tr>
+          <th>IP address</th><th>MAC</th><th>Vendor</th><th>Hostname</th><th>Open ports</th>
+          <th>Type</th><th>Trust</th><th>Notes</th><th>Switch / Port</th>
+          <th>Status</th><th>First seen</th><th>Last seen</th>
+          {% if can_manage || can_deploy %}<th>Actions</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in filtered_devices %}
+        <tr>
+          <td>{{ d.ip_address }}</td>
+          <td>{% if let Some(mac) = d.mac_address %}{{ mac }}{% else %}&mdash;{% endif %}</td>
+          <td>{% if let Some(v) = d.vendor %}{{ v }}{% else %}&mdash;{% endif %}</td>
+          <td>{% if let Some(h) = d.hostname %}{{ h }}{% else %}&mdash;{% endif %}</td>
+          <td>{% if let Some(p) = d.open_ports %}{{ p }}{% else %}&mdash;{% endif %}</td>
+          <td>{{ d.device_type_label }}</td>
+          <td>
+            {% if d.trust_value == "trusted" %}<span class="badge badge-success">{{ d.trust_label }}</span>
+            {% else if d.trust_value == "untrusted" %}<span class="badge badge-danger">{{ d.trust_label }}</span>
+            {% else %}<span class="badge badge-muted">{{ d.trust_label }}</span>{% endif %}
+          </td>
+          <td>{% if let Some(n) = d.notes %}{{ n }}{% else %}&mdash;{% endif %}</td>
+          <td>{% if let Some(loc) = d.switch_location %}{{ loc }}{% else %}&mdash;{% endif %}</td>
+          <td>
+            {% if let Some(name) = d.managed_host_name %}<span class="badge badge-success">Managed ({{ name }})</span>
+            {% else %}<span class="badge badge-muted">Unmanaged</span>{% endif %}
+            {% if d.stale %}<span class="badge badge-warning">Stale</span>{% endif %}
+          </td>
+          <td>{{ d.first_seen_at }}</td>
+          <td>{{ d.last_seen_at }}</td>
+          {% if can_manage || can_deploy %}
+          <td class="actions">
+            {% if can_deploy && d.managed_host_name.is_none() %}
+            <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <input type="hidden" name="selected_ips" value="{{ d.ip_address }}">
+              <button type="submit" class="btn btn-secondary">{% call macros::icon("host") %} Quick add</button>
+            </form>
+            {% endif %}
+            {% if can_manage %}
+            <a class="btn btn-secondary" href="/arsenals/panopticon/devices/{{ d.id }}/classify">{% call macros::icon("role") %} Classify</a>
+            <a class="btn btn-danger" href="/arsenals/panopticon/devices/{{ d.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if let Some(p) = filtered_page %}
+  {% call pager::pagination_nav(p) %}
+  {% endif %}
+  {% endif %}
+
+  {% else %}
+  {# ---- Grouped-by-subnet view (default). ---- #}
+  {% if groups.is_empty() %}
+  <p class="results-empty">
     {% if port_filter.is_empty() %}
     No devices discovered yet -- run a discovery scan.
     {% else %}
@@ -100,57 +156,102 @@
     {% endif %}
   </p>
   {% else %}
-  <table>
-    <thead>
-      <tr>
-        <th>IP address</th><th>MAC</th><th>Vendor</th><th>Hostname</th><th>Open ports</th>
-        <th>Type</th><th>Trust</th><th>Notes</th><th>Switch / Port</th>
-        <th>Status</th><th>First seen</th><th>Last seen</th>
-        {% if can_manage || can_deploy %}<th>Actions</th>{% endif %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for d in devices %}
-      <tr>
-        <td>{{ d.ip_address }}</td>
-        <td>{% if let Some(mac) = d.mac_address %}{{ mac }}{% else %}&mdash;{% endif %}</td>
-        <td>{% if let Some(v) = d.vendor %}{{ v }}{% else %}&mdash;{% endif %}</td>
-        <td>{% if let Some(h) = d.hostname %}{{ h }}{% else %}&mdash;{% endif %}</td>
-        <td>{% if let Some(p) = d.open_ports %}{{ p }}{% else %}&mdash;{% endif %}</td>
-        <td>{{ d.device_type_label }}</td>
-        <td>
-          {% if d.trust_value == "trusted" %}<span class="badge badge-success">{{ d.trust_label }}</span>
-          {% else if d.trust_value == "untrusted" %}<span class="badge badge-danger">{{ d.trust_label }}</span>
-          {% else %}<span class="badge badge-muted">{{ d.trust_label }}</span>{% endif %}
-        </td>
-        <td>{% if let Some(n) = d.notes %}{{ n }}{% else %}&mdash;{% endif %}</td>
-        <td>{% if let Some(loc) = d.switch_location %}{{ loc }}{% else %}&mdash;{% endif %}</td>
-        <td>
-          {% if let Some(name) = d.managed_host_name %}<span class="badge badge-success">Managed ({{ name }})</span>
-          {% else %}<span class="badge badge-muted">Unmanaged</span>{% endif %}
-          {% if d.stale %}<span class="badge badge-warning">Stale</span>{% endif %}
-        </td>
-        <td>{{ d.first_seen_at }}</td>
-        <td>{{ d.last_seen_at }}</td>
-        {% if can_manage || can_deploy %}
-        <td class="actions">
-          {% if can_deploy && d.managed_host_name.is_none() %}
-          <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <input type="hidden" name="selected_ips" value="{{ d.ip_address }}">
-            <button type="submit" class="btn btn-secondary">{% call macros::icon("host") %} Quick add</button>
-          </form>
-          {% endif %}
-          {% if can_manage %}
-          <a class="btn btn-secondary" href="/arsenals/panopticon/devices/{{ d.id }}/classify">{% call macros::icon("role") %} Classify</a>
-          <a class="btn btn-danger" href="/arsenals/panopticon/devices/{{ d.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
-          {% endif %}
-        </td>
+  {% for group in groups %}
+  <details class="inventory-group"{% if group.is_open %} open{% endif %}>
+    <summary>
+      <span class="chevron-wrap">{% call macros::icon("chevron") %}</span>
+      <span class="inventory-group-label">{{ group.display_label }}</span>
+      <span class="badge badge-muted">{{ group.device_count }} device{% if group.device_count != 1 %}s{% endif %}</span>
+      <span class="badge badge-success">{{ group.managed_count }} / {{ group.device_count }} managed</span>
+      {% if can_scan || can_manage %}
+      <span class="inventory-group-actions actions">
+        {% if can_scan %}
+        {% if let Some(href) = group.rescan_href %}
+        <a class="btn btn-secondary btn-sm" href="{{ href }}">{% call macros::icon("scan") %} Rescan</a>
         {% endif %}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+        {% endif %}
+        {% if can_manage %}
+        {% if let Some(href) = group.remove_href %}
+        <a class="btn btn-danger btn-sm" href="{{ href }}">{% call macros::icon("danger") %} Remove</a>
+        {% endif %}
+        {% endif %}
+      </span>
+      {% endif %}
+    </summary>
+
+    {% if group.is_open %}
+      {% if group.devices.is_empty() %}
+      <p class="results-empty">No devices on this page.</p>
+      {% else %}
+      <div class="table-scroll" tabindex="0" role="region" aria-label="{{ group.scroll_aria_label }}">
+        <table>
+          <thead>
+            <tr>
+              <th>IP address</th><th>MAC</th><th>Vendor</th><th>Hostname</th><th>Open ports</th>
+              <th>Type</th><th>Trust</th><th>Notes</th><th>Switch / Port</th>
+              <th>Status</th><th>First seen</th><th>Last seen</th>
+              {% if can_manage || can_deploy %}<th>Actions</th>{% endif %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in group.devices %}
+            <tr>
+              <td>{{ d.ip_address }}</td>
+              <td>{% if let Some(mac) = d.mac_address %}{{ mac }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if let Some(v) = d.vendor %}{{ v }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if let Some(h) = d.hostname %}{{ h }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if let Some(p) = d.open_ports %}{{ p }}{% else %}&mdash;{% endif %}</td>
+              <td>{{ d.device_type_label }}</td>
+              <td>
+                {% if d.trust_value == "trusted" %}<span class="badge badge-success">{{ d.trust_label }}</span>
+                {% else if d.trust_value == "untrusted" %}<span class="badge badge-danger">{{ d.trust_label }}</span>
+                {% else %}<span class="badge badge-muted">{{ d.trust_label }}</span>{% endif %}
+              </td>
+              <td>{% if let Some(n) = d.notes %}{{ n }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if let Some(loc) = d.switch_location %}{{ loc }}{% else %}&mdash;{% endif %}</td>
+              <td>
+                {% if let Some(name) = d.managed_host_name %}<span class="badge badge-success">Managed ({{ name }})</span>
+                {% else %}<span class="badge badge-muted">Unmanaged</span>{% endif %}
+                {% if d.stale %}<span class="badge badge-warning">Stale</span>{% endif %}
+              </td>
+              <td>{{ d.first_seen_at }}</td>
+              <td>{{ d.last_seen_at }}</td>
+              {% if can_manage || can_deploy %}
+              <td class="actions">
+                {% if can_deploy && d.managed_host_name.is_none() %}
+                <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline;">
+                  <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                  <input type="hidden" name="selected_ips" value="{{ d.ip_address }}">
+                  <button type="submit" class="btn btn-secondary">{% call macros::icon("host") %} Quick add</button>
+                </form>
+                {% endif %}
+                {% if can_manage %}
+                <a class="btn btn-secondary" href="/arsenals/panopticon/devices/{{ d.id }}/classify">{% call macros::icon("role") %} Classify</a>
+                <a class="btn btn-danger" href="/arsenals/panopticon/devices/{{ d.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
+                {% endif %}
+              </td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if let Some(p) = group.page_info %}
+      {% call pager::group_pagination_nav(p) %}
+      {% endif %}
+      {% endif %}
+    {% else %}
+      {% if let Some(href) = group.open_href %}
+      <p><a href="{{ href }}">{% call macros::icon("generate") %} Load devices</a></p>
+      {% endif %}
+    {% endif %}
+  </details>
+  {% endfor %}
+
+  {% if let Some(p) = group_list_page %}
+  {% call pager::pagination_nav(p) %}
+  {% endif %}
+  {% endif %}
   {% endif %}
 </div>
 

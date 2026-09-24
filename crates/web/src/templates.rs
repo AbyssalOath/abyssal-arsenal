@@ -466,8 +466,12 @@ pub struct AuditRow {
 pub struct AuditTemplate {
     pub base: BaseCtx,
     pub entries: Vec<AuditRow>,
-    pub page: i64,
-    pub total_pages: i64,
+    /// Keyset (cursor) pagination, not offset -- the audit log is
+    /// append-heavy and unbounded in principle, so this never runs a
+    /// `COUNT(*)` or an `OFFSET` scan (GitHub issue #10). `None` when
+    /// there's nothing further in that direction.
+    pub newer_href: Option<String>,
+    pub older_href: Option<String>,
     pub action_filter: String,
 }
 
@@ -974,17 +978,75 @@ pub struct NetworkDeviceRow {
     pub switch_location: Option<String>,
 }
 
-/// One row of Panopticon's topology view -- devices grouped by inferred
-/// IPv4 /24 (the common case for a LAN) or bucketed together under
-/// `"other"` for anything else (IPv6, or an address this simple grouping
-/// can't parse). Deliberately not real L2/switch topology -- per-device
-/// switch/port location (`NetworkDeviceRow::switch_location`) comes from
-/// polling switches individually (`/arsenals/panopticon/switches`), not
-/// from any broader LLDP-derived map of how those switches interconnect.
-pub struct SubnetGroup {
-    pub subnet: String,
-    pub device_count: usize,
-    pub managed_count: usize,
+/// Generic numbered-pagination info for an Askama template: first/prev/
+/// next/last plus a windowed, ellipsis-collapsed page strip and a
+/// "Showing X-Y of Z" range -- built once in Rust
+/// (`pagination::page_window`/`page_link`) and handed to the
+/// `pagination_nav` macro (`templates/_pagination.html`), never
+/// assembled in the template itself. Used by the Device Inventory
+/// group-list, an ad-hoc `?subnet=` filtered view, and any other
+/// offset-paginated view (GitHub issue #10).
+pub struct NumberedPageInfo {
+    pub current_page: u32,
+    pub total_pages: u32,
+    pub range_start: u64,
+    pub range_end: u64,
+    pub total: u64,
+    pub first_href: Option<String>,
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
+    pub last_href: Option<String>,
+    /// `(label, href, is_current)` -- `href: None` renders as a plain
+    /// ellipsis, not a link.
+    pub numbered: Vec<(String, Option<String>, bool)>,
+}
+
+/// A single subnet group's own row pagination -- deliberately simpler
+/// than [`NumberedPageInfo`] (no numbered strip) so a page with several
+/// open groups doesn't repeat a full pager widget inside every one of
+/// them.
+pub struct GroupPageInfo {
+    pub current_page: u32,
+    pub total_pages: u32,
+    pub range_start: u64,
+    pub range_end: u64,
+    pub total: u64,
+    pub prev_href: Option<String>,
+    pub next_href: Option<String>,
+}
+
+/// One subnet group in the Device Inventory's grouped view -- a
+/// `<details>` whose `<summary>` (subnet, device count, managed count)
+/// always renders, but whose body (`devices`) is only populated when
+/// `is_open` -- see `docs/device-inventory.md`'s render-budget/`open`-param
+/// design. A device with multiple IPs would appear in each group its
+/// IPs fall into, never twice within the same one -- moot today, since
+/// `panopticon_devices` has exactly one IP per row (see that doc's
+/// "multi-IP devices" note).
+pub struct InventoryGroup {
+    /// The canonical CIDR string (`"10.0.1.0/24"`), or the literal
+    /// `"unassigned"` sentinel for the "Unassigned / Unknown" group --
+    /// also what `?open=`/`gp[...]` keys use, so a group's own links are
+    /// stable across reloads.
+    pub network: String,
+    /// `"10.0.1.0/24"` or `"Unassigned / Unknown"` -- what the
+    /// `<summary>` actually displays.
+    pub display_label: String,
+    pub is_unassigned: bool,
+    pub device_count: i64,
+    pub managed_count: i64,
+    pub is_open: bool,
+    pub devices: Vec<NetworkDeviceRow>,
+    /// The "Load devices" link shown in place of a body when `!is_open`.
+    pub open_href: Option<String>,
+    pub scroll_aria_label: String,
+    pub page_info: Option<GroupPageInfo>,
+    /// Existing "Rescan"/"Remove" actions, preserved from the old
+    /// Topology table -- `None` for the Unassigned group, which can't be
+    /// rescanned (there's no CIDR to target) though it can still be
+    /// cleared via Remove.
+    pub rescan_href: Option<String>,
+    pub remove_href: Option<String>,
 }
 
 #[derive(Template)]
@@ -1000,11 +1062,27 @@ pub struct PanopticonTemplate {
     /// Network Scan, `routes/panopticon_deploy.rs`), distinct from both
     /// `can_scan`/`can_manage` above.
     pub can_deploy: bool,
-    pub devices: Vec<NetworkDeviceRow>,
-    pub subnets: Vec<SubnetGroup>,
     /// The `?port=` query value echoed back into the filter input, empty
     /// when unfiltered.
     pub port_filter: String,
+    pub total_device_count: i64,
+    pub render_budget: u32,
+    /// Empty when `filtered_devices` is `Some` (an ad-hoc `?subnet=`
+    /// filter replaces the grouped view entirely, per GitHub issue #10's
+    /// "filters to one group").
+    pub groups: Vec<InventoryGroup>,
+    pub group_list_page: Option<NumberedPageInfo>,
+    pub subnet_filter_input: String,
+    pub subnet_filter_error: Option<String>,
+    pub filtered_subnet: Option<String>,
+    /// Where the filter chip's "x" link goes -- the current query with
+    /// `subnet`/`page` dropped, built in Rust
+    /// (`InventoryQuery::without_subnet`) rather than hand-assembled in
+    /// the template, so it stays consistent with every other pagination
+    /// link on this page. `None` whenever `filtered_subnet` is `None`.
+    pub clear_subnet_href: Option<String>,
+    pub filtered_devices: Vec<NetworkDeviceRow>,
+    pub filtered_page: Option<NumberedPageInfo>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,

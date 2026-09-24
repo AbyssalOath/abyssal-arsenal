@@ -33,9 +33,16 @@
   </table>
 
   <div class="pagination">
-    {% if page > 0 %}<a href="/admin/audit?action={{ action_filter }}&page={{ page - 1 }}">&larr; Newer</a>{% endif %}
-    <span>Page {{ page + 1 }} of {{ total_pages }}</span>
-    {% if page + 1 < total_pages %}<a href="/admin/audit?action={{ action_filter }}&page={{ page + 1 }}">Older &rarr;</a>{% endif %}
+    {% if let Some(href) = newer_href %}
+    <a href="{{ href }}">&larr; Newer</a>
+    {% else %}
+    <span class="pagination-disabled" aria-disabled="true">&larr; Newer</span>
+    {% endif %}
+    {% if let Some(href) = older_href %}
+    <a href="{{ href }}">Older &rarr;</a>
+    {% else %}
+    <span class="pagination-disabled" aria-disabled="true">Older &rarr;</span>
+    {% endif %}
   </div>
 </div>
 

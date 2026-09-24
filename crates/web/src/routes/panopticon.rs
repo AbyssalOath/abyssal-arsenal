@@ -1,21 +1,23 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
+    PANOPTICON_INVENTORY_RENDER_BUDGET, PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT,
     PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS, PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS,
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
 };
 use abyssal_core::{
-    AppError, DeviceType, MacroScope, Permission, SnmpAuthProtocol, SnmpPrivProtocol,
-    SnmpSecurityLevel, SnmpVersion, TrustState,
+    AppError, DeviceType, MacroScope, NetworkDevice, Permission, SnmpAuthProtocol,
+    SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
 };
 use abyssal_database::repo;
+use abyssal_database::repo::network_devices::GroupCount;
 use abyssal_execution::OperationParams;
 use abyssal_rbac::AuthContext;
 use axum::Form;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
@@ -27,22 +29,263 @@ use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
+use crate::pagination;
 use crate::state::AppState;
 use crate::templates::{
-    BaseCtx, NetworkDeviceRow, PanopticonClassifyTemplate, PanopticonTemplate, SubnetGroup,
+    BaseCtx, GroupPageInfo, InventoryGroup, NetworkDeviceRow, NumberedPageInfo,
+    PanopticonClassifyTemplate, PanopticonTemplate,
 };
 use crate::theme;
 
-/// Groups a device's IPv4 address into its /24 -- the common case for a
-/// LAN -- or `"other"` for anything this simple heuristic can't parse
-/// (IPv6, malformed data). See `SubnetGroup`'s doc comment for why this
-/// isn't real L2 topology.
-fn subnet_of(ip: &str) -> String {
-    let octets: Vec<&str> = ip.split('.').collect();
-    if octets.len() == 4 && octets.iter().all(|o| o.parse::<u8>().is_ok()) {
-        format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2])
+/// Devices within an open subnet group's own row pagination (GitHub issue
+/// #10) -- deliberately smaller than a typical list-view default since
+/// several groups can be open on the page at once.
+const GROUP_ROWS_PER_PAGE: u32 = 50;
+
+/// How many subnet groups the group *list* itself shows per page --
+/// independent of `GROUP_ROWS_PER_PAGE`, which paginates the rows inside
+/// one already-open group.
+const GROUPS_PER_PAGE: u32 = 25;
+
+/// The literal `network` value/query-param sentinel standing in for the
+/// "Unassigned / Unknown" group (devices whose `ip_address` never parsed
+/// into a `network`) -- never a value `abyssal_core::normalize_cidr` could
+/// itself produce, so it can't collide with a real subnet.
+const UNASSIGNED: &str = "unassigned";
+
+/// Every Device Inventory query-string param this page understands, parsed
+/// once via [`parse_inventory_query`] and threaded through instead of
+/// re-parsing `RawQuery` at every call site. Also doubles as the one place
+/// that knows how to re-serialize itself (see [`InventoryQuery::href`]),
+/// so every link on the page -- "Load devices", a per-group Prev/Next, the
+/// group-list pager, the filtered-view pager -- preserves every other
+/// active param instead of each hand-rolling its own query string.
+#[derive(Default, Clone)]
+pub(crate) struct InventoryQuery {
+    /// `?port=` -- the existing open-port filter, composed with grouping.
+    pub port: Option<u16>,
+    /// `?subnet=` -- an ad-hoc CIDR filter that replaces the grouped view
+    /// entirely with one filtered, paginated table (GitHub issue #10's
+    /// "filters to one group" requirement; accepts any valid CIDR, not
+    /// just one that happens to match the configured grouping prefix).
+    pub subnet: Option<String>,
+    /// Repeatable `?open=<network>` -- which groups render their body
+    /// even when the render budget would otherwise leave them collapsed.
+    /// Server-rendered back into `details[open]` so state survives
+    /// reloads and is shareable, per GitHub issue #10.
+    pub open: Vec<String>,
+    /// `?group_page=` -- which page of the subnet *list itself* to show,
+    /// independent of any single group's own row pagination.
+    pub group_page: Option<u32>,
+    /// Repeatable `?gp=<network>:<page>` -- one subnet group's own row
+    /// page, keyed by network so multiple open groups don't collide. The
+    /// scheme is a single repeatable key with a `network:page` value
+    /// (rather than dynamic bracket keys like `gp[10.0.1.0/24]=2`) since
+    /// axum/serde_urlencoded can't deserialize either shape automatically
+    /// either way, and a flat repeatable pair is simpler to hand-parse.
+    pub gp: Vec<(String, u32)>,
+    /// `?page=` -- the ad-hoc filtered view's own row page (only
+    /// meaningful together with `subnet`; the grouped view uses
+    /// `group_page`/`gp` instead so the two pagers never share a key).
+    pub page: Option<u32>,
+}
+
+impl InventoryQuery {
+    fn with_open(&self, network: &str) -> Self {
+        let mut q = self.clone();
+        if !q.open.iter().any(|o| o == network) {
+            q.open.push(network.to_string());
+        }
+        q
+    }
+
+    fn with_gp(&self, network: &str, page: u32) -> Self {
+        let mut q = self.clone();
+        q.gp.retain(|(n, _)| n != network);
+        if page > 1 {
+            q.gp.push((network.to_string(), page));
+        }
+        q
+    }
+
+    fn with_group_page(&self, page: u32) -> Self {
+        let mut q = self.clone();
+        q.group_page = if page > 1 { Some(page) } else { None };
+        q
+    }
+
+    fn with_page(&self, page: u32) -> Self {
+        let mut q = self.clone();
+        q.page = if page > 1 { Some(page) } else { None };
+        q
+    }
+
+    fn without_subnet(&self) -> Self {
+        let mut q = self.clone();
+        q.subnet = None;
+        q.page = None;
+        q
+    }
+
+    /// Re-serializes every active param back into `/arsenals/panopticon`'s
+    /// query string -- the one place a Device Inventory link is built, so
+    /// "preserve every other filter/sort param" (GitHub issue #10) is
+    /// guaranteed rather than re-implemented per link site.
+    fn href(&self) -> String {
+        if self.port.is_none()
+            && self.subnet.is_none()
+            && self.open.is_empty()
+            && self.group_page.is_none()
+            && self.gp.is_empty()
+            && self.page.is_none()
+        {
+            return "/arsenals/panopticon".to_string();
+        }
+        let mut ser = form_urlencoded::Serializer::new(String::new());
+        if let Some(p) = self.port {
+            ser.append_pair("port", &p.to_string());
+        }
+        if let Some(s) = &self.subnet {
+            ser.append_pair("subnet", s);
+        }
+        for o in &self.open {
+            ser.append_pair("open", o);
+        }
+        if let Some(p) = self.group_page {
+            ser.append_pair("group_page", &p.to_string());
+        }
+        for (net, page) in &self.gp {
+            ser.append_pair("gp", &format!("{net}:{page}"));
+        }
+        if let Some(p) = self.page {
+            ser.append_pair("page", &p.to_string());
+        }
+        format!("/arsenals/panopticon?{}", ser.finish())
+    }
+}
+
+/// Parses the Device Inventory's raw query string into an [`InventoryQuery`]
+/// -- a plain `Query<T>` extractor can't deserialize the repeated `open=`
+/// values into a `Vec` or the dynamic-ish `gp=network:page` pairs, so this
+/// hand-parses via `form_urlencoded` (the same "repeated-key form groups
+/// need manual parsing" pattern already used for permissions/module
+/// checkboxes elsewhere in this app). A malformed `gp`/`group_page`/`port`
+/// value is silently dropped rather than rejected -- falls back to that
+/// param's default, never a 500 on a hand-edited or stale bookmark.
+pub(crate) fn parse_inventory_query(raw: Option<&str>) -> InventoryQuery {
+    let mut q = InventoryQuery::default();
+    let Some(raw) = raw else { return q };
+    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+        match key.as_ref() {
+            "port" => q.port = value.trim().parse::<u16>().ok(),
+            "subnet" => {
+                let v = value.trim();
+                if !v.is_empty() {
+                    q.subnet = Some(v.to_string());
+                }
+            }
+            "open" => {
+                let v = value.trim();
+                if !v.is_empty() && !q.open.iter().any(|o| o == v) {
+                    q.open.push(v.to_string());
+                }
+            }
+            "group_page" => q.group_page = value.trim().parse::<u32>().ok(),
+            "gp" => {
+                if let Some((net, page)) = value.split_once(':')
+                    && !net.is_empty()
+                    && let Ok(page) = page.parse::<u32>()
+                {
+                    q.gp.retain(|(n, _)| n != net);
+                    q.gp.push((net.to_string(), page));
+                }
+            }
+            "page" => q.page = value.trim().parse::<u32>().ok(),
+            _ => {}
+        }
+    }
+    q
+}
+
+/// Builds one inventory row's view-model from a fetched [`NetworkDevice`] --
+/// shared by the grouped view and the ad-hoc filtered view so both render
+/// devices identically.
+fn build_device_row(
+    d: NetworkDevice,
+    managed_by_ip: &HashMap<String, String>,
+    switch_names: &HashMap<Uuid, String>,
+    timezone: &str,
+) -> NetworkDeviceRow {
+    let stale = d.is_stale();
+    let vendor = d.vendor().map(str::to_string);
+    let open_ports = if d.ports.is_empty() {
+        None
     } else {
-        "other".to_string()
+        Some(
+            d.ports
+                .iter()
+                .map(|p| match &p.service {
+                    Some(svc) => format!("{}/{} {}", p.port, p.protocol, svc),
+                    None => format!("{}/{}", p.port, p.protocol),
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    };
+    let switch_location = d
+        .switch_id
+        .and_then(|id| switch_names.get(&id))
+        .map(|name| match &d.switch_port {
+            Some(port) => format!("{name} / {port}"),
+            None => name.clone(),
+        });
+    NetworkDeviceRow {
+        id: d.id.to_string(),
+        managed_host_name: managed_by_ip.get(&d.ip_address).cloned(),
+        ip_address: d.ip_address,
+        mac_address: d.mac_address,
+        vendor,
+        hostname: d.hostname,
+        open_ports,
+        device_type_label: d.device_type.label().to_string(),
+        device_type_value: d.device_type.as_str().to_string(),
+        trust_label: d.trust_state.label().to_string(),
+        trust_value: d.trust_state.as_str().to_string(),
+        notes: d.notes,
+        first_seen_at: crate::common::format_in_tz(d.first_seen_at, timezone),
+        last_seen_at: crate::common::format_in_tz(d.last_seen_at, timezone),
+        stale,
+        switch_location,
+    }
+}
+
+/// Builds a [`NumberedPageInfo`] from a metadata-only [`pagination::Page`]
+/// plus a closure that turns a target page number into that page's href --
+/// the one place the ellipsis-collapsed numbered strip is assembled, reused
+/// by both the group-list pager and the ad-hoc filtered-view pager (they
+/// differ only in which query param they page over).
+fn numbered_page_info(
+    page: &pagination::Page<()>,
+    link_for: impl Fn(u32) -> String,
+) -> NumberedPageInfo {
+    let numbered = pagination::page_window(page.page, page.total_pages)
+        .into_iter()
+        .map(|entry| match entry {
+            Some(p) => (p.to_string(), Some(link_for(p)), p == page.page),
+            None => ("…".to_string(), None, false),
+        })
+        .collect();
+    NumberedPageInfo {
+        current_page: page.page,
+        total_pages: page.total_pages,
+        range_start: page.start_index(),
+        range_end: page.end_index(),
+        total: page.total,
+        first_href: page.has_prev().then(|| link_for(1)),
+        prev_href: page.has_prev().then(|| link_for(page.page - 1)),
+        next_href: page.has_next().then(|| link_for(page.page + 1)),
+        last_href: page.has_next().then(|| link_for(page.total_pages)),
+        numbered,
     }
 }
 
@@ -50,7 +293,7 @@ pub(crate) async fn render(
     state: &AppState,
     jar: &CookieJar,
     ctx: &AuthContext,
-    port_filter: Option<u16>,
+    query: InventoryQuery,
     result_label: Option<String>,
     result_output: Option<String>,
     result_error: Option<String>,
@@ -76,98 +319,245 @@ pub(crate) async fn render(
             managed_by_ip.insert(ip.clone(), host.name.clone());
         }
     }
-
-    let devices = repo::network_devices::list(&state.pool).await?;
     let switches = repo::panopticon_switches::list(&state.pool).await?;
     let switch_names: HashMap<Uuid, String> =
         switches.into_iter().map(|s| (s.id, s.name)).collect();
 
-    // Topology counts reflect the whole inventory regardless of the port
-    // filter below -- that filter narrows the device table, not the
-    // subnet overview.
-    let mut subnet_counts: Vec<(String, usize, usize)> = Vec::new();
-    for device in &devices {
-        let subnet = subnet_of(&device.ip_address);
-        let managed = managed_by_ip.contains_key(&device.ip_address);
-        match subnet_counts.iter_mut().find(|(s, _, _)| *s == subnet) {
-            Some((_, count, managed_count)) => {
-                *count += 1;
-                if managed {
-                    *managed_count += 1;
-                }
-            }
-            None => subnet_counts.push((subnet, 1, if managed { 1 } else { 0 })),
-        }
-    }
-    subnet_counts.sort_by(|a, b| a.0.cmp(&b.0));
-    let subnets = subnet_counts
-        .into_iter()
-        .map(|(subnet, device_count, managed_count)| SubnetGroup {
-            subnet,
-            device_count,
-            managed_count,
-        })
-        .collect();
+    let can_scan = ctx.has(Permission::NetworkScan);
+    let can_manage = ctx.has(Permission::NetworkManage);
+    let can_deploy = ctx.has(Permission::HostsManage);
+    let render_budget = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_INVENTORY_RENDER_BUDGET,
+        PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT,
+    )
+    .await
+    .unwrap_or(PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT);
+    let total_device_count = repo::network_devices::total_count(&state.pool).await?;
 
-    let device_rows = devices
-        .into_iter()
-        .filter(|d| match port_filter {
-            Some(port) => d.ports.iter().any(|p| p.port == port),
-            None => true,
-        })
-        .map(|d| {
-            let stale = d.is_stale();
-            let vendor = d.vendor().map(str::to_string);
-            let open_ports = if d.ports.is_empty() {
-                None
+    // An ad-hoc `?subnet=` filter replaces the grouped view entirely with
+    // one filtered, paginated table -- GitHub issue #10's "filters to one
+    // group" requirement. An invalid value falls through to the normal
+    // grouped view with an error banner instead of a 500 or a silently
+    // ignored filter.
+    if let Some(raw_subnet) = query
+        .subnet
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        && let Some((addr, prefix)) = abyssal_core::parse_cidr(raw_subnet)
+    {
+        let canonical =
+            abyssal_core::normalize_cidr(raw_subnet).unwrap_or_else(|| raw_subnet.to_string());
+        let (start_ip, end_ip) = abyssal_core::subnet_bounds(addr, prefix);
+        let total = repo::network_devices::count_in_range(&state.pool, &start_ip, &end_ip).await?;
+        let requested_page = query.page.unwrap_or(1).max(1);
+        let total_u64 = total.max(0) as u64;
+        let page_num = if pagination::Page::<()>::page_out_of_range(
+            requested_page,
+            GROUP_ROWS_PER_PAGE,
+            total_u64,
+        ) {
+            pagination::total_pages(total_u64, GROUP_ROWS_PER_PAGE)
+        } else {
+            requested_page
+        };
+        let offset = pagination::offset(page_num, GROUP_ROWS_PER_PAGE);
+        let rows = repo::network_devices::list_page_in_range(
+            &state.pool,
+            &start_ip,
+            &end_ip,
+            i64::from(GROUP_ROWS_PER_PAGE),
+            offset,
+        )
+        .await?;
+        let device_rows: Vec<NetworkDeviceRow> = rows
+            .into_iter()
+            .map(|d| build_device_row(d, &managed_by_ip, &switch_names, &ctx.user.timezone))
+            .collect();
+        let page_meta: pagination::Page<()> =
+            pagination::Page::new(vec![], page_num, GROUP_ROWS_PER_PAGE, total_u64);
+        let filtered_page = Some(numbered_page_info(&page_meta, |p| {
+            query.with_page(p).href()
+        }));
+
+        let tpl = PanopticonTemplate {
+            base,
+            can_scan,
+            can_manage,
+            can_deploy,
+            port_filter: query.port.map(|p| p.to_string()).unwrap_or_default(),
+            total_device_count,
+            render_budget,
+            groups: vec![],
+            group_list_page: None,
+            subnet_filter_input: raw_subnet.to_string(),
+            subnet_filter_error: None,
+            filtered_subnet: Some(canonical),
+            clear_subnet_href: Some(query.without_subnet().href()),
+            filtered_devices: device_rows,
+            filtered_page,
+            result_label,
+            result_output,
+            result_error,
+        };
+        let jar = jar.clone();
+        let jar = match new_cookie {
+            Some(c) => jar.add(c),
+            None => jar,
+        };
+        return Ok((jar, tpl).into_response());
+    }
+
+    let subnet_filter_error = query
+        .subnet
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            format!(
+                "\"{s}\" isn't a valid CIDR -- expected an address and prefix length, e.g. \
+                 10.0.1.0/24 or 2001:db8::/64."
+            )
+        });
+
+    // Grouped view: header counts for every subnet group always render
+    // (one aggregate query, no N+1); a group's own device rows only render
+    // when it's explicitly `open=`-named, or every group renders open when
+    // the whole filtered inventory fits under the render budget.
+    let counts: Vec<GroupCount> =
+        repo::network_devices::group_counts(&state.pool, query.port).await?;
+    let total_matching: i64 = counts.iter().map(|c| c.device_count).sum();
+    let render_all = total_matching.max(0) as u64 <= u64::from(render_budget);
+    let open_set: HashSet<&str> = query.open.iter().map(String::as_str).collect();
+    let gp_map: HashMap<&str, u32> = query.gp.iter().map(|(n, p)| (n.as_str(), *p)).collect();
+
+    let group_total = counts.len() as u64;
+    let group_page_requested = query.group_page.unwrap_or(1).max(1);
+    let group_page_num = if pagination::Page::<()>::page_out_of_range(
+        group_page_requested,
+        GROUPS_PER_PAGE,
+        group_total,
+    ) {
+        pagination::total_pages(group_total, GROUPS_PER_PAGE)
+    } else {
+        group_page_requested
+    };
+    let group_offset = pagination::offset(group_page_num, GROUPS_PER_PAGE) as usize;
+    let group_page_meta: pagination::Page<()> =
+        pagination::Page::new(vec![], group_page_num, GROUPS_PER_PAGE, group_total);
+    let group_list_page = Some(numbered_page_info(&group_page_meta, |p| {
+        query.with_group_page(p).href()
+    }));
+
+    let mut groups = Vec::new();
+    for gc in counts
+        .iter()
+        .skip(group_offset)
+        .take(GROUPS_PER_PAGE as usize)
+    {
+        let network_key = gc.network.clone().unwrap_or_else(|| UNASSIGNED.to_string());
+        let display_label = gc
+            .network
+            .clone()
+            .unwrap_or_else(|| "Unassigned / Unknown".to_string());
+        let is_unassigned = gc.network.is_none();
+        let is_open = render_all || open_set.contains(network_key.as_str());
+
+        let (devices, page_info, open_href) = if is_open {
+            let requested_page = gp_map
+                .get(network_key.as_str())
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            let total = gc.device_count.max(0) as u64;
+            let page_num = if pagination::Page::<()>::page_out_of_range(
+                requested_page,
+                GROUP_ROWS_PER_PAGE,
+                total,
+            ) {
+                pagination::total_pages(total, GROUP_ROWS_PER_PAGE)
             } else {
-                Some(
-                    d.ports
-                        .iter()
-                        .map(|p| match &p.service {
-                            Some(svc) => format!("{}/{} {}", p.port, p.protocol, svc),
-                            None => format!("{}/{}", p.port, p.protocol),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                )
+                requested_page
             };
-            let switch_location = d
-                .switch_id
-                .and_then(|id| switch_names.get(&id))
-                .map(|name| match &d.switch_port {
-                    Some(port) => format!("{name} / {port}"),
-                    None => name.clone(),
-                });
-            NetworkDeviceRow {
-                id: d.id.to_string(),
-                managed_host_name: managed_by_ip.get(&d.ip_address).cloned(),
-                ip_address: d.ip_address,
-                mac_address: d.mac_address,
-                vendor,
-                hostname: d.hostname,
-                open_ports,
-                device_type_label: d.device_type.label().to_string(),
-                device_type_value: d.device_type.as_str().to_string(),
-                trust_label: d.trust_state.label().to_string(),
-                trust_value: d.trust_state.as_str().to_string(),
-                notes: d.notes,
-                first_seen_at: crate::common::format_in_tz(d.first_seen_at, &ctx.user.timezone),
-                last_seen_at: crate::common::format_in_tz(d.last_seen_at, &ctx.user.timezone),
-                stale,
-                switch_location,
-            }
-        })
-        .collect();
+            let offset = pagination::offset(page_num, GROUP_ROWS_PER_PAGE);
+            let rows = repo::network_devices::list_page(
+                &state.pool,
+                gc.network.as_deref(),
+                query.port,
+                i64::from(GROUP_ROWS_PER_PAGE),
+                offset,
+            )
+            .await?;
+            let device_rows: Vec<NetworkDeviceRow> = rows
+                .into_iter()
+                .map(|d| build_device_row(d, &managed_by_ip, &switch_names, &ctx.user.timezone))
+                .collect();
+            let page_meta: pagination::Page<()> =
+                pagination::Page::new(vec![], page_num, GROUP_ROWS_PER_PAGE, total);
+            let opened = query.with_open(&network_key);
+            let gpi = GroupPageInfo {
+                current_page: page_meta.page,
+                total_pages: page_meta.total_pages,
+                range_start: page_meta.start_index(),
+                range_end: page_meta.end_index(),
+                total: page_meta.total,
+                prev_href: page_meta
+                    .has_prev()
+                    .then(|| opened.with_gp(&network_key, page_meta.page - 1).href()),
+                next_href: page_meta
+                    .has_next()
+                    .then(|| opened.with_gp(&network_key, page_meta.page + 1).href()),
+            };
+            (device_rows, Some(gpi), None)
+        } else {
+            (vec![], None, Some(query.with_open(&network_key).href()))
+        };
+
+        let rescan_href = (!is_unassigned).then(|| {
+            format!(
+                "/arsenals/panopticon/scan/confirm?target={}",
+                urlencoding_encode(&network_key)
+            )
+        });
+        let remove_href = Some(format!(
+            "/arsenals/panopticon/subnets/remove/confirm?subnet={}",
+            urlencoding_encode(&network_key)
+        ));
+
+        let scroll_aria_label = format!("Devices in {display_label}");
+        groups.push(InventoryGroup {
+            display_label,
+            is_unassigned,
+            device_count: gc.device_count,
+            managed_count: gc.managed_count,
+            is_open,
+            devices,
+            open_href,
+            scroll_aria_label,
+            page_info,
+            rescan_href,
+            remove_href,
+            network: network_key,
+        });
+    }
 
     let tpl = PanopticonTemplate {
-        can_scan: ctx.has(Permission::NetworkScan),
-        can_manage: ctx.has(Permission::NetworkManage),
-        can_deploy: ctx.has(Permission::HostsManage),
         base,
-        devices: device_rows,
-        subnets,
-        port_filter: port_filter.map(|p| p.to_string()).unwrap_or_default(),
+        can_scan,
+        can_manage,
+        can_deploy,
+        port_filter: query.port.map(|p| p.to_string()).unwrap_or_default(),
+        total_device_count,
+        render_budget,
+        groups,
+        group_list_page,
+        subnet_filter_input: query.subnet.clone().unwrap_or_default(),
+        subnet_filter_error,
+        filtered_subnet: None,
+        clear_subnet_href: None,
+        filtered_devices: vec![],
+        filtered_page: None,
         result_label,
         result_output,
         result_error,
@@ -180,21 +570,15 @@ pub(crate) async fn render(
     Ok((jar, tpl).into_response())
 }
 
-#[derive(Deserialize)]
-pub struct ShowQuery {
-    #[serde(default)]
-    port: Option<String>,
-}
-
 pub async fn show(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
-    Query(q): Query<ShowQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
-    let port_filter = q.port.as_deref().and_then(|p| p.trim().parse::<u16>().ok());
-    render(&state, &jar, &ctx, port_filter, None, None, None).await
+    let query = parse_inventory_query(raw.as_deref());
+    render(&state, &jar, &ctx, query, None, None, None).await
 }
 
 // ---------------------------------------------------------------------
@@ -208,26 +592,29 @@ pub struct ScanQuery {
     ports: Option<String>,
 }
 
-/// Whether `ip` falls within `target`'s advertised `/24` -- the same
-/// coarse grouping the Topology table itself uses (`subnet_of`), not real
-/// CIDR arithmetic. Split out from `has_scan_history` purely so this
-/// matching logic has a unit test independent of the database.
-fn ip_matches_subnet_target(ip: &str, target: &str) -> bool {
-    subnet_of(ip) == target
-}
-
 /// Whether `target` has been scanned before -- a CIDR target counts as
-/// known when it already appears in the Topology table (some inventory
-/// device's own `/24` matches it exactly); a single host/IP counts as
-/// known when it's already in the inventory. Used to decide whether the
-/// heavy "type the target to confirm" dialog is warranted (a genuinely new
-/// target) or just friction (a rescan of something already vetted once).
+/// known when at least one inventory device's numeric address already
+/// falls inside it (real range containment via `abyssal_core::subnet_bounds`
+/// and `count_in_range`, not the /24-string-match heuristic this used
+/// before GitHub issue #10 -- and, unlike the old implementation, this
+/// never fetches the whole inventory to answer the question); a single
+/// host/IP counts as known when it's already in the inventory. Used to
+/// decide whether the heavy "type the target to confirm" dialog is
+/// warranted (a genuinely new target) or just friction (a rescan of
+/// something already vetted once). An unparseable CIDR target is treated
+/// as unknown -- `validate_scan_query` already rejected it before this is
+/// ever called in practice, so this is defense in depth, not the primary
+/// validation.
 async fn has_scan_history(pool: &abyssal_database::DbPool, target: &str) -> Result<bool, WebError> {
     if target.contains('/') {
-        let devices = repo::network_devices::list(pool).await?;
-        Ok(devices
-            .iter()
-            .any(|d| ip_matches_subnet_target(&d.ip_address, target)))
+        match abyssal_core::parse_cidr(target) {
+            Some((addr, prefix)) => {
+                let (start_ip, end_ip) = abyssal_core::subnet_bounds(addr, prefix);
+                let count = repo::network_devices::count_in_range(pool, &start_ip, &end_ip).await?;
+                Ok(count > 0)
+            }
+            None => Ok(false),
+        }
     } else {
         Ok(repo::network_devices::find_by_ip(pool, target)
             .await?
@@ -500,18 +887,27 @@ pub async fn remove_device(
 }
 
 // ---------------------------------------------------------------------
-// Subnet actions (Topology table) -- a subnet is purely a grouping of
-// devices by `subnet_of(ip)`, computed fresh in `render` every time, never
-// a stored entity of its own. "Rescan" needs no dedicated route at all --
-// it's just a link into the existing scan-confirm flow with the subnet as
-// the target (see panopticon.html). "Remove" does need one: the only way
-// to make a subnet stop appearing in the table is removing every device
-// that currently falls into it.
+// Subnet actions -- a subnet group is purely a grouping of devices by
+// their persisted `network` column (GitHub issue #10), never a stored
+// entity of its own. "Rescan" needs no dedicated route at all -- it's
+// just a link into the existing scan-confirm flow with the subnet as the
+// target (see panopticon.html). "Remove" does need one: the only way to
+// make a group stop appearing is removing every device that currently
+// falls into it. `subnet` in the query string here is a group's `network`
+// key -- either a canonical CIDR string or the literal `"unassigned"`
+// sentinel (see `UNASSIGNED`), matching whatever `InventoryGroup::network`
+// the page itself linked from.
 // ---------------------------------------------------------------------
 
 #[derive(Deserialize)]
 pub struct SubnetQuery {
     subnet: String,
+}
+
+/// `q.subnet` back into the `Option<&str>` shape every `repo::network_devices`
+/// grouping function expects -- `None` for the `UNASSIGNED` sentinel.
+fn group_network(subnet: &str) -> Option<&str> {
+    (subnet != UNASSIGNED).then_some(subnet)
 }
 
 pub async fn subnet_remove_confirm(
@@ -523,11 +919,14 @@ pub async fn subnet_remove_confirm(
     abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
 
     let subnet = q.subnet.trim().to_string();
-    let devices = repo::network_devices::list(&state.pool).await?;
-    let count = devices
-        .iter()
-        .filter(|d| subnet_of(&d.ip_address) == subnet)
-        .count();
+    let display = if subnet == UNASSIGNED {
+        "Unassigned / Unknown".to_string()
+    } else {
+        subnet.clone()
+    };
+    let ids =
+        repo::network_devices::list_ids_for_group(&state.pool, group_network(&subnet)).await?;
+    let count = ids.len();
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -543,10 +942,10 @@ pub async fn subnet_remove_confirm(
 
     let tpl = crate::templates::ConfirmTemplate {
         base,
-        title: "Remove subnet from topology".to_string(),
+        title: "Remove subnet group from inventory".to_string(),
         message: format!(
-            "This will remove all {count} device(s) currently grouped under \"{subnet}\" \
-             from the network device inventory -- there's no separate \"topology\" record to \
+            "This will remove all {count} device(s) currently grouped under \"{display}\" \
+             from the network device inventory -- there's no separate \"group\" record to \
              delete, this has the same effect as removing each of those devices individually. \
              They reappear if a future scan finds them again -- this doesn't block or affect \
              the devices themselves."
@@ -598,13 +997,10 @@ pub async fn subnet_remove(
     let subnet = q.subnet.trim().to_string();
     crate::common::require_typed_confirmation(&form.confirm_text, &subnet)?;
 
-    let devices = repo::network_devices::list(&state.pool).await?;
-    let matching: Vec<_> = devices
-        .into_iter()
-        .filter(|d| subnet_of(&d.ip_address) == subnet)
-        .collect();
-    let ids: Vec<Uuid> = matching.iter().map(|d| d.id).collect();
-    let ip_addresses: Vec<String> = matching.into_iter().map(|d| d.ip_address).collect();
+    let ids_and_ips =
+        repo::network_devices::list_ids_for_group(&state.pool, group_network(&subnet)).await?;
+    let ids: Vec<Uuid> = ids_and_ips.iter().map(|(id, _)| *id).collect();
+    let ip_addresses: Vec<String> = ids_and_ips.into_iter().map(|(_, ip)| ip).collect();
 
     let removed = repo::network_devices::delete_by_ids(&state.pool, &ids).await?;
 
@@ -624,6 +1020,57 @@ pub async fn subnet_remove(
     .await?;
 
     Ok(Redirect::to("/arsenals/panopticon").into_response())
+}
+
+/// "Re-derive subnets" -- recomputes every device's `network` column using
+/// whatever `panopticon.subnet_prefix_v4`/`_v6` is configured right now.
+/// Only needed after deliberately changing that prefix (an ordinary
+/// scan/sighting already keeps `network` current going forward via
+/// `current_network_of`); the automatic startup backfill
+/// (`crates/app/src/main.rs`) only ever touches rows that are still
+/// `NULL`, so this is the explicit counterpart for rows that already have
+/// a (now stale) value. Gated the same as every other inventory-mutating
+/// action here (`network.manage`); no confirmation dialog since it only
+/// recomputes a derived value, never deletes anything.
+#[derive(Deserialize)]
+pub struct RederiveSubnetsForm {
+    csrf_token: String,
+}
+
+pub async fn subnets_rederive(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<RederiveSubnetsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let updated = repo::network_devices::rederive_all_networks(&state.pool).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::NetworkSubnetsRederived, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .metadata(serde_json::json!({ "devices_updated": updated })),
+    )
+    .await?;
+
+    render(
+        &state,
+        &jar,
+        &ctx,
+        InventoryQuery::default(),
+        Some("Re-derive subnets".to_string()),
+        Some(format!(
+            "Recomputed the subnet group for {updated} device(s) using the currently configured prefixes."
+        )),
+        None,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------
@@ -1880,22 +2327,83 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subnet_of_groups_ipv4_into_its_24() {
-        assert_eq!(subnet_of("10.245.20.53"), "10.245.20.0/24");
-        assert_eq!(subnet_of("192.168.1.1"), "192.168.1.0/24");
+    fn group_network_maps_the_sentinel_to_none() {
+        assert_eq!(group_network(UNASSIGNED), None);
+        assert_eq!(group_network("10.0.1.0/24"), Some("10.0.1.0/24"));
     }
 
     #[test]
-    fn subnet_of_falls_back_to_other_for_non_ipv4() {
-        assert_eq!(subnet_of("not-an-ip"), "other");
-        assert_eq!(subnet_of("::1"), "other");
+    fn parse_inventory_query_reads_every_param() {
+        let q = parse_inventory_query(Some(
+            "port=22&subnet=10.0.1.0%2F24&open=10.0.1.0%2F24&open=unassigned\
+             &group_page=2&gp=10.0.1.0%2F24%3A3&page=4",
+        ));
+        assert_eq!(q.port, Some(22));
+        assert_eq!(q.subnet.as_deref(), Some("10.0.1.0/24"));
+        assert_eq!(
+            q.open,
+            vec!["10.0.1.0/24".to_string(), "unassigned".to_string()]
+        );
+        assert_eq!(q.group_page, Some(2));
+        assert_eq!(q.gp, vec![("10.0.1.0/24".to_string(), 3)]);
+        assert_eq!(q.page, Some(4));
     }
 
     #[test]
-    fn ip_matches_subnet_target_matches_only_the_same_24() {
-        assert!(ip_matches_subnet_target("10.245.20.53", "10.245.20.0/24"));
-        assert!(!ip_matches_subnet_target("10.245.20.53", "10.245.21.0/24"));
-        assert!(!ip_matches_subnet_target("not-an-ip", "10.245.20.0/24"));
+    fn parse_inventory_query_is_empty_for_no_query_string() {
+        let q = parse_inventory_query(None);
+        assert_eq!(q.port, None);
+        assert!(q.open.is_empty());
+        assert!(q.gp.is_empty());
+    }
+
+    #[test]
+    fn parse_inventory_query_drops_malformed_values_instead_of_failing() {
+        let q = parse_inventory_query(Some("port=not-a-number&gp=missing-page&group_page=nope"));
+        assert_eq!(q.port, None);
+        assert!(q.gp.is_empty());
+        assert_eq!(q.group_page, None);
+    }
+
+    #[test]
+    fn parse_inventory_query_dedupes_repeated_open_values() {
+        let q = parse_inventory_query(Some("open=10.0.1.0%2F24&open=10.0.1.0%2F24"));
+        assert_eq!(q.open.len(), 1);
+    }
+
+    #[test]
+    fn parse_inventory_query_lets_a_later_gp_entry_win_for_the_same_network() {
+        let q = parse_inventory_query(Some("gp=10.0.1.0%2F24%3A2&gp=10.0.1.0%2F24%3A5"));
+        assert_eq!(q.gp, vec![("10.0.1.0/24".to_string(), 5)]);
+    }
+
+    #[test]
+    fn inventory_query_href_omits_page_1_defaults() {
+        let q = InventoryQuery::default();
+        assert_eq!(q.with_group_page(1).href(), "/arsenals/panopticon");
+        assert_eq!(
+            q.with_group_page(2).href(),
+            "/arsenals/panopticon?group_page=2"
+        );
+    }
+
+    #[test]
+    fn inventory_query_with_open_is_idempotent() {
+        let q = InventoryQuery::default().with_open("10.0.1.0/24");
+        let q2 = q.with_open("10.0.1.0/24");
+        assert_eq!(q2.open.len(), 1);
+    }
+
+    #[test]
+    fn inventory_query_without_subnet_also_clears_its_page() {
+        let q = InventoryQuery {
+            subnet: Some("10.0.1.0/24".to_string()),
+            page: Some(3),
+            ..Default::default()
+        };
+        let cleared = q.without_subnet();
+        assert_eq!(cleared.subnet, None);
+        assert_eq!(cleared.page, None);
     }
 
     #[test]

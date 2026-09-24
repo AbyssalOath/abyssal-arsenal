@@ -170,15 +170,31 @@ pub async fn scan_view(
                 )
                 .await;
             }
-            super::panopticon::render(&state, &jar, &ctx, None, result_label, result_output, None)
-                .await
+            super::panopticon::render(
+                &state,
+                &jar,
+                &ctx,
+                super::panopticon::InventoryQuery::default(),
+                result_label,
+                result_output,
+                None,
+            )
+            .await
         }
         ScanJobStatus::Failed => {
             let result_label = snapshot.result_label.clone();
             let result_error = snapshot.result_error.clone();
             drop(snapshot);
-            super::panopticon::render(&state, &jar, &ctx, None, result_label, None, result_error)
-                .await
+            super::panopticon::render(
+                &state,
+                &jar,
+                &ctx,
+                super::panopticon::InventoryQuery::default(),
+                result_label,
+                None,
+                result_error,
+            )
+            .await
         }
     }
 }

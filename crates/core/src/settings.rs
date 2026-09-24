@@ -195,3 +195,21 @@ pub const RELIQUARY_BACKUP_ENCRYPT_BY_DEFAULT: &str = "reliquary.backup_encrypt_
 /// dump whose other rows exclude it, for a deployment that wants its
 /// backups to exclude potentially sensitive audit detail by default.
 pub const RELIQUARY_BACKUP_INCLUDE_AUDIT_LOGS: &str = "reliquary.backup_include_audit_logs";
+
+/// Device Inventory subnet grouping (GitHub issue #10) -- the prefix
+/// length a device's IP is masked down to before grouping, per address
+/// family. Changing either takes effect for newly-seen devices
+/// immediately; existing rows' stored `network` column needs the
+/// "Re-derive subnets" action on the inventory page to catch up (see
+/// `docs/device-inventory.md`).
+pub const PANOPTICON_SUBNET_PREFIX_V4: &str = "panopticon.subnet_prefix_v4";
+pub const PANOPTICON_SUBNET_PREFIX_V4_DEFAULT: u32 = 24;
+pub const PANOPTICON_SUBNET_PREFIX_V6: &str = "panopticon.subnet_prefix_v6";
+pub const PANOPTICON_SUBNET_PREFIX_V6_DEFAULT: u32 = 64;
+
+/// Below this many total devices, every subnet group's body renders
+/// open by default (paginated internally); at or above it, only groups
+/// named in the `?open=` query param render their rows -- see
+/// `docs/device-inventory.md`'s "render budget" section.
+pub const PANOPTICON_INVENTORY_RENDER_BUDGET: &str = "panopticon.inventory_render_budget";
+pub const PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT: u32 = 500;

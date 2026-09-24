@@ -61,6 +61,18 @@ async fn main() -> anyhow::Result<()> {
     abyssal_database::run_migrations(&pool).await?;
     abyssal_database::seed::seed_core_defaults(&pool).await?;
 
+    // GitHub issue #10: backfills `network` for any device row that
+    // predates the column, or was somehow left `NULL` -- idempotent,
+    // cheap when there's nothing to do (the common case after the first
+    // startup post-upgrade).
+    match abyssal_database::repo::network_devices::backfill_network(&pool).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(count = n, "panopticon: backfilled device subnet groupings"),
+        Err(e) => {
+            tracing::error!(error = %e, "panopticon: failed to backfill device subnet groupings")
+        }
+    }
+
     let registry = ModuleRegistry::new(arsenals::all());
     registry.ensure_seeded(&pool).await?;
 

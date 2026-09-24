@@ -1288,6 +1288,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::panopticon::subnet_remove),
         )
         .route(
+            "/arsenals/panopticon/subnets/rederive",
+            post(routes::panopticon::subnets_rederive),
+        )
+        .route(
             "/arsenals/panopticon/devices/:id/classify",
             get(routes::panopticon::classify_form).post(routes::panopticon::classify_device),
         )

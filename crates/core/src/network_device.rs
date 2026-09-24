@@ -152,6 +152,11 @@ pub struct NetworkDevicePort {
 pub struct NetworkDevice {
     pub id: Uuid,
     pub ip_address: String,
+    /// The subnet `ip_address` masks down to at whatever prefix was
+    /// configured when this row was last written or re-derived (GitHub
+    /// issue #10) -- `None` only if `ip_address` somehow failed to parse
+    /// as an IP at all (the "Unassigned / Unknown" group).
+    pub network: Option<String>,
     /// Resolved from the kernel's neighbor table (`ip neigh`) after an
     /// active scan, from a live ARP sniff, or from an SNMP switch poll --
     /// see `panopticon_ops.rs`, `panopticon_arp.rs`. Only ever populated

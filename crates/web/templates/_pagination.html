@@ -1,0 +1,78 @@
+{#
+  Shared, zero-JS pagination widgets (GitHub issue #10) -- built from a
+  `NumberedPageInfo`/`GroupPageInfo` assembled entirely in Rust
+  (`crates/web/src/pagination.rs`, `routes/panopticon.rs::numbered_page_info`),
+  never computed in the template itself. Every href is a plain `<a>` --
+  first/prev/next/last, a windowed page-number strip with `…` standing in
+  for a collapsed run, and a disabled (non-focusable, non-link) state at
+  either end. `aria-current="page"` marks the active page; the whole strip
+  sits in a `<nav aria-label="Pagination">` landmark.
+#}
+
+{% macro pagination_nav(p) %}
+<nav class="pagination" aria-label="Pagination">
+  <span class="pagination-range">
+    {% if p.total == 0 %}No results{% else %}Showing {{ p.range_start }}&ndash;{{ p.range_end }} of {{ p.total }}{% endif %}
+  </span>
+  {% if p.total_pages > 1 %}
+  <span class="pagination-links">
+    {% if let Some(href) = p.first_href %}
+    <a class="pagination-link" href="{{ href }}">&laquo; First</a>
+    {% else %}
+    <span class="pagination-link pagination-disabled" aria-disabled="true">&laquo; First</span>
+    {% endif %}
+    {% if let Some(href) = p.prev_href %}
+    <a class="pagination-link" href="{{ href }}">&lsaquo; Prev</a>
+    {% else %}
+    <span class="pagination-link pagination-disabled" aria-disabled="true">&lsaquo; Prev</span>
+    {% endif %}
+    {% for (label, href, is_current) in p.numbered %}
+      {% if let Some(href) = href %}
+      <a class="pagination-page{% if is_current %} pagination-page-current{% endif %}" href="{{ href }}"{% if is_current %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% else %}
+      <span class="pagination-ellipsis">{{ label }}</span>
+      {% endif %}
+    {% endfor %}
+    {% if let Some(href) = p.next_href %}
+    <a class="pagination-link" href="{{ href }}">Next &rsaquo;</a>
+    {% else %}
+    <span class="pagination-link pagination-disabled" aria-disabled="true">Next &rsaquo;</span>
+    {% endif %}
+    {% if let Some(href) = p.last_href %}
+    <a class="pagination-link" href="{{ href }}">Last &raquo;</a>
+    {% else %}
+    <span class="pagination-link pagination-disabled" aria-disabled="true">Last &raquo;</span>
+    {% endif %}
+  </span>
+  {% endif %}
+</nav>
+{% endmacro %}
+
+{#
+  A deliberately smaller Prev/Next-only widget for one subnet group's own
+  row pagination -- see `GroupPageInfo`'s doc comment for why: a page with
+  several groups open at once shouldn't repeat a full numbered strip
+  inside every one of them.
+#}
+{% macro group_pagination_nav(p) %}
+<nav class="pagination pagination-compact" aria-label="Pagination">
+  <span class="pagination-range">
+    {% if p.total == 0 %}No results{% else %}Showing {{ p.range_start }}&ndash;{{ p.range_end }} of {{ p.total }}{% endif %}
+  </span>
+  {% if p.total_pages > 1 %}
+  <span class="pagination-links">
+    {% if let Some(href) = p.prev_href %}
+    <a class="pagination-link" href="{{ href }}">&lsaquo; Prev</a>
+    {% else %}
+    <span class="pagination-link pagination-disabled" aria-disabled="true">&lsaquo; Prev</span>
+    {% endif %}
+    <span class="pagination-page pagination-page-current" aria-current="page">{{ p.current_page }} / {{ p.total_pages }}</span>
+    {% if let Some(href) = p.next_href %}
+    <a class="pagination-link" href="{{ href }}">Next &rsaquo;</a>
+    {% else %}
+    <span class="pagination-link pagination-disabled" aria-disabled="true">Next &rsaquo;</span>
+    {% endif %}
+  </span>
+  {% endif %}
+</nav>
+{% endmacro %}

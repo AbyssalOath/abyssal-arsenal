@@ -74,6 +74,42 @@ pub async fn list_grouped(pool: &DbPool) -> anyhow::Result<HashMap<Uuid, Vec<Net
     Ok(grouped)
 }
 
+/// Open ports for exactly the devices in `device_ids`, grouped -- the
+/// paginated middle ground between `list_grouped` (every device) and
+/// `list_for_device` (one device): a page of a subnet group's rows needs
+/// ports for just that page's devices, not the whole inventory's.
+pub async fn list_grouped_for_devices(
+    pool: &DbPool,
+    device_ids: &[Uuid],
+) -> anyhow::Result<HashMap<Uuid, Vec<NetworkDevicePort>>> {
+    if device_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = vec!["?"; device_ids.len()].join(",");
+    let query = format!(
+        "SELECT device_id, port, protocol, service FROM panopticon_device_ports \
+         WHERE device_id IN ({placeholders}) ORDER BY device_id, port, protocol"
+    );
+    let mut q = sqlx::query_as::<_, PortRow>(&query);
+    for id in device_ids {
+        q = q.bind(id.to_string());
+    }
+    let rows: Vec<PortRow> = q.fetch_all(pool).await?;
+
+    let mut grouped: HashMap<Uuid, Vec<NetworkDevicePort>> = HashMap::new();
+    for row in rows {
+        let Ok(id) = Uuid::parse_str(&row.device_id) else {
+            continue;
+        };
+        grouped.entry(id).or_default().push(NetworkDevicePort {
+            port: row.port,
+            protocol: row.protocol,
+            service: row.service,
+        });
+    }
+    Ok(grouped)
+}
+
 /// Open ports for a single device -- used where the caller only needs one
 /// device's ports rather than the whole inventory's (`list_grouped`).
 pub async fn list_for_device(

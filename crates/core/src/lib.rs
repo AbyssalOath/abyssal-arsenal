@@ -13,6 +13,7 @@ pub mod security_event;
 pub mod session;
 pub mod settings;
 pub mod storage;
+pub mod subnet;
 pub mod user;
 
 pub use crypto::{CryptoError, EncryptionKey};
@@ -39,4 +40,5 @@ pub use storage::{
     ProtocolConfig, SftpAuthMethod, SftpConfig, SmbConfig, SmbEncryption, SmbMinProtocol,
     StorageConnection, ValidationCheckResult, ValidationMode, ValidationRun, ValidationStatus,
 };
+pub use subnet::{network_of, normalize_cidr, parse_cidr, subnet_bounds};
 pub use user::{AuthProviderKind, User};
