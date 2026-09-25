@@ -15,17 +15,23 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::Duration;
 
-use abyssal_agent_protocol::{AgentOperation, CommandOutcome};
+use abyssal_agent_protocol::{
+    AgentOperation, CommandOutcome, is_protected_account_name, is_protected_windows_account_name,
+    is_valid_absolute_path, is_valid_account_name, is_valid_windows_absolute_path,
+    is_valid_windows_account_name,
+};
 use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::Severity;
 use abyssal_core::settings::{
-    THANATOS_ALERT_RECIPIENTS, THANATOS_CORRELATION_THRESHOLD,
+    THANATOS_ALERT_RECIPIENTS, THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED,
+    THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, THANATOS_CORRELATION_THRESHOLD,
     THANATOS_CORRELATION_THRESHOLD_DEFAULT, THANATOS_CORRELATION_WINDOW_MINUTES,
     THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_CROSS_HOST_THRESHOLD,
     THANATOS_CROSS_HOST_THRESHOLD_DEFAULT, THANATOS_EXTRA_FIM_PATHS, THANATOS_MONITORING_ENABLED,
     THANATOS_SWEEP_INTERVAL_SECONDS, THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
 };
 use abyssal_database::{DbPool, repo};
+use abyssal_hosts::HostConnectionRegistry;
 use abyssal_notifications::{NotificationDispatcher, NotificationMessage};
 use uuid::Uuid;
 
@@ -98,7 +104,10 @@ const NEW_KERNEL_MODULE_LABEL: &str = "New kernel module/driver loaded";
 /// instead.
 pub async fn persist_scan_output(
     pool: &DbPool,
+    hosts: &HostConnectionRegistry,
+    notifications: &NotificationDispatcher,
     host_id: Uuid,
+    host_name: &str,
     stdout: &str,
 ) -> anyhow::Result<(usize, Option<String>)> {
     let mut persisted = 0usize;
@@ -138,6 +147,18 @@ pub async fn persist_scan_output(
                 .await?
                 {
                     persisted += 1;
+                    export_event_to_syslog(
+                        notifications,
+                        host_name,
+                        Severity::High,
+                        "fim",
+                        FIM_CHANGE_LABEL,
+                        &raw_line,
+                    )
+                    .await;
+                }
+                if is_per_user_ssh_authorized_keys(path) {
+                    maybe_auto_quarantine_ssh_key(pool, hosts, host_id, path).await;
                 }
             }
             continue;
@@ -159,6 +180,8 @@ pub async fn persist_scan_output(
             .await?
         {
             persisted += 1;
+            export_event_to_syslog(notifications, host_name, severity, source, label, raw_line)
+                .await;
         }
     }
 
@@ -179,6 +202,15 @@ pub async fn persist_scan_output(
             .await?
             {
                 persisted += 1;
+                export_event_to_syslog(
+                    notifications,
+                    host_name,
+                    Severity::High,
+                    "network",
+                    NEW_LISTENING_PORT_LABEL,
+                    &raw_line,
+                )
+                .await;
             }
         }
     }
@@ -203,12 +235,154 @@ pub async fn persist_scan_output(
             .await?
             {
                 persisted += 1;
+                export_event_to_syslog(
+                    notifications,
+                    host_name,
+                    Severity::High,
+                    "kernel_module",
+                    NEW_KERNEL_MODULE_LABEL,
+                    &raw_line,
+                )
+                .await;
             }
         }
     }
 
     let informational = (!informational_lines.is_empty()).then(|| informational_lines.join("\n"));
     Ok((persisted, informational))
+}
+
+/// Maps a Thanatos finding's `Severity` to the coarser three-level
+/// `abyssal_notifications::Severity` -- `Low`/`Medium` both fold to
+/// `Info` (a real SIEM's own rules can re-derive finer severity from the
+/// forwarded `source`/label text if it wants to), `High` maps to
+/// `Warning`, and `Critical` (reserved for correlation alerts, per this
+/// file's own convention) maps to `Critical`.
+fn notification_severity(severity: Severity) -> abyssal_notifications::Severity {
+    match severity {
+        Severity::Low | Severity::Medium => abyssal_notifications::Severity::Info,
+        Severity::High => abyssal_notifications::Severity::Warning,
+        Severity::Critical => abyssal_notifications::Severity::Critical,
+    }
+}
+
+/// Phase 12 (external SIEM/syslog export), the "every persisted
+/// classified event" scope chosen over "alerts only": forwards *every*
+/// genuinely new Thanatos finding (not just correlation alerts, which
+/// already went through `notifications.dispatch` before this phase) to
+/// whatever `NotificationProvider`s are registered. `recipients` is
+/// deliberately empty -- unlike an alert email, nobody should get an
+/// inbox message for every classified log line, only a syslog
+/// destination that's set up to receive a firehose of these
+/// (`SmtpProvider::send` is a no-op on an empty recipient list, so this
+/// naturally reaches only the syslog provider when both are configured).
+async fn export_event_to_syslog(
+    notifications: &NotificationDispatcher,
+    host_name: &str,
+    severity: Severity,
+    source: &str,
+    label: &str,
+    raw_line: &str,
+) {
+    notifications
+        .dispatch(&NotificationMessage {
+            subject: format!("[Thanatos] {host_name}: {label}"),
+            body: format!("source={source} severity={} {raw_line}", severity.as_key()),
+            severity: notification_severity(severity),
+            recipients: Vec::new(),
+        })
+        .await;
+}
+
+/// True only for a per-user OpenSSH `authorized_keys` file, matched on
+/// exact basename (not a suffix check) so Windows' fixed, admin-wide
+/// `administrators_authorized_keys` (which happens to end with the same
+/// substring) is deliberately excluded -- see
+/// `THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED`'s doc comment for why
+/// auto-quarantine is scoped this narrowly rather than to "any FIM
+/// drift." Splits on both separators since a path here may be either
+/// Linux- or Windows-shaped depending on the reporting host.
+fn is_per_user_ssh_authorized_keys(path: &str) -> bool {
+    path.rsplit(['/', '\\']).next() == Some("authorized_keys")
+}
+
+/// Phase 11: if `THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED` is on,
+/// dispatches `AgentOperation::QuarantineFile` against `host_id` for a
+/// per-user `authorized_keys` file this scan just found had changed --
+/// no human in the loop. Best-effort: any failure (setting read, path
+/// validation, dispatch) is logged and recorded in the audit trail as a
+/// failure rather than propagated, since this runs inside the middle of
+/// ingesting an otherwise-successful scan and a misfired automation
+/// should never take the scan itself down.
+async fn maybe_auto_quarantine_ssh_key(
+    pool: &DbPool,
+    hosts: &HostConnectionRegistry,
+    host_id: Uuid,
+    path: &str,
+) {
+    match repo::settings::get_bool(pool, THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, false).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to read auto-quarantine-ssh-keys setting");
+            return;
+        }
+    }
+
+    let host = match repo::hosts::find_by_id(pool, host_id).await {
+        Ok(Some(host)) => host,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::error!(error = %e, host_id = %host_id, "failed to load host for auto-quarantine");
+            return;
+        }
+    };
+    let is_windows = host.os.as_deref() == Some("windows");
+    let path_valid = if is_windows {
+        is_valid_windows_absolute_path(path)
+    } else {
+        is_valid_absolute_path(path)
+    };
+    if !path_valid {
+        tracing::warn!(host_id = %host_id, path, "auto-quarantine skipped: path failed validation");
+        return;
+    }
+
+    let outcome = hosts
+        .dispatch(
+            host_id,
+            AgentOperation::QuarantineFile {
+                path: path.to_string(),
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+
+    let (audit_outcome, detail) = match outcome {
+        Ok(CommandOutcome::Ok(_)) => (AuditOutcome::Success, None),
+        Ok(CommandOutcome::Err(message)) => (AuditOutcome::Failure, Some(message)),
+        Err(e) => (AuditOutcome::Failure, Some(e.to_string())),
+    };
+    if let Some(detail) = &detail {
+        tracing::warn!(host_id = %host_id, path, error = detail, "auto-quarantine dispatch did not succeed");
+    }
+
+    if let Err(e) = abyssal_audit::record(
+        pool,
+        AuditEvent::new(AuditAction::AutomatedResponseTriggered, audit_outcome)
+            .resource(&host_id.to_string())
+            .metadata(serde_json::json!({
+                "action": "quarantine_file",
+                "host_id": host_id,
+                "path": path,
+                "trigger": "authorized_keys_fim_drift",
+                "detail": detail,
+            })),
+    )
+    .await
+    {
+        tracing::error!(error = %e, host_id = %host_id, "failed to write audit record for auto-quarantine");
+    }
 }
 
 /// Checks whether this host has crossed the high-severity burst
@@ -497,8 +671,98 @@ async fn check_cross_host_burst(
 /// `extract_username` only recognizes the OpenSSH/PAM message shapes
 /// Windows event log lines don't share -- see that function's own doc
 /// comment.
+/// Phase 11: if `THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED` is on,
+/// dispatches `AgentOperation::LockUserAccount` for `username` against
+/// `host_id` right after the cross-host account-targeting correlation
+/// rule has just raised a fresh finding naming it -- no human in the
+/// loop. Same best-effort error handling as
+/// `maybe_auto_quarantine_ssh_key`: any failure is logged/audited, never
+/// propagated. Branches validation by `Host.os` the same way the
+/// Inquest disable-account route (Phase 7c) already does; the agent's
+/// own protected-account checks (`root`/`Administrator`/...) are the
+/// real backstop, but checking here too avoids a wasted dispatch and
+/// lets the audit trail say plainly that it was skipped rather than
+/// merely failed.
+async fn maybe_auto_disable_account(
+    pool: &DbPool,
+    hosts: &HostConnectionRegistry,
+    host_id: Uuid,
+    username: &str,
+) {
+    match repo::settings::get_bool(pool, THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED, false).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to read auto-disable-account setting");
+            return;
+        }
+    }
+
+    let host = match repo::hosts::find_by_id(pool, host_id).await {
+        Ok(Some(host)) => host,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::error!(error = %e, host_id = %host_id, "failed to load host for auto-disable-account");
+            return;
+        }
+    };
+    let is_windows = host.os.as_deref() == Some("windows");
+    let (name_valid, is_protected) = if is_windows {
+        (
+            is_valid_windows_account_name(username),
+            is_protected_windows_account_name(username),
+        )
+    } else {
+        (
+            is_valid_account_name(username),
+            is_protected_account_name(username),
+        )
+    };
+    if !name_valid || is_protected {
+        tracing::warn!(host_id = %host_id, username, "auto-disable-account skipped: invalid or protected account name");
+        return;
+    }
+
+    let outcome = hosts
+        .dispatch(
+            host_id,
+            AgentOperation::LockUserAccount {
+                username: username.to_string(),
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+
+    let (audit_outcome, detail) = match outcome {
+        Ok(CommandOutcome::Ok(_)) => (AuditOutcome::Success, None),
+        Ok(CommandOutcome::Err(message)) => (AuditOutcome::Failure, Some(message)),
+        Err(e) => (AuditOutcome::Failure, Some(e.to_string())),
+    };
+    if let Some(detail) = &detail {
+        tracing::warn!(host_id = %host_id, username, error = detail, "auto-disable-account dispatch did not succeed");
+    }
+
+    if let Err(e) = abyssal_audit::record(
+        pool,
+        AuditEvent::new(AuditAction::AutomatedResponseTriggered, audit_outcome)
+            .resource(&host_id.to_string())
+            .metadata(serde_json::json!({
+                "action": "disable_account",
+                "host_id": host_id,
+                "username": username,
+                "trigger": "cross_host_account_targeting",
+                "detail": detail,
+            })),
+    )
+    .await
+    {
+        tracing::error!(error = %e, host_id = %host_id, "failed to write audit record for auto-disable-account");
+    }
+}
+
 async fn check_cross_host_username_reuse(
     pool: &DbPool,
+    hosts: &HostConnectionRegistry,
     notifications: &NotificationDispatcher,
     recipients: &[String],
     window_minutes: i64,
@@ -572,6 +836,8 @@ async fn check_cross_host_username_reuse(
                 tracing::error!(error = %e, host_id = %host_id, "failed to write audit record for Thanatos cross-host account-targeting alert");
             }
 
+            maybe_auto_disable_account(pool, hosts, *host_id, &username).await;
+
             if !recipients.is_empty() {
                 let message = NotificationMessage {
                     subject: "[Thanatos] Cross-host security alert".to_string(),
@@ -594,20 +860,23 @@ async fn check_cross_host_username_reuse(
 /// Phase 7d) raised a finding.
 pub async fn ingest_scan(
     pool: &DbPool,
+    hosts: &HostConnectionRegistry,
     notifications: &NotificationDispatcher,
     recipients: &[String],
     host_id: Uuid,
     host_name: &str,
     stdout: &str,
 ) -> anyhow::Result<(usize, Option<String>, bool)> {
-    let (persisted, informational) = persist_scan_output(pool, host_id, stdout).await?;
+    let (persisted, informational) =
+        persist_scan_output(pool, hosts, notifications, host_id, host_name, stdout).await?;
     let per_host_alerted =
         check_and_raise_alert(pool, notifications, recipients, host_id, host_name).await?;
     let (_, window_minutes) = correlation_settings(pool).await;
     let cross_host_ip_alerted =
         check_cross_host_burst(pool, notifications, recipients, window_minutes).await?;
     let cross_host_username_alerted =
-        check_cross_host_username_reuse(pool, notifications, recipients, window_minutes).await?;
+        check_cross_host_username_reuse(pool, hosts, notifications, recipients, window_minutes)
+            .await?;
     Ok((
         persisted,
         informational,
@@ -735,6 +1004,7 @@ pub fn spawn_thanatos_sweep(state: AppState) {
 
                 match ingest_scan(
                     &state.pool,
+                    &state.hosts,
                     &state.notifications,
                     &recipients,
                     host.id,
@@ -806,6 +1076,55 @@ mod tests {
             None
         );
         assert_eq!(extract_source_ip(""), None);
+    }
+
+    #[test]
+    fn maps_thanatos_severity_to_notification_severity() {
+        assert_eq!(
+            notification_severity(Severity::Low),
+            abyssal_notifications::Severity::Info
+        );
+        assert_eq!(
+            notification_severity(Severity::Medium),
+            abyssal_notifications::Severity::Info
+        );
+        assert_eq!(
+            notification_severity(Severity::High),
+            abyssal_notifications::Severity::Warning
+        );
+        assert_eq!(
+            notification_severity(Severity::Critical),
+            abyssal_notifications::Severity::Critical
+        );
+    }
+
+    #[test]
+    fn recognizes_a_per_user_authorized_keys_path_on_both_platforms() {
+        assert!(is_per_user_ssh_authorized_keys(
+            "/home/alice/.ssh/authorized_keys"
+        ));
+        assert!(is_per_user_ssh_authorized_keys(
+            "/root/.ssh/authorized_keys"
+        ));
+        assert!(is_per_user_ssh_authorized_keys(
+            r"C:\Users\alice\.ssh\authorized_keys"
+        ));
+    }
+
+    #[test]
+    fn excludes_the_windows_admin_wide_authorized_keys_file() {
+        // Ends with the same substring ("authorized_keys") as the
+        // per-user file, but is a different, system-wide file that
+        // backs every admin login -- must never be treated the same.
+        assert!(!is_per_user_ssh_authorized_keys(
+            r"C:\ProgramData\ssh\administrators_authorized_keys"
+        ));
+    }
+
+    #[test]
+    fn excludes_unrelated_fim_watchlist_paths() {
+        assert!(!is_per_user_ssh_authorized_keys("/etc/passwd"));
+        assert!(!is_per_user_ssh_authorized_keys("/etc/ssh/sshd_config"));
     }
 
     #[test]

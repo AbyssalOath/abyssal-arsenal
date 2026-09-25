@@ -60,6 +60,15 @@ pub enum AuditAction {
     SecurityEventAcknowledged,
     SecurityEventResolved,
     SecurityEventSuppressed,
+    /// A Thanatos playbook automation (Phase 11) dispatched a response
+    /// action on its own, with no human clicking anything -- distinct
+    /// from Phase 7c's manual kill/disable-account routes, which
+    /// deliberately reuse the generic executor audit trail instead of a
+    /// custom action, since a human is always the one who clicked there.
+    /// `metadata` always carries `{"action": "quarantine_file" |
+    /// "disable_account", "host_id": ..., ...}` so the audit viewer can
+    /// tell which automation fired and against what.
+    AutomatedResponseTriggered,
 
     /// Sepulchre: storage connection definitions, shares, mounts, and
     /// their credentials. Secret-touching variants never carry the
@@ -139,6 +148,7 @@ impl AuditAction {
             AuditAction::SecurityEventAcknowledged => "SECURITY_EVENT_ACKNOWLEDGED",
             AuditAction::SecurityEventResolved => "SECURITY_EVENT_RESOLVED",
             AuditAction::SecurityEventSuppressed => "SECURITY_EVENT_SUPPRESSED",
+            AuditAction::AutomatedResponseTriggered => "AUTOMATED_RESPONSE_TRIGGERED",
 
             AuditAction::StorageConnectionCreated => "STORAGE_CONNECTION_CREATED",
             AuditAction::StorageConnectionChanged => "STORAGE_CONNECTION_CHANGED",
@@ -212,6 +222,7 @@ impl AuditAction {
         AuditAction::SecurityEventAcknowledged,
         AuditAction::SecurityEventResolved,
         AuditAction::SecurityEventSuppressed,
+        AuditAction::AutomatedResponseTriggered,
         AuditAction::StorageConnectionCreated,
         AuditAction::StorageConnectionChanged,
         AuditAction::StorageConnectionDeleted,

@@ -591,6 +591,60 @@ async fn linux_kernel_modules(elevation: &ElevationState) -> Vec<String> {
     modules
 }
 
+/// Discovers per-user SSH `authorized_keys` files (Phase 10) -- planting
+/// a key there grants login without ever touching a password or
+/// sudoers, a classic persistence technique the fixed `FIM_WATCHLIST`
+/// above can't cover since the set of users (and therefore paths) isn't
+/// fixed the way `/etc/passwd` itself is. Reuses the exact directory set
+/// `cryptkeeper.rs`'s `SENSITIVE_SCAN_DIRS` already established for the
+/// same "sensitive SSH material lives here" reasoning, just discovering
+/// paths to hash (via the same `sha256sum`/`thanatos_file_hashes` path
+/// every other FIM entry already goes through, completely unchanged)
+/// instead of checking permissions on them. `-maxdepth 3` covers both
+/// `/home/<user>/.ssh/authorized_keys` (3 levels below `/home`) and
+/// `/root/.ssh/authorized_keys` (2 levels below `/root`, comfortably
+/// under the same ceiling).
+#[cfg(unix)]
+async fn linux_authorized_keys_paths(elevation: &ElevationState) -> Vec<String> {
+    let mut paths = Vec::new();
+    // Deliberately *not* gated on `exit_code == Some(0)`, unlike most
+    // other `run_allow_failure` calls in this file: `find` exits
+    // non-zero the moment it hits *any* permission-denied subtree during
+    // traversal (near-guaranteed here -- `/home` almost always holds
+    // other users' private directories this agent can't read), even
+    // though it still printed every match it *could* reach to stdout
+    // first. Requiring a clean exit would silently discard real,
+    // complete results over one unrelated denied directory -- confirmed
+    // live against a real multi-user `/home` during this phase's own
+    // verification, not a hypothetical. `cryptkeeper.rs`'s own
+    // `find`-based functions (`list_tls_certificates`,
+    // `scan_sensitive_file_permissions`) already never check this for
+    // exactly the same reason.
+    if let Ok(output) = elevation
+        .run_allow_failure(
+            "find",
+            &[
+                "/home",
+                "/root",
+                "-maxdepth",
+                "3",
+                "-type",
+                "f",
+                "-name",
+                "authorized_keys",
+            ],
+        )
+        .await
+    {
+        for line in output.stdout.lines() {
+            if !line.trim().is_empty() {
+                paths.push(line.trim().to_string());
+            }
+        }
+    }
+    paths
+}
+
 #[cfg(unix)]
 pub async fn scan_security_events(
     elevation: &ElevationState,
@@ -749,7 +803,16 @@ pub async fn scan_security_events(
         .map(String::as_str)
         .filter(|p| abyssal_agent_protocol::is_valid_absolute_path(p))
         .collect();
-    for path in FIM_WATCHLIST.iter().copied().chain(extra_fim_paths) {
+    // Per-user SSH `authorized_keys` files (Phase 10) -- discovered
+    // fresh every scan rather than fixed, since the set of users isn't;
+    // see `linux_authorized_keys_paths`'s own doc comment.
+    let authorized_keys_paths = linux_authorized_keys_paths(elevation).await;
+    for path in FIM_WATCHLIST
+        .iter()
+        .copied()
+        .chain(extra_fim_paths)
+        .chain(authorized_keys_paths.iter().map(String::as_str))
+    {
         if let Ok(output) = elevation.run_allow_failure("sha256sum", &[path]).await
             && output.exit_code == Some(0)
             && let Some(hash) = output.stdout.split_whitespace().next()
@@ -949,6 +1012,54 @@ pub async fn scan_security_events(
             let hash = output.stdout.trim();
             if !hash.is_empty() {
                 stdout.push_str(&format!("fim\t{path}\t{hash}\n"));
+            }
+        }
+    }
+
+    // Per-user SSH `authorized_keys` files (Phase 10) -- Windows analog
+    // of the Linux `find`-based discovery: OpenSSH-for-Windows (an
+    // optional, increasingly common Windows feature) stores per-user
+    // keys at `C:\Users\<user>\.ssh\authorized_keys` and a single
+    // centralized file for admin accounts at `C:\ProgramData\ssh\
+    // administrators_authorized_keys`. Discovered fresh every scan
+    // (the set of users isn't fixed), then hashed the same one-call-
+    // per-path way `extra_fim_paths` already is above.
+    let discover_keys_script = "$paths = @(Get-ChildItem -Path 'C:\\Users\\*\\.ssh\\authorized_keys' \
+         -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName); \
+         if (Test-Path 'C:\\ProgramData\\ssh\\administrators_authorized_keys') { \
+         $paths += 'C:\\ProgramData\\ssh\\administrators_authorized_keys' }; $paths";
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            discover_keys_script,
+        ],
+    )
+    .await
+    {
+        for path in output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let capture_expr = format!(
+                "(Get-Content -Raw -Path {} -ErrorAction SilentlyContinue)",
+                crate::process::ps_quote(path)
+            );
+            let hash_script = windows_fim_hash_script(&capture_expr);
+            if let Ok(output) = crate::process::run_command(
+                "powershell.exe",
+                &["-NoProfile", "-NonInteractive", "-Command", &hash_script],
+            )
+            .await
+            {
+                let hash = output.stdout.trim();
+                if !hash.is_empty() {
+                    stdout.push_str(&format!("fim\t{path}\t{hash}\n"));
+                }
             }
         }
     }

@@ -196,8 +196,10 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "lettre",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 

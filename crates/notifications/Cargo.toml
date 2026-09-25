@@ -11,3 +11,5 @@ thiserror.workspace = true
 tracing.workspace = true
 lettre.workspace = true
 anyhow.workspace = true
+tokio.workspace = true
+chrono.workspace = true

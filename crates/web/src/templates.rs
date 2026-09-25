@@ -522,6 +522,8 @@ pub struct SettingsTemplate {
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
     pub thanatos_extra_fim_paths: String,
+    pub thanatos_auto_quarantine_ssh_keys_enabled: bool,
+    pub thanatos_auto_disable_account_enabled: bool,
     pub thanatos_correlation_threshold: u32,
     pub thanatos_correlation_window_minutes: u32,
     pub thanatos_sweep_interval_seconds: u32,
@@ -533,6 +535,7 @@ pub struct SettingsTemplate {
     pub panopticon_traffic_raw_retention_days: u32,
     pub panopticon_traffic_hourly_retention_days: u32,
     pub panopticon_traffic_daily_retention_days: u32,
+    pub audit_syslog_export_enabled: bool,
     pub message: Option<String>,
 }
 

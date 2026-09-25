@@ -49,6 +49,12 @@ const DEFAULT_CREDENTIALS_FILE: &str = r"C:\ProgramData\abyssal-agent\credential
 
 #[cfg(unix)]
 const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/abyssal-agent.service";
+/// Where the interactive `install` command's own copy of the binary
+/// lives -- see `install_agent_binary`'s doc comment for why this needs
+/// to be a fixed, root-owned path rather than wherever the operator
+/// happened to run `abyssal-agent` from.
+#[cfg(unix)]
+const INSTALLED_BINARY_PATH: &str = "/usr/local/bin/abyssal-agent";
 
 #[derive(Parser)]
 #[command(
@@ -387,13 +393,97 @@ fn ensure_root_or_reexec() -> anyhow::Result<()> {
     }
 }
 
+/// Copies the currently-running binary to a fixed, root-owned system
+/// location (`INSTALLED_BINARY_PATH`) if it isn't already running from
+/// there, then hardens its ownership/permissions, and returns that
+/// canonical path for `ExecStart` to use.
+///
+/// A `User=root` systemd unit must never point `ExecStart` at a binary
+/// sitting wherever the operator happened to download/extract it to --
+/// that location (a home directory, `/tmp`, an extracted release
+/// archive) is typically owned by, and writable by, their own
+/// unprivileged account. Left as `current_exe()` verbatim, that account
+/// (or anything that compromises it) could silently replace the binary,
+/// and the next service (re)start would run attacker-controlled code as
+/// root -- the exact privilege-escalation shape a local vulnerability
+/// scan flagged against this pattern. Mirrors the manual-install
+/// instructions in `crates/agent/README.md`, which already tell an
+/// operator to `sudo install -m 755 ... /usr/local/bin/abyssal-agent` by
+/// hand -- this just makes the interactive path do the same thing
+/// automatically rather than assuming a careful operator always will.
+///
+/// Skips the copy (but still re-hardens permissions, so a repair-run
+/// re-asserts them) when already running from `INSTALLED_BINARY_PATH`:
+/// copying a running executable onto itself is at best a no-op and at
+/// worst undefined, since the kernel may still be executing that exact
+/// inode.
+#[cfg(unix)]
+async fn install_agent_binary() -> anyhow::Result<PathBuf> {
+    let current_exe =
+        std::env::current_exe().context("could not determine this binary's own path")?;
+    let target = PathBuf::from(INSTALLED_BINARY_PATH);
+
+    if current_exe != target {
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        tokio::fs::copy(&current_exe, &target)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to install the agent binary to {} -- this needs root, re-run with sudo",
+                    target.display()
+                )
+            })?;
+        println!("Installed binary to {}", target.display());
+    }
+
+    harden_binary_permissions(&target).await?;
+    Ok(target)
+}
+
+/// `chown root:root` + `chmod 755` on the installed binary -- explicit,
+/// not relied on implicitly from "`install` already runs as root so
+/// anything it writes is root-owned anyway": stating the property
+/// directly here means it holds even if `ensure_root_or_reexec`'s own
+/// logic ever changes, and matches the literal remediation a security
+/// scan would recommend for this vulnerability class. Shelled out to
+/// `chown` (matching this codebase's existing "shell out to a real
+/// system tool" convention -- see `crates/agent/src/process.rs`'s own
+/// `run_command`) rather than a raw `libc::chown` FFI call.
+#[cfg(unix)]
+async fn harden_binary_permissions(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let status = tokio::process::Command::new("chown")
+        .arg("root:root")
+        .arg(path)
+        .status()
+        .await
+        .context("failed to run chown -- is it installed and on PATH?")?;
+    if !status.success() {
+        anyhow::bail!("chown root:root {} failed", path.display());
+    }
+
+    let mut perms = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .permissions();
+    perms.set_mode(0o755);
+    tokio::fs::set_permissions(path, perms)
+        .await
+        .with_context(|| format!("failed to chmod {}", path.display()))?;
+    Ok(())
+}
+
 #[cfg(unix)]
 async fn install_systemd_service(
     control_plane_url: &str,
     credentials_file: &Path,
 ) -> anyhow::Result<()> {
-    let binary_path =
-        std::env::current_exe().context("could not determine this binary's own path")?;
+    let binary_path = install_agent_binary().await?;
 
     let mut exec_start = format!(
         "{} run --control-plane-url {control_plane_url}",

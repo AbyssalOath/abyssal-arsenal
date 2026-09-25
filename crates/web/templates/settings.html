@@ -216,6 +216,68 @@
 
     <div class="settings-row">
       <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("danger") %} Auto-quarantine on SSH key tampering</div>
+        <p class="settings-row-desc">Automatically quarantines a per-user <code>authorized_keys</code> file the instant it changes -- no human in the loop.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Fires only for a per-user <code>authorized_keys</code> file discovered by Thanatos's
+            SSH-key file-integrity coverage, never the rest of the file-integrity watch-list
+            (<code>/etc/passwd</code>, <code>sshd_config</code>, the Windows hosts file, ...) --
+            quarantining those unattended could itself cause an outage or lock out legitimate
+            access, whereas a compromised SSH key is safely and narrowly reversible from the
+            Inquest quarantine view. Off by default, same second-gate reasoning as host
+            isolation above.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if thanatos_auto_quarantine_ssh_keys_enabled %}on danger{% endif %}">
+          <span class="toggle-dot"></span>{% if thanatos_auto_quarantine_ssh_keys_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/thanatos-auto-quarantine-ssh-keys">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if thanatos_auto_quarantine_ssh_keys_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if thanatos_auto_quarantine_ssh_keys_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
+            {% if thanatos_auto_quarantine_ssh_keys_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("danger") %} Auto-disable account on cross-host targeting</div>
+        <p class="settings-row-desc">Automatically disables an account the instant it's targeted by high-severity events across multiple hosts -- no human in the loop.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Fires only when Thanatos's cross-host account-targeting correlation rule raises a
+            finding for a host. A real, accepted residual risk: a legitimate shared service or
+            automation account logging in from many hosts could in principle trip the same
+            pattern a real credential-spray attack would and get auto-disabled. Protected
+            account names (<code>root</code>, <code>Administrator</code>, ...) are never
+            touched regardless of this setting. Off by default, same second-gate reasoning as
+            host isolation above.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if thanatos_auto_disable_account_enabled %}on danger{% endif %}">
+          <span class="toggle-dot"></span>{% if thanatos_auto_disable_account_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/thanatos-auto-disable-account">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if thanatos_auto_disable_account_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if thanatos_auto_disable_account_enabled %}btn-secondary{% else %}btn-danger{% endif %}">
+            {% if thanatos_auto_disable_account_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos correlation &amp; sweep tuning</div>
         <p class="settings-row-desc">How sensitive correlation is, and how often the unattended sweep polls.</p>
         <details class="settings-row-more">
@@ -409,6 +471,48 @@
           <label for="traffic-daily-days">Daily (days, 0=off)</label>
           <input type="number" id="traffic-daily-days" name="daily_days" min="0" max="3650" value="{{ panopticon_traffic_daily_retention_days }}" style="max-width:90px;">
           <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="settings-section">
+  <h2 class="settings-section-title">External Export</h2>
+  <div class="card settings-list">
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("audit") %} Audit trail syslog export</div>
+        <p class="settings-row-desc">Streams every audit event this whole app records -- not just Thanatos -- to the syslog destination below.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Off by default: this continuously forwards every recorded audit event
+            (logins, RBAC changes, backups, every arsenal's containment actions, ...) to an
+            external SIEM/log aggregator, not just Thanatos's own security events. The
+            destination itself (<code>SYSLOG_HOST</code>/<code>SYSLOG_PORT</code>) is set via
+            environment variables at deploy time, same as SMTP -- this toggle only controls
+            whether audit data is actively streamed there at all. Turning this on starts
+            forwarding from the moment it's enabled; it does not retroactively export
+            existing history. Thanatos's own findings (every classified event, file-integrity
+            change, new port/module, and correlation alert -- not just alerts) are always
+            forwarded to the same syslog destination when one is configured, independent of
+            this toggle.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if audit_syslog_export_enabled %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if audit_syslog_export_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/audit-syslog-export">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if audit_syslog_export_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if audit_syslog_export_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if audit_syslog_export_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
         </form>
       </div>
     </div>

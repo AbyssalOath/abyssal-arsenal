@@ -15,7 +15,7 @@ use abyssal_database::repo;
 use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
-use abyssal_notifications::{NotificationDispatcher, SmtpProvider};
+use abyssal_notifications::{NotificationDispatcher, SmtpProvider, SyslogProvider};
 use abyssal_web::reliquary_backup::provider::NativeProvider;
 use abyssal_web::reliquary_backup::restore::MaintenanceMode;
 use abyssal_web::reliquary_backup::storage::LocalFs;
@@ -134,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
             public_url: config.public_url.clone(),
         }),
         login_limiter: Arc::new(LoginLimiter::default()),
-        notifications: Arc::new(build_notifications(&config)),
+        notifications: Arc::new(build_notifications(&config).await),
         hosts: Arc::new(HostConnectionRegistry::new()),
         executor: Arc::new(executor),
         elevation: Arc::new(ElevationTracker::new()),
@@ -162,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
     abyssal_web::spawn_panopticon_snmp_sweep(state.pool.clone(), encryption_key);
     abyssal_web::spawn_panopticon_traffic_rollup(state.pool.clone());
     spawn_panopticon_listeners(state.pool.clone()).await;
+    abyssal_web::spawn_audit_syslog_sweep(state.pool.clone(), state.notifications.clone());
 
     let app = abyssal_web::build(state);
 
@@ -230,7 +231,7 @@ async fn spawn_panopticon_listeners(pool: DbPool) {
     }
 }
 
-fn build_notifications(config: &Config) -> NotificationDispatcher {
+async fn build_notifications(config: &Config) -> NotificationDispatcher {
     let mut dispatcher = NotificationDispatcher::new();
 
     if let (Some(host), Some(from)) = (&config.smtp_host, &config.smtp_from) {
@@ -239,6 +240,13 @@ fn build_notifications(config: &Config) -> NotificationDispatcher {
         match SmtpProvider::new(host, config.smtp_port, username, password, from) {
             Ok(provider) => dispatcher.register(Box::new(provider)),
             Err(e) => tracing::warn!(error = %e, "SMTP notification provider not configured"),
+        }
+    }
+
+    if let Some(host) = &config.syslog_host {
+        match SyslogProvider::new(host, config.syslog_port, &config.syslog_app_name).await {
+            Ok(provider) => dispatcher.register(Box::new(provider)),
+            Err(e) => tracing::warn!(error = %e, "syslog notification provider not configured"),
         }
     }
 

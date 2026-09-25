@@ -24,6 +24,7 @@ impl NotificationDispatcher {
         &self,
         message: &NotificationMessage,
     ) -> Vec<(String, Result<(), NotificationError>)> {
+        tracing::debug!(providers = self.providers.len(), subject = %message.subject, "dispatching notification");
         let mut results = Vec::with_capacity(self.providers.len());
         for provider in &self.providers {
             let result = provider.send(message).await;

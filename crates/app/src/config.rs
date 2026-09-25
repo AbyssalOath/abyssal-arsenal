@@ -9,6 +9,20 @@ pub struct Config {
     pub smtp_username: Option<String>,
     pub smtp_password: Option<String>,
     pub smtp_from: Option<String>,
+    /// Destination host for the syslog `NotificationProvider` (Phase 12
+    /// of the Thanatos SIEM/EDR build-out) -- a real external SIEM/log
+    /// aggregator's ingest address. Configured via environment variables
+    /// at startup, same as SMTP above, not admin-editable at runtime:
+    /// this is infrastructure wiring (where does the syslog daemon live),
+    /// not a security posture toggle like `AUDIT_SYSLOG_EXPORT_ENABLED`
+    /// (which *is* Settings-backed, since "should the whole audit trail
+    /// leave this host at all" is a decision worth changing without a
+    /// redeploy).
+    pub syslog_host: Option<String>,
+    pub syslog_port: u16,
+    /// RFC 5424 APP-NAME field -- lets one syslog destination receiving
+    /// from several Abyssal Arsenal deployments tell them apart.
+    pub syslog_app_name: String,
     /// Base URL this control plane is reachable at (e.g.
     /// `https://arsenal.example.com`), used only to build a clickable link
     /// in outgoing emails (currently just the password-reset email).
@@ -53,6 +67,12 @@ impl Config {
             smtp_username: env_opt("SMTP_USERNAME"),
             smtp_password: env_opt("SMTP_PASSWORD"),
             smtp_from: env_opt("SMTP_FROM"),
+            syslog_host: env_opt("SYSLOG_HOST"),
+            syslog_port: env_opt("SYSLOG_PORT")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(514),
+            syslog_app_name: env_opt("SYSLOG_APP_NAME")
+                .unwrap_or_else(|| "abyssal-arsenal".to_string()),
             public_url: env_opt("PUBLIC_URL").map(|v| v.trim_end_matches('/').to_string()),
             encryption_key: env_opt("ENCRYPTION_KEY")
                 .map(|v| abyssal_core::EncryptionKey::from_base64(&v))

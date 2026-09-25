@@ -59,6 +59,41 @@ pub const THANATOS_ALERT_RECIPIENTS: &str = "thanatos.alert_recipients";
 /// host rather than sent anyway (see `thanatos_ops::extra_fim_paths_for`).
 pub const THANATOS_EXTRA_FIM_PATHS: &str = "thanatos.extra_fim_paths";
 
+/// Gates autonomous, no-human-in-the-loop dispatch of `QuarantineFile`
+/// against a host the instant Thanatos's own FIM watch detects a changed
+/// *per-user* `authorized_keys` file (Phase 10) -- planting/altering an
+/// SSH key is a classic persistence technique with essentially no
+/// legitimate reason to happen unattended. Off by default, same
+/// second-gate reasoning as `HOST_ISOLATION_ENABLED`: an admin has to
+/// deliberately opt in before anything gets dispatched with no human
+/// clicking anything. Deliberately scoped to *only* this one FIM source,
+/// not "any FIM drift" -- the rest of the watch-list (`/etc/passwd`,
+/// `sshd_config`, the Windows hosts file, HKLM Run keys, ...) covers
+/// files whose unattended removal could itself cause an outage or lock
+/// out legitimate access; a compromised SSH key, by contrast, is safely
+/// and narrowly reversible by restoring it from quarantine. See
+/// `thanatos_ops::is_per_user_ssh_authorized_keys` for the exact
+/// filename match.
+pub const THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED: &str =
+    "thanatos.auto_quarantine_ssh_keys_enabled";
+
+/// Gates autonomous, no-human-in-the-loop dispatch of `LockUserAccount`
+/// the instant the cross-host account-targeting correlation rule (Phase
+/// 7d) raises a finding for a host -- an account being targeted by
+/// high-severity events on several distinct hosts at once is a strong
+/// credential-spray/account-targeting signal. Off by default, same
+/// second-gate reasoning as `HOST_ISOLATION_ENABLED` and the setting
+/// above. A real, accepted residual risk of turning this on: a
+/// legitimate shared service/automation account (backups, monitoring)
+/// logging in from many hosts could in principle trip the same pattern a
+/// real attack would and get auto-disabled -- the existing protected-
+/// account checks (`is_protected_account_name`/
+/// `is_protected_windows_account_name`, refusing `root`/`Administrator`/
+/// etc. regardless of this setting) already guard the worst case, but
+/// this doesn't eliminate every false-positive shape, and an admin
+/// enabling this should know that going in.
+pub const THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED: &str = "thanatos.auto_disable_account_enabled";
+
 /// How many high-or-above severity events on one host within
 /// `THANATOS_CORRELATION_WINDOW_MINUTES` constitute a "burst" worth
 /// raising a correlation alert over (`thanatos_ops::check_and_raise_alert`).
@@ -268,3 +303,27 @@ pub const PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT: u32 = 0;
 /// (every group starts collapsed) for the same reason Panopticon's does.
 pub const THANATOS_DASHBOARD_RENDER_BUDGET: &str = "thanatos.dashboard_render_budget";
 pub const THANATOS_DASHBOARD_RENDER_BUDGET_DEFAULT: u32 = 0;
+
+/// Gates the platform-wide audit-trail-to-syslog export sweep (Phase 12
+/// of the Thanatos SIEM/EDR build-out) -- off by default, since this
+/// continuously streams *every* `AuditEvent` this whole app records
+/// (logins, RBAC changes, backups, every arsenal's containment actions,
+/// ...), not just Thanatos's own security events, off-host to whatever
+/// `SYSLOG_HOST` is configured. An admin has to deliberately opt in
+/// before any audit data leaves this host at all -- the syslog
+/// destination itself is environment-variable-configured at startup
+/// (same as SMTP), but *whether it's used for this* is worth changing
+/// without a redeploy, the same reasoning `THANATOS_MONITORING_ENABLED`
+/// already established for the unattended Thanatos sweep.
+pub const AUDIT_SYSLOG_EXPORT_ENABLED: &str = "audit.syslog_export_enabled";
+
+/// Internal-only watermark for the audit-syslog-export sweep -- the
+/// encoded `AuditCursor` (see `abyssal_database::repo::audit`) of the
+/// newest row already exported, so a restart resumes forward from there
+/// instead of either re-exporting everything or silently losing rows
+/// written while the process was down. Never rendered on the Settings
+/// page and never written by an admin -- moved forward only by the sweep
+/// itself, the same "small persisted scalar" role every other `Settings`
+/// value already plays, just system-written instead of admin-written (no
+/// dedicated one-row table felt warranted for a single moving string).
+pub const AUDIT_SYSLOG_EXPORT_CURSOR: &str = "audit.syslog_export_cursor";

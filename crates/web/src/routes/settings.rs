@@ -1,13 +1,14 @@
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
     APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES, APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
-    HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED, PANOPTICON_ARP_ENABLED,
-    PANOPTICON_ARP_INTERFACE, PANOPTICON_MDNS_ENABLED, PANOPTICON_SWEEP_ENABLED,
-    PANOPTICON_SWEEP_TARGET, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
+    AUDIT_SYSLOG_EXPORT_ENABLED, HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED,
+    PANOPTICON_ARP_ENABLED, PANOPTICON_ARP_INTERFACE, PANOPTICON_MDNS_ENABLED,
+    PANOPTICON_SWEEP_ENABLED, PANOPTICON_SWEEP_TARGET, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
-    THANATOS_ALERT_RECIPIENTS, THANATOS_CORRELATION_THRESHOLD,
+    THANATOS_ALERT_RECIPIENTS, THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED,
+    THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, THANATOS_CORRELATION_THRESHOLD,
     THANATOS_CORRELATION_THRESHOLD_DEFAULT, THANATOS_CORRELATION_WINDOW_MINUTES,
     THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_EXTRA_FIM_PATHS,
     THANATOS_MONITORING_ENABLED, THANATOS_SWEEP_INTERVAL_SECONDS,
@@ -66,6 +67,14 @@ pub async fn show(
         repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "").await?;
     let thanatos_extra_fim_paths =
         repo::settings::get_string(&state.pool, THANATOS_EXTRA_FIM_PATHS, "").await?;
+    let thanatos_auto_quarantine_ssh_keys_enabled = repo::settings::get_bool(
+        &state.pool,
+        THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED,
+        false,
+    )
+    .await?;
+    let thanatos_auto_disable_account_enabled =
+        repo::settings::get_bool(&state.pool, THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED, false).await?;
     let thanatos_correlation_threshold = repo::settings::get_u32(
         &state.pool,
         THANATOS_CORRELATION_THRESHOLD,
@@ -112,6 +121,8 @@ pub async fn show(
         PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS,
     )
     .await?;
+    let audit_syslog_export_enabled =
+        repo::settings::get_bool(&state.pool, AUDIT_SYSLOG_EXPORT_ENABLED, false).await?;
 
     let tpl = SettingsTemplate {
         base,
@@ -122,6 +133,8 @@ pub async fn show(
         thanatos_monitoring_enabled,
         thanatos_alert_recipients,
         thanatos_extra_fim_paths,
+        thanatos_auto_quarantine_ssh_keys_enabled,
+        thanatos_auto_disable_account_enabled,
         thanatos_correlation_threshold,
         thanatos_correlation_window_minutes,
         thanatos_sweep_interval_seconds,
@@ -133,6 +146,7 @@ pub async fn show(
         panopticon_traffic_raw_retention_days,
         panopticon_traffic_hourly_retention_days,
         panopticon_traffic_daily_retention_days,
+        audit_syslog_export_enabled,
         message: None,
     };
     let jar = match new_cookie {
@@ -287,6 +301,120 @@ pub async fn set_thanatos_monitoring(
                 username: &ctx.user.username,
             })
             .resource(THANATOS_MONITORING_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ThanatosAutoQuarantineSshKeysForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_thanatos_auto_quarantine_ssh_keys(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosAutoQuarantineSshKeysForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ThanatosAutoDisableAccountForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_thanatos_auto_disable_account(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosAutoDisableAccountForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct AuditSyslogExportForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+pub async fn set_audit_syslog_export(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<AuditSyslogExportForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        AUDIT_SYSLOG_EXPORT_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(AUDIT_SYSLOG_EXPORT_ENABLED)
             .metadata(serde_json::json!({ "enabled": form.enabled })),
     )
     .await?;

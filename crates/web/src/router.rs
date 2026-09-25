@@ -160,6 +160,18 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_thanatos_extra_fim_paths),
         )
         .route(
+            "/admin/settings/thanatos-auto-quarantine-ssh-keys",
+            post(routes::settings::set_thanatos_auto_quarantine_ssh_keys),
+        )
+        .route(
+            "/admin/settings/thanatos-auto-disable-account",
+            post(routes::settings::set_thanatos_auto_disable_account),
+        )
+        .route(
+            "/admin/settings/audit-syslog-export",
+            post(routes::settings::set_audit_syslog_export),
+        )
+        .route(
             "/admin/settings/panopticon-sweep-enabled",
             post(routes::settings::set_panopticon_sweep_enabled),
         )

@@ -105,8 +105,11 @@ pub async fn count(pool: &DbPool, filter: &AuditFilter) -> anyhow::Result<i64> {
 /// (a UUID) is the tiebreaker for rows sharing the same microsecond
 /// timestamp, which `datetime(6)` makes rare but not impossible (e.g. a
 /// batch of audit events written from one request). Opaque to callers
-/// outside this module: encode/decode round-trip through a query param,
-/// never constructed from anything but a row this module itself returned.
+/// outside this crate: encode/decode round-trip through a query param,
+/// never hand-constructed from raw fields -- always either `decode`d or
+/// built from a real `AuditEntry` this repo module itself returned (via
+/// `of`, e.g. the audit-syslog-export sweep advancing its own watermark
+/// from a row `list_after` just gave it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditCursor {
     occurred_at_micros: i64,
@@ -114,7 +117,7 @@ pub struct AuditCursor {
 }
 
 impl AuditCursor {
-    fn of(entry: &AuditEntry) -> Self {
+    pub fn of(entry: &AuditEntry) -> Self {
         Self {
             occurred_at_micros: entry.occurred_at.and_utc().timestamp_micros(),
             id: entry.id.clone(),
@@ -271,6 +274,57 @@ pub async fn list_keyset(
         newer_cursor: newer_cursor.map(|c| c.encode()),
         older_cursor: older_cursor.map(|c| c.encode()),
     })
+}
+
+/// The single newest row in the whole (unfiltered) audit log, if any --
+/// used only to establish the audit-syslog-export sweep's starting
+/// watermark the first time it ever runs, the same "silently baseline,
+/// don't retroactively export/alert on pre-existing history" principle
+/// Thanatos's own FIM/port/module baselines already established.
+pub async fn latest_cursor(pool: &DbPool) -> anyhow::Result<Option<AuditCursor>> {
+    let row: Option<AuditEntry> =
+        sqlx::query_as("SELECT * FROM audit_log ORDER BY occurred_at DESC, id DESC LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.as_ref().map(AuditCursor::of))
+}
+
+/// Every (unfiltered) audit row strictly newer than `cursor`, oldest
+/// first -- unlike `list_keyset`, always returns true chronological
+/// order (never reversed back to newest-first for display), since the
+/// audit-syslog-export sweep needs to forward rows to an external SIEM
+/// in the order they actually happened. `cursor: None` returns the
+/// oldest rows in the whole table -- callers that don't want to export
+/// pre-existing history from the beginning of time should seed a
+/// starting cursor via `latest_cursor` first, the same way this repo's
+/// own `for_each_batch` seeds `cursor: None` deliberately (there, to mean
+/// "from the very start," which is the right default for a full export;
+/// here, callers choose differently for the opposite reason).
+pub async fn list_after(
+    pool: &DbPool,
+    cursor: Option<&AuditCursor>,
+    limit: i64,
+) -> anyhow::Result<Vec<AuditEntry>> {
+    let rows: Vec<AuditEntry> = match cursor {
+        None => {
+            sqlx::query_as("SELECT * FROM audit_log ORDER BY occurred_at ASC, id ASC LIMIT ?")
+                .bind(limit)
+                .fetch_all(pool)
+                .await?
+        }
+        Some(c) => {
+            sqlx::query_as(
+                "SELECT * FROM audit_log WHERE (occurred_at, id) > (?, ?) \
+                 ORDER BY occurred_at ASC, id ASC LIMIT ?",
+            )
+            .bind(c.occurred_at())
+            .bind(&c.id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        }
+    };
+    Ok(rows)
 }
 
 /// Streams the *entire* filtered audit log in fixed-size keyset batches,

@@ -22,10 +22,11 @@
 //! from the Linux path.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use anyhow::Context;
 use windows_service::service::{
     ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
     ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
@@ -40,6 +41,15 @@ const SERVICE_DESCRIPTION: &str =
     "Connects this host to its Abyssal Arsenal control plane and serves managed-host operations.";
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
+/// Where the interactive `install` command's own copy of the binary
+/// lives -- `Program Files`, not `ProgramData` (already used for
+/// `credentials.json`): the former is where Windows itself blocks
+/// standard-user write access by default, the latter is meant for data,
+/// not executables. See `install_agent_binary`'s doc comment for why
+/// this needs to be a fixed, hardened path at all.
+const INSTALLED_BINARY_DIR: &str = r"C:\Program Files\AbyssalAgent";
+const INSTALLED_BINARY_PATH: &str = r"C:\Program Files\AbyssalAgent\abyssal-agent.exe";
+
 define_windows_service!(ffi_service_main, service_main);
 
 /// Registers (or, on a re-run, reconfigures) `abyssal-agent run <args>`
@@ -53,7 +63,7 @@ pub fn install_service(control_plane_url: &str, credentials_file: &Path) -> anyh
     let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
     let manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
 
-    let executable_path = std::env::current_exe()?;
+    let executable_path = install_agent_binary()?;
     let mut launch_arguments = vec![
         OsString::from("run"),
         OsString::from("--control-plane-url"),
@@ -92,6 +102,71 @@ pub fn install_service(control_plane_url: &str, credentials_file: &Path) -> anyh
     )?;
     service.set_description(SERVICE_DESCRIPTION)?;
     service.start::<&str>(&[])?;
+    Ok(())
+}
+
+/// Copies the currently-running binary to a fixed, hardened system
+/// location (`INSTALLED_BINARY_PATH`) if it isn't already running from
+/// there, then re-asserts its ACLs, and returns that canonical path for
+/// the SCM's `executable_path` to use.
+///
+/// A `LocalSystem` service must never point at a binary sitting wherever
+/// the operator happened to download/extract it to (a Downloads folder,
+/// a home directory) -- that location is typically writable by their own
+/// standard-user account. Left as `current_exe()` verbatim, that account
+/// (or anything that compromises it) could silently replace the binary,
+/// and the next service (re)start would run attacker-controlled code as
+/// `LocalSystem` -- the exact privilege-escalation shape a local
+/// vulnerability scan flagged against this pattern on the Linux side
+/// (see `install_agent_binary` in `crates/agent/src/main.rs`, which this
+/// mirrors). Skips the copy (but still re-hardens ACLs, so a repair-run
+/// re-asserts them) when already running from `INSTALLED_BINARY_PATH`.
+fn install_agent_binary() -> anyhow::Result<PathBuf> {
+    let current_exe =
+        std::env::current_exe().context("could not determine this binary's own path")?;
+    let target = PathBuf::from(INSTALLED_BINARY_PATH);
+
+    if current_exe != target {
+        std::fs::create_dir_all(INSTALLED_BINARY_DIR)
+            .with_context(|| format!("failed to create {INSTALLED_BINARY_DIR}"))?;
+        std::fs::copy(&current_exe, &target).with_context(|| {
+            format!("failed to install the agent binary to {}", target.display())
+        })?;
+        println!("Installed binary to {}", target.display());
+    }
+
+    harden_binary_acls(&target)?;
+    Ok(target)
+}
+
+/// Strips inherited ACL entries and grants full control only to `SYSTEM`
+/// and `Administrators`, read-and-execute to `Users` -- explicit, not
+/// relied on implicitly from "`Program Files` already blocks standard-
+/// user writes by default": stating the property directly here means it
+/// holds even if the parent directory's own ACLs are ever looser than
+/// expected, and matches the literal remediation a security scan would
+/// recommend for this vulnerability class. Shelled out to `icacls`
+/// (matching this codebase's existing "shell out to a real system tool"
+/// convention, the same reasoning every other Windows-specific data
+/// source/action in this crate already follows) rather than raw ACL
+/// FFI. Well-known SIDs (`S-1-5-18` = SYSTEM, `S-1-5-32-544` =
+/// Administrators, `S-1-5-32-545` = Users) are used instead of group
+/// names, which are themselves localized on a non-English Windows
+/// install.
+fn harden_binary_acls(path: &Path) -> anyhow::Result<()> {
+    let path_str = path.to_string_lossy();
+    let status = std::process::Command::new("icacls")
+        .arg(path_str.as_ref())
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg("*S-1-5-18:F")
+        .arg("*S-1-5-32-544:F")
+        .arg("*S-1-5-32-545:RX")
+        .status()
+        .context("failed to run icacls -- is it available on this system?")?;
+    if !status.success() {
+        anyhow::bail!("icacls hardening of {} failed", path.display());
+    }
     Ok(())
 }
 

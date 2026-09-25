@@ -618,6 +618,7 @@ pub async fn scan(
 
             let ingest = crate::thanatos_ops::ingest_scan(
                 &state.pool,
+                &state.hosts,
                 &state.notifications,
                 &recipients,
                 host_id,

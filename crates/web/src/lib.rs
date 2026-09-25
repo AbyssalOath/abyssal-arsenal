@@ -1,3 +1,4 @@
+mod audit_export;
 pub mod common;
 pub mod csrf;
 pub mod error;
@@ -22,6 +23,7 @@ mod thanatos_ops;
 pub mod theme;
 pub mod update_check;
 
+pub use audit_export::spawn_audit_syslog_sweep;
 pub use health_ops::spawn_health_sweep;
 pub use panopticon_arp::spawn_panopticon_arp_listener;
 pub use panopticon_mdns::spawn_panopticon_mdns_listener;

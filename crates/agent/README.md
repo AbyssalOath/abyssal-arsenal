@@ -51,10 +51,19 @@ described below (`abyssal-agent install --control-plane-url ...
 
    With no arguments at all, `abyssal-agent` runs its interactive `install`
    command: it asks for the control plane URL and the enrollment token,
-   enrolls the host, then writes and enables a systemd service for itself
-   (`systemctl enable --now abyssal-agent`) so it survives a reboot without
-   you having to hand-author a unit file. That's the whole install --
-   nothing else to configure.
+   enrolls the host, copies itself to `/usr/local/bin/abyssal-agent`
+   (`root:root`, mode `755`) if it isn't running from there already, then
+   writes and enables a systemd service pointed at that copy
+   (`systemctl enable --now abyssal-agent`) so it survives a reboot
+   without you having to hand-author a unit file. That's the whole
+   install -- nothing else to configure. The binary copy step matters:
+   the extracted archive you ran `install` from is typically sitting
+   somewhere your own unprivileged account can write to, and a `User=
+   root` unit must never point at a binary anyone but root can replace --
+   that combination is exactly the local-privilege-escalation pattern a
+   vulnerability scan flags. `install` always copies to a root-owned
+   path and hardens it before wiring the unit to it, rather than trusting
+   wherever it happened to be run from.
 
    Installing needs root, but you don't have to remember `sudo` yourself --
    if it isn't already running as root, it asks (`Run this with sudo now?
@@ -164,9 +173,16 @@ alongside the Linux `.tar.gz`.
    zip, then run the extracted `abyssal-agent.exe` with no arguments (or
    `abyssal-agent.exe install --control-plane-url ... --enrollment-token
    ...` for a scripted install). This asks for the control plane URL and
-   enrollment token if not already given as flags, enrolls the host, then
-   registers and starts an auto-start `LocalSystem` service named
-   `abyssal-agent` -- the Windows analog of `systemctl enable --now`.
+   enrollment token if not already given as flags, enrolls the host,
+   copies itself to `C:\Program Files\AbyssalAgent\abyssal-agent.exe`
+   (hardened with `icacls` to full control for `SYSTEM`/Administrators
+   only, read-and-execute for standard users) if it isn't running from
+   there already, then registers and starts an auto-start `LocalSystem`
+   service pointed at that copy, named `abyssal-agent` -- the Windows
+   analog of `systemctl enable --now`. Same reasoning as the Linux path's
+   own binary copy step: a `LocalSystem` service must never point at a
+   binary sitting wherever it was extracted to, which a standard user can
+   typically overwrite.
 3. Not running elevated? Unlike the Linux path, there's no automatic
    re-exec-under-`sudo` equivalent available on every supported Windows
    version -- `install` just tells you to re-run from an administrator

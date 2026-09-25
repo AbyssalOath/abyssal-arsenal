@@ -335,7 +335,19 @@ named backends worth their own enum and file the way firewalld/ufw/nftables
    without the prompts or the service setup, for scripted installs). The
    agent `POST`s the token to `/api/hosts/enroll` -- this endpoint is
    authenticated purely by the token, not a browser session, and is
-   intentionally outside `CurrentUser`/CSRF.
+   intentionally outside `CurrentUser`/CSRF. Before writing the service
+   unit, `install` also copies the running binary to a fixed, hardened
+   system path (`/usr/local/bin/abyssal-agent`, `root:root` `0755`; `C:\
+   Program Files\AbyssalAgent\abyssal-agent.exe`, `icacls`-restricted on
+   Windows) and points the unit/service at *that* copy rather than
+   wherever the operator happened to run it from -- a `User=root`/
+   `LocalSystem` unit pointed at a binary sitting in a standard user's own
+   writable download location is a real local-privilege-escalation
+   vector (that account can replace the binary; the next service restart
+   runs their code with the service's own privilege), not a hypothetical
+   one -- this is a real fix for a real vulnerability report against this
+   exact pattern, not written defensively against something that can't
+   happen.
 3. The control plane creates a `Host` row, generates a long-lived opaque
    credential (same generate/hash pattern as sessions), and returns it once.
    The agent persists it locally (`/etc/abyssal-agent/credentials.json` by
