@@ -7,7 +7,10 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
-    THANATOS_ALERT_RECIPIENTS, THANATOS_MONITORING_ENABLED,
+    THANATOS_ALERT_RECIPIENTS, THANATOS_CORRELATION_THRESHOLD,
+    THANATOS_CORRELATION_THRESHOLD_DEFAULT, THANATOS_CORRELATION_WINDOW_MINUTES,
+    THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_MONITORING_ENABLED,
+    THANATOS_SWEEP_INTERVAL_SECONDS, THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
 };
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
@@ -60,6 +63,24 @@ pub async fn show(
         repo::settings::get_bool(&state.pool, THANATOS_MONITORING_ENABLED, false).await?;
     let thanatos_alert_recipients =
         repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "").await?;
+    let thanatos_correlation_threshold = repo::settings::get_u32(
+        &state.pool,
+        THANATOS_CORRELATION_THRESHOLD,
+        THANATOS_CORRELATION_THRESHOLD_DEFAULT,
+    )
+    .await?;
+    let thanatos_correlation_window_minutes = repo::settings::get_u32(
+        &state.pool,
+        THANATOS_CORRELATION_WINDOW_MINUTES,
+        THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT,
+    )
+    .await?;
+    let thanatos_sweep_interval_seconds = repo::settings::get_u32(
+        &state.pool,
+        THANATOS_SWEEP_INTERVAL_SECONDS,
+        THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
+    )
+    .await?;
     let panopticon_sweep_enabled =
         repo::settings::get_bool(&state.pool, PANOPTICON_SWEEP_ENABLED, false).await?;
     let panopticon_sweep_target =
@@ -97,6 +118,9 @@ pub async fn show(
         host_isolation_enabled,
         thanatos_monitoring_enabled,
         thanatos_alert_recipients,
+        thanatos_correlation_threshold,
+        thanatos_correlation_window_minutes,
+        thanatos_sweep_interval_seconds,
         panopticon_sweep_enabled,
         panopticon_sweep_target,
         panopticon_mdns_enabled,
@@ -319,6 +343,86 @@ pub async fn set_thanatos_alert_recipients(
                 username: &ctx.user.username,
             })
             .resource(THANATOS_ALERT_RECIPIENTS),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ThanatosCorrelationForm {
+    csrf_token: String,
+    threshold: u32,
+    window_minutes: u32,
+    sweep_interval_seconds: u32,
+}
+
+/// One form, three related tunables -- the correlation threshold/window
+/// (`thanatos_ops::check_and_raise_alert`) and the unattended sweep's own
+/// poll interval (`spawn_thanatos_sweep`). Grouped together since they're
+/// all "how sensitive/how often" knobs for the same detection pipeline,
+/// same reasoning as `set_panopticon_traffic_retention`'s single form for
+/// three retention settings.
+pub async fn set_thanatos_correlation(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosCorrelationForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if form.threshold == 0 || form.threshold > 1000 {
+        return Err(WebError(AppError::Validation(
+            "Correlation threshold must be between 1 and 1000 events.".into(),
+        )));
+    }
+    if form.window_minutes == 0 || form.window_minutes > 1440 {
+        return Err(WebError(AppError::Validation(
+            "Correlation window must be between 1 and 1440 minutes (24 hours).".into(),
+        )));
+    }
+    if form.sweep_interval_seconds < 10 || form.sweep_interval_seconds > 3600 {
+        return Err(WebError(AppError::Validation(
+            "Sweep interval must be between 10 and 3600 seconds.".into(),
+        )));
+    }
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_CORRELATION_THRESHOLD,
+        serde_json::json!(form.threshold),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        THANATOS_CORRELATION_WINDOW_MINUTES,
+        serde_json::json!(form.window_minutes),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        THANATOS_SWEEP_INTERVAL_SECONDS,
+        serde_json::json!(form.sweep_interval_seconds),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("thanatos.correlation")
+            .metadata(serde_json::json!({
+                "threshold": form.threshold,
+                "window_minutes": form.window_minutes,
+                "sweep_interval_seconds": form.sweep_interval_seconds,
+            })),
     )
     .await?;
 

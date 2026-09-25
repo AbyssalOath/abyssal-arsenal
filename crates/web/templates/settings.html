@@ -191,6 +191,36 @@
 
     <div class="settings-row">
       <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos correlation &amp; sweep tuning</div>
+        <p class="settings-row-desc">How sensitive correlation is, and how often the unattended sweep polls.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            A correlation alert fires when a host logs at least this many high-or-critical
+            security events within the window below -- the window also doubles as that
+            alert's own cooldown, so it won't fire again for the same host until the window
+            has passed. The sweep interval is how often the unattended background sweep
+            polls every connected host when background monitoring (above) is on; a change
+            here takes effect within one old-length interval, not a restart.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/thanatos-correlation" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="thanatos-threshold">Threshold (events)</label>
+          <input type="number" id="thanatos-threshold" name="threshold" min="1" max="1000" value="{{ thanatos_correlation_threshold }}" style="max-width:90px;">
+          <label for="thanatos-window">Window (minutes)</label>
+          <input type="number" id="thanatos-window" name="window_minutes" min="1" max="1440" value="{{ thanatos_correlation_window_minutes }}" style="max-width:90px;">
+          <label for="thanatos-sweep-interval">Sweep interval (seconds)</label>
+          <input type="number" id="thanatos-sweep-interval" name="sweep_interval_seconds" min="10" max="3600" value="{{ thanatos_sweep_interval_seconds }}" style="max-width:90px;">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("scan") %} Panopticon active sweep</div>
         <p class="settings-row-desc">Unattended scan that re-runs a discovery scan against a fixed target on a schedule.</p>
         <details class="settings-row-more">

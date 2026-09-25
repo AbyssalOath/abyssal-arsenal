@@ -49,6 +49,39 @@ pub const THANATOS_MONITORING_ENABLED: &str = "thanatos.monitoring_enabled";
 /// it's also actively pushed out.
 pub const THANATOS_ALERT_RECIPIENTS: &str = "thanatos.alert_recipients";
 
+/// How many high-or-above severity events on one host within
+/// `THANATOS_CORRELATION_WINDOW_MINUTES` constitute a "burst" worth
+/// raising a correlation alert over (`thanatos_ops::check_and_raise_alert`).
+/// Was a hardcoded constant; promoted to a setting so an operator can tune
+/// sensitivity without a rebuild.
+pub const THANATOS_CORRELATION_THRESHOLD: &str = "thanatos.correlation_threshold";
+pub const THANATOS_CORRELATION_THRESHOLD_DEFAULT: u32 = 5;
+
+/// The correlation check's look-back window in minutes -- also doubles as
+/// how long a raised alert suppresses another one for the same host, so an
+/// alert's cooldown is exactly as long as the burst window that triggered
+/// it (see `thanatos_ops::check_and_raise_alert`'s doc comment).
+pub const THANATOS_CORRELATION_WINDOW_MINUTES: &str = "thanatos.correlation_window_minutes";
+pub const THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT: u32 = 5;
+
+/// How often (in seconds) the unattended sweep (`spawn_thanatos_sweep`)
+/// ticks when `THANATOS_MONITORING_ENABLED` is on. Read fresh at the start
+/// of every tick, so lowering it takes effect within one old interval,
+/// never a restart; raising it takes effect on the very next tick.
+pub const THANATOS_SWEEP_INTERVAL_SECONDS: &str = "thanatos.sweep_interval_seconds";
+pub const THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT: u32 = 60;
+
+/// How many *distinct hosts* a single source IP must trigger high-or-above
+/// severity events on, within `THANATOS_CORRELATION_WINDOW_MINUTES`, to
+/// raise a cross-host correlation alert -- the same burst-detection idea
+/// as the per-host threshold, but looking for one attacker hitting many
+/// hosts at once (a credential-stuffing/lateral-movement pattern the
+/// per-host check alone can't see). Reuses the same window setting as the
+/// per-host check rather than a separate one, since both describe "how
+/// recently is 'recently'" for the same underlying detection pipeline.
+pub const THANATOS_CROSS_HOST_THRESHOLD: &str = "thanatos.cross_host_threshold";
+pub const THANATOS_CROSS_HOST_THRESHOLD_DEFAULT: u32 = 3;
+
 /// Gates Panopticon's unattended periodic *active* discovery sweep (real
 /// nmap traffic against `PANOPTICON_SWEEP_TARGET`, on a long fixed
 /// interval -- see `spawn_panopticon_sweep`). Off by default, same
@@ -216,3 +249,12 @@ pub const PANOPTICON_SUBNET_PREFIX_V6_DEFAULT: u32 = 64;
 /// setting explicitly.
 pub const PANOPTICON_INVENTORY_RENDER_BUDGET: &str = "panopticon.inventory_render_budget";
 pub const PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT: u32 = 0;
+
+/// Same render-budget mechanics as `PANOPTICON_INVENTORY_RENDER_BUDGET`,
+/// applied to the Thanatos fleet dashboard's per-host event groups:
+/// below this many total events across every group shown, every group
+/// renders open by default; at or above it (or by default, since this is
+/// `0`), only groups named in `?open=` render their rows. Defaults to `0`
+/// (every group starts collapsed) for the same reason Panopticon's does.
+pub const THANATOS_DASHBOARD_RENDER_BUDGET: &str = "thanatos.dashboard_render_budget";
+pub const THANATOS_DASHBOARD_RENDER_BUDGET_DEFAULT: u32 = 0;

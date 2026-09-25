@@ -22,5 +22,6 @@ pub mod sessions;
 pub mod settings;
 pub mod ssh_trusted_host_keys;
 pub mod storage_connections;
+pub mod thanatos_file_hashes;
 pub mod users;
 pub mod validation_runs;

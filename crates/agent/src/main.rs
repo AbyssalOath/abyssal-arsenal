@@ -26,14 +26,28 @@ mod sepulchre;
 mod thanatos;
 mod transport;
 mod vivisection;
+#[cfg(windows)]
+mod winservice;
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
+/// Where credentials persist by default. `/etc/...` needs root on Unix
+/// (matching every other root-owned config path there); `ProgramData` is
+/// its Windows equivalent -- world-readable-by-default but writable only
+/// by admins/`LocalSystem`, the standard location for service-wide
+/// persistent state that isn't per-user.
+#[cfg(unix)]
 const DEFAULT_CREDENTIALS_FILE: &str = "/etc/abyssal-agent/credentials.json";
+#[cfg(windows)]
+const DEFAULT_CREDENTIALS_FILE: &str = r"C:\ProgramData\abyssal-agent\credentials.json";
+
+#[cfg(unix)]
 const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/abyssal-agent.service";
 
 #[derive(Parser)]
@@ -42,7 +56,7 @@ const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/abyssal-agent.service";
     version,
     about = "Abyssal Arsenal managed-host agent"
 )]
-struct Cli {
+pub struct Cli {
     /// Defaults to `install` (interactive setup) when run with no
     /// subcommand at all -- see that command's own help.
     #[command(subcommand)]
@@ -50,7 +64,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-enum Command {
+pub enum Command {
     /// Enroll (on first run) and connect to the control plane, serving
     /// commands until interrupted. Safe to run repeatedly / under a
     /// supervisor like systemd — once credentials exist, `--enrollment-token`
@@ -99,6 +113,19 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    // When the SCM launches this binary as a registered service, it
+    // expects a call into `StartServiceCtrlDispatcherW` within a short
+    // startup timeout -- `run_as_service` blocks for the service's
+    // entire lifetime in that case, only returning once it's stopped.
+    // Launched any other way (a human in a terminal, or on any other
+    // platform), there's no SCM control pipe to connect to and it
+    // returns immediately with an error instead -- fall through to the
+    // ordinary CLI path below.
+    #[cfg(windows)]
+    if winservice::run_as_service().is_ok() {
+        return Ok(());
+    }
 
     let cli = Cli::parse();
     match cli.command {
@@ -152,9 +179,11 @@ async fn run(
 }
 
 /// The interactive/seamless install path: enroll (if not already), then
-/// write and enable a systemd unit so the agent survives a reboot without
-/// the operator having to hand-author one -- see `crates/agent/README.md`
-/// for the manual equivalent this mirrors exactly.
+/// register whatever this host's own service manager is (a systemd unit
+/// on Linux, a native Windows service on Windows) so the agent survives
+/// a reboot without the operator having to hand-author one -- see
+/// `crates/agent/README.md` for the manual equivalent this mirrors
+/// exactly.
 async fn install(
     control_plane_url: Option<String>,
     enrollment_token: Option<String>,
@@ -196,21 +225,41 @@ async fn install(
     .await?;
     println!("Enrolled as host {}", credentials.host_id);
 
-    if init_system::detect().await != init_system::InitSystem::Systemd {
+    #[cfg(windows)]
+    {
+        winservice::install_service(&control_plane_url, &credentials_file)?;
         println!(
-            "\nNo systemd detected on this host -- skipping service setup. Run it directly \
-             (`abyssal-agent run --control-plane-url {control_plane_url}`) under whatever \
-             supervisor this host actually uses instead."
+            "\nDone. abyssal-agent is enrolled and running as a Windows service.\n\
+             Check on it any time with: sc query abyssal-agent (or the Services console)"
         );
-        return Ok(());
     }
 
-    install_systemd_service(&control_plane_url, &credentials_file).await?;
+    #[cfg(unix)]
+    {
+        if init_system::detect().await != init_system::InitSystem::Systemd {
+            println!(
+                "\nNo systemd detected on this host -- skipping service setup. Run it directly \
+                 (`abyssal-agent run --control-plane-url {control_plane_url}`) under whatever \
+                 supervisor this host actually uses instead."
+            );
+            return Ok(());
+        }
 
+        install_systemd_service(&control_plane_url, &credentials_file).await?;
+
+        println!(
+            "\nDone. abyssal-agent is enrolled and running as a systemd service.\n\
+             Check on it any time with: systemctl status abyssal-agent"
+        );
+    }
+
+    #[cfg(not(any(unix, windows)))]
     println!(
-        "\nDone. abyssal-agent is enrolled and running as a systemd service.\n\
-         Check on it any time with: systemctl status abyssal-agent"
+        "\nEnrolled, but this platform has no supported service manager integration -- run it \
+         directly (`abyssal-agent run --control-plane-url {control_plane_url}`) under whatever \
+         supervisor this host uses instead."
     );
+
     Ok(())
 }
 
@@ -231,6 +280,7 @@ fn prompt(label: &str) -> anyhow::Result<String> {
 
 /// Same shape as `prompt`, but accepts an empty answer as `default_yes`
 /// instead of erroring -- for a yes/no confirmation, not a required value.
+#[cfg(unix)]
 fn prompt_yes_no(label: &str, default_yes: bool) -> anyhow::Result<bool> {
     use std::io::Write;
     print!("{label}");
@@ -246,10 +296,13 @@ fn prompt_yes_no(label: &str, default_yes: bool) -> anyhow::Result<bool> {
     Ok(matches!(answer.as_str(), "y" | "yes"))
 }
 
-/// True on Unix once the effective UID is 0. Always false on any other
-/// target -- `abyssal-agent` only ever runs on Linux hosts in practice, so
-/// this is just a defensive fallback rather than real cross-platform
-/// support.
+/// True once this process holds elevated privileges: effective UID 0 on
+/// Unix, membership in the built-in Administrators role on Windows
+/// (checked via `IsInRole`, shelled out through PowerShell -- consistent
+/// with how the rest of this agent's Windows-specific code queries the
+/// OS through a CLI tool rather than raw Win32 FFI, and there's no
+/// equivalent of `libc::geteuid()` in safe, dependency-free Rust for
+/// Windows token elevation).
 fn running_as_root() -> bool {
     #[cfg(unix)]
     {
@@ -257,32 +310,55 @@ fn running_as_root() -> bool {
         // cannot fail.
         unsafe { libc::geteuid() == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "([Security.Principal.WindowsPrincipal] \
+                 [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(\
+                 [Security.Principal.WindowsBuiltInRole]::Administrator)",
+            ])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .eq_ignore_ascii_case("true")
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         false
     }
 }
 
-/// `install` needs root (to write the credentials file and manage the
-/// systemd service). Rather than failing outright, offer to re-exec
-/// under `sudo` -- same interactive prompt-then-`exec sudo "$0" "$@"`
-/// pattern already familiar from plenty of install scripts. `exec()`
-/// replaces this process image entirely (never returns on success), so
-/// the re-exec'd process picks up exactly where this one would have,
-/// just with EUID 0 -- `running_as_root()` short-circuits immediately on
-/// its next call, no risk of looping.
+/// `install` needs elevated privileges (to write the credentials file and
+/// manage the host's service manager). On Unix, offer to re-exec under
+/// `sudo` -- same interactive prompt-then-`exec sudo "$0" "$@"` pattern
+/// already familiar from plenty of install scripts; `exec()` replaces
+/// this process image entirely (never returns on success), so the
+/// re-exec'd process picks up exactly where this one would have, just
+/// with EUID 0 -- `running_as_root()` short-circuits immediately on its
+/// next call, no risk of looping. Windows has no universal sudo
+/// equivalent available on every supported version, so there's no
+/// automatic re-exec there -- just clear guidance to re-run elevated.
 fn ensure_root_or_reexec() -> anyhow::Result<()> {
     if running_as_root() {
         return Ok(());
     }
 
-    println!("Root privileges are required to enroll this host and manage its systemd service.");
-    if !prompt_yes_no("Run this with sudo now? [Y/n]: ", true)? {
-        anyhow::bail!("root is required to continue -- re-run with sudo");
-    }
-
     #[cfg(unix)]
     {
+        println!(
+            "Root privileges are required to enroll this host and manage its systemd service."
+        );
+        if !prompt_yes_no("Run this with sudo now? [Y/n]: ", true)? {
+            anyhow::bail!("root is required to continue -- re-run with sudo");
+        }
+
         use std::os::unix::process::CommandExt;
 
         let current_exe =
@@ -298,12 +374,20 @@ fn ensure_root_or_reexec() -> anyhow::Result<()> {
             .exec();
         Err(err).context("failed to re-exec with sudo -- is sudo installed and on PATH?")
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        anyhow::bail!("automatic sudo re-exec is only supported on Unix; re-run this as root")
+        anyhow::bail!(
+            "administrator privileges are required -- right-click a terminal (Command Prompt \
+             or PowerShell) and choose \"Run as administrator\", then re-run this command"
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        anyhow::bail!("automatic privilege re-exec is only supported on Unix; re-run this as root")
     }
 }
 
+#[cfg(unix)]
 async fn install_systemd_service(
     control_plane_url: &str,
     credentials_file: &Path,
@@ -355,6 +439,7 @@ async fn install_systemd_service(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn run_systemctl(args: &[&str]) -> anyhow::Result<()> {
     let status = tokio::process::Command::new("systemctl")
         .args(args)

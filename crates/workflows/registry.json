@@ -90,6 +90,60 @@
     "context_fields": ["persisted_count"]
   },
   {
+    "source_arsenal": "postmortem",
+    "source_action": "failed_login_attempts",
+    "condition": { "field": "failed_login_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "thanatos",
+    "target_action": "show_host",
+    "label": "Correlate with Thanatos",
+    "context_fields": ["failed_login_count"]
+  },
+  {
+    "source_arsenal": "postmortem",
+    "source_action": "core_dumps",
+    "condition": { "field": "core_dump_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "inquest",
+    "target_action": "show_host",
+    "label": "Investigate with Inquest",
+    "context_fields": ["core_dump_count"]
+  },
+  {
+    "source_arsenal": "postmortem",
+    "source_action": "oom_kill_events",
+    "condition": { "field": "oom_kill_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "inquest",
+    "target_action": "show_host",
+    "label": "Investigate with Inquest",
+    "context_fields": ["oom_kill_count"]
+  },
+  {
+    "source_arsenal": "inquest",
+    "source_action": "isolate_host",
+    "condition": { "field": "isolated", "operator": "equals", "value": true },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate with Postmortem",
+    "context_fields": ["isolated"]
+  },
+  {
+    "source_arsenal": "inquest",
+    "source_action": "block_remote_ip",
+    "condition": { "field": "blocked", "operator": "equals", "value": true },
+    "target_arsenal": "thanatos",
+    "target_action": "show_host",
+    "label": "Re-scan with Thanatos",
+    "context_fields": ["blocked"]
+  },
+  {
+    "source_arsenal": "inquest",
+    "source_action": "quarantine_file",
+    "condition": { "field": "quarantined", "operator": "equals", "value": true },
+    "target_arsenal": "thanatos",
+    "target_action": "show_host",
+    "label": "Re-scan with Thanatos",
+    "context_fields": ["quarantined"]
+  },
+  {
     "source_arsenal": "obituary",
     "source_action": "journal_disk_usage",
     "condition": { "field": "usage_bytes", "operator": "greater_than_or_equal", "value": 1073741824 },

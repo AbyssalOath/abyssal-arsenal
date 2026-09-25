@@ -142,9 +142,21 @@ pub async fn ws_upgrade(
     AgentAuth {
         host,
         protocol_version,
+        os,
+        agent_version,
     }: AgentAuth,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, host, protocol_version, addr))
+    ws.on_upgrade(move |socket| {
+        handle_socket(
+            socket,
+            state,
+            host,
+            protocol_version,
+            os,
+            agent_version,
+            addr,
+        )
+    })
 }
 
 async fn handle_socket(
@@ -152,6 +164,8 @@ async fn handle_socket(
     state: AppState,
     host: Host,
     protocol_version: Option<u32>,
+    os: Option<String>,
+    agent_version: Option<String>,
     addr: SocketAddr,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(16);
@@ -165,9 +179,15 @@ async fn handle_socket(
             "agent connected with a mismatched or unreported protocol version -- it may be running a stale build",
         );
     }
-    tracing::info!(host_id = %host.id, name = %host.name, "agent connected");
-    if let Err(e) =
-        repo::hosts::touch_last_seen_with_ip(&state.pool, host.id, &addr.ip().to_string()).await
+    tracing::info!(host_id = %host.id, name = %host.name, ?os, ?agent_version, "agent connected");
+    if let Err(e) = repo::hosts::touch_last_seen_with_ip(
+        &state.pool,
+        host.id,
+        &addr.ip().to_string(),
+        os.as_deref(),
+        agent_version.as_deref(),
+    )
+    .await
     {
         tracing::warn!(error = %e, "failed to record host connection time/address");
     }

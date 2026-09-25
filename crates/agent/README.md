@@ -1,10 +1,20 @@
 # abyssal-agent
 
-Runs on a managed Linux host, not on the Abyssal Arsenal control plane. It
+Runs on a managed Linux or Windows host, not on the Abyssal Arsenal control
+plane (macOS is not yet supported -- see "Windows and macOS" below). It
 connects *out* to the control plane over an authenticated WebSocket and
 executes a fixed, versioned whitelist of operations locally
 (`abyssal-agent-protocol::AgentOperation`) -- it never accepts an arbitrary
 command from the wire.
+
+Everything below the "Windows" section is written for Linux; Windows install
+steps are their own section further down, since enough of the mechanics
+(service manager, privilege model, default paths) genuinely differ that
+interleaving them would be more confusing than a clean split. Both platforms
+share the same binary crate, the same wire protocol, and -- for arsenals
+that support it -- the same behavior; see `crates/agent/src/thanatos.rs`'s
+module doc comment for how Thanatos's own detection differs by platform
+underneath an identical output format.
 
 Everything below is the manual path: an operator SSHing into the host
 themselves and running these steps by hand. If the host already turned up
@@ -136,6 +146,66 @@ the unit's first start and remove it afterwards), then:
 sudo systemctl daemon-reload
 sudo systemctl enable --now abyssal-agent
 ```
+
+## Windows
+
+The same `abyssal-agent` binary crate builds and runs on Windows
+(`x86_64-pc-windows-msvc`), registering itself as a native Windows service
+(`LocalSystem`) instead of a systemd unit -- the CI release job
+(`.github/workflows/release.yml`) publishes both as separate archives on
+every tagged release, `abyssal-agent-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+alongside the Linux `.tar.gz`.
+
+1. In the control plane's web UI, go to `/admin/hosts` and generate an
+   enrollment token (valid 15 minutes, single-use).
+2. On the target host, in an **administrator** Command Prompt or
+   PowerShell, download and extract the
+   [latest release](https://github.com/AbyssalOath/abyssal-arsenal/releases/latest)
+   zip, then run the extracted `abyssal-agent.exe` with no arguments (or
+   `abyssal-agent.exe install --control-plane-url ... --enrollment-token
+   ...` for a scripted install). This asks for the control plane URL and
+   enrollment token if not already given as flags, enrolls the host, then
+   registers and starts an auto-start `LocalSystem` service named
+   `abyssal-agent` -- the Windows analog of `systemctl enable --now`.
+3. Not running elevated? Unlike the Linux path, there's no automatic
+   re-exec-under-`sudo` equivalent available on every supported Windows
+   version -- `install` just tells you to re-run from an administrator
+   terminal ("Run as administrator") and exits.
+
+Once installed, `sc query abyssal-agent` shows its state, or use the
+Services console (`services.msc`). Re-running `install` reconfigures the
+existing service in place (same "safe to re-run" behavior as the systemd
+path) rather than failing if it's already registered.
+
+**Model divergences from Linux**, both deliberate:
+
+- **No Apotheosis (time-boxed sudo elevation) equivalent.** The service
+  always runs as `LocalSystem`, which already has the access Thanatos's
+  read-only Security/System event log queries need -- there's no
+  unprivileged-by-default mode to elevate *from* the way Linux's
+  sudo-based `ElevationState` provides.
+- **Thanatos detection reads the Security/System event logs** (via
+  `Get-WinEvent`, shelled through `powershell.exe`) instead of tailing
+  `/var/log/auth.log`/the kernel ring buffer/systemd -- see the module
+  doc comment in `crates/agent/src/thanatos.rs` for the exact signals
+  watched and why they're matched on event ID rather than message text.
+  Every other arsenal that shells out to a Linux-only tool (`iptables`,
+  `useradd`, `systemctl`, ...) simply isn't functional on Windows yet;
+  Thanatos is the one arsenal this pass brought to parity.
+
+## Windows and macOS
+
+Windows support (above) covers Thanatos detection depth and the
+install/service-manager story; it does not extend every other arsenal's
+Linux-specific tooling (Parish's `useradd`, Firewall's `iptables`, ...) to
+Windows equivalents yet. macOS isn't supported at all: distributing a
+`launchd`-installed background agent without Gatekeeper blocking every
+install needs code-signing/notarization, which needs an active Apple
+Developer Program membership. If that's ever obtained, the shape would
+mirror Windows exactly -- `cfg(target_os = "macos")` in this same crate,
+Apple unified logging (`log show`/`oslog`) for Thanatos's auth/sudo-
+equivalent events, a `launchd` `.plist` for persistence, the same wire
+format either way.
 
 ## Why it runs as root (usually)
 

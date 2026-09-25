@@ -246,6 +246,7 @@ impl Executor {
             (HostOpKind::Elevate, AuditOutcome::Success) => AuditAction::HostElevated,
             (HostOpKind::Elevate, AuditOutcome::Failure) => AuditAction::HostElevationFailed,
             (HostOpKind::Deescalate, _) => AuditAction::HostDeescalated,
+            (HostOpKind::SecurityScan, _) => AuditAction::SecurityEventScanRun,
             (HostOpKind::Other, _) => AuditAction::SystemCommandExecuted,
         };
 
@@ -284,6 +285,7 @@ impl Executor {
 enum HostOpKind {
     Elevate,
     Deescalate,
+    SecurityScan,
     Other,
 }
 
@@ -292,6 +294,7 @@ impl From<&AgentOperation> for HostOpKind {
         match operation {
             AgentOperation::Elevate { .. } => HostOpKind::Elevate,
             AgentOperation::Deescalate => HostOpKind::Deescalate,
+            AgentOperation::ScanSecurityEvents => HostOpKind::SecurityScan,
             _ => HostOpKind::Other,
         }
     }

@@ -32,8 +32,8 @@ use crate::host_context;
 use crate::pagination;
 use crate::state::AppState;
 use crate::templates::{
-    BaseCtx, GroupPageInfo, InventoryGroup, NetworkDeviceRow, NumberedPageInfo,
-    PanopticonClassifyTemplate, PanopticonTemplate,
+    BaseCtx, GroupPageInfo, InventoryGroup, NetworkDeviceRow, PanopticonClassifyTemplate,
+    PanopticonTemplate,
 };
 use crate::theme;
 
@@ -259,36 +259,6 @@ fn build_device_row(
     }
 }
 
-/// Builds a [`NumberedPageInfo`] from a metadata-only [`pagination::Page`]
-/// plus a closure that turns a target page number into that page's href --
-/// the one place the ellipsis-collapsed numbered strip is assembled, reused
-/// by both the group-list pager and the ad-hoc filtered-view pager (they
-/// differ only in which query param they page over).
-fn numbered_page_info(
-    page: &pagination::Page<()>,
-    link_for: impl Fn(u32) -> String,
-) -> NumberedPageInfo {
-    let numbered = pagination::page_window(page.page, page.total_pages)
-        .into_iter()
-        .map(|entry| match entry {
-            Some(p) => (p.to_string(), Some(link_for(p)), p == page.page),
-            None => ("…".to_string(), None, false),
-        })
-        .collect();
-    NumberedPageInfo {
-        current_page: page.page,
-        total_pages: page.total_pages,
-        range_start: page.start_index(),
-        range_end: page.end_index(),
-        total: page.total,
-        first_href: page.has_prev().then(|| link_for(1)),
-        prev_href: page.has_prev().then(|| link_for(page.page - 1)),
-        next_href: page.has_next().then(|| link_for(page.page + 1)),
-        last_href: page.has_next().then(|| link_for(page.total_pages)),
-        numbered,
-    }
-}
-
 pub(crate) async fn render(
     state: &AppState,
     jar: &CookieJar,
@@ -377,7 +347,7 @@ pub(crate) async fn render(
             .collect();
         let page_meta: pagination::Page<()> =
             pagination::Page::new(vec![], page_num, GROUP_ROWS_PER_PAGE, total_u64);
-        let filtered_page = Some(numbered_page_info(&page_meta, |p| {
+        let filtered_page = Some(pagination::numbered_page_info(&page_meta, |p| {
             query.with_page(p).href()
         }));
 
@@ -446,7 +416,7 @@ pub(crate) async fn render(
     let group_offset = pagination::offset(group_page_num, GROUPS_PER_PAGE) as usize;
     let group_page_meta: pagination::Page<()> =
         pagination::Page::new(vec![], group_page_num, GROUPS_PER_PAGE, group_total);
-    let group_list_page = Some(numbered_page_info(&group_page_meta, |p| {
+    let group_list_page = Some(pagination::numbered_page_info(&group_page_meta, |p| {
         query.with_group_page(p).href()
     }));
 

@@ -152,6 +152,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_thanatos_alert_recipients),
         )
         .route(
+            "/admin/settings/thanatos-correlation",
+            post(routes::settings::set_thanatos_correlation),
+        )
+        .route(
             "/admin/settings/panopticon-sweep-enabled",
             post(routes::settings::set_panopticon_sweep_enabled),
         )
@@ -1375,6 +1379,18 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/thanatos/:host_id/elevate",
             post(routes::thanatos::elevate),
+        )
+        .route(
+            "/arsenals/thanatos/events/:event_id/acknowledge",
+            post(routes::thanatos::acknowledge_event),
+        )
+        .route(
+            "/arsenals/thanatos/events/:event_id/resolve",
+            post(routes::thanatos::resolve_event),
+        )
+        .route(
+            "/arsenals/thanatos/events/:event_id/suppress",
+            post(routes::thanatos::suppress_event),
         )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))

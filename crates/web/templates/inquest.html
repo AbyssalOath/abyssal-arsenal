@@ -1,24 +1,61 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
 {% block title %}Inquest — Abyssal Arsenal{% endblock %}
 {% block heading %}Inquest — Incident Response{% endblock %}
 {% block content %}
 
-{% if hosts.is_empty() %}
 <div class="card">
-  <p style="color:var(--text-muted);">
+  {% if groups.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">
     No hosts are currently online. Enroll and connect a host from
     <a href="/admin/hosts">Hosts</a> first.
   </p>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    Expand a host for a quick read-only check, or open its full page to respond or contain.
+  </p>
+  {% for group in groups %}
+  <details class="inventory-group"{% if group.is_open %} open{% endif %}>
+    <summary>
+      <span class="chevron-wrap">{% call macros::icon("chevron") %}</span>
+      <span class="inventory-group-label">{{ group.host_name }}</span>
+      <span class="inventory-group-actions actions">
+        <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ group.host_id }}">{% call macros::icon("scan") %} Open host page</a>
+      </span>
+    </summary>
+
+    {% if group.is_open %}
+    <div class="action-grid" style="margin-top:10px;">
+      <form method="post" action="/arsenals/inquest/{{ group.host_id }}/blocked-ips">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} Blocked IPs</button>
+      </form>
+      <form method="post" action="/arsenals/inquest/{{ group.host_id }}/isolation-status">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Isolation Status</button>
+      </form>
+      <form method="post" action="/arsenals/inquest/{{ group.host_id }}/quarantined-files">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Quarantined Files</button>
+      </form>
+    </div>
+    <p style="color:var(--text-muted); margin:8px 0 0; font-size:0.85rem;">
+      Running a check here jumps to this host's full page to show the result. Response actions
+      (block/quarantine/isolate) are on that page too, deliberately not embedded here.
+    </p>
+    {% else %}
+    {% if let Some(href) = group.open_href %}
+    <p><a href="{{ href }}">{% call macros::icon("generate") %} Load quick checks</a></p>
+    {% endif %}
+    {% endif %}
+  </details>
+  {% endfor %}
+
+  {% if let Some(p) = group_list_page %}
+  {% call pager::pagination_nav(p) %}
+  {% endif %}
+  {% endif %}
 </div>
-{% else %}
-<div class="card">
-  <p style="color:var(--text-muted); margin-top:0;">Pick a host to investigate or contain.</p>
-  <div class="actions">
-    {% for h in hosts %}
-    <a class="btn btn-secondary" href="/arsenals/inquest/{{ h.id }}">{{ h.name }}</a>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
 
 {% endblock %}

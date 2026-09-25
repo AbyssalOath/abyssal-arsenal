@@ -21,6 +21,16 @@ pub struct Host {
     /// Used by Panopticon to correlate a discovered network device against
     /// a known managed host.
     pub last_seen_ip: Option<String>,
+    /// The coarse platform family the agent reported at its most recent
+    /// connect (`std::env::consts::OS` on the agent binary -- `"linux"`,
+    /// `"windows"`, `"macos"`, ...), or `None` for a host that has never
+    /// connected under an agent build new enough to report it. Lets
+    /// Thanatos (and anything else that needs to) route to the right
+    /// detection logic per host instead of assuming Linux.
+    pub os: Option<String>,
+    /// The agent binary's own version at its most recent connect, or
+    /// `None` for the same reason as `os`.
+    pub agent_version: Option<String>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
 

@@ -1,24 +1,74 @@
 {% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
 {% block title %}Postmortem — Abyssal Arsenal{% endblock %}
-{% block heading %}Postmortem — Forensic Examination{% endblock %}
+{% block heading %}Postmortem — Forensics{% endblock %}
 {% block content %}
 
-{% if hosts.is_empty() %}
 <div class="card">
-  <p style="color:var(--text-muted);">
+  {% if groups.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">
     No hosts are currently online. Enroll and connect a host from
     <a href="/admin/hosts">Hosts</a> first.
   </p>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    Expand a host to run a quick forensic check, or open its full page for the rest
+    (recently-modified files, elevate, etc.).
+  </p>
+  {% for group in groups %}
+  <details class="inventory-group"{% if group.is_open %} open{% endif %}>
+    <summary>
+      <span class="chevron-wrap">{% call macros::icon("chevron") %}</span>
+      <span class="inventory-group-label">{{ group.host_name }}</span>
+      <span class="inventory-group-actions actions">
+        <a class="btn btn-secondary btn-sm" href="/arsenals/postmortem/{{ group.host_id }}">{% call macros::icon("scan") %} Open host page</a>
+      </span>
+    </summary>
+
+    {% if group.is_open %}
+    <div class="action-grid" style="margin-top:10px;">
+      <form method="post" action="/arsenals/postmortem/{{ group.host_id }}/boot-history">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("reboot") %} Boot History</button>
+      </form>
+      <form method="post" action="/arsenals/postmortem/{{ group.host_id }}/kernel-ring-buffer">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Kernel Ring Buffer</button>
+      </form>
+      <form method="post" action="/arsenals/postmortem/{{ group.host_id }}/oom-kills">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} OOM-Kill Events</button>
+      </form>
+      <form method="post" action="/arsenals/postmortem/{{ group.host_id }}/core-dumps">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Core Dumps</button>
+      </form>
+      <form method="post" action="/arsenals/postmortem/{{ group.host_id }}/journal-errors">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} System Journal Errors</button>
+      </form>
+      <form method="post" action="/arsenals/postmortem/{{ group.host_id }}/failed-logins">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Failed Login Attempts</button>
+      </form>
+    </div>
+    <p style="color:var(--text-muted); margin:8px 0 0; font-size:0.85rem;">
+      Running a check here jumps to this host's full page to show the result. File-integrity
+      checks (with a configurable lookback window) are on that page too.
+    </p>
+    {% else %}
+    {% if let Some(href) = group.open_href %}
+    <p><a href="{{ href }}">{% call macros::icon("generate") %} Load quick checks</a></p>
+    {% endif %}
+    {% endif %}
+  </details>
+  {% endfor %}
+
+  {% if let Some(p) = group_list_page %}
+  {% call pager::pagination_nav(p) %}
+  {% endif %}
+  {% endif %}
 </div>
-{% else %}
-<div class="card">
-  <p style="color:var(--text-muted); margin-top:0;">Pick a host to examine.</p>
-  <div class="actions">
-    {% for h in hosts %}
-    <a class="btn btn-secondary" href="/arsenals/postmortem/{{ h.id }}">{{ h.name }}</a>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
 
 {% endblock %}

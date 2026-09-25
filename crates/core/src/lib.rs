@@ -32,7 +32,7 @@ pub use reliquary_backup::{
     EncryptionMetadata, ManifestEntry, VerificationStatus,
 };
 pub use role::{BUILT_IN_ROLES, MAX_ROLE_DEPTH, Role};
-pub use security_event::{SecurityEvent, Severity};
+pub use security_event::{EventStatus, SecurityEvent, Severity};
 pub use session::Session;
 pub use storage::{
     AccessMethod, Capability, ConnectionAccessMethod, ConnectionCapability, ConnectionOrigin,

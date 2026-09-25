@@ -13,6 +13,8 @@ struct HostRow {
     enrolled_at: NaiveDateTime,
     last_seen_at: Option<NaiveDateTime>,
     last_seen_ip: Option<String>,
+    os: Option<String>,
+    agent_version: Option<String>,
     revoked_at: Option<NaiveDateTime>,
 }
 
@@ -29,6 +31,8 @@ impl From<HostRow> for Host {
             enrolled_at: utc(row.enrolled_at),
             last_seen_at: row.last_seen_at.map(utc),
             last_seen_ip: row.last_seen_ip,
+            os: row.os,
+            agent_version: row.agent_version,
             revoked_at: row.revoked_at.map(utc),
         }
     }
@@ -94,15 +98,28 @@ pub async fn touch_last_seen(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Like `touch_last_seen`, but also records the connecting address --
-/// called once at WebSocket upgrade time (see `routes/agent.rs`), not on
-/// every subsequent heartbeat/pong, since the address is constant for the
-/// life of that connection.
-pub async fn touch_last_seen_with_ip(pool: &DbPool, id: Uuid, ip: &str) -> anyhow::Result<()> {
+/// Like `touch_last_seen`, but also records the connecting address plus
+/// whatever platform/version the agent reported (`X-Agent-Os`/
+/// `X-Agent-Version` -- absent on an older agent build, in which case the
+/// existing stored value is left alone via `COALESCE`, never blanked out
+/// just because this particular connection didn't repeat it) -- called
+/// once at WebSocket upgrade time (see `routes/agent.rs`), not on every
+/// subsequent heartbeat/pong, since all of this is constant for the life
+/// of that connection.
+pub async fn touch_last_seen_with_ip(
+    pool: &DbPool,
+    id: Uuid,
+    ip: &str,
+    os: Option<&str>,
+    agent_version: Option<&str>,
+) -> anyhow::Result<()> {
     sqlx::query(
-        "UPDATE hosts SET last_seen_at = CURRENT_TIMESTAMP(6), last_seen_ip = ? WHERE id = ?",
+        "UPDATE hosts SET last_seen_at = CURRENT_TIMESTAMP(6), last_seen_ip = ?, \
+         os = COALESCE(?, os), agent_version = COALESCE(?, agent_version) WHERE id = ?",
     )
     .bind(ip)
+    .bind(os)
+    .bind(agent_version)
     .bind(id.to_string())
     .execute(pool)
     .await?;

@@ -89,3 +89,50 @@ jobs:
           files: |
             ${{ env.SERVER_ASSET_PATH }}
             ${{ env.AGENT_ASSET_PATH }}
+
+  # `abyssal-agent` only -- the control plane (sqlx/MariaDB, systemd-
+  # oriented host ops, ...) is Linux/Docker only and isn't built here.
+  # `windows-latest` runners ship MSVC build tools out of the box, which
+  # this sandbox never had -- this job is the first real build gate for
+  # the agent's Windows support (see crates/agent/README.md and
+  # crates/agent/src/winservice.rs), not something type-checked in
+  # isolation the way it was during development. Runs after `release` so
+  # the GitHub release already exists to attach this asset to, rather
+  # than racing it to create one.
+  release-windows-agent:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run agent tests
+        run: cargo test -p abyssal-agent
+
+      - name: Build release binary
+        run: cargo build --release -p abyssal-agent
+
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"
+
+          agent_stage="abyssal-agent-${version}-x86_64-pc-windows-msvc"
+          mkdir -p "$agent_stage"
+          cp target/release/abyssal-agent.exe "$agent_stage/"
+          cp crates/agent/README.md LICENSE "$agent_stage/"
+          7z a "${agent_stage}.zip" "$agent_stage" > /dev/null
+
+          echo "AGENT_ASSET_PATH=${agent_stage}.zip" >> "$GITHUB_ENV"
+
+      - name: Upload Windows agent asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: ${{ env.AGENT_ASSET_PATH }}

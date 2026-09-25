@@ -55,6 +55,11 @@ pub enum AuditAction {
     RoleCreated,
     RoleDeleted,
     UserRoleAssigned,
+    SecurityEventScanRun,
+    SecurityAlertRaised,
+    SecurityEventAcknowledged,
+    SecurityEventResolved,
+    SecurityEventSuppressed,
 
     /// Sepulchre: storage connection definitions, shares, mounts, and
     /// their credentials. Secret-touching variants never carry the
@@ -129,6 +134,11 @@ impl AuditAction {
             AuditAction::RoleCreated => "ROLE_CREATED",
             AuditAction::RoleDeleted => "ROLE_DELETED",
             AuditAction::UserRoleAssigned => "USER_ROLE_ASSIGNED",
+            AuditAction::SecurityEventScanRun => "SECURITY_EVENT_SCAN_RUN",
+            AuditAction::SecurityAlertRaised => "SECURITY_ALERT_RAISED",
+            AuditAction::SecurityEventAcknowledged => "SECURITY_EVENT_ACKNOWLEDGED",
+            AuditAction::SecurityEventResolved => "SECURITY_EVENT_RESOLVED",
+            AuditAction::SecurityEventSuppressed => "SECURITY_EVENT_SUPPRESSED",
 
             AuditAction::StorageConnectionCreated => "STORAGE_CONNECTION_CREATED",
             AuditAction::StorageConnectionChanged => "STORAGE_CONNECTION_CHANGED",
@@ -197,6 +207,11 @@ impl AuditAction {
         AuditAction::RoleCreated,
         AuditAction::RoleDeleted,
         AuditAction::UserRoleAssigned,
+        AuditAction::SecurityEventScanRun,
+        AuditAction::SecurityAlertRaised,
+        AuditAction::SecurityEventAcknowledged,
+        AuditAction::SecurityEventResolved,
+        AuditAction::SecurityEventSuppressed,
         AuditAction::StorageConnectionCreated,
         AuditAction::StorageConnectionChanged,
         AuditAction::StorageConnectionDeleted,

@@ -118,8 +118,17 @@ async fn persist(path: &Path, credentials: &Credentials) -> anyhow::Result<()> {
 }
 
 fn default_hostname() -> String {
-    match std::fs::read_to_string("/etc/hostname") {
-        Ok(contents) if !contents.trim().is_empty() => contents.trim().to_string(),
-        _ => "unknown-host".to_string(),
+    #[cfg(unix)]
+    if let Ok(contents) = std::fs::read_to_string("/etc/hostname")
+        && !contents.trim().is_empty()
+    {
+        return contents.trim().to_string();
     }
+    #[cfg(windows)]
+    if let Ok(name) = std::env::var("COMPUTERNAME")
+        && !name.trim().is_empty()
+    {
+        return name.trim().to_string();
+    }
+    "unknown-host".to_string()
 }

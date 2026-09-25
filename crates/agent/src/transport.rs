@@ -44,6 +44,12 @@ pub async fn connect_and_serve(
         .header("Host", authority)
         .header("Authorization", format!("Bearer {credential}"))
         .header("X-Agent-Protocol-Version", PROTOCOL_VERSION.to_string())
+        // Coarse platform family + the agent binary's own version --
+        // persisted onto the `hosts` row at connect time so features like
+        // Thanatos can route to the right per-OS logic instead of
+        // assuming every host is Linux.
+        .header("X-Agent-Os", std::env::consts::OS)
+        .header("X-Agent-Version", env!("CARGO_PKG_VERSION"))
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")

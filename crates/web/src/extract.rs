@@ -78,6 +78,11 @@ impl FromRequestParts<AppState> for CurrentUser {
 pub struct AgentAuth {
     pub host: Host,
     pub protocol_version: Option<u32>,
+    /// `X-Agent-Os`/`X-Agent-Version` -- absent on an agent build that
+    /// predates platform reporting, same "missing means an old build"
+    /// convention as `protocol_version` above.
+    pub os: Option<String>,
+    pub agent_version: Option<String>,
 }
 
 /// Distinct from `WebError` on purpose: an agent is a machine client, not a
@@ -127,10 +132,22 @@ impl FromRequestParts<AppState> for AgentAuth {
             .get("X-Agent-Protocol-Version")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u32>().ok());
+        let os = parts
+            .headers
+            .get("X-Agent-Os")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let agent_version = parts
+            .headers
+            .get("X-Agent-Version")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
 
         Ok(AgentAuth {
             host,
             protocol_version,
+            os,
+            agent_version,
         })
     }
 }

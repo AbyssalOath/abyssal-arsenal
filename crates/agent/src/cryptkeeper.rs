@@ -13,6 +13,7 @@
 //!   names explicitly, and `ScanSensitiveFilePermissions` only reports
 //!   *permissions*, never contents, on files it finds.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use abyssal_agent_protocol::{
@@ -92,6 +93,10 @@ pub async fn list_ssh_host_keys(elevation: &ElevationState) -> CommandOutcome {
         };
         let private_path = pubkey_path.trim_end_matches(".pub");
         let permission_note = match tokio::fs::metadata(private_path).await {
+            // POSIX mode bits have no equivalent on Windows (ACL-based
+            // permissions instead) -- this whole module targets
+            // Unix-style SSH host keys, so there's nothing to check there.
+            #[cfg(unix)]
             Ok(meta) => {
                 let mode = meta.permissions().mode() & 0o777;
                 if mode & 0o077 != 0 {
@@ -100,6 +105,8 @@ pub async fn list_ssh_host_keys(elevation: &ElevationState) -> CommandOutcome {
                     String::new()
                 }
             }
+            #[cfg(not(unix))]
+            Ok(_) => String::new(),
             Err(_) => " -- private key file not found".to_string(),
         };
         out.push_str(&format!("{fingerprint}{permission_note}\n"));

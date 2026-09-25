@@ -521,6 +521,9 @@ pub struct SettingsTemplate {
     pub host_isolation_enabled: bool,
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
+    pub thanatos_correlation_threshold: u32,
+    pub thanatos_correlation_window_minutes: u32,
+    pub thanatos_sweep_interval_seconds: u32,
     pub panopticon_sweep_enabled: bool,
     pub panopticon_sweep_target: String,
     pub panopticon_mdns_enabled: bool,
@@ -728,16 +731,29 @@ pub struct CadavaultHostTemplate {
     pub result_error: Option<String>,
 }
 
-pub struct PostmortemHostRow {
-    pub id: String,
-    pub name: String,
+/// One connected host's collapsible group on the Postmortem/Inquest fleet
+/// dashboard -- the group-list half of Panopticon's Device Inventory
+/// pattern (GitHub issue #10), without per-group row pagination: unlike
+/// Panopticon's subnet groups or Thanatos's per-host event history,
+/// there's no structured per-host row data here to page through, only a
+/// handful of read-only quick-check buttons that cost nothing to reveal
+/// -- so a group's body is just those buttons, gated behind `<details>`
+/// purely to keep a fleet of many hosts visually tidy, not for any
+/// query-cost reason. Always starts closed (no render-budget setting),
+/// matching this app's default posture for every collapsible section.
+pub struct PostmortemHostGroup {
+    pub host_id: String,
+    pub host_name: String,
+    pub is_open: bool,
+    pub open_href: Option<String>,
 }
 
 #[derive(Template)]
 #[template(path = "postmortem.html")]
 pub struct PostmortemTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<PostmortemHostRow>,
+    pub groups: Vec<PostmortemHostGroup>,
+    pub group_list_page: Option<NumberedPageInfo>,
 }
 
 /// No `can_manage` field -- every op in this arsenal is read-only forensic
@@ -753,6 +769,7 @@ pub struct PostmortemHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
 }
 
@@ -899,16 +916,20 @@ pub struct OssuaryHostTemplate {
     pub prefill_device: Option<String>,
 }
 
-pub struct InquestHostRow {
-    pub id: String,
-    pub name: String,
+/// Same shape and reasoning as `PostmortemHostGroup`.
+pub struct InquestHostGroup {
+    pub host_id: String,
+    pub host_name: String,
+    pub is_open: bool,
+    pub open_href: Option<String>,
 }
 
 #[derive(Template)]
 #[template(path = "inquest.html")]
 pub struct InquestTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<InquestHostRow>,
+    pub groups: Vec<InquestHostGroup>,
+    pub group_list_page: Option<NumberedPageInfo>,
 }
 
 #[derive(Template)]
@@ -931,6 +952,7 @@ pub struct InquestHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
 }
 
@@ -1371,9 +1393,25 @@ pub struct CryptkeeperHostTemplate {
     pub suggested_actions: Vec<SuggestedActionView>,
 }
 
-pub struct ThanatosHostRow {
-    pub id: String,
-    pub name: String,
+/// One connected host's collapsible group on the Thanatos fleet dashboard
+/// -- the same `<details>` + independently-paginated-rows pattern
+/// Panopticon's Device Inventory uses for subnet groups (GitHub issue
+/// #10), keyed by host instead of by subnet. A host's `<summary>` (name,
+/// event count) always renders; its event rows only render when open
+/// (render-budget-vs-`open=` mechanics identical to Panopticon's).
+pub struct ThanatosHostGroup {
+    pub host_id: String,
+    pub host_name: String,
+    /// "Linux"/"Windows"/"macOS"/"Unknown OS", from `Host.os` -- see
+    /// `routes::thanatos::os_label`.
+    pub os_label: &'static str,
+    pub event_count: i64,
+    pub is_open: bool,
+    pub events: Vec<SecurityEventRow>,
+    /// The "Load events" link shown in place of a body when `!is_open`.
+    pub open_href: Option<String>,
+    pub scroll_aria_label: String,
+    pub page_info: Option<GroupPageInfo>,
 }
 
 pub struct SeverityCountRow {
@@ -1383,12 +1421,26 @@ pub struct SeverityCountRow {
 }
 
 pub struct SecurityEventRow {
+    pub id: String,
     pub severity_label: &'static str,
     pub badge_class: &'static str,
     pub label: String,
     pub source: String,
     pub raw_line: String,
     pub occurred_at: String,
+    pub status_label: &'static str,
+    pub status_badge_class: &'static str,
+    /// Whether to show the "Acknowledge" button -- only when this event
+    /// is still `Open` (acknowledging an already-acknowledged event is a
+    /// no-op with nothing to confirm, so the button just doesn't appear
+    /// rather than being shown disabled).
+    pub can_acknowledge: bool,
+    /// Whether to show the "Resolve"/"Suppress" buttons -- both stay
+    /// available while the event is `Open` or `Acknowledged`; once it's
+    /// `Resolved`/`Suppressed` there's no further transition in this
+    /// pass (no "reopen" -- see `docs` for why).
+    pub can_resolve_or_suppress: bool,
+    pub resolution_note: Option<String>,
 }
 
 pub struct AlertRow {
@@ -1402,17 +1454,35 @@ pub struct AlertRow {
 #[template(path = "thanatos.html")]
 pub struct ThanatosTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<ThanatosHostRow>,
+    /// `security.manage` -- gates the acknowledge/resolve/suppress
+    /// buttons on every event row, distinct from the `security.view`
+    /// every read-facing Thanatos route already requires.
+    pub can_manage: bool,
     pub severity_summary: Vec<SeverityCountRow>,
     pub recent_alerts: Vec<AlertRow>,
+    pub total_event_count: i64,
+    pub render_budget: u32,
+    pub groups: Vec<ThanatosHostGroup>,
+    pub group_list_page: Option<NumberedPageInfo>,
+    /// Whether resolved/suppressed events are currently included -- drives
+    /// the "Show resolved"/"Hide resolved" toggle link's label.
+    pub show_resolved: bool,
+    pub toggle_resolved_href: String,
 }
 
 #[derive(Template)]
 #[template(path = "thanatos_host.html")]
 pub struct ThanatosHostTemplate {
     pub base: BaseCtx,
+    pub can_manage: bool,
     pub host_id: String,
     pub host_name: String,
+    /// "Linux"/"Windows"/"macOS"/"Unknown OS", from `Host.os` -- see
+    /// `routes::thanatos::os_label`.
+    pub os_label: &'static str,
+    /// What the scan button actually reads on this host -- see
+    /// `routes::thanatos::detection_sources_note`.
+    pub detection_sources_note: &'static str,
     pub elevated: bool,
     pub protocol_mismatch: bool,
     pub events: Vec<SecurityEventRow>,
@@ -1420,6 +1490,9 @@ pub struct ThanatosHostTemplate {
     pub result_output: Option<String>,
     pub result_error: Option<String>,
     pub suggested_actions: Vec<SuggestedActionView>,
+    pub context: Vec<WorkflowContextRow>,
+    pub show_resolved: bool,
+    pub toggle_resolved_href: String,
 }
 
 pub struct ApothecaryHostRow {

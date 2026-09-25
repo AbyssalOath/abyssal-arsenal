@@ -8,7 +8,7 @@ use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
 use axum::Form;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
@@ -21,16 +21,28 @@ use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
+use crate::pagination;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, InquestHostRow, InquestHostTemplate, InquestTemplate};
+use crate::templates::{
+    BaseCtx, InquestHostGroup, InquestHostTemplate, InquestTemplate, SuggestedActionView,
+};
 use crate::theme;
 
-/// Landing page for this arsenal: just a host picker, same as every other
-/// per-host arsenal.
+/// How many host groups the group list shows per page -- same constant
+/// Panopticon's Device Inventory and Thanatos's dashboard use.
+const GROUPS_PER_PAGE: u32 = 25;
+
+/// Landing page for this arsenal: a paginated, collapsible-per-host group
+/// list (GitHub issue #10's grouped-dashboard pattern) instead of a flat
+/// host-link list -- each group's body is just the read-only quick-check
+/// buttons (nothing per-host to paginate inside, since these are live
+/// agent reads, not stored rows), collapsed by default for the same
+/// reason every other dropdown in this app now defaults closed.
 pub async fn show(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
+    RawQuery(raw): RawQuery,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::IncidentsView)?;
 
@@ -39,6 +51,8 @@ pub async fn show(
     {
         return Ok(Redirect::to(&format!("/arsenals/inquest/{host_id}")).into_response());
     }
+
+    let query = pagination::parse_group_list_query(raw.as_deref());
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -52,17 +66,55 @@ pub async fn show(
     )
     .await?;
 
-    let mut hosts = Vec::new();
+    let mut connected_hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
         if host.is_active() && state.hosts.is_connected(host.id) {
-            hosts.push(InquestHostRow {
-                id: host.id.to_string(),
-                name: host.name,
-            });
+            connected_hosts.push(host);
         }
     }
 
-    let tpl = InquestTemplate { base, hosts };
+    let open_set: std::collections::HashSet<&str> = query.open.iter().map(String::as_str).collect();
+    let group_total = connected_hosts.len() as u64;
+    let group_page_requested = query.group_page.unwrap_or(1).max(1);
+    let group_page_num = if pagination::Page::<()>::page_out_of_range(
+        group_page_requested,
+        GROUPS_PER_PAGE,
+        group_total,
+    ) {
+        pagination::total_pages(group_total, GROUPS_PER_PAGE)
+    } else {
+        group_page_requested
+    };
+    let group_offset = pagination::offset(group_page_num, GROUPS_PER_PAGE) as usize;
+    let group_page_meta: pagination::Page<()> =
+        pagination::Page::new(vec![], group_page_num, GROUPS_PER_PAGE, group_total);
+    let group_list_page = Some(pagination::numbered_page_info(&group_page_meta, |p| {
+        query.with_group_page(p).href("/arsenals/inquest")
+    }));
+
+    let groups = connected_hosts
+        .iter()
+        .skip(group_offset)
+        .take(GROUPS_PER_PAGE as usize)
+        .map(|host| {
+            let host_id_str = host.id.to_string();
+            let is_open = open_set.contains(host_id_str.as_str());
+            let open_href =
+                (!is_open).then(|| query.with_open(&host_id_str).href("/arsenals/inquest"));
+            InquestHostGroup {
+                host_id: host_id_str,
+                host_name: host.name.clone(),
+                is_open,
+                open_href,
+            }
+        })
+        .collect();
+
+    let tpl = InquestTemplate {
+        base,
+        groups,
+        group_list_page,
+    };
     let jar = jar.clone();
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -89,6 +141,37 @@ async fn render_host(
         result_output,
         result_error,
         Vec::new(),
+        Vec::new(),
+    )
+    .await
+}
+
+/// Same as `render_host`, but also renders a "Suggested Next Steps" section
+/// from the workflow registry's matches against this result -- see
+/// `run_write_op`'s/`run_destructive_op`'s `workflow` parameter, the
+/// source of every non-empty `suggested_actions` this ever gets called
+/// with.
+#[allow(clippy::too_many_arguments)]
+async fn render_host_with_suggestions(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
+    result_error: Option<String>,
+    suggested_actions: Vec<SuggestedActionView>,
+) -> Result<Response, WebError> {
+    render_host_with_context(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        suggested_actions,
+        Vec::new(),
     )
     .await
 }
@@ -106,6 +189,7 @@ async fn render_host_with_context(
     result_label: Option<String>,
     result_output: Option<String>,
     result_error: Option<String>,
+    suggested_actions: Vec<SuggestedActionView>,
     context: Vec<WorkflowContextRow>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
@@ -144,6 +228,7 @@ async fn render_host_with_context(
         result_label,
         result_output,
         result_error,
+        suggested_actions,
         context,
     };
     let jar = jar.clone();
@@ -174,6 +259,7 @@ pub async fn show_host(
         None,
         None,
         None,
+        Vec::new(),
         workflow_context_rows(&query),
     )
     .await
@@ -330,6 +416,11 @@ pub async fn list_quarantined_files(
 // Write
 // ---------------------------------------------------------------------
 
+/// `workflow`, when given, feeds a `{field: true}` result into the
+/// workflow registry on success (see `crates/workflows/registry.json`'s
+/// Inquest-sourced entries) -- containment/remediation actions here are
+/// booleans ("did it succeed"), unlike Postmortem's read ops, which feed
+/// a line count instead.
 #[allow(clippy::too_many_arguments)]
 async fn run_write_op(
     state: &AppState,
@@ -338,6 +429,7 @@ async fn run_write_op(
     host_id: Uuid,
     operation: AgentOperation,
     label: &str,
+    workflow: Option<(&str, &str)>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
@@ -364,7 +456,20 @@ async fn run_write_op(
 
     match result {
         Ok(output) => {
-            render_host(
+            let suggested_actions = if let Some((source_action, field)) = workflow {
+                let entry = serde_json::json!({ field: true });
+                crate::common::suggested_actions_for(
+                    state,
+                    "inquest",
+                    source_action,
+                    std::slice::from_ref(&entry),
+                    host_id,
+                )
+                .await
+            } else {
+                Vec::new()
+            };
+            render_host_with_suggestions(
                 state,
                 jar,
                 ctx,
@@ -372,6 +477,7 @@ async fn run_write_op(
                 result_label,
                 Some(output.stdout),
                 None,
+                suggested_actions,
             )
             .await
         }
@@ -424,6 +530,7 @@ pub async fn block_remote_ip(
         host_id,
         AgentOperation::BlockRemoteIp { ip: ip.clone() },
         &format!("Block IP ({ip})"),
+        Some(("block_remote_ip", "blocked")),
     )
     .await
 }
@@ -445,6 +552,7 @@ pub async fn unblock_remote_ip(
         host_id,
         AgentOperation::UnblockRemoteIp { ip: ip.clone() },
         &format!("Unblock IP ({ip})"),
+        None,
     )
     .await
 }
@@ -477,6 +585,7 @@ pub async fn quarantine_file(
         host_id,
         AgentOperation::QuarantineFile { path: path.clone() },
         &format!("Quarantine File ({path})"),
+        Some(("quarantine_file", "quarantined")),
     )
     .await
 }
@@ -518,6 +627,7 @@ pub async fn restore_quarantined_file(
             quarantine_filename: quarantine_filename.clone(),
         },
         &format!("Restore Quarantined File ({quarantine_filename})"),
+        None,
     )
     .await
 }
@@ -538,6 +648,7 @@ pub async fn deisolate_host(
         host_id,
         AgentOperation::DeisolateHost,
         "De-isolate Host",
+        None,
     )
     .await
 }
@@ -626,6 +737,7 @@ async fn run_destructive_op(
     operation: AgentOperation,
     label: &str,
     form: ConfirmForm,
+    workflow: Option<(&str, &str)>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::IncidentsRespond)?;
     require_csrf(&jar, &form.csrf_token)?;
@@ -662,7 +774,20 @@ async fn run_destructive_op(
 
     match result {
         Ok(output) => {
-            render_host(
+            let suggested_actions = if let Some((source_action, field)) = workflow {
+                let entry = serde_json::json!({ field: true });
+                crate::common::suggested_actions_for(
+                    state,
+                    "inquest",
+                    source_action,
+                    std::slice::from_ref(&entry),
+                    host_id,
+                )
+                .await
+            } else {
+                Vec::new()
+            };
+            render_host_with_suggestions(
                 state,
                 &jar,
                 &ctx,
@@ -670,6 +795,7 @@ async fn run_destructive_op(
                 result_label,
                 Some(output.stdout),
                 None,
+                suggested_actions,
             )
             .await
         }
@@ -747,6 +873,7 @@ pub async fn delete_quarantined_file(
         },
         "Delete Quarantined File",
         form,
+        None,
     )
     .await
 }
@@ -809,6 +936,7 @@ pub async fn isolate_host(
         AgentOperation::IsolateHost,
         "Isolate Host",
         form,
+        Some(("isolate_host", "isolated")),
     )
     .await
 }
@@ -865,5 +993,47 @@ pub async fn elevate(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn isolating_a_host_suggests_postmortem() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "isolated": true });
+        let targets: Vec<String> = registry
+            .evaluate("inquest", "isolate_host", &entry)
+            .matches
+            .into_iter()
+            .map(|m| m.target_arsenal)
+            .collect();
+        assert!(targets.contains(&"postmortem".to_string()));
+    }
+
+    #[test]
+    fn blocking_an_ip_suggests_thanatos() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "blocked": true });
+        let targets: Vec<String> = registry
+            .evaluate("inquest", "block_remote_ip", &entry)
+            .matches
+            .into_iter()
+            .map(|m| m.target_arsenal)
+            .collect();
+        assert!(targets.contains(&"thanatos".to_string()));
+    }
+
+    #[test]
+    fn quarantining_a_file_suggests_thanatos() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "quarantined": true });
+        let targets: Vec<String> = registry
+            .evaluate("inquest", "quarantine_file", &entry)
+            .matches
+            .into_iter()
+            .map(|m| m.target_arsenal)
+            .collect();
+        assert!(targets.contains(&"thanatos".to_string()));
     }
 }

@@ -45,6 +45,54 @@ impl std::fmt::Display for Severity {
     }
 }
 
+/// An event's place in its (manual, analyst-driven) lifecycle -- Thanatos
+/// SIEM/EDR build-out, Phase 3, the first real use of
+/// `Permission::SecurityManage`. Every event starts `Open`; nothing here
+/// ever transitions a status automatically (a re-scan matching the same
+/// content hash is a no-op via `INSERT IGNORE`, not a "reopen").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EventStatus {
+    #[default]
+    Open,
+    Acknowledged,
+    Resolved,
+    Suppressed,
+}
+
+impl EventStatus {
+    pub const fn as_key(self) -> &'static str {
+        match self {
+            EventStatus::Open => "open",
+            EventStatus::Acknowledged => "acknowledged",
+            EventStatus::Resolved => "resolved",
+            EventStatus::Suppressed => "suppressed",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "open" => Some(EventStatus::Open),
+            "acknowledged" => Some(EventStatus::Acknowledged),
+            "resolved" => Some(EventStatus::Resolved),
+            "suppressed" => Some(EventStatus::Suppressed),
+            _ => None,
+        }
+    }
+
+    /// Whether a view that's hiding "settled" events should show this one
+    /// -- `Open`/`Acknowledged` are still active, `Resolved`/`Suppressed`
+    /// are done with.
+    pub const fn is_active(self) -> bool {
+        matches!(self, EventStatus::Open | EventStatus::Acknowledged)
+    }
+}
+
+impl std::fmt::Display for EventStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_key())
+    }
+}
+
 /// One classified security-relevant log line (or, when `source` is
 /// `"correlation"`, one threshold finding the control plane itself
 /// raised) persisted by Thanatos. `line_hash` is what the database
@@ -60,6 +108,14 @@ pub struct SecurityEvent {
     pub label: String,
     pub raw_line: String,
     pub occurred_at: DateTime<Utc>,
+    pub status: EventStatus,
+    /// Who last changed `status` away from `Open` -- `None` for an event
+    /// still in its default state, or one from before Phase 3.
+    pub acknowledged_by: Option<Uuid>,
+    pub acknowledged_at: Option<DateTime<Utc>>,
+    /// A free-text note attached at resolve/suppress time -- optional
+    /// even then, and always `None` for a merely-acknowledged event.
+    pub resolution_note: Option<String>,
 }
 
 /// The dedup key `thanatos_events` uniquely constrains on. Stable across
@@ -96,6 +152,36 @@ mod tests {
         ] {
             assert_eq!(Severity::from_key(s.as_key()), Some(s));
         }
+    }
+
+    #[test]
+    fn event_status_round_trips_through_its_key() {
+        for s in [
+            EventStatus::Open,
+            EventStatus::Acknowledged,
+            EventStatus::Resolved,
+            EventStatus::Suppressed,
+        ] {
+            assert_eq!(EventStatus::from_key(s.as_key()), Some(s));
+        }
+    }
+
+    #[test]
+    fn unknown_event_status_key_resolves_to_none() {
+        assert_eq!(EventStatus::from_key("not-a-status"), None);
+    }
+
+    #[test]
+    fn event_status_defaults_to_open() {
+        assert_eq!(EventStatus::default(), EventStatus::Open);
+    }
+
+    #[test]
+    fn open_and_acknowledged_are_active_resolved_and_suppressed_are_not() {
+        assert!(EventStatus::Open.is_active());
+        assert!(EventStatus::Acknowledged.is_active());
+        assert!(!EventStatus::Resolved.is_active());
+        assert!(!EventStatus::Suppressed.is_active());
     }
 
     #[test]

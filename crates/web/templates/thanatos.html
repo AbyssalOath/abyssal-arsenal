@@ -1,5 +1,6 @@
 {% extends "app_base.html" %}
 {% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
 {% block title %}Thanatos — Abyssal Arsenal{% endblock %}
 {% block heading %}Thanatos — Security Telemetry{% endblock %}
 {% block content %}
@@ -44,22 +45,100 @@
   {% endif %}
 </div>
 
-{% if hosts.is_empty() %}
 <div class="card">
-  <p style="color:var(--text-muted);">
+  <h3>{% call macros::icon("host") %} Connected Hosts</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    {{ total_event_count }} event(s) total, across every connected host{% if !show_resolved %} (open/acknowledged only){% endif %}.
+    {% if render_budget > 0 %}
+    Groups auto-expand while the fleet is under {{ render_budget }} events; otherwise use
+    "Load events" per host.
+    {% else %}
+    Groups start collapsed -- use "Load events" per host to view its history.
+    {% endif %}
+    <a href="{{ toggle_resolved_href }}">{% if show_resolved %}Hide{% else %}Show{% endif %} resolved/suppressed</a>
+  </p>
+
+  {% if groups.is_empty() %}
+  <p class="results-empty">
     No hosts are currently online. Enroll and connect a host from
     <a href="/admin/hosts">Hosts</a> first.
   </p>
+  {% else %}
+  {% for group in groups %}
+  <details class="inventory-group"{% if group.is_open %} open{% endif %}>
+    <summary>
+      <span class="chevron-wrap">{% call macros::icon("chevron") %}</span>
+      <span class="inventory-group-label">{{ group.host_name }}</span>
+      <span class="badge badge-muted">{{ group.os_label }}</span>
+      <span class="badge badge-muted">{{ group.event_count }} event{% if group.event_count != 1 %}s{% endif %}</span>
+      <span class="inventory-group-actions actions">
+        <a class="btn btn-secondary btn-sm" href="/arsenals/thanatos/{{ group.host_id }}">{% call macros::icon("scan") %} Open host page</a>
+      </span>
+    </summary>
+
+    {% if group.is_open %}
+      {% if group.events.is_empty() %}
+      <p class="results-empty">No events recorded for this host yet -- run a scan from its host page.</p>
+      {% else %}
+      <div class="table-scroll" tabindex="0" role="region" aria-label="{{ group.scroll_aria_label }}">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th><th>Finding</th><th>Source</th><th>Detail</th><th>Status</th><th>Occurred</th>
+              {% if can_manage %}<th>Actions</th>{% endif %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in group.events %}
+            <tr>
+              <td><span class="badge {{ e.badge_class }}">{{ e.severity_label }}</span></td>
+              <td>{{ e.label }}</td>
+              <td>{{ e.source }}</td>
+              <td style="overflow-wrap:anywhere;">{{ e.raw_line }}</td>
+              <td>
+                <span class="badge {{ e.status_badge_class }}">{{ e.status_label }}</span>
+                {% if let Some(note) = e.resolution_note %}<div style="color:var(--text-muted); font-size:0.8rem;">{{ note }}</div>{% endif %}
+              </td>
+              <td>{{ e.occurred_at }}</td>
+              {% if can_manage %}
+              <td class="actions">
+                {% if e.can_acknowledge %}
+                <form method="post" action="/arsenals/thanatos/events/{{ e.id }}/acknowledge" style="display:inline;">
+                  <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                  <button type="submit" class="btn btn-secondary btn-sm">Acknowledge</button>
+                </form>
+                {% endif %}
+                {% if e.can_resolve_or_suppress %}
+                <form method="post" action="/arsenals/thanatos/events/{{ e.id }}/resolve" style="display:inline-flex; gap:4px; align-items:center;">
+                  <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                  <input type="text" name="note" placeholder="note (optional)" style="width:100px; margin:0;">
+                  <button type="submit" formaction="/arsenals/thanatos/events/{{ e.id }}/resolve" class="btn btn-secondary btn-sm">Resolve</button>
+                  <button type="submit" formaction="/arsenals/thanatos/events/{{ e.id }}/suppress" class="btn btn-secondary btn-sm">Suppress</button>
+                </form>
+                {% endif %}
+              </td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if let Some(p) = group.page_info %}
+      {% call pager::group_pagination_nav(p) %}
+      {% endif %}
+      {% endif %}
+    {% else %}
+      {% if let Some(href) = group.open_href %}
+      <p><a href="{{ href }}">{% call macros::icon("generate") %} Load events</a></p>
+      {% endif %}
+    {% endif %}
+  </details>
+  {% endfor %}
+
+  {% if let Some(p) = group_list_page %}
+  {% call pager::pagination_nav(p) %}
+  {% endif %}
+  {% endif %}
 </div>
-{% else %}
-<div class="card">
-  <p style="color:var(--text-muted); margin-top:0;">Pick a host to run a scan or view its event history.</p>
-  <div class="actions">
-    {% for h in hosts %}
-    <a class="btn btn-secondary" href="/arsenals/thanatos/{{ h.id }}">{{ h.name }}</a>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
 
 {% endblock %}

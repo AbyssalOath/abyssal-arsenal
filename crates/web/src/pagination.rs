@@ -155,6 +155,106 @@ pub struct CursorPage<T> {
     pub older_cursor: Option<String>,
 }
 
+/// Builds a `NumberedPageInfo` from a metadata-only `Page<()>` plus a
+/// closure that turns a target page number into that page's href -- the
+/// one place the ellipsis-collapsed numbered strip is assembled, shared
+/// by every grouped/paginated view in the app (Panopticon's Device
+/// Inventory, Thanatos's fleet dashboard, ...). Callers differ only in
+/// which query param `link_for` builds a link around.
+pub fn numbered_page_info(
+    page: &Page<()>,
+    link_for: impl Fn(u32) -> String,
+) -> crate::templates::NumberedPageInfo {
+    let numbered = page_window(page.page, page.total_pages)
+        .into_iter()
+        .map(|entry| match entry {
+            Some(p) => (p.to_string(), Some(link_for(p)), p == page.page),
+            None => ("…".to_string(), None, false),
+        })
+        .collect();
+    crate::templates::NumberedPageInfo {
+        current_page: page.page,
+        total_pages: page.total_pages,
+        range_start: page.start_index(),
+        range_end: page.end_index(),
+        total: page.total,
+        first_href: page.has_prev().then(|| link_for(1)),
+        prev_href: page.has_prev().then(|| link_for(page.page - 1)),
+        next_href: page.has_next().then(|| link_for(page.page + 1)),
+        last_href: page.has_next().then(|| link_for(page.total_pages)),
+        numbered,
+    }
+}
+
+/// The simplest half of the grouped-dashboard pattern -- a paginated list
+/// of collapsible `<details>` groups with no per-group row pagination
+/// inside (a group's body costs nothing to reveal, so there's nothing to
+/// page through independently -- see Inquest's/Postmortem's fleet
+/// dashboards, GitHub issue #10). Just `open`/`group_page`, no `gp`;
+/// Panopticon's `InventoryQuery` and Thanatos's `DashboardQuery` are their
+/// own richer, arsenal-specific supersets of this same shape (a port
+/// filter, per-group row pages, ...) so aren't collapsed into this type.
+#[derive(Default, Clone)]
+pub struct GroupListQuery {
+    /// Repeatable `?open=<key>` -- which groups render open.
+    pub open: Vec<String>,
+    /// `?group_page=` -- which page of the group list itself.
+    pub group_page: Option<u32>,
+}
+
+impl GroupListQuery {
+    pub fn with_open(&self, key: &str) -> Self {
+        let mut q = self.clone();
+        if !q.open.iter().any(|o| o == key) {
+            q.open.push(key.to_string());
+        }
+        q
+    }
+
+    pub fn with_group_page(&self, page: u32) -> Self {
+        let mut q = self.clone();
+        q.group_page = if page > 1 { Some(page) } else { None };
+        q
+    }
+
+    pub fn href(&self, base_path: &str) -> String {
+        if self.open.is_empty() && self.group_page.is_none() {
+            return base_path.to_string();
+        }
+        let mut ser = form_urlencoded::Serializer::new(String::new());
+        for o in &self.open {
+            ser.append_pair("open", o);
+        }
+        if let Some(p) = self.group_page {
+            ser.append_pair("group_page", &p.to_string());
+        }
+        format!("{base_path}?{}", ser.finish())
+    }
+}
+
+/// Hand-parsed via `form_urlencoded` (repeated `open=` values can't
+/// deserialize through a plain `Query<T>` extractor) -- a malformed
+/// `group_page` value is silently dropped rather than rejected, same "an
+/// old/hand-edited bookmark never 500s" convention as every other
+/// grouped-dashboard query parser in this app.
+pub fn parse_group_list_query(raw: Option<&str>) -> GroupListQuery {
+    let mut q = GroupListQuery::default();
+    let Some(raw) = raw else { return q };
+    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+        match key.as_ref() {
+            "open" => {
+                let v = value.trim();
+                if !v.is_empty() && !q.open.iter().any(|o| o == v) {
+                    q.open.push(v.to_string());
+                }
+            }
+            "group_page" => q.group_page = value.trim().parse::<u32>().ok(),
+            _ => {}
+        }
+    }
+    q
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +358,42 @@ mod tests {
     fn page_link_url_encodes_param_values() {
         let link = page_link("/x", &[("subnet", "10.0.1.0/24")], 1);
         assert_eq!(link, "/x?subnet=10.0.1.0%2F24&page=1");
+    }
+
+    #[test]
+    fn group_list_query_href_is_bare_path_when_empty() {
+        let q = GroupListQuery::default();
+        assert_eq!(q.href("/arsenals/inquest"), "/arsenals/inquest");
+    }
+
+    #[test]
+    fn group_list_query_with_open_is_idempotent() {
+        let q = GroupListQuery::default().with_open("host-1");
+        let q2 = q.with_open("host-1");
+        assert_eq!(q2.open.len(), 1);
+        assert_eq!(
+            q2.href("/arsenals/inquest"),
+            "/arsenals/inquest?open=host-1"
+        );
+    }
+
+    #[test]
+    fn group_list_query_with_group_page_omits_page_1() {
+        let q = GroupListQuery::default();
+        assert_eq!(q.with_group_page(1).href("/x"), "/x");
+        assert_eq!(q.with_group_page(2).href("/x"), "/x?group_page=2");
+    }
+
+    #[test]
+    fn parse_group_list_query_reads_repeated_open_and_group_page() {
+        let q = parse_group_list_query(Some("open=host-1&open=host-2&group_page=3"));
+        assert_eq!(q.open, vec!["host-1".to_string(), "host-2".to_string()]);
+        assert_eq!(q.group_page, Some(3));
+    }
+
+    #[test]
+    fn parse_group_list_query_drops_malformed_group_page() {
+        let q = parse_group_list_query(Some("group_page=nope"));
+        assert_eq!(q.group_page, None);
     }
 }

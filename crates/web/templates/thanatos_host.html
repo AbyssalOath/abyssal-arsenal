@@ -8,7 +8,7 @@
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }} <span class="badge badge-muted">{{ os_label }}</span></h2>
     {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
@@ -30,6 +30,13 @@
   </div>
   {% endif %}
 
+  {% if !context.is_empty() %}
+  <div class="info-banner" style="margin-top:10px;">
+    Arrived here from a suggested next step, with:
+    {% for c in context %}<code>{{ c.label }}: {{ c.value }}</code>{% if !loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
   <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
     <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
     {% if let Some(output) = result_output %}
@@ -47,6 +54,7 @@
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Run Security Event Scan</button>
   </form>
+  <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0;">{{ detection_sources_note }}</p>
 
   {% if !suggested_actions.is_empty() %}
   <div class="suggested-actions-panel">
@@ -61,24 +69,56 @@
 </div>
 
 <div class="card">
-  <h3>Event History</h3>
+  <div style="display:flex; justify-content:space-between; align-items:baseline;">
+    <h3 style="margin:0;">Event History</h3>
+    <a href="{{ toggle_resolved_href }}">{% if show_resolved %}Hide{% else %}Show{% endif %} resolved/suppressed</a>
+  </div>
   {% if events.is_empty() %}
-  <p style="color:var(--text-muted); margin-top:0;">No events recorded for this host yet -- run a scan above.</p>
+  <p style="color:var(--text-muted);">No events recorded for this host yet -- run a scan above.</p>
   {% else %}
-  <table>
-    <thead><tr><th>Severity</th><th>Finding</th><th>Source</th><th>Detail</th><th>Occurred</th></tr></thead>
-    <tbody>
-      {% for e in events %}
-      <tr>
-        <td><span class="badge {{ e.badge_class }}">{{ e.severity_label }}</span></td>
-        <td>{{ e.label }}</td>
-        <td>{{ e.source }}</td>
-        <td style="overflow-wrap:anywhere;">{{ e.raw_line }}</td>
-        <td>{{ e.occurred_at }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Event history for {{ host_name }}">
+    <table>
+      <thead>
+        <tr>
+          <th>Severity</th><th>Finding</th><th>Source</th><th>Detail</th><th>Status</th><th>Occurred</th>
+          {% if can_manage %}<th>Actions</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in events %}
+        <tr>
+          <td><span class="badge {{ e.badge_class }}">{{ e.severity_label }}</span></td>
+          <td>{{ e.label }}</td>
+          <td>{{ e.source }}</td>
+          <td style="overflow-wrap:anywhere;">{{ e.raw_line }}</td>
+          <td>
+            <span class="badge {{ e.status_badge_class }}">{{ e.status_label }}</span>
+            {% if let Some(note) = e.resolution_note %}<div style="color:var(--text-muted); font-size:0.8rem;">{{ note }}</div>{% endif %}
+          </td>
+          <td>{{ e.occurred_at }}</td>
+          {% if can_manage %}
+          <td class="actions">
+            {% if e.can_acknowledge %}
+            <form method="post" action="/arsenals/thanatos/events/{{ e.id }}/acknowledge" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn btn-secondary btn-sm">Acknowledge</button>
+            </form>
+            {% endif %}
+            {% if e.can_resolve_or_suppress %}
+            <form method="post" action="/arsenals/thanatos/events/{{ e.id }}/resolve" style="display:inline-flex; gap:4px; align-items:center;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <input type="text" name="note" placeholder="note (optional)" style="width:100px; margin:0;">
+              <button type="submit" formaction="/arsenals/thanatos/events/{{ e.id }}/resolve" class="btn btn-secondary btn-sm">Resolve</button>
+              <button type="submit" formaction="/arsenals/thanatos/events/{{ e.id }}/suppress" class="btn btn-secondary btn-sm">Suppress</button>
+            </form>
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% endif %}
 </div>
 
