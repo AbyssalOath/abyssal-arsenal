@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -973,7 +973,20 @@ pub enum AgentOperation {
     /// this needs structured-ish output rather than the free-text
     /// `OperationOutput` every other read op returns. Read: never
     /// modifies anything on the host.
-    ScanSecurityEvents,
+    ///
+    /// `extra_fim_paths` (Phase 7b): admin-configured paths to hash
+    /// alongside the agent's own small hardcoded watch-list (never a
+    /// replacement for it -- an admin clearing this setting shouldn't
+    /// lose default coverage). Each path is validated
+    /// control-plane-side before being sent (`is_valid_absolute_path`/
+    /// `is_valid_windows_absolute_path` depending on the target host's
+    /// `Host.os`), but the agent re-validates too, same as every other
+    /// operation here -- this crate's own doc comment's rule that the
+    /// agent never trusts a wire value just because the control plane
+    /// already checked it.
+    ScanSecurityEvents {
+        extra_fim_paths: Vec<String>,
+    },
 
     // -------------------------------------------------------------
     // Sepulchre: host-side SFTP/SMB share provisioning and mounts.
@@ -1816,7 +1829,7 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("DeleteSshKeypair")
                 .field("path", path)
                 .finish(),
-            AgentOperation::ScanSecurityEvents => write!(f, "ScanSecurityEvents"),
+            AgentOperation::ScanSecurityEvents { .. } => write!(f, "ScanSecurityEvents"),
             AgentOperation::DetectPackageBackend => write!(f, "DetectPackageBackend"),
             AgentOperation::RenderSepulchreConfig { target, content } => f
                 .debug_struct("RenderSepulchreConfig")
@@ -2071,6 +2084,29 @@ pub fn is_valid_absolute_path(path: &str) -> bool {
         && path.chars().all(|c| !c.is_control())
 }
 
+/// A Windows absolute filesystem path (e.g. `C:\Users\foo\bad.exe`) for
+/// `QuarantineFile` on a Windows-managed host -- `is_valid_absolute_path`
+/// above hard-requires a leading `/` and would reject every Windows path
+/// outright, so this is a sibling, not a replacement: every other caller
+/// of `is_valid_absolute_path` stays Unix-only and untouched. Requires a
+/// drive letter (`X:\`), no `..` traversal segment, and no control
+/// characters -- deliberately permissive on which printable characters
+/// are otherwise allowed, same reasoning as the Unix validator's own doc
+/// comment (argument-injection safety here comes from never passing this
+/// through a shell, not from a restricted character set).
+pub fn is_valid_windows_absolute_path(path: &str) -> bool {
+    let mut chars = path.chars();
+    let Some(drive) = chars.next() else {
+        return false;
+    };
+    if !drive.is_ascii_alphabetic() || chars.next() != Some(':') || chars.next() != Some('\\') {
+        return false;
+    }
+    path.len() <= 4096
+        && !path.split(['\\', '/']).any(|segment| segment == "..")
+        && path.chars().all(|c| !c.is_control())
+}
+
 /// A systemd unit name (e.g. `"sshd.service"`, `"nginx"`,
 /// `"getty@tty1.service"`). Letters, digits, and the punctuation systemd
 /// itself allows in unit names (`-_.:@`) only, and never starting with
@@ -2179,12 +2215,45 @@ pub fn is_valid_account_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
 }
 
+/// Windows analog of `is_valid_account_name` above -- deliberately a
+/// separate, more permissive validator rather than reusing the Unix one
+/// as-is: real Windows local account names are conventionally mixed-
+/// case (`Administrator`, `svc-Backup`, ...), so a lowercase-only check
+/// would reject entirely ordinary Windows usernames, not just malformed
+/// input. Capped at 20 characters -- the real `sAMAccountName` limit --
+/// and kept to a conservative alphanumeric-plus-`-_.` character set
+/// rather than the full (much wider) range Windows itself actually
+/// allows, same "restrictive charset, not shell-escaping" reasoning as
+/// every other name validator in this file.
+pub fn is_valid_windows_account_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 20 {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
 /// The one Linux account/group name this tool refuses to lock, delete, or
 /// otherwise touch destructively, regardless of what the caller asks for.
 /// There's no portable way to know every distro's other "don't touch
 /// this" names (wheel, sudo, and similar vary), but `root` is universal.
 pub fn is_protected_account_name(name: &str) -> bool {
     name == "root"
+}
+
+/// Windows analog of `is_protected_account_name` above -- the small set
+/// of built-in local accounts present on essentially every install that
+/// this tool refuses to lock/disable regardless of what the caller asks
+/// for. Case-insensitive: Windows account names aren't case-sensitive.
+pub fn is_protected_windows_account_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "administrator" | "guest" | "defaultaccount" | "wdagutilityaccount"
+    )
 }
 
 /// A GECOS/comment field for `useradd -c`. Permissive on content (real
@@ -2340,14 +2409,20 @@ pub fn is_valid_ip_address(ip: &str) -> bool {
 
 /// A quarantine filename as produced by `QuarantineFile` and consumed by
 /// `RestoreQuarantinedFile`/`DeleteQuarantinedFile` --
-/// `<unix_ts>__<percent-encoded original path>`. Never accepts a path
-/// separator or a `..` segment: this filename is joined directly onto the
-/// quarantine directory, so allowing either would turn a quarantine
-/// restore/delete into an arbitrary-file read/write primitive.
+/// `<unix_ts>__<percent-encoded original path>`. Never accepts either
+/// path separator (`/` on Unix, `\` on Windows -- this validator is
+/// shared by both platforms' quarantine implementations) or a `..`
+/// segment: this filename is joined directly onto the quarantine
+/// directory, so allowing any of them would turn a quarantine restore/
+/// delete into an arbitrary-file read/write primitive. A well-formed
+/// filename should never contain a raw `\` anyway -- `percent_encode`
+/// always escapes it -- but this doesn't rely on that being true by
+/// construction alone.
 pub fn is_valid_quarantine_filename(filename: &str) -> bool {
     !filename.is_empty()
         && filename.len() <= 4096
         && !filename.contains('/')
+        && !filename.contains('\\')
         && !filename.contains("..")
         && filename.chars().all(|c| !c.is_control())
 }
@@ -2557,6 +2632,31 @@ mod tests {
     }
 
     #[test]
+    fn accepts_reasonable_windows_absolute_paths() {
+        assert!(is_valid_windows_absolute_path(r"C:\Users\foo\bad.exe"));
+        assert!(is_valid_windows_absolute_path(
+            r"D:\Program Files\app\file.dll"
+        ));
+        assert!(is_valid_windows_absolute_path(r"c:\lowercase\drive"));
+    }
+
+    #[test]
+    fn rejects_malformed_windows_absolute_paths() {
+        assert!(!is_valid_windows_absolute_path(""));
+        assert!(!is_valid_windows_absolute_path(r"\no\drive\letter"));
+        assert!(!is_valid_windows_absolute_path("relative\\path"));
+        assert!(!is_valid_windows_absolute_path(
+            r"C:\Users\..\..\Windows\System32"
+        ));
+        assert!(!is_valid_windows_absolute_path("C:\\evil\nmalicious"));
+        assert!(!is_valid_windows_absolute_path(r"C/Users\missing-colon"));
+        assert!(!is_valid_windows_absolute_path(&format!(
+            r"C:\{}",
+            "a".repeat(4096)
+        )));
+    }
+
+    #[test]
     fn accepts_reasonable_unit_names() {
         assert!(is_valid_unit_name("sshd.service"));
         assert!(is_valid_unit_name("nginx"));
@@ -2670,6 +2770,9 @@ mod tests {
         assert!(!is_valid_quarantine_filename("../../etc/passwd"));
         assert!(!is_valid_quarantine_filename("some/path"));
         assert!(!is_valid_quarantine_filename("has\ncontrol"));
+        assert!(!is_valid_quarantine_filename(
+            "1737072000__C%3A..\\..\\Windows\\System32"
+        ));
     }
 
     #[test]
@@ -2789,9 +2892,34 @@ mod tests {
     }
 
     #[test]
+    fn accepts_reasonable_windows_account_names() {
+        assert!(is_valid_windows_account_name("Administrator"));
+        assert!(is_valid_windows_account_name("svc-Backup"));
+        assert!(is_valid_windows_account_name("_service"));
+        assert!(is_valid_windows_account_name("user.name"));
+    }
+
+    #[test]
+    fn rejects_malformed_windows_account_names() {
+        assert!(!is_valid_windows_account_name(""));
+        assert!(!is_valid_windows_account_name("-flag"));
+        assert!(!is_valid_windows_account_name("9start"));
+        assert!(!is_valid_windows_account_name("has space"));
+        assert!(!is_valid_windows_account_name(&"a".repeat(21)));
+    }
+
+    #[test]
     fn protects_root_account_name() {
         assert!(is_protected_account_name("root"));
         assert!(!is_protected_account_name("deploy"));
+    }
+
+    #[test]
+    fn protects_builtin_windows_account_names_case_insensitively() {
+        assert!(is_protected_windows_account_name("Administrator"));
+        assert!(is_protected_windows_account_name("GUEST"));
+        assert!(is_protected_windows_account_name("defaultaccount"));
+        assert!(!is_protected_windows_account_name("deploy-svc"));
     }
 
     #[test]

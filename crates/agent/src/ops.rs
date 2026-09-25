@@ -349,7 +349,9 @@ pub async fn run(
         AgentOperation::DeleteSshKeypair { path } => {
             cryptkeeper::delete_ssh_keypair(path, elevation).await
         }
-        AgentOperation::ScanSecurityEvents => thanatos::scan_security_events(elevation).await,
+        AgentOperation::ScanSecurityEvents { extra_fim_paths } => {
+            thanatos::scan_security_events(elevation, extra_fim_paths).await
+        }
         AgentOperation::DetectPackageBackend => sepulchre::detect_package_backend(elevation).await,
         AgentOperation::RenderSepulchreConfig { target, content } => {
             sepulchre::render_sepulchre_config(target, content, elevation).await

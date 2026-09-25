@@ -294,7 +294,7 @@ impl From<&AgentOperation> for HostOpKind {
         match operation {
             AgentOperation::Elevate { .. } => HostOpKind::Elevate,
             AgentOperation::Deescalate => HostOpKind::Deescalate,
-            AgentOperation::ScanSecurityEvents => HostOpKind::SecurityScan,
+            AgentOperation::ScanSecurityEvents { .. } => HostOpKind::SecurityScan,
             _ => HostOpKind::Other,
         }
     }

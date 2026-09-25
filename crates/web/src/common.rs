@@ -18,6 +18,21 @@ use crate::csrf;
 use crate::error::WebError;
 use crate::state::AppState;
 
+/// Human-readable label for `Host.os` (`std::env::consts::OS` as reported
+/// by the agent at connect time, see `crates/core/src/host.rs`) -- shared
+/// by every arsenal whose UI is OS-aware (Thanatos's detection-source
+/// badge/note, Inquest's containment-mechanism badge/note). `None`
+/// covers a host that's never connected under an agent build new enough
+/// to report its OS.
+pub fn os_label(os: Option<&str>) -> &'static str {
+    match os {
+        Some("linux") => "Linux",
+        Some("windows") => "Windows",
+        Some("macos") => "macOS",
+        _ => "Unknown OS",
+    }
+}
+
 /// Renders a UTC timestamp (everything is stored in UTC) in `tz_name`
 /// (an IANA name, e.g. `"America/Chicago"`, as stored on `User::timezone`).
 /// Falls back to UTC if `tz_name` somehow isn't a real zone -- this is

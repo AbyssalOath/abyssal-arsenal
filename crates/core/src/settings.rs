@@ -49,6 +49,16 @@ pub const THANATOS_MONITORING_ENABLED: &str = "thanatos.monitoring_enabled";
 /// it's also actively pushed out.
 pub const THANATOS_ALERT_RECIPIENTS: &str = "thanatos.alert_recipients";
 
+/// Comma-or-newline-separated admin-configured paths to hash alongside
+/// the agent's own small fixed FIM watch-list (Phase 7b) -- additive,
+/// never a replacement: clearing this setting doesn't lose the default
+/// coverage. Empty by default. Each entry is validated (`is_valid_
+/// absolute_path`/`is_valid_windows_absolute_path`, per the target
+/// host's `Host.os`) before being sent to that host; an entry that
+/// doesn't validate for a host's platform is silently skipped for that
+/// host rather than sent anyway (see `thanatos_ops::extra_fim_paths_for`).
+pub const THANATOS_EXTRA_FIM_PATHS: &str = "thanatos.extra_fim_paths";
+
 /// How many high-or-above severity events on one host within
 /// `THANATOS_CORRELATION_WINDOW_MINUTES` constitute a "burst" worth
 /// raising a correlation alert over (`thanatos_ops::check_and_raise_alert`).

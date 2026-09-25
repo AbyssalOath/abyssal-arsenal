@@ -20,6 +20,7 @@
     <summary>
       <span class="chevron-wrap">{% call macros::icon("chevron") %}</span>
       <span class="inventory-group-label">{{ group.host_name }}</span>
+      <span class="badge badge-muted">{{ group.os_label }}</span>
       <span class="inventory-group-actions actions">
         <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ group.host_id }}">{% call macros::icon("scan") %} Open host page</a>
       </span>

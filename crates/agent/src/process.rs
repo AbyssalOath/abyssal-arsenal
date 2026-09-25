@@ -146,6 +146,37 @@ fn finish(program: &str, output: std::process::Output) -> Result<OperationOutput
     })
 }
 
+/// Wraps a literal string as a single-quoted PowerShell string, doubling
+/// any embedded `'` (PowerShell's own single-quoted-string escape).
+/// Every Windows-specific module in this crate builds a `-Command`
+/// script as a plain Rust *string* via `format!` -- unlike this same
+/// module's own `run_command`, which passes arguments as a real argv
+/// array and never touches a shell at all -- so any untrusted value
+/// (a path, an IP, a filename) reaching one of those scripts needs this
+/// first. A single-quoted PowerShell literal performs no variable/
+/// subexpression expansion at all (unlike a double-quoted one), so
+/// doubling `'` is sufficient. See `crates/agent/src/inquest.rs`'s
+/// `windows` module doc comment for the fuller reasoning this was first
+/// written for.
+#[cfg(windows)]
+pub fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Wraps a PowerShell command so a thrown ("terminating") error becomes
+/// a genuine non-zero process exit. Without this, many cmdlet failures
+/// (a locked file, a missing destination, an already-existing firewall
+/// rule) would just write to stderr while the process still exits 0 --
+/// exactly what this module's own `run_command` doc comment warns
+/// against relying on ("a command that runs but fails partway... would
+/// come back as Ok with empty-looking output -- silently reporting
+/// success for something that didn't happen"). Every Windows write/
+/// destructive action in this crate goes through this.
+#[cfg(windows)]
+pub fn ps_checked(body: &str) -> String {
+    format!("$ErrorActionPreference = 'Stop'; try {{ {body} }} catch {{ Write-Error $_; exit 1 }}")
+}
+
 /// Checks whether a program is on `PATH` without running it -- used for
 /// picking which of several possible tools (firewall backends, etc.) is
 /// actually available on this host.

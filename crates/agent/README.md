@@ -184,21 +184,37 @@ path) rather than failing if it's already registered.
   read-only Security/System event log queries need -- there's no
   unprivileged-by-default mode to elevate *from* the way Linux's
   sudo-based `ElevationState` provides.
-- **Thanatos detection reads the Security/System event logs** (via
-  `Get-WinEvent`, shelled through `powershell.exe`) instead of tailing
-  `/var/log/auth.log`/the kernel ring buffer/systemd -- see the module
-  doc comment in `crates/agent/src/thanatos.rs` for the exact signals
-  watched and why they're matched on event ID rather than message text.
-  Every other arsenal that shells out to a Linux-only tool (`iptables`,
-  `useradd`, `systemctl`, ...) simply isn't functional on Windows yet;
-  Thanatos is the one arsenal this pass brought to parity.
+- **Thanatos detection reads the Security/System event logs** (plus,
+  best-effort, PowerShell script block logging and Windows Defender's
+  operational log where enabled), via `Get-WinEvent`, shelled through
+  `powershell.exe` instead of tailing `/var/log/auth.log`/the kernel ring
+  buffer/systemd -- see the module doc comment in
+  `crates/agent/src/thanatos.rs` for the exact signals watched and why
+  they're matched on event ID rather than message text.
+- **Inquest's response/containment actions go through Windows Defender
+  Firewall** (`New-NetFirewallRule`/`Set-NetFirewallProfile`, shelled
+  through `powershell.exe`) instead of nftables/iptables, and quarantine
+  moves files under `C:\ProgramData\abyssal-agent\quarantine` instead of
+  `/var/lib/abyssal-arsenal/quarantine` -- see the module doc comment in
+  `crates/agent/src/inquest.rs`. Host isolation specifically carries a
+  real, documented model divergence there (no single-transaction
+  primitive the way `nft -f`/`iptables-restore` provide) -- read
+  `windows::isolate_host`'s own doc comment, and see "The second-gate
+  pattern for catastrophic-risk operations" in
+  [ARCHITECTURE.md](../../ARCHITECTURE.md), before isolating a production
+  Windows host with it for the first time.
+- Every other arsenal that shells out to a Linux-only tool (Parish's
+  `useradd`, Firewall's `iptables`, Cryptkeeper's `ssh-keygen`/`openssl`,
+  ...) still simply isn't functional on Windows -- Thanatos and Inquest
+  are the two arsenals brought to parity so far.
 
 ## Windows and macOS
 
-Windows support (above) covers Thanatos detection depth and the
-install/service-manager story; it does not extend every other arsenal's
-Linux-specific tooling (Parish's `useradd`, Firewall's `iptables`, ...) to
-Windows equivalents yet. macOS isn't supported at all: distributing a
+Windows support (above) covers Thanatos's detection depth and Inquest's
+response/containment actions, plus the install/service-manager story; it
+does not extend every other arsenal's Linux-specific tooling (Parish's
+`useradd`, Cryptkeeper's `ssh-keygen`, ...) to Windows equivalents yet.
+macOS isn't supported at all: distributing a
 `launchd`-installed background agent without Gatekeeper blocking every
 install needs code-signing/notarization, which needs an active Apple
 Developer Program membership. If that's ever obtained, the shape would

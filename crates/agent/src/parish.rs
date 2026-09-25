@@ -119,6 +119,7 @@ pub async fn remove_user_from_group(
     }
 }
 
+#[cfg(unix)]
 pub async fn lock_user_account(username: String, elevation: &ElevationState) -> CommandOutcome {
     if let Err(e) = validate_account(&username) {
         return CommandOutcome::Err(e);
@@ -132,11 +133,64 @@ pub async fn lock_user_account(username: String, elevation: &ElevationState) -> 
     }
 }
 
+#[cfg(unix)]
 pub async fn unlock_user_account(username: String, elevation: &ElevationState) -> CommandOutcome {
     if let Err(e) = validate_account(&username) {
         return CommandOutcome::Err(e);
     }
     match elevation.run("usermod", &["-U", username.as_str()]).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+/// Windows equivalent of `lock_user_account`/`unlock_user_account` above
+/// -- `Disable-LocalUser`/`Enable-LocalUser` via PowerShell rather than
+/// `usermod -L`/`-U`. Uses `is_valid_windows_account_name`/
+/// `is_protected_windows_account_name` (mixed-case-friendly, a different
+/// built-in protected-name set) rather than the Unix validators above --
+/// see those functions' own doc comments for why they're genuinely
+/// separate, not just cfg-gated copies.
+#[cfg(windows)]
+pub async fn lock_user_account(username: String, _elevation: &ElevationState) -> CommandOutcome {
+    if !abyssal_agent_protocol::is_valid_windows_account_name(&username) {
+        return CommandOutcome::Err(format!("refusing invalid account name: {username}"));
+    }
+    if abyssal_agent_protocol::is_protected_windows_account_name(&username) {
+        return CommandOutcome::Err(format!(
+            "refusing to touch the protected account: {username}"
+        ));
+    }
+    let script = crate::process::ps_checked(&format!(
+        "Disable-LocalUser -Name {}",
+        crate::process::ps_quote(&username)
+    ));
+    match crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", &script],
+    )
+    .await
+    {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+#[cfg(windows)]
+pub async fn unlock_user_account(username: String, _elevation: &ElevationState) -> CommandOutcome {
+    if !abyssal_agent_protocol::is_valid_windows_account_name(&username) {
+        return CommandOutcome::Err(format!("refusing invalid account name: {username}"));
+    }
+    let script = crate::process::ps_checked(&format!(
+        "Enable-LocalUser -Name {}",
+        crate::process::ps_quote(&username)
+    ));
+    match crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", &script],
+    )
+    .await
+    {
         Ok(output) => CommandOutcome::Ok(output),
         Err(e) => CommandOutcome::Err(e),
     }

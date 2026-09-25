@@ -32,6 +32,28 @@ use crate::theme;
 /// Panopticon's Device Inventory and Thanatos's dashboard use.
 const GROUPS_PER_PAGE: u32 = 25;
 
+/// What "block an IP"/"isolate this host"/"quarantine a file" actually
+/// do on this host -- differs by platform (see
+/// `crates/agent/src/inquest.rs`'s module doc comment), so the per-host
+/// page says so explicitly rather than showing one Linux-flavored
+/// sentence regardless of what's actually connected.
+fn containment_note(os: Option<&str>) -> &'static str {
+    match os {
+        Some("windows") => {
+            "Blocking/isolation go through Windows Defender Firewall (PowerShell); \
+             quarantine moves files under C:\\ProgramData\\abyssal-agent\\quarantine. \
+             Isolation here can't be applied as a single atomic transaction the way the \
+             Linux path's nftables/iptables mechanism can -- see this host's agent-side \
+             documentation before isolating a production host for the first time."
+        }
+        Some("macos") => "Inquest response actions aren't supported on macOS hosts yet.",
+        _ => {
+            "Blocking/isolation go through nftables (preferred) or iptables, whichever this \
+             host has; quarantine moves files under /var/lib/abyssal-arsenal/quarantine."
+        }
+    }
+}
+
 /// Landing page for this arsenal: a paginated, collapsible-per-host group
 /// list (GitHub issue #10's grouped-dashboard pattern) instead of a flat
 /// host-link list -- each group's body is just the read-only quick-check
@@ -104,6 +126,7 @@ pub async fn show(
             InquestHostGroup {
                 host_id: host_id_str,
                 host_name: host.name.clone(),
+                os_label: crate::common::os_label(host.os.as_deref()),
                 is_open,
                 open_href,
             }
@@ -216,6 +239,8 @@ async fn render_host_with_context(
     .await?;
     let host_isolation_enabled =
         repo::settings::get_bool(&state.pool, HOST_ISOLATION_ENABLED, false).await?;
+    let os_label = crate::common::os_label(host.os.as_deref());
+    let containment_note = containment_note(host.os.as_deref());
 
     let tpl = InquestHostTemplate {
         can_manage: ctx.has(Permission::IncidentsRespond),
@@ -225,6 +250,8 @@ async fn render_host_with_context(
         base,
         host_id: host_id.to_string(),
         host_name: host.name,
+        os_label,
+        containment_note,
         result_label,
         result_output,
         result_error,
@@ -573,10 +600,24 @@ pub async fn quarantine_file(
     abyssal_rbac::ensure(&ctx, Permission::IncidentsRespond)?;
     require_csrf(&jar, &form.csrf_token)?;
     let path = form.path.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_absolute_path(&path) {
-        return Err(WebError(AppError::Validation(
-            "Enter an absolute path (starting with /) to quarantine.".into(),
-        )));
+    // OS-aware: a Windows host's quarantine (`C:\...`) needs the
+    // Windows validator, not the Unix one -- validating against the
+    // wrong one would reject every legitimate path for that platform.
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let valid = if host.os.as_deref() == Some("windows") {
+        abyssal_agent_protocol::is_valid_windows_absolute_path(&path)
+    } else {
+        abyssal_agent_protocol::is_valid_absolute_path(&path)
+    };
+    if !valid {
+        let hint = if host.os.as_deref() == Some("windows") {
+            r"Enter an absolute Windows path (e.g. C:\Users\foo\bad.exe) to quarantine."
+        } else {
+            "Enter an absolute path (starting with /) to quarantine."
+        };
+        return Err(WebError(AppError::Validation(hint.into())));
     }
     run_write_op(
         &state,
@@ -648,6 +689,98 @@ pub async fn deisolate_host(
         host_id,
         AgentOperation::DeisolateHost,
         "De-isolate Host",
+        None,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------
+// Write: disable/enable a local account -- reuses `AgentOperation::
+// LockUserAccount`/`UnlockUserAccount` (already implemented, Linux via
+// `parish::lock_user_account`, Windows via `Disable-LocalUser`/
+// `Enable-LocalUser`) through the same `run_write_op` every other
+// Inquest write action already goes through -- deliberately not routed
+// through Parish's own web handlers, since the point is this action
+// being dispatched (and generically audited, same as block/quarantine/
+// isolate already are) from Inquest's own incident-response context,
+// not Parish's account-management one. `Write` tier, not `Destructive`:
+// reversible via the paired enable action, matching Parish's own
+// classification for the identical underlying operation.
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct AccountForm {
+    csrf_token: String,
+    username: String,
+}
+
+fn validate_account_username(
+    host: &abyssal_core::Host,
+    username: &str,
+) -> Result<String, WebError> {
+    let username = username.trim().to_string();
+    let valid = if host.os.as_deref() == Some("windows") {
+        abyssal_agent_protocol::is_valid_windows_account_name(&username)
+    } else {
+        abyssal_agent_protocol::is_valid_account_name(&username)
+    };
+    if !valid {
+        return Err(WebError(AppError::Validation(
+            "Enter a valid account name for this host's platform.".into(),
+        )));
+    }
+    Ok(username)
+}
+
+pub async fn disable_account(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<AccountForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::IncidentsRespond)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let username = validate_account_username(&host, &form.username)?;
+    run_write_op(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::LockUserAccount {
+            username: username.clone(),
+        },
+        &format!("Disable Account ({username})"),
+        None,
+    )
+    .await
+}
+
+pub async fn enable_account(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<AccountForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::IncidentsRespond)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let username = validate_account_username(&host, &form.username)?;
+    run_write_op(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::UnlockUserAccount {
+            username: username.clone(),
+        },
+        &format!("Enable Account ({username})"),
         None,
     )
     .await
@@ -872,6 +1005,85 @@ pub async fn delete_quarantined_file(
             filename: filename.clone(),
         },
         "Delete Quarantined File",
+        form,
+        None,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------
+// Destructive (conservative tier): kill a process -- reuses
+// `AgentOperation::SendSignal` (already implemented, Linux via `kill
+// -s`, Windows via `Stop-Process -Force`) the same way disable/enable
+// account reuses `LockUserAccount`/`UnlockUserAccount` above: dispatched
+// from Inquest's own incident-response context rather than Reanimation's
+// process-management one, through the same shared destructive machinery
+// every other Inquest destructive action already uses. Always sends
+// `KILL` -- an incident-response kill is meant to stop a process right
+// now, not ask it nicely to exit, and `KILL`/`TERM` are the only two
+// signal names with any Windows equivalent at all (see
+// `reanimation::send_signal`'s Windows doc comment).
+// ---------------------------------------------------------------------
+
+fn validate_pid_query(value: &str) -> Result<u32, WebError> {
+    let pid: u32 = value
+        .trim()
+        .parse()
+        .map_err(|_| WebError(AppError::Validation("Enter a numeric process ID.".into())))?;
+    if !abyssal_agent_protocol::is_valid_pid(pid) {
+        return Err(WebError(AppError::Validation(
+            "Refusing to operate on that process ID.".into(),
+        )));
+    }
+    Ok(pid)
+}
+
+pub async fn kill_process_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Query(q): Query<SingleFieldQuery>,
+) -> Result<Response, WebError> {
+    let pid = validate_pid_query(&q.value)?;
+    let action_url = format!("/arsenals/inquest/{host_id}/kill-process?value={pid}");
+    destructive_confirm(
+        &state,
+        jar,
+        ctx,
+        host_id,
+        "Kill process",
+        format!(
+            "This will forcibly terminate process {pid} on this host right now. It cannot be \
+             undone -- any unsaved work in that process is lost."
+        ),
+        action_url,
+        "process ID",
+        &pid.to_string(),
+    )
+    .await
+}
+
+pub async fn kill_process(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Query(q): Query<SingleFieldQuery>,
+    Form(form): Form<ConfirmForm>,
+) -> Result<Response, WebError> {
+    let pid = validate_pid_query(&q.value)?;
+    run_destructive_op(
+        &state,
+        jar,
+        ctx,
+        host_id,
+        &pid.to_string(),
+        AgentOperation::SendSignal {
+            pid,
+            signal: "KILL".to_string(),
+        },
+        "Kill Process",
         form,
         None,
     )

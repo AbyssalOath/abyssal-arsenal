@@ -858,6 +858,33 @@ this pattern if getting it wrong once, unattended or with a typo, would
 be worse than what the existing Destructive tier already assumes it
 might be.
 
+**Windows host isolation is a real model divergence from the Linux
+mechanism just described, not just a different backend.** Linux's
+`nft_isolate`/`iptables_isolate` (`crates/agent/src/inquest.rs`) apply
+the entire drop-everything-except-the-control-plane ruleset as one atomic
+transaction (`nft -f`/`iptables-restore`), because a chain's default-drop
+policy takes effect the instant it's created -- without atomicity, there
+would be a real window where the agent's own control-plane connection has
+nothing accepting it. Windows Defender Firewall's PowerShell surface
+(`Set-NetFirewallProfile`/`New-NetFirewallRule`) has no equivalent
+single-transaction primitive. The Windows implementation mitigates this
+with ordering instead of atomicity -- add the explicit control-plane
+allow rules *first*, flip the default action to Block *second* (reversed
+on de-isolate) -- which avoids the specific "control connection gets cut"
+risk the Linux atomicity exists to prevent (the allow rule for the
+control plane is always in place before the block-everything policy
+takes effect), at the cost of a different, more benign gap: for the
+brief window between the two PowerShell statements, isolation hasn't
+fully taken effect yet, rather than the connection being at risk. See
+`crates/agent/src/inquest.rs`'s `windows::isolate_host` doc comment for
+the full reasoning. This has never been exercised against a real Windows
+Firewall (no Windows machine in this project's own sandbox) -- treat it
+as needing real-world validation before isolating a production Windows
+host with it, the same caveat every other Windows-specific code path in
+this agent carries (see "Future work: push-based telemetry and
+additional platforms (Thanatos)" above, and `crates/agent/README.md`'s
+own Windows section).
+
 ## Background tasks
 
 Everything in the control plane is otherwise request-driven -- nothing

@@ -8,10 +8,11 @@
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }} <span class="badge badge-muted">{{ os_label }}</span></h2>
     {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
+  <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0;">{{ containment_note }}</p>
 
   {% if !elevated && base.can_hosts_elevate %}
   <form method="post" action="/arsenals/inquest/{{ host_id }}/elevate" class="elevate-form">
@@ -112,19 +113,37 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-warning">{% call macros::icon("check") %} De-isolate Host</button>
     </form>
+    <form method="post" action="/arsenals/inquest/{{ host_id }}/disable-account">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="disable-account-username">Account username</label>
+      <input type="text" id="disable-account-username" name="username" placeholder="e.g. suspicious-user" required>
+      <button type="submit" class="btn-warning">{% call macros::icon("danger") %} Disable Account</button>
+    </form>
+    <form method="post" action="/arsenals/inquest/{{ host_id }}/enable-account">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="enable-account-username">Account username</label>
+      <input type="text" id="enable-account-username" name="username" placeholder="e.g. suspicious-user" required>
+      <button type="submit" class="btn-warning">{% call macros::icon("check") %} Enable Account</button>
+    </form>
   </div>
 </div>
 
 <div class="card kind-destructive">
   <h3>Destructive</h3>
   <p style="color:var(--text-muted); margin-top:0;">
-    Deleting a quarantined file is permanent -- it can no longer be restored afterward.
+    Deleting a quarantined file is permanent -- it can no longer be restored afterward. Killing a
+    process is immediate and cannot be undone.
   </p>
   <div class="action-grid">
     <form method="get" action="/arsenals/inquest/{{ host_id }}/delete-quarantined/confirm">
       <label for="delete-quarantine-filename">Quarantine filename</label>
       <input type="text" id="delete-quarantine-filename" name="value" placeholder="from Quarantined Files above" required>
       <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Delete Quarantined File&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/inquest/{{ host_id }}/kill-process/confirm">
+      <label for="kill-process-pid">Process ID</label>
+      <input type="number" id="kill-process-pid" name="value" min="2" placeholder="e.g. 4821" required>
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Kill Process&hellip;</button>
     </form>
   </div>
 </div>

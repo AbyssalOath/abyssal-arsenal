@@ -22,7 +22,7 @@ use abyssal_core::settings::{
     THANATOS_ALERT_RECIPIENTS, THANATOS_CORRELATION_THRESHOLD,
     THANATOS_CORRELATION_THRESHOLD_DEFAULT, THANATOS_CORRELATION_WINDOW_MINUTES,
     THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_CROSS_HOST_THRESHOLD,
-    THANATOS_CROSS_HOST_THRESHOLD_DEFAULT, THANATOS_MONITORING_ENABLED,
+    THANATOS_CROSS_HOST_THRESHOLD_DEFAULT, THANATOS_EXTRA_FIM_PATHS, THANATOS_MONITORING_ENABLED,
     THANATOS_SWEEP_INTERVAL_SECONDS, THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
 };
 use abyssal_database::{DbPool, repo};
@@ -59,24 +59,43 @@ async fn correlation_settings(pool: &DbPool) -> (i64, i64) {
 /// `source = "fim"` row's shape is defined.
 const FIM_CHANGE_LABEL: &str = "File-integrity watch-list change";
 
-/// Parses `stdout` from `AgentOperation::ScanSecurityEvents` -- three
+/// Same role as `FIM_CHANGE_LABEL`, for a newly-appearing listening
+/// port (`source = "network"`) -- see
+/// `repo::thanatos_network_baseline::record_seen_ports`.
+const NEW_LISTENING_PORT_LABEL: &str = "New listening port";
+
+/// Same role again, for a newly-loaded kernel module/driver (Phase 9,
+/// `source = "kernel_module"`) -- see `repo::
+/// thanatos_kernel_module_baseline::record_seen_modules`.
+const NEW_KERNEL_MODULE_LABEL: &str = "New kernel module/driver loaded";
+
+/// Parses `stdout` from `AgentOperation::ScanSecurityEvents` -- five
 /// explicitly tagged line shapes (see `crates/agent/src/thanatos.rs`'s
 /// module doc comment): `severity\tlabel\tsource\traw_line` for a
 /// classified event, `fim\t<path>\t<hash>` for a file-integrity
-/// watch-list entry, `info\t<message>` for anything else worth surfacing
-/// (no readable log sources, or nothing matched). Any line matching none
-/// of these shapes is silently ignored rather than guessed at.
+/// watch-list entry, `port\t<proto>:<port>` for a currently-listening
+/// port (Phase 7a), `module\t<name>` for a currently-loaded kernel
+/// module/driver (Phase 9), `info\t<message>` for anything else worth
+/// surfacing (no readable log sources, or nothing matched). Any line
+/// matching none of these shapes is silently ignored rather than
+/// guessed at.
 ///
 /// Persists every classified event (deduplicated by content hash) and
 /// compares every FIM hash against the last one recorded for that
 /// host+path (`repo::thanatos_file_hashes`), inserting a synthetic
 /// `high`-severity event when one has actually changed since a prior
 /// observation (never on the first sighting of a path, which only
-/// establishes the baseline). Returns the number of genuinely *new*
-/// events persisted (classified + FIM-drift combined -- not the number of
-/// lines the agent reported, since re-scanning the same tail window
-/// reports the same lines again every time) and, when the agent sent an
-/// `info` line, that message to show instead.
+/// establishes the baseline). Every reported port and every reported
+/// module are each reconciled in their own batch, after the line-by-line
+/// loop, against `repo::thanatos_network_baseline`/`repo::
+/// thanatos_kernel_module_baseline` respectively -- genuinely new ones
+/// (never on a host's first-ever scan) each become a synthetic
+/// `high`-severity event too. Returns the number of genuinely *new*
+/// events persisted (classified + FIM-drift + new-port + new-module
+/// combined -- not the number of lines the agent reported, since
+/// re-scanning the same tail window reports the same lines again every
+/// time) and, when the agent sent an `info` line, that message to show
+/// instead.
 pub async fn persist_scan_output(
     pool: &DbPool,
     host_id: Uuid,
@@ -84,8 +103,24 @@ pub async fn persist_scan_output(
 ) -> anyhow::Result<(usize, Option<String>)> {
     let mut persisted = 0usize;
     let mut informational_lines: Vec<&str> = Vec::new();
+    let mut current_ports: Vec<String> = Vec::new();
+    let mut current_modules: Vec<String> = Vec::new();
 
     for line in stdout.lines() {
+        if let Some(port_key) = line.strip_prefix("port\t") {
+            if !port_key.is_empty() {
+                current_ports.push(port_key.to_string());
+            }
+            continue;
+        }
+
+        if let Some(module_key) = line.strip_prefix("module\t") {
+            if !module_key.is_empty() {
+                current_modules.push(module_key.to_string());
+            }
+            continue;
+        }
+
         if let Some(rest) = line.strip_prefix("fim\t") {
             let Some((path, hash)) = rest.split_once('\t') else {
                 continue;
@@ -124,6 +159,51 @@ pub async fn persist_scan_output(
             .await?
         {
             persisted += 1;
+        }
+    }
+
+    if !current_ports.is_empty() {
+        let new_ports =
+            repo::thanatos_network_baseline::record_seen_ports(pool, host_id, &current_ports)
+                .await?;
+        for port_key in new_ports {
+            let raw_line = format!("New listening port: {port_key}");
+            if repo::security_events::insert_if_new(
+                pool,
+                host_id,
+                "network",
+                Severity::High,
+                NEW_LISTENING_PORT_LABEL,
+                &raw_line,
+            )
+            .await?
+            {
+                persisted += 1;
+            }
+        }
+    }
+
+    if !current_modules.is_empty() {
+        let new_modules = repo::thanatos_kernel_module_baseline::record_seen_modules(
+            pool,
+            host_id,
+            &current_modules,
+        )
+        .await?;
+        for module_key in new_modules {
+            let raw_line = format!("New kernel module/driver loaded: {module_key}");
+            if repo::security_events::insert_if_new(
+                pool,
+                host_id,
+                "kernel_module",
+                Severity::High,
+                NEW_KERNEL_MODULE_LABEL,
+                &raw_line,
+            )
+            .await?
+            {
+                persisted += 1;
+            }
         }
     }
 
@@ -216,6 +296,37 @@ pub fn parse_recipients(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parses `THANATOS_EXTRA_FIM_PATHS` the way it's stored -- comma- or
+/// newline-separated, same permissive split-trim-filter shape
+/// `parse_recipients` uses for its own comma-separated setting (a
+/// second separator here since multi-line paths are more natural to
+/// paste one-per-line than comma-joined).
+pub fn parse_extra_fim_paths(raw: &str) -> Vec<String> {
+    raw.split([',', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Filters `all_paths` down to the ones valid for `os` (`Host.os`) --
+/// an entry meant for one platform is silently dropped for a host on the
+/// other rather than sent anyway and failing/being ignored agent-side.
+/// `None` or anything other than `"windows"` is treated as Unix,
+/// matching `routes::thanatos::os_label`'s own default branch.
+pub fn extra_fim_paths_for(all_paths: &[String], os: Option<&str>) -> Vec<String> {
+    let is_valid: fn(&str) -> bool = if os == Some("windows") {
+        abyssal_agent_protocol::is_valid_windows_absolute_path
+    } else {
+        abyssal_agent_protocol::is_valid_absolute_path
+    };
+    all_paths
+        .iter()
+        .filter(|path| is_valid(path))
+        .cloned()
+        .collect()
+}
+
 /// Best-effort extraction of a `from <ip>` token from a raw auth-log line
 /// (e.g. `"Failed password for invalid user root from 203.0.113.5 port 22
 /// ssh2"`) -- every SSH auth failure/success rule this app's own `RULES`
@@ -227,7 +338,43 @@ fn extract_source_ip(raw_line: &str) -> Option<IpAddr> {
     raw_line.split_whitespace().find_map(|tok| tok.parse().ok())
 }
 
+/// Best-effort extraction of the targeted username from a raw SSH
+/// auth-log line, for the same family of rules `extract_source_ip`
+/// already parses (`crates/agent/src/thanatos.rs`'s SSH-related `RULES`
+/// entries) -- the OpenSSH/PAM message phrasing this depends on is
+/// stable and non-localized (`sshd` never localizes its own log output),
+/// unlike Windows Security-log messages (see that `RULES` table's own
+/// doc comment for why this is deliberately Linux-only, Phase 7d).
+/// Checked in this specific order because it matters:
+/// - `"invalid user "` first, so `"Failed password for invalid user
+///   root from ..."` extracts `"root"`, not the literal word `"invalid"`.
+/// - `"for user "` second, so `"session opened for user root"` (PAM's
+///   own distinct phrasing, no `"invalid user"` involved) extracts
+///   `"root"` rather than the literal word `"user"` a naive `"for "`
+///   split would grab instead.
+/// - a plain `" for "` last, for `"Failed password for admin from ..."`/
+///   `"Accepted publickey for admin from ..."`/`"Accepted password for
+///   admin from ..."`.
+///
+/// Lines with no `for`-shaped clause at all (`"FAILED su"`, generic PAM
+/// `"authentication failure"` without a `user=`/`for` token) return
+/// `None` -- a coverage gap, not a wrong answer, the same "best-effort,
+/// not exhaustive" character `extract_source_ip` already has.
+fn extract_username(raw_line: &str) -> Option<String> {
+    if let Some((_, rest)) = raw_line.split_once("invalid user ") {
+        return rest.split_whitespace().next().map(str::to_string);
+    }
+    if let Some((_, rest)) = raw_line.split_once("for user ") {
+        return rest.split_whitespace().next().map(str::to_string);
+    }
+    if let Some((_, rest)) = raw_line.split_once(" for ") {
+        return rest.split_whitespace().next().map(str::to_string);
+    }
+    None
+}
+
 const CROSS_HOST_LABEL: &str = "Cross-host credential-stuffing pattern";
+const CROSS_HOST_USERNAME_LABEL: &str = "Cross-host account-targeting pattern";
 
 /// Looks for one source IP that's triggered high-or-above severity events
 /// on several distinct hosts within the correlation window -- a pattern a
@@ -336,10 +483,115 @@ async fn check_cross_host_burst(
     Ok(alerted)
 }
 
+/// Same shape and reasoning as `check_cross_host_burst` above, grouping
+/// by *targeted username* instead of *source IP* (Phase 7d) -- a
+/// same-account-across-many-hosts pattern a per-host or per-IP check
+/// alone can't see (an attacker rotating source IPs while retrying the
+/// same credential fleet-wide, or a compromised credential being tried
+/// against every host that might accept it). Shares the same
+/// `source = "correlation"` row shape, the same
+/// `THANATOS_CROSS_HOST_THRESHOLD` setting (one "how many hosts is
+/// suspicious" knob for both cross-host rules, not two to tune
+/// separately), and the same already-covered-this-window suppression via
+/// `has_recent_correlation_event`. Linux-only in practice, since
+/// `extract_username` only recognizes the OpenSSH/PAM message shapes
+/// Windows event log lines don't share -- see that function's own doc
+/// comment.
+async fn check_cross_host_username_reuse(
+    pool: &DbPool,
+    notifications: &NotificationDispatcher,
+    recipients: &[String],
+    window_minutes: i64,
+) -> anyhow::Result<bool> {
+    let host_threshold = repo::settings::get_u32(
+        pool,
+        THANATOS_CROSS_HOST_THRESHOLD,
+        THANATOS_CROSS_HOST_THRESHOLD_DEFAULT,
+    )
+    .await
+    .unwrap_or(THANATOS_CROSS_HOST_THRESHOLD_DEFAULT);
+
+    let rows =
+        repo::security_events::list_recent_high_severity_all_hosts(pool, window_minutes).await?;
+    let mut hosts_by_username: HashMap<String, HashSet<Uuid>> = HashMap::new();
+    for (host_id, raw_line) in &rows {
+        if let Some(username) = extract_username(raw_line) {
+            hosts_by_username
+                .entry(username)
+                .or_default()
+                .insert(*host_id);
+        }
+    }
+
+    let mut alerted = false;
+    for (username, affected_hosts) in hosts_by_username {
+        if (affected_hosts.len() as u32) < host_threshold {
+            continue;
+        }
+        let raw_line = format!(
+            "Account \"{username}\" was targeted by high-or-critical security events on {} \
+             distinct host(s) within the last {window_minutes} minutes (threshold: \
+             {host_threshold}).",
+            affected_hosts.len()
+        );
+
+        for host_id in &affected_hosts {
+            if repo::security_events::has_recent_correlation_event(pool, *host_id, window_minutes)
+                .await?
+            {
+                continue;
+            }
+            let inserted = repo::security_events::insert_if_new(
+                pool,
+                *host_id,
+                "correlation",
+                Severity::Critical,
+                CROSS_HOST_USERNAME_LABEL,
+                &raw_line,
+            )
+            .await?;
+            if !inserted {
+                continue;
+            }
+            alerted = true;
+
+            if let Err(e) = abyssal_audit::record(
+                pool,
+                AuditEvent::new(AuditAction::SecurityAlertRaised, AuditOutcome::Success)
+                    .resource(&host_id.to_string())
+                    .metadata(serde_json::json!({
+                        "username": username,
+                        "affected_host_count": affected_hosts.len(),
+                        "threshold": host_threshold,
+                        "window_minutes": window_minutes,
+                        "kind": "cross_host_username",
+                    })),
+            )
+            .await
+            {
+                tracing::error!(error = %e, host_id = %host_id, "failed to write audit record for Thanatos cross-host account-targeting alert");
+            }
+
+            if !recipients.is_empty() {
+                let message = NotificationMessage {
+                    subject: "[Thanatos] Cross-host security alert".to_string(),
+                    body: raw_line.clone(),
+                    severity: abyssal_notifications::Severity::Critical,
+                    recipients: recipients.to_vec(),
+                };
+                notifications.dispatch(&message).await;
+            }
+        }
+    }
+
+    Ok(alerted)
+}
+
 /// Runs the persist-then-correlate pipeline for one host's scan output --
 /// the shared tail end of both the on-demand and the periodic-sweep
-/// paths. `alerted` is true if either the per-host burst check or the
-/// fleet-wide cross-host check raised a finding.
+/// paths. `alerted` is true if the per-host burst check or either
+/// fleet-wide cross-host check (by source IP or by targeted username,
+/// Phase 7d) raised a finding.
 pub async fn ingest_scan(
     pool: &DbPool,
     notifications: &NotificationDispatcher,
@@ -352,12 +604,14 @@ pub async fn ingest_scan(
     let per_host_alerted =
         check_and_raise_alert(pool, notifications, recipients, host_id, host_name).await?;
     let (_, window_minutes) = correlation_settings(pool).await;
-    let cross_host_alerted =
+    let cross_host_ip_alerted =
         check_cross_host_burst(pool, notifications, recipients, window_minutes).await?;
+    let cross_host_username_alerted =
+        check_cross_host_username_reuse(pool, notifications, recipients, window_minutes).await?;
     Ok((
         persisted,
         informational,
-        per_host_alerted || cross_host_alerted,
+        per_host_alerted || cross_host_ip_alerted || cross_host_username_alerted,
     ))
 }
 
@@ -434,6 +688,16 @@ pub fn spawn_thanatos_sweep(state: AppState) {
             };
             let recipients = parse_recipients(&recipients_raw);
 
+            let extra_fim_paths_raw =
+                match repo::settings::get_string(&state.pool, THANATOS_EXTRA_FIM_PATHS, "").await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to read Thanatos extra FIM paths");
+                        String::new()
+                    }
+                };
+            let extra_fim_paths_all = parse_extra_fim_paths(&extra_fim_paths_raw);
+
             let hosts = match repo::hosts::list(&state.pool).await {
                 Ok(hosts) => hosts,
                 Err(e) => {
@@ -447,11 +711,12 @@ pub fn spawn_thanatos_sweep(state: AppState) {
                     continue;
                 }
 
+                let extra_fim_paths = extra_fim_paths_for(&extra_fim_paths_all, host.os.as_deref());
                 let outcome = state
                     .hosts
                     .dispatch(
                         host.id,
-                        AgentOperation::ScanSecurityEvents,
+                        AgentOperation::ScanSecurityEvents { extra_fim_paths },
                         Duration::from_secs(30),
                     )
                     .await;
@@ -544,10 +809,85 @@ mod tests {
     }
 
     #[test]
+    fn extracts_username_from_invalid_user_lines() {
+        assert_eq!(
+            extract_username("Failed password for invalid user root from 203.0.113.5 port 22 ssh2"),
+            Some("root".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_username_from_plain_for_lines() {
+        assert_eq!(
+            extract_username("Failed password for admin from 203.0.113.5 port 22 ssh2"),
+            Some("admin".to_string())
+        );
+        assert_eq!(
+            extract_username("Accepted publickey for deploy from 203.0.113.5 port 22 ssh2"),
+            Some("deploy".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_username_from_session_opened_lines_not_the_word_user() {
+        // Regression check: a naive `" for "` split would grab the
+        // literal word "user" here instead of the real username.
+        assert_eq!(
+            extract_username("pam_unix(sshd:session): session opened for user root by (uid=0)"),
+            Some("root".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_no_for_clause_is_present() {
+        assert_eq!(
+            extract_username(
+                "pam_unix(sudo:auth): authentication failure; logname= uid=1000 euid=0 \
+                 tty=/dev/pts/0 ruser=dschwartzad rhost=  user=root"
+            ),
+            None
+        );
+        assert_eq!(extract_username(""), None);
+    }
+
+    #[test]
     fn parse_recipients_splits_and_trims_and_drops_empties() {
         assert_eq!(
             parse_recipients(" a@example.com, b@example.com ,, "),
             vec!["a@example.com".to_string(), "b@example.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_extra_fim_paths_splits_on_commas_and_newlines() {
+        assert_eq!(
+            parse_extra_fim_paths(" /etc/foo,\n /etc/bar \n\n, ,C:\\Users\\bad.exe"),
+            vec![
+                "/etc/foo".to_string(),
+                "/etc/bar".to_string(),
+                "C:\\Users\\bad.exe".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extra_fim_paths_for_filters_by_platform() {
+        let paths = vec![
+            "/etc/foo".to_string(),
+            "C:\\Users\\bad.exe".to_string(),
+            "relative/path".to_string(),
+        ];
+        assert_eq!(
+            extra_fim_paths_for(&paths, None),
+            vec!["/etc/foo".to_string()]
+        );
+        assert_eq!(
+            extra_fim_paths_for(&paths, Some("linux")),
+            vec!["/etc/foo".to_string()]
+        );
+        assert_eq!(
+            extra_fim_paths_for(&paths, Some("windows")),
+            vec!["C:\\Users\\bad.exe".to_string()]
         );
     }
 }

@@ -50,21 +50,6 @@ fn severity_view(severity: Severity) -> (&'static str, &'static str) {
     }
 }
 
-/// Human-readable label for `Host.os` (`std::env::consts::OS` as reported
-/// by the agent at connect time, see `crates/core/src/host.rs`) -- drives
-/// the OS badge on both the fleet dashboard's host groups and the
-/// per-host page, and which detection-source sentence the latter shows
-/// (see `detection_sources_note` below). `None` covers a host that's
-/// never connected under an agent build new enough to report its OS.
-fn os_label(os: Option<&str>) -> &'static str {
-    match os {
-        Some("linux") => "Linux",
-        Some("windows") => "Windows",
-        Some("macos") => "macOS",
-        _ => "Unknown OS",
-    }
-}
-
 /// What Thanatos's scan actually reads on this host -- differs by
 /// platform (see `crates/agent/src/thanatos.rs`'s module doc comment),
 /// so the per-host page says so explicitly rather than showing one
@@ -72,9 +57,11 @@ fn os_label(os: Option<&str>) -> &'static str {
 fn detection_sources_note(os: Option<&str>) -> &'static str {
     match os {
         Some("windows") => {
-            "Scans this host's Security and System event logs (failed/successful logons, \
-             account and privileged-group changes, service failures, unexpected shutdowns) \
-             and hashes its hosts file for tampering."
+            "Scans this host's Security and System event logs (logons, lateral-movement/\
+             privileged-logon indicators, account/service/scheduled-task changes, audit-policy \
+             tampering, service failures, unexpected shutdowns) plus PowerShell script block \
+             logging and Windows Defender's log where enabled, and hashes its hosts file, \
+             machine-wide Run keys, and local Administrators membership for tampering."
         }
         Some("macos") => {
             "macOS hosts aren't scanned yet -- Thanatos detection is Linux/Windows only for now."
@@ -401,7 +388,7 @@ pub async fn show(
         groups.push(ThanatosHostGroup {
             host_id: host_id_str,
             host_name: host.name.clone(),
-            os_label: os_label(host.os.as_deref()),
+            os_label: crate::common::os_label(host.os.as_deref()),
             event_count,
             is_open,
             events,
@@ -517,7 +504,7 @@ async fn render_host_with_suggestions(
             "?show_resolved=1"
         }
     );
-    let os_label = os_label(host.os.as_deref());
+    let os_label = crate::common::os_label(host.os.as_deref());
     let detection_sources_note = detection_sources_note(host.os.as_deref());
 
     let tpl = ThanatosHostTemplate {
@@ -590,6 +577,17 @@ pub async fn scan(
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("Security Event Scan -- {}", host.name));
 
+    let extra_fim_paths_raw = repo::settings::get_string(
+        &state.pool,
+        abyssal_core::settings::THANATOS_EXTRA_FIM_PATHS,
+        "",
+    )
+    .await?;
+    let extra_fim_paths = crate::thanatos_ops::extra_fim_paths_for(
+        &crate::thanatos_ops::parse_extra_fim_paths(&extra_fim_paths_raw),
+        host.os.as_deref(),
+    );
+
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -598,7 +596,7 @@ pub async fn scan(
             &state.hosts,
             host_id,
             &host.name,
-            AgentOperation::ScanSecurityEvents,
+            AgentOperation::ScanSecurityEvents { extra_fim_paths },
             Permission::SecurityView,
             OperationKind::Read,
             false,

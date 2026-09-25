@@ -156,6 +156,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_thanatos_correlation),
         )
         .route(
+            "/admin/settings/thanatos-extra-fim-paths",
+            post(routes::settings::set_thanatos_extra_fim_paths),
+        )
+        .route(
             "/admin/settings/panopticon-sweep-enabled",
             post(routes::settings::set_panopticon_sweep_enabled),
         )
@@ -1116,12 +1120,28 @@ pub fn build(state: AppState) -> Router {
             post(routes::inquest::deisolate_host),
         )
         .route(
+            "/arsenals/inquest/:host_id/disable-account",
+            post(routes::inquest::disable_account),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/enable-account",
+            post(routes::inquest::enable_account),
+        )
+        .route(
             "/arsenals/inquest/:host_id/delete-quarantined/confirm",
             get(routes::inquest::delete_quarantined_file_confirm),
         )
         .route(
             "/arsenals/inquest/:host_id/delete-quarantined",
             post(routes::inquest::delete_quarantined_file),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/kill-process/confirm",
+            get(routes::inquest::kill_process_confirm),
+        )
+        .route(
+            "/arsenals/inquest/:host_id/kill-process",
+            post(routes::inquest::kill_process),
         )
         .route(
             "/arsenals/inquest/:host_id/isolate/confirm",

@@ -9,8 +9,9 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
     THANATOS_ALERT_RECIPIENTS, THANATOS_CORRELATION_THRESHOLD,
     THANATOS_CORRELATION_THRESHOLD_DEFAULT, THANATOS_CORRELATION_WINDOW_MINUTES,
-    THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_MONITORING_ENABLED,
-    THANATOS_SWEEP_INTERVAL_SECONDS, THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
+    THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_EXTRA_FIM_PATHS,
+    THANATOS_MONITORING_ENABLED, THANATOS_SWEEP_INTERVAL_SECONDS,
+    THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
 };
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
@@ -63,6 +64,8 @@ pub async fn show(
         repo::settings::get_bool(&state.pool, THANATOS_MONITORING_ENABLED, false).await?;
     let thanatos_alert_recipients =
         repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "").await?;
+    let thanatos_extra_fim_paths =
+        repo::settings::get_string(&state.pool, THANATOS_EXTRA_FIM_PATHS, "").await?;
     let thanatos_correlation_threshold = repo::settings::get_u32(
         &state.pool,
         THANATOS_CORRELATION_THRESHOLD,
@@ -118,6 +121,7 @@ pub async fn show(
         host_isolation_enabled,
         thanatos_monitoring_enabled,
         thanatos_alert_recipients,
+        thanatos_extra_fim_paths,
         thanatos_correlation_threshold,
         thanatos_correlation_window_minutes,
         thanatos_sweep_interval_seconds,
@@ -343,6 +347,71 @@ pub async fn set_thanatos_alert_recipients(
                 username: &ctx.user.username,
             })
             .resource(THANATOS_ALERT_RECIPIENTS),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+/// Each non-empty entry must be a syntactically valid absolute path for
+/// *at least one* platform (Unix or Windows) -- a mixed fleet's admin
+/// can legitimately want both kinds of path in one list, so this
+/// doesn't reject a Windows-shaped path just because it fails the Unix
+/// validator or vice versa. `thanatos_ops::extra_fim_paths_for` is what
+/// actually decides which entries apply to which host at scan time --
+/// this is just a save-time sanity check against obvious typos/garbage.
+fn validate_extra_fim_paths(raw: &str) -> Result<String, WebError> {
+    let cleaned = crate::thanatos_ops::parse_extra_fim_paths(raw);
+    for path in &cleaned {
+        if !abyssal_agent_protocol::is_valid_absolute_path(path)
+            && !abyssal_agent_protocol::is_valid_windows_absolute_path(path)
+        {
+            return Err(WebError(AppError::Validation(format!(
+                "\"{path}\" doesn't look like a valid absolute path on either Linux or Windows."
+            ))));
+        }
+    }
+    // Newline-joined (not comma-joined, unlike `validate_recipients`'s
+    // single-line input) so it round-trips cleanly through the
+    // multi-line textarea this setting is edited in -- `parse_extra_fim_
+    // paths` accepts either separator on the way back in either way.
+    Ok(cleaned.join("\n"))
+}
+
+#[derive(Deserialize)]
+pub struct ThanatosExtraFimPathsForm {
+    csrf_token: String,
+    #[serde(default)]
+    paths: String,
+}
+
+pub async fn set_thanatos_extra_fim_paths(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosExtraFimPathsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let paths = validate_extra_fim_paths(&form.paths)?;
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_EXTRA_FIM_PATHS,
+        serde_json::json!(paths),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(THANATOS_EXTRA_FIM_PATHS),
     )
     .await?;
 

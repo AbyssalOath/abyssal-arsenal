@@ -521,6 +521,7 @@ pub struct SettingsTemplate {
     pub host_isolation_enabled: bool,
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
+    pub thanatos_extra_fim_paths: String,
     pub thanatos_correlation_threshold: u32,
     pub thanatos_correlation_window_minutes: u32,
     pub thanatos_sweep_interval_seconds: u32,
@@ -920,6 +921,9 @@ pub struct OssuaryHostTemplate {
 pub struct InquestHostGroup {
     pub host_id: String,
     pub host_name: String,
+    /// "Linux"/"Windows"/"macOS"/"Unknown OS", from `Host.os` -- see
+    /// `common::os_label`.
+    pub os_label: &'static str,
     pub is_open: bool,
     pub open_href: Option<String>,
 }
@@ -938,6 +942,12 @@ pub struct InquestHostTemplate {
     pub base: BaseCtx,
     pub host_id: String,
     pub host_name: String,
+    /// "Linux"/"Windows"/"macOS"/"Unknown OS", from `Host.os` -- see
+    /// `common::os_label`.
+    pub os_label: &'static str,
+    /// What block/isolate/quarantine actually do on this host -- see
+    /// `routes::inquest::containment_note`.
+    pub containment_note: &'static str,
     /// `incidents.respond` -- gates the Write/Destructive sections,
     /// distinct from the `incidents.view` the read operations use.
     pub can_manage: bool,

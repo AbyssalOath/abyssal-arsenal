@@ -191,6 +191,31 @@
 
     <div class="settings-row">
       <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos extra file-integrity paths</div>
+        <p class="settings-row-desc">Extra files hashed for tampering, on top of the built-in watch-list.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Comma- or newline-separated absolute paths, added to (never replacing) the small
+            fixed set Thanatos already hashes on every scan. Each path only applies to hosts
+            of a matching platform -- a Linux path (starting with <code>/</code>) is sent only
+            to Linux hosts, a Windows path (<code>C:\...</code>) only to Windows hosts -- so a
+            mixed fleet's list can freely contain both kinds together.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/thanatos-extra-fim-paths" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="thanatos-extra-fim-paths" class="sr-only">Extra FIM paths</label>
+          <textarea id="thanatos-extra-fim-paths" name="paths" rows="3" placeholder="/etc/nginx/nginx.conf&#10;C:\inetpub\wwwroot\web.config">{{ thanatos_extra_fim_paths }}</textarea>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos correlation &amp; sweep tuning</div>
         <p class="settings-row-desc">How sensitive correlation is, and how often the unattended sweep polls.</p>
         <details class="settings-row-more">
