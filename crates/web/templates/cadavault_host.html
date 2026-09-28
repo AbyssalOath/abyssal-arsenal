@@ -30,6 +30,13 @@
   </div>
   {% endif %}
 
+  {% if !context.is_empty() %}
+  <div class="info-banner" style="margin-top:10px;">
+    Arrived here from a suggested next step, with:
+    {% for c in context %}<code>{{ c.label }}: {{ c.value }}</code>{% if !loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
   <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
     <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
     {% if let Some(output) = result_output %}
@@ -42,6 +49,30 @@
     <p class="results-empty">No output yet -- run a check.</p>
     {% endif %}
   </details>
+
+  {% if !suggested_actions.is_empty() %}
+  <div class="suggested-actions-panel">
+    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+    <div class="action-grid" style="margin-top:8px;">
+      {% for action in suggested_actions %}
+      <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("route") %} Security posture report</h3>
+  <p style="margin-top:0; color:var(--text-muted);">
+    Run every Cadavault check at once (firewall, SSH, kernel/sysctl, accounts,
+    access control, updates) and get a single scored report with prioritized
+    next steps.
+  </p>
+  <form method="post" action="/arsenals/cadavault/{{ host_id }}/posture-report">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn">{% call macros::icon("firewall") %} Run Security Posture Report</button>
+  </form>
 </div>
 
 <div class="card">
@@ -59,30 +90,146 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Recent Auth Log</button>
     </form>
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/sshd-config-audit">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} SSH Config Audit</button>
+    </form>
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/sysctl-posture">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} Sysctl Posture</button>
+    </form>
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/account-policy-audit">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Account Policy Audit</button>
+    </form>
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/mac-status">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} MAC Status</button>
+    </form>
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/automatic-updates">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("generate") %} Automatic Updates</button>
+    </form>
   </div>
 </div>
 
+{% if !sysctl_posture.is_empty() %}
+<div class="card">
+  <h3>Kernel / sysctl posture</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Current effective values against a security baseline. Applying a fix writes
+    the recommended value to the Abyssal-managed sysctl drop-in and applies it
+    immediately -- narrow and reversible from Grimoire.
+  </p>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Sysctl security posture">
+    <table>
+      <thead>
+        <tr>
+          <th>Parameter</th><th>Current</th><th>Recommended</th><th>Status</th>
+          {% if can_manage %}<th>Action</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in sysctl_posture %}
+        <tr>
+          <td><code>{{ row.key }}</code><br><span style="color:var(--text-muted);">{{ row.description }}</span></td>
+          <td><code>{{ row.current }}</code></td>
+          <td><code>{{ row.recommended }}</code></td>
+          <td><span class="badge {{ row.status_badge_class }}">{{ row.status_label }}</span></td>
+          {% if can_manage %}
+          <td>
+            {% if row.needs_fix %}
+            <form method="post" action="/arsenals/cadavault/{{ host_id }}/apply-sysctl">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <input type="hidden" name="key" value="{{ row.key }}">
+              <button type="submit" class="btn-warning">Apply</button>
+            </form>
+            {% else %}
+            &mdash;
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {% if can_manage %}
 <div class="card">
-  <h3>Write / Destructive</h3>
+  <h3>Firewall</h3>
   <div class="action-grid">
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/allow-port">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <label for="port">Allow port</label>
-      <input type="number" id="port" name="port" min="1" max="65535" placeholder="e.g. 8080" required>
-      <label for="protocol">Protocol</label>
-      <select id="protocol" name="protocol">
+      <label for="allow-port">Allow port</label>
+      <input type="number" id="allow-port" name="port" min="1" max="65535" placeholder="e.g. 8080" required>
+      <label for="allow-protocol">Protocol</label>
+      <select id="allow-protocol" name="protocol">
         <option value="tcp">tcp</option>
         <option value="udp">udp</option>
       </select>
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Allow Port</button>
     </form>
 
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/deny-port">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="deny-port">Deny port</label>
+      <input type="number" id="deny-port" name="port" min="1" max="65535" placeholder="e.g. 23" required>
+      <label for="deny-protocol">Protocol</label>
+      <select id="deny-protocol" name="protocol">
+        <option value="tcp">tcp</option>
+        <option value="udp">udp</option>
+      </select>
+      <button type="submit" class="btn-warning">{% call macros::icon("firewall") %} Deny Port</button>
+    </form>
+
+    <form method="get" action="/arsenals/cadavault/{{ host_id }}/remove-port/confirm">
+      <label for="remove-port">Remove allowed port</label>
+      <input type="number" id="remove-port" name="port" min="1" max="65535" placeholder="e.g. 8080" required>
+      <label for="remove-protocol">Protocol</label>
+      <select id="remove-protocol" name="protocol">
+        <option value="tcp">tcp</option>
+        <option value="udp">udp</option>
+      </select>
+      <button type="submit" class="btn-danger">{% call macros::icon("firewall") %} Remove Port&hellip;</button>
+    </form>
+
     <div>
       <p style="color:var(--text-muted); margin-top:0;">
-        Can cut off remote access if the current management port isn't already allowed.
+        Enabling or removing a rule can cut off remote access if the current management port isn't allowed.
       </p>
       <a class="btn btn-danger" href="/arsenals/cadavault/{{ host_id }}/firewall-enable/confirm">{% call macros::icon("firewall") %} Enable Firewall&hellip;</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>SSH Hardening</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Each setting is written to a Cadavault-managed drop-in
+    (<code>/etc/ssh/sshd_config.d/50-cadavault.conf</code>), validated with
+    <code>sshd -t</code>, and applied by reloading sshd -- rolling back if
+    validation or the reload fails. Run <em>SSH Config Audit</em> first to see
+    the current effective settings.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/cadavault/{{ host_id }}/harden-sshd/confirm">
+      <label for="ssh-setting">Apply hardening</label>
+      <select id="ssh-setting" name="setting">
+        {% for (value, label) in ssh_hardening_settings %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn-danger">{% call macros::icon("firewall") %} Apply&hellip;</button>
+    </form>
+
+    <div>
+      <p style="color:var(--text-muted); margin-top:0;">
+        Resets sshd to the host's own defaults.
+      </p>
+      <a class="btn btn-danger" href="/arsenals/cadavault/{{ host_id }}/clear-ssh-hardening/confirm">{% call macros::icon("firewall") %} Clear SSH Hardening&hellip;</a>
     </div>
   </div>
 </div>

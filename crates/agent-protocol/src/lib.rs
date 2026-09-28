@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -65,6 +65,59 @@ pub enum AgentOperation {
     /// can cut off remote access if the current management port isn't
     /// already allowed, so the control plane requires explicit confirmation.
     FirewallEnable,
+    /// Adds an explicit deny/drop rule for a port on the detected firewall
+    /// backend -- the block half that complements `FirewallAllowPort`. Write:
+    /// like the allow, it's an additive rule change and needs no typed
+    /// confirmation, though the control plane's UI still warns that denying
+    /// the port you're connected through can cut off remote access.
+    FirewallDenyPort {
+        port: u16,
+        protocol: String,
+    },
+    /// Removes a previously-allowed port from the detected firewall backend --
+    /// the inverse of `FirewallAllowPort`. Destructive: revoking access to a
+    /// port can cut off remote connectivity, so the control plane requires
+    /// explicit confirmation, the same gate `FirewallEnable` uses.
+    FirewallRemovePort {
+        port: u16,
+        protocol: String,
+    },
+    /// Reports the host's effective sshd configuration (`sshd -T`), narrowed
+    /// to the security-relevant directives (root login, password auth, empty
+    /// passwords, X11 forwarding, MaxAuthTries). Read-only.
+    SshdConfigAudit,
+    /// Applies one hardening directive to a Cadavault-owned sshd drop-in
+    /// (`/etc/ssh/sshd_config.d/50-cadavault.conf`), validating the whole
+    /// config with `sshd -t` before reloading the service and rolling back to
+    /// the previous drop-in if validation or reload fails -- the same
+    /// managed-file idiom `sepulchre.rs` uses. Destructive: tightening auth
+    /// (disabling password or root login) can lock out the current session,
+    /// so the control plane requires explicit confirmation.
+    HardenSshd {
+        setting: SshHardeningSetting,
+    },
+    /// Clears every Cadavault-managed sshd hardening directive, resetting the
+    /// drop-in to just its header so sshd falls back to the host's own
+    /// defaults. Destructive for the same reason as `HardenSshd` -- undoing a
+    /// tightening can change who can log in -- so confirmation is required.
+    ClearSshHardening,
+    /// Reports the host's current effective values for the curated set of
+    /// security-relevant kernel parameters (`SECURITY_SYSCTLS`), read with
+    /// `sysctl -n <key>`. Read-only -- the fix is applied through the shared
+    /// `SetPersistentSysctl` operation, so there's no separate mutation here.
+    SysctlSecurityPosture,
+    /// Read-only audit of account and access policy: UID-0 accounts besides
+    /// root, empty-password accounts, `NOPASSWD` sudoers rules, and the
+    /// password-aging defaults. Remediation happens in Parish, reached via a
+    /// workflow suggestion -- this only reports.
+    AccountPolicyAudit,
+    /// Read-only status of the host's mandatory access control system
+    /// (SELinux or AppArmor, detected rather than assumed), including whether
+    /// it's enforcing.
+    MacStatus,
+    /// Read-only status of automatic security updates for the detected package
+    /// manager (unattended-upgrades on apt, `dnf-automatic` on dnf/yum, etc.).
+    AutomaticUpdatesStatus,
     /// Validates a sudo password via `sudo -S -v` and starts/refreshes a
     /// time-boxed elevation window on the agent ("Apotheosis"). Write --
     /// the password prompt itself is the meaningful confirmation step, so
@@ -1160,6 +1213,191 @@ pub enum SepulchreConfigTarget {
     SambaInclude,
 }
 
+/// One sshd hardening directive Cadavault can apply, each mapping to a single
+/// known-safe `Key value` line. A closed set rather than a free-form
+/// key/value pair, so the control plane can never write an arbitrary sshd
+/// directive to a managed host -- the same detect/validate-don't-trust posture
+/// the firewall and hostname operations already take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SshHardeningSetting {
+    /// `PermitRootLogin no` -- no direct root SSH login at all.
+    DisableRootLogin,
+    /// `PasswordAuthentication no` -- key-based authentication only.
+    DisablePasswordAuth,
+    /// `PermitEmptyPasswords no` -- never accept an account with no password.
+    DisableEmptyPasswords,
+    /// `X11Forwarding no` -- no X11 display forwarding over SSH.
+    DisableX11Forwarding,
+}
+
+impl SshHardeningSetting {
+    /// Every setting, in the order Cadavault presents them.
+    pub const ALL: [SshHardeningSetting; 4] = [
+        SshHardeningSetting::DisableRootLogin,
+        SshHardeningSetting::DisablePasswordAuth,
+        SshHardeningSetting::DisableEmptyPasswords,
+        SshHardeningSetting::DisableX11Forwarding,
+    ];
+
+    /// The `sshd_config` directive this setting writes, as `(key, value)`.
+    /// The key casing matches sshd's own documented directive names; sshd
+    /// treats directive keys case-insensitively, but staying canonical keeps
+    /// the managed drop-in readable.
+    pub fn directive(self) -> (&'static str, &'static str) {
+        match self {
+            SshHardeningSetting::DisableRootLogin => ("PermitRootLogin", "no"),
+            SshHardeningSetting::DisablePasswordAuth => ("PasswordAuthentication", "no"),
+            SshHardeningSetting::DisableEmptyPasswords => ("PermitEmptyPasswords", "no"),
+            SshHardeningSetting::DisableX11Forwarding => ("X11Forwarding", "no"),
+        }
+    }
+
+    /// The stable string used in form values and URLs (matches the
+    /// `snake_case` serde renaming above so the wire and the form agree).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SshHardeningSetting::DisableRootLogin => "disable_root_login",
+            SshHardeningSetting::DisablePasswordAuth => "disable_password_auth",
+            SshHardeningSetting::DisableEmptyPasswords => "disable_empty_passwords",
+            SshHardeningSetting::DisableX11Forwarding => "disable_x11_forwarding",
+        }
+    }
+
+    /// Parses a form/URL value back into a setting, or `None` if it names no
+    /// known setting -- the control plane never trusts an arbitrary string.
+    pub fn from_wire(value: &str) -> Option<SshHardeningSetting> {
+        SshHardeningSetting::ALL
+            .into_iter()
+            .find(|s| s.as_str() == value)
+    }
+
+    /// A short human label for the UI and audit trail.
+    pub fn label(self) -> &'static str {
+        match self {
+            SshHardeningSetting::DisableRootLogin => "Disable root login",
+            SshHardeningSetting::DisablePasswordAuth => "Disable password authentication",
+            SshHardeningSetting::DisableEmptyPasswords => "Disallow empty passwords",
+            SshHardeningSetting::DisableX11Forwarding => "Disable X11 forwarding",
+        }
+    }
+
+    /// Whether applying this setting can cut off the current session (root or
+    /// password login) -- used to word the confirmation prompt more sharply.
+    pub fn can_lock_out(self) -> bool {
+        matches!(
+            self,
+            SshHardeningSetting::DisableRootLogin | SshHardeningSetting::DisablePasswordAuth
+        )
+    }
+}
+
+/// One kernel parameter in Cadavault's security-posture baseline: its key,
+/// the hardened value to compare the host's live value against, and a short
+/// reason. Shared by the agent (which reads each key's effective value) and
+/// the control plane (which scores the values and, when applying a fix,
+/// dispatches `SetPersistentSysctl` with the `recommended` value here) so the
+/// baseline lives in exactly one place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SecuritySysctl {
+    pub key: &'static str,
+    pub recommended: &'static str,
+    pub description: &'static str,
+}
+
+/// The curated baseline of security-relevant kernel parameters. A CIS-lite
+/// set covering network anti-spoofing/redirect hardening and a few kernel and
+/// filesystem protections -- deliberately a fixed, reviewed list rather than
+/// anything operator-supplied, so applying a fix can only ever set one of
+/// these keys to its reviewed value.
+pub const SECURITY_SYSCTLS: &[SecuritySysctl] = &[
+    SecuritySysctl {
+        key: "net.ipv4.conf.all.rp_filter",
+        recommended: "1",
+        description: "Reverse-path filtering (drop spoofed source addresses)",
+    },
+    SecuritySysctl {
+        key: "net.ipv4.conf.all.accept_redirects",
+        recommended: "0",
+        description: "Ignore ICMP redirects (IPv4)",
+    },
+    SecuritySysctl {
+        key: "net.ipv4.conf.all.send_redirects",
+        recommended: "0",
+        description: "Don't send ICMP redirects (not a router)",
+    },
+    SecuritySysctl {
+        key: "net.ipv4.conf.all.accept_source_route",
+        recommended: "0",
+        description: "Reject source-routed packets (IPv4)",
+    },
+    SecuritySysctl {
+        key: "net.ipv4.conf.all.log_martians",
+        recommended: "1",
+        description: "Log packets with impossible source addresses",
+    },
+    SecuritySysctl {
+        key: "net.ipv4.icmp_echo_ignore_broadcasts",
+        recommended: "1",
+        description: "Ignore broadcast pings (Smurf-attack amplification)",
+    },
+    SecuritySysctl {
+        key: "net.ipv4.tcp_syncookies",
+        recommended: "1",
+        description: "SYN cookies (SYN-flood resistance)",
+    },
+    SecuritySysctl {
+        key: "net.ipv6.conf.all.accept_redirects",
+        recommended: "0",
+        description: "Ignore ICMP redirects (IPv6)",
+    },
+    SecuritySysctl {
+        key: "net.ipv6.conf.all.accept_source_route",
+        recommended: "0",
+        description: "Reject source-routed packets (IPv6)",
+    },
+    SecuritySysctl {
+        key: "kernel.dmesg_restrict",
+        recommended: "1",
+        description: "Restrict kernel ring buffer to privileged users",
+    },
+    SecuritySysctl {
+        key: "kernel.kptr_restrict",
+        recommended: "1",
+        description: "Hide kernel pointers from unprivileged users",
+    },
+    SecuritySysctl {
+        key: "kernel.randomize_va_space",
+        recommended: "2",
+        description: "Full address-space layout randomization (ASLR)",
+    },
+    SecuritySysctl {
+        key: "fs.protected_hardlinks",
+        recommended: "1",
+        description: "Restrict hardlinks to files the user owns",
+    },
+    SecuritySysctl {
+        key: "fs.protected_symlinks",
+        recommended: "1",
+        description: "Restrict symlink following in world-writable dirs",
+    },
+    SecuritySysctl {
+        key: "fs.suid_dumpable",
+        recommended: "0",
+        description: "Never core-dump setuid programs",
+    },
+];
+
+/// The reviewed value for `key` if it's part of the security baseline, else
+/// `None`. The control plane calls this before applying a fix, so a host can
+/// only ever be set to a baseline value for a baseline key.
+pub fn recommended_sysctl(key: &str) -> Option<&'static str> {
+    SECURITY_SYSCTLS
+        .iter()
+        .find(|s| s.key == key)
+        .map(|s| s.recommended)
+}
+
 impl AgentOperation {
     /// A short, human-readable past-tense description for the audit trail
     /// and the dashboard's "recent activity" feed (e.g. `"Rebooted"`,
@@ -1179,6 +1417,16 @@ impl AgentOperation {
                 format!("Allowed port {port}/{protocol}")
             }
             AgentOperation::FirewallEnable => "Enabled firewall".to_string(),
+            AgentOperation::FirewallDenyPort { port, protocol } => {
+                format!("Denied port {port}/{protocol}")
+            }
+            AgentOperation::FirewallRemovePort { port, protocol } => {
+                format!("Removed firewall rule for port {port}/{protocol}")
+            }
+            AgentOperation::HardenSshd { setting } => {
+                format!("Applied SSH hardening: {}", setting.label())
+            }
+            AgentOperation::ClearSshHardening => "Cleared SSH hardening".to_string(),
             AgentOperation::Elevate { .. } => "Elevated privileges".to_string(),
             AgentOperation::Deescalate => "De-escalated privileges".to_string(),
             AgentOperation::InterfaceSetState { interface, up } => {
@@ -1413,6 +1661,26 @@ impl fmt::Debug for AgentOperation {
                 .field("protocol", protocol)
                 .finish(),
             AgentOperation::FirewallEnable => write!(f, "FirewallEnable"),
+            AgentOperation::FirewallDenyPort { port, protocol } => f
+                .debug_struct("FirewallDenyPort")
+                .field("port", port)
+                .field("protocol", protocol)
+                .finish(),
+            AgentOperation::FirewallRemovePort { port, protocol } => f
+                .debug_struct("FirewallRemovePort")
+                .field("port", port)
+                .field("protocol", protocol)
+                .finish(),
+            AgentOperation::SshdConfigAudit => write!(f, "SshdConfigAudit"),
+            AgentOperation::HardenSshd { setting } => f
+                .debug_struct("HardenSshd")
+                .field("setting", setting)
+                .finish(),
+            AgentOperation::ClearSshHardening => write!(f, "ClearSshHardening"),
+            AgentOperation::SysctlSecurityPosture => write!(f, "SysctlSecurityPosture"),
+            AgentOperation::AccountPolicyAudit => write!(f, "AccountPolicyAudit"),
+            AgentOperation::MacStatus => write!(f, "MacStatus"),
+            AgentOperation::AutomaticUpdatesStatus => write!(f, "AutomaticUpdatesStatus"),
             AgentOperation::Elevate {
                 idle_timeout_secs, ..
             } => f
@@ -2496,6 +2764,32 @@ pub fn is_valid_tightened_permission_mode(mode: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_hardening_setting_round_trips_through_its_string() {
+        for setting in SshHardeningSetting::ALL {
+            assert_eq!(
+                SshHardeningSetting::from_wire(setting.as_str()),
+                Some(setting)
+            );
+        }
+        assert_eq!(SshHardeningSetting::from_wire("not-a-setting"), None);
+    }
+
+    #[test]
+    fn ssh_hardening_directives_are_the_expected_hardened_values() {
+        assert_eq!(
+            SshHardeningSetting::DisableRootLogin.directive(),
+            ("PermitRootLogin", "no")
+        );
+        assert_eq!(
+            SshHardeningSetting::DisablePasswordAuth.directive(),
+            ("PasswordAuthentication", "no")
+        );
+        // Only the auth-affecting settings can lock out the current session.
+        assert!(SshHardeningSetting::DisablePasswordAuth.can_lock_out());
+        assert!(!SshHardeningSetting::DisableX11Forwarding.can_lock_out());
+    }
 
     #[test]
     fn accepts_reasonable_hostnames() {

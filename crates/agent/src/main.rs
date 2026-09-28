@@ -1,4 +1,5 @@
 mod apothecary;
+mod cadavault;
 mod catacomb;
 mod cryptkeeper;
 mod defleshing;

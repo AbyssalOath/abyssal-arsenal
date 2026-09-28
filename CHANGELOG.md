@@ -12,6 +12,84 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Cadavault: aggregate Security Posture Report.** A single **Run
+  Security Posture Report** action runs every Cadavault check at once
+  (firewall, SSH hardening, kernel/sysctl baseline, account policy,
+  mandatory access control, automatic updates) and presents one scored
+  rollup: each category as pass / warning / failing / unavailable, with a
+  weighted overall score (a warning counts as half a pass; checks that
+  couldn't run -- e.g. because the host isn't elevated -- are excluded
+  from the denominator rather than dragging the grade down). It's built
+  entirely by reusing the individual read operations, so it adds no new
+  agent operation, and it's the richest workflow source in the app: it
+  aggregates and de-duplicates the suggested next steps from every
+  sub-check it ran, so one report can point at Cryptkeeper, Parish,
+  Grimoire, and Apothecary together. The report page notes when a host
+  isn't elevated and offers a one-click re-run.
+- **Cadavault: account, MAC, and automatic-update audits.** Three new
+  read-only posture checks, each handing remediation off to the arsenal
+  that owns it via a contextual workflow suggestion rather than acting
+  itself. **Account Policy Audit** reports UID-0 accounts other than
+  root, empty-password accounts, `NOPASSWD` sudoers rules, and the
+  password-aging defaults from `/etc/login.defs` (a check whose file
+  needs root and isn't readable is reported `unknown`, never a
+  misleading zero) -- extra privileged or passwordless accounts offer
+  "Manage accounts with Parish". **MAC Status** detects SELinux
+  (`getenforce`/`sestatus`) or AppArmor (`aa-status`) rather than
+  assuming either, and a present-but-not-enforcing system offers
+  "Enforce access control with Grimoire". **Automatic Updates** detects
+  the package manager and checks that family's unattended-update
+  mechanism (apt periodic / `dnf-automatic.timer` / ...), offering
+  "Configure automatic updates with Apothecary" when it's disabled.
+  Adds read-only `AccountPolicyAudit`, `MacStatus`, and
+  `AutomaticUpdatesStatus` operations.
+- **Cadavault: kernel/sysctl security posture.** A new **Sysctl Posture**
+  read reports the host's current effective values for a curated,
+  CIS-lite baseline of security-relevant kernel parameters
+  (`SECURITY_SYSCTLS` -- network anti-spoofing and redirect hardening,
+  ASLR, `dmesg`/kernel-pointer restrictions, filesystem link
+  protections, and so on), scoring each as pass/fail/unavailable in a
+  table. Where a value falls short, an **Apply** button sets it to the
+  reviewed baseline value by reusing the existing shared
+  `SetPersistentSysctl` operation (writing the Abyssal-managed sysctl
+  drop-in and applying it immediately) -- narrow and reversible from
+  Grimoire. Cadavault only ever applies a key that's in the baseline, and
+  only ever to that key's reviewed value, so it can't be used to set an
+  arbitrary sysctl. A posture check that turns up any failing parameters
+  offers "Manage all sysctls with Grimoire". Adds one read-only
+  `AgentOperation::SysctlSecurityPosture`; the fix path adds no new
+  mutating operation.
+- **Cadavault: firewall deny/remove and SSH hardening.** The security
+  arsenal grows beyond its original allow-a-port-and-look scope. On the
+  firewall side it now has **Deny Port** (a Write that adds an explicit
+  block rule -- the complement of Allow Port) and **Remove Port** (a
+  Destructive, type-the-hostname-to-confirm operation that revokes a
+  previously-allowed port, since doing so can cut off remote access), both
+  detecting firewalld/ufw/iptables the same way the existing firewall
+  operations do and refusing raw nftables with a clear message rather than
+  guessing at an unfamiliar ruleset. New too is an **SSH Config Audit**
+  read (`sshd -T`, narrowed to the security-relevant directives -- root
+  login, password auth, empty passwords, X11 forwarding, MaxAuthTries) and
+  an **SSH Hardening** section that applies one known-safe directive at a
+  time (disable root login, password auth, empty passwords, or X11
+  forwarding) to a Cadavault-owned drop-in
+  (`/etc/ssh/sshd_config.d/50-cadavault.conf`), validating the whole
+  config with `sshd -t` and rolling back to the previous drop-in if
+  validation or the reload fails -- the same managed-file,
+  validate-before-reload idiom Sepulchre uses, so a bad change can never
+  lock you out. The hardening set is a closed enum
+  (`SshHardeningSetting`), never a free-form directive, so the control
+  plane can't write an arbitrary line to a host's sshd. Tightening auth is
+  Destructive and gated behind typed confirmation; **Clear SSH Hardening**
+  resets the drop-in to its header. Cadavault is now also wired into the
+  contextual workflow graph for the first time: an SSH audit that finds
+  password authentication still enabled offers "Review authorized keys
+  with Cryptkeeper before disabling password auth", and Postmortem's
+  failed-login and Thanatos's alerted-scan results now both offer to
+  harden the host with Cadavault. `PROTOCOL_VERSION` bumps to 25 for the
+  new `AgentOperation` variants -- existing agents need one redeploy (or a
+  self-update) before they understand them.
+
 - **Agent lifecycle: one-click updates, self-update, and per-OS
   bootstrap installers.** A host showing "Agent out of date" in
   `/admin/hosts` now has an **Update agent** action that dispatches the

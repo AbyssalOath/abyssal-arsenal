@@ -394,6 +394,7 @@ const KNOWN_CONTEXT_FIELDS: &[(&str, &str)] = &[
     ("connection_name", "Connection name"),
     ("method", "Access method"),
     ("failed_login_count", "Failed login attempts"),
+    ("failing_count", "Failing checks"),
     ("core_dump_count", "Core dumps"),
     ("oom_kill_count", "OOM-kill events"),
     ("isolated", "Host isolated"),

@@ -90,12 +90,30 @@
     "context_fields": ["persisted_count"]
   },
   {
+    "source_arsenal": "thanatos",
+    "source_action": "scan_security_events",
+    "condition": { "field": "alerted", "operator": "equals", "value": true },
+    "target_arsenal": "cadavault",
+    "target_action": "show_host",
+    "label": "Harden host with Cadavault",
+    "context_fields": ["persisted_count"]
+  },
+  {
     "source_arsenal": "postmortem",
     "source_action": "failed_login_attempts",
     "condition": { "field": "failed_login_count", "operator": "greater_than_or_equal", "value": 1 },
     "target_arsenal": "thanatos",
     "target_action": "show_host",
     "label": "Correlate with Thanatos",
+    "context_fields": ["failed_login_count"]
+  },
+  {
+    "source_arsenal": "postmortem",
+    "source_action": "failed_login_attempts",
+    "condition": { "field": "failed_login_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "cadavault",
+    "target_action": "show_host",
+    "label": "Harden SSH with Cadavault",
     "context_fields": ["failed_login_count"]
   },
   {
@@ -266,5 +284,60 @@
     "target_action": "show_host",
     "label": "Check Network Storage with Sepulchre",
     "context_fields": ["mount_point"]
+  },
+  {
+    "source_arsenal": "cadavault",
+    "source_action": "sshd_config_audit",
+    "condition": { "field": "password_authentication", "operator": "equals", "value": true },
+    "target_arsenal": "cryptkeeper",
+    "target_action": "show_host",
+    "label": "Review authorized keys with Cryptkeeper before disabling password auth",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "cadavault",
+    "source_action": "sysctl_posture",
+    "condition": { "field": "failing_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "grimoire",
+    "target_action": "show_host",
+    "label": "Manage all sysctls with Grimoire",
+    "context_fields": ["failing_count"]
+  },
+  {
+    "source_arsenal": "cadavault",
+    "source_action": "account_policy_audit",
+    "condition": {
+      "any": [
+        { "field": "extra_uid0_count", "operator": "greater_than_or_equal", "value": 1 },
+        { "field": "empty_password_count", "operator": "greater_than_or_equal", "value": 1 }
+      ]
+    },
+    "target_arsenal": "parish",
+    "target_action": "show_host",
+    "label": "Manage accounts with Parish",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "cadavault",
+    "source_action": "mac_status",
+    "condition": {
+      "all": [
+        { "field": "mac_present", "operator": "equals", "value": true },
+        { "field": "mac_enforcing", "operator": "equals", "value": false }
+      ]
+    },
+    "target_arsenal": "grimoire",
+    "target_action": "show_host",
+    "label": "Enforce access control with Grimoire",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "cadavault",
+    "source_action": "automatic_updates_status",
+    "condition": { "field": "automatic_updates", "operator": "equals", "value": "disabled" },
+    "target_arsenal": "apothecary",
+    "target_action": "show_host",
+    "label": "Configure automatic updates with Apothecary",
+    "context_fields": []
   }
 ]

@@ -1,0 +1,71 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Cadavault Posture — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Cadavault — Security Posture — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/cadavault/{{ host_id }}">&larr; Back to Cadavault</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+    <span class="badge {{ score_badge_class }}" style="font-size:1.1em;">{{ score_label }} — {{ score_percent }}%</span>
+  </div>
+  <p style="margin:8px 0 0; color:var(--text-muted);">
+    {{ pass_count }} passing, {{ warn_count }} warning, {{ fail_count }} failing.
+    Score weights a warning as half a pass; checks that couldn't run are excluded.
+  </p>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    Some checks may not have run. Rebuild and redeploy <code>abyssal-agent</code> on this host.
+  </div>
+  {% endif %}
+
+  {% if !elevated %}
+  <div class="info-banner" style="margin-top:10px;">
+    This host isn't elevated. Some checks (empty-password accounts, sudoers, the full sshd config) need root and may show as <em>unavailable</em> or incomplete. Elevate from the Cadavault page and re-run for a complete report.
+  </div>
+  {% endif %}
+
+  <form method="post" action="/arsenals/cadavault/{{ host_id }}/posture-report" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">{% call macros::icon("route") %} Re-run report</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Checks</h3>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Security posture checks">
+    <table>
+      <thead>
+        <tr><th>Category</th><th>Status</th><th>Summary</th></tr>
+      </thead>
+      <tbody>
+        {% for c in categories %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td><span class="badge {{ c.status_badge_class }}">{{ c.status_label }}</span></td>
+          <td>{{ c.summary }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if !suggested_actions.is_empty() %}
+<div class="card">
+  <div class="suggested-actions-panel">
+    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+    <div class="action-grid" style="margin-top:8px;">
+      {% for action in suggested_actions %}
+      <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

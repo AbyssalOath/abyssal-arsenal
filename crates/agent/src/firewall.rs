@@ -150,6 +150,114 @@ pub async fn allow_port(port: u16, protocol: &str, elevation: &ElevationState) -
     }
 }
 
+pub async fn deny_port(port: u16, protocol: &str, elevation: &ElevationState) -> CommandOutcome {
+    // Defense in depth: validated on the control plane before dispatch, but
+    // this agent is the execution boundary and never trusts a wire value.
+    if !abyssal_agent_protocol::is_valid_port_protocol(port, protocol) {
+        return CommandOutcome::Err(format!(
+            "refusing invalid port/protocol: {port}/{protocol} (port must be 1-65535, protocol tcp or udp)"
+        ));
+    }
+
+    match detect().await {
+        Some(Backend::Firewalld) => {
+            // firewalld zones are default-deny, so an explicit block is a
+            // rich rule rather than a plain port. The inner quotes are part
+            // of firewalld's rich-rule grammar and pass through literally as
+            // a single argv entry (no shell involved).
+            let rich_rule = format!("rule port port=\"{port}\" protocol=\"{protocol}\" drop");
+            let add_arg = format!("--add-rich-rule={rich_rule}");
+            if let Err(e) = elevation
+                .run("firewall-cmd", &["--permanent", &add_arg])
+                .await
+            {
+                return CommandOutcome::Err(format!("[backend: firewalld] {e}"));
+            }
+            tag(
+                Backend::Firewalld,
+                elevation.run("firewall-cmd", &["--reload"]).await,
+            )
+        }
+        Some(Backend::Ufw) => {
+            let rule = format!("{port}/{protocol}");
+            tag(Backend::Ufw, elevation.run("ufw", &["deny", &rule]).await)
+        }
+        Some(Backend::Iptables) => {
+            let port_str = port.to_string();
+            tag(
+                Backend::Iptables,
+                elevation
+                    .run(
+                        "iptables",
+                        &[
+                            "-A", "INPUT", "-p", protocol, "--dport", &port_str, "-j", "DROP",
+                        ],
+                    )
+                    .await,
+            )
+        }
+        Some(Backend::Nftables) => CommandOutcome::Err(
+            "Direct nftables rule management isn't supported -- the ruleset's table/chain layout \
+             varies too much per host to add a rule safely without knowing it. Use firewalld or \
+             ufw, or add the rule manually."
+                .to_string(),
+        ),
+        None => CommandOutcome::Err(NO_BACKEND.to_string()),
+    }
+}
+
+pub async fn remove_port(port: u16, protocol: &str, elevation: &ElevationState) -> CommandOutcome {
+    if !abyssal_agent_protocol::is_valid_port_protocol(port, protocol) {
+        return CommandOutcome::Err(format!(
+            "refusing invalid port/protocol: {port}/{protocol} (port must be 1-65535, protocol tcp or udp)"
+        ));
+    }
+
+    match detect().await {
+        Some(Backend::Firewalld) => {
+            let remove_arg = format!("--remove-port={port}/{protocol}");
+            if let Err(e) = elevation
+                .run("firewall-cmd", &["--permanent", &remove_arg])
+                .await
+            {
+                return CommandOutcome::Err(format!("[backend: firewalld] {e}"));
+            }
+            tag(
+                Backend::Firewalld,
+                elevation.run("firewall-cmd", &["--reload"]).await,
+            )
+        }
+        Some(Backend::Ufw) => {
+            let rule = format!("{port}/{protocol}");
+            tag(
+                Backend::Ufw,
+                elevation.run("ufw", &["delete", "allow", &rule]).await,
+            )
+        }
+        Some(Backend::Iptables) => {
+            let port_str = port.to_string();
+            tag(
+                Backend::Iptables,
+                elevation
+                    .run(
+                        "iptables",
+                        &[
+                            "-D", "INPUT", "-p", protocol, "--dport", &port_str, "-j", "ACCEPT",
+                        ],
+                    )
+                    .await,
+            )
+        }
+        Some(Backend::Nftables) => CommandOutcome::Err(
+            "Direct nftables rule management isn't supported -- the ruleset's table/chain layout \
+             varies too much per host to remove a rule safely without knowing it. Use firewalld or \
+             ufw, or remove the rule manually."
+                .to_string(),
+        ),
+        None => CommandOutcome::Err(NO_BACKEND.to_string()),
+    }
+}
+
 pub async fn enable(elevation: &ElevationState) -> CommandOutcome {
     match detect().await {
         Some(Backend::Firewalld) => tag(

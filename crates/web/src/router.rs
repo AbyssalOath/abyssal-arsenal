@@ -270,8 +270,48 @@ pub fn build(state: AppState) -> Router {
             post(routes::cadavault::recent_auth_log),
         )
         .route(
+            "/arsenals/cadavault/:host_id/posture-report",
+            post(routes::cadavault::posture_report),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/sshd-config-audit",
+            post(routes::cadavault::sshd_config_audit),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/sysctl-posture",
+            post(routes::cadavault::sysctl_posture),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/account-policy-audit",
+            post(routes::cadavault::account_policy_audit),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/mac-status",
+            post(routes::cadavault::mac_status),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/automatic-updates",
+            post(routes::cadavault::automatic_updates_status),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/apply-sysctl",
+            post(routes::cadavault::apply_sysctl),
+        )
+        .route(
             "/arsenals/cadavault/:host_id/allow-port",
             post(routes::cadavault::allow_port),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/deny-port",
+            post(routes::cadavault::deny_port),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/remove-port/confirm",
+            get(routes::cadavault::remove_port_confirm),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/remove-port",
+            post(routes::cadavault::remove_port),
         )
         .route(
             "/arsenals/cadavault/:host_id/firewall-enable/confirm",
@@ -280,6 +320,22 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/cadavault/:host_id/firewall-enable",
             post(routes::cadavault::enable_firewall),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/harden-sshd/confirm",
+            get(routes::cadavault::harden_sshd_confirm),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/harden-sshd",
+            post(routes::cadavault::harden_sshd),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/clear-ssh-hardening/confirm",
+            get(routes::cadavault::clear_ssh_hardening_confirm),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/clear-ssh-hardening",
+            post(routes::cadavault::clear_ssh_hardening),
         )
         .route(
             "/arsenals/cadavault/:host_id/elevate",

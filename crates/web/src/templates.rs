@@ -764,6 +764,57 @@ pub struct CadavaultHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    /// SSH hardening settings offered in the "Harden SSH" form, as
+    /// `(form_value, label)` pairs. See `abyssal_agent_protocol::SshHardeningSetting`.
+    pub ssh_hardening_settings: Vec<(String, String)>,
+    /// Rows of the kernel/sysctl security-posture table -- empty unless the
+    /// Sysctl Posture check was just run.
+    pub sysctl_posture: Vec<SysctlPostureRow>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+    pub context: Vec<WorkflowContextRow>,
+}
+
+/// One row of Cadavault's aggregate Security Posture Report: a category
+/// (Firewall, SSH, Kernel/sysctl, Accounts, MAC, Updates) with its rolled-up
+/// status and a one-line summary.
+pub struct PostureCategoryRow {
+    pub name: String,
+    pub status_label: String,
+    pub status_badge_class: String,
+    pub summary: String,
+}
+
+#[derive(Template)]
+#[template(path = "cadavault_posture.html")]
+pub struct CadavaultPostureTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    /// Weighted score 0-100 (pass = 1, warn = 0.5, fail = 0; unavailable
+    /// categories are excluded from the denominator).
+    pub score_percent: u8,
+    pub score_label: String,
+    pub score_badge_class: String,
+    pub pass_count: usize,
+    pub warn_count: usize,
+    pub fail_count: usize,
+    pub categories: Vec<PostureCategoryRow>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+/// One row of Cadavault's kernel/sysctl security-posture table: a baseline
+/// parameter, the host's current value, the recommended value, and how they
+/// compare. `needs_fix` gates the per-row "Apply" button.
+pub struct SysctlPostureRow {
+    pub key: String,
+    pub current: String,
+    pub recommended: String,
+    pub description: String,
+    pub status_label: String,
+    pub status_badge_class: String,
+    pub needs_fix: bool,
 }
 
 /// One connected host's collapsible group on the Postmortem/Inquest fleet

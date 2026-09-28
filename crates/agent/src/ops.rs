@@ -43,6 +43,27 @@ pub async fn run(
             firewall::allow_port(port, &protocol, elevation).await
         }
         AgentOperation::FirewallEnable => firewall::enable(elevation).await,
+        AgentOperation::FirewallDenyPort { port, protocol } => {
+            firewall::deny_port(port, &protocol, elevation).await
+        }
+        AgentOperation::FirewallRemovePort { port, protocol } => {
+            firewall::remove_port(port, &protocol, elevation).await
+        }
+        AgentOperation::SshdConfigAudit => crate::cadavault::sshd_config_audit(elevation).await,
+        AgentOperation::HardenSshd { setting } => {
+            crate::cadavault::harden_sshd(setting, elevation).await
+        }
+        AgentOperation::ClearSshHardening => crate::cadavault::clear_ssh_hardening(elevation).await,
+        AgentOperation::SysctlSecurityPosture => {
+            crate::cadavault::sysctl_security_posture(elevation).await
+        }
+        AgentOperation::AccountPolicyAudit => {
+            crate::cadavault::account_policy_audit(elevation).await
+        }
+        AgentOperation::MacStatus => crate::cadavault::mac_status(elevation).await,
+        AgentOperation::AutomaticUpdatesStatus => {
+            crate::cadavault::automatic_updates_status(elevation).await
+        }
         AgentOperation::Elevate {
             password,
             idle_timeout_secs,
