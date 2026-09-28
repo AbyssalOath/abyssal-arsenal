@@ -136,20 +136,17 @@ try {
 "#;
 
 fn render_script(template: &str, base_url: &str) -> String {
-    template
-        .replace("__CONTROL_PLANE_URL__", base_url)
-        .replace("__AGENT_VERSION__", crate::update_check::CURRENT_VERSION.trim())
+    template.replace("__CONTROL_PLANE_URL__", base_url).replace(
+        "__AGENT_VERSION__",
+        crate::update_check::CURRENT_VERSION.trim(),
+    )
 }
 
 /// `GET /install.sh` -- the Linux bootstrap one-liner's target.
 pub async fn install_sh(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let base_url = control_plane_base_url(&state, &headers);
     let body = render_script(INSTALL_SH_TEMPLATE, &base_url);
-    (
-        [(CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
-        body,
-    )
-        .into_response()
+    ([(CONTENT_TYPE, "text/x-shellscript; charset=utf-8")], body).into_response()
 }
 
 /// `GET /install.ps1` -- the Windows bootstrap one-liner's target.

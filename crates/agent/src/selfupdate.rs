@@ -80,7 +80,12 @@ async fn run_self_update(version: &str) -> anyhow::Result<String> {
     let bytes = download(&url).await?;
     tokio::fs::write(&archive_path, &bytes)
         .await
-        .with_context(|| format!("could not write downloaded archive to {}", archive_path.display()))?;
+        .with_context(|| {
+            format!(
+                "could not write downloaded archive to {}",
+                archive_path.display()
+            )
+        })?;
 
     let new_binary = asset.extract(&staging, &archive_path).await?;
 
@@ -223,7 +228,9 @@ async fn download(url: &str) -> anyhow::Result<Vec<u8>> {
         .with_context(|| format!("failed to reach {url}"))?
         .error_for_status()
         .with_context(|| {
-            format!("release download returned an error status for {url} -- is that version published?")
+            format!(
+                "release download returned an error status for {url} -- is that version published?"
+            )
         })?;
 
     let bytes = response
@@ -263,9 +270,12 @@ async fn install_and_restart(new_binary: &Path, version: &str) -> anyhow::Result
     // ownership/mode an operator-run `install` would produce.
     crate::harden_binary_permissions(&staged).await?;
 
-    tokio::fs::rename(&staged, &target)
-        .await
-        .with_context(|| format!("failed to move the new binary into place at {}", target.display()))?;
+    tokio::fs::rename(&staged, &target).await.with_context(|| {
+        format!(
+            "failed to move the new binary into place at {}",
+            target.display()
+        )
+    })?;
 
     schedule_restart_unix()?;
     let _ = tokio::fs::remove_dir_all(staging_dir()).await;
@@ -326,7 +336,8 @@ async fn install_and_restart(new_binary: &Path, version: &str) -> anyhow::Result
     // a detached batch script the job of stopping the service, swapping the
     // file once it's actually unlocked, and starting it again.
     let target = PathBuf::from(crate::winservice::INSTALLED_BINARY_PATH);
-    let staged = PathBuf::from(crate::winservice::INSTALLED_BINARY_DIR).join("abyssal-agent.new.exe");
+    let staged =
+        PathBuf::from(crate::winservice::INSTALLED_BINARY_DIR).join("abyssal-agent.new.exe");
 
     tokio::fs::copy(new_binary, &staged)
         .await
@@ -358,7 +369,12 @@ async fn install_and_restart(new_binary: &Path, version: &str) -> anyhow::Result
     );
     tokio::fs::write(&script_path, script)
         .await
-        .with_context(|| format!("failed to write the updater script to {}", script_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to write the updater script to {}",
+                script_path.display()
+            )
+        })?;
 
     spawn_detached_windows(&script_path)?;
 

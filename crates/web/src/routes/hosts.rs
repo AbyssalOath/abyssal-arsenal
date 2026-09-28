@@ -49,9 +49,8 @@ fn build_enrollment_instructions(base_url: &str, token: &str) -> EnrollmentInstr
     let windows_asset = format!("abyssal-agent-v{version}-x86_64-pc-windows-msvc");
     let releases = "https://github.com/AbyssalOath/abyssal-arsenal/releases/download";
 
-    let linux_oneliner = format!(
-        "curl -fsSL {base_url}/install.sh | sudo sh -s -- --enrollment-token {token}"
-    );
+    let linux_oneliner =
+        format!("curl -fsSL {base_url}/install.sh | sudo sh -s -- --enrollment-token {token}");
 
     let linux_manual = format!(
         "curl -LO {releases}/v{version}/{linux_asset}.tar.gz\n\
@@ -64,9 +63,8 @@ fn build_enrollment_instructions(base_url: &str, token: &str) -> EnrollmentInstr
     // the token as a parameter -- the reliable way to pass an argument to a
     // remotely fetched PowerShell script (plain `irm ... | iex` can't take
     // one). Must be run from an elevated ("Run as administrator") prompt.
-    let windows_oneliner = format!(
-        "& ([scriptblock]::Create((irm {base_url}/install.ps1))) -EnrollmentToken {token}"
-    );
+    let windows_oneliner =
+        format!("& ([scriptblock]::Create((irm {base_url}/install.ps1))) -EnrollmentToken {token}");
 
     let windows_manual = format!(
         "$v = \"{version}\"; $a = \"{windows_asset}\"\n\
