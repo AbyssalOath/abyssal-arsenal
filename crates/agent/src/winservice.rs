@@ -47,8 +47,8 @@ const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 /// standard-user write access by default, the latter is meant for data,
 /// not executables. See `install_agent_binary`'s doc comment for why
 /// this needs to be a fixed, hardened path at all.
-const INSTALLED_BINARY_DIR: &str = r"C:\Program Files\AbyssalAgent";
-const INSTALLED_BINARY_PATH: &str = r"C:\Program Files\AbyssalAgent\abyssal-agent.exe";
+pub(crate) const INSTALLED_BINARY_DIR: &str = r"C:\Program Files\AbyssalAgent";
+pub(crate) const INSTALLED_BINARY_PATH: &str = r"C:\Program Files\AbyssalAgent\abyssal-agent.exe";
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -153,7 +153,7 @@ fn install_agent_binary() -> anyhow::Result<PathBuf> {
 /// Administrators, `S-1-5-32-545` = Users) are used instead of group
 /// names, which are themselves localized on a non-English Windows
 /// install.
-fn harden_binary_acls(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn harden_binary_acls(path: &Path) -> anyhow::Result<()> {
     let path_str = path.to_string_lossy();
     let status = std::process::Command::new("icacls")
         .arg(path_str.as_ref())

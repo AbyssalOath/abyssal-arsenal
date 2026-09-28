@@ -21,7 +21,7 @@ use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, HostRow, HostsTemplate};
+use crate::templates::{BaseCtx, EnrollmentInstructions, HostRow, HostsTemplate};
 use crate::theme;
 
 fn control_plane_base_url(state: &AppState, headers: &HeaderMap) -> String {
@@ -37,12 +37,60 @@ fn control_plane_base_url(state: &AppState, headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
+/// Builds the per-OS enrollment guidance for a freshly generated token. All
+/// four commands are fully filled in (control-plane URL, agent version, and
+/// the one-time token) so the operator copies one block verbatim. The
+/// version is this control plane's own (`update_check::CURRENT_VERSION`) --
+/// the release whose agent artifact matches this build's protocol, same
+/// version the SSH-deploy path and self-update install.
+fn build_enrollment_instructions(base_url: &str, token: &str) -> EnrollmentInstructions {
+    let version = crate::update_check::CURRENT_VERSION.trim();
+    let linux_asset = format!("abyssal-agent-v{version}-x86_64-unknown-linux-gnu");
+    let windows_asset = format!("abyssal-agent-v{version}-x86_64-pc-windows-msvc");
+    let releases = "https://github.com/AbyssalOath/abyssal-arsenal/releases/download";
+
+    let linux_oneliner = format!(
+        "curl -fsSL {base_url}/install.sh | sudo sh -s -- --enrollment-token {token}"
+    );
+
+    let linux_manual = format!(
+        "curl -LO {releases}/v{version}/{linux_asset}.tar.gz\n\
+         tar -xzf {linux_asset}.tar.gz\n\
+         sudo ./{linux_asset}/abyssal-agent install \\\n  \
+         --control-plane-url {base_url} --enrollment-token {token}"
+    );
+
+    // Downloads the served script text and invokes it as a scriptblock with
+    // the token as a parameter -- the reliable way to pass an argument to a
+    // remotely fetched PowerShell script (plain `irm ... | iex` can't take
+    // one). Must be run from an elevated ("Run as administrator") prompt.
+    let windows_oneliner = format!(
+        "& ([scriptblock]::Create((irm {base_url}/install.ps1))) -EnrollmentToken {token}"
+    );
+
+    let windows_manual = format!(
+        "$v = \"{version}\"; $a = \"{windows_asset}\"\n\
+         Invoke-WebRequest {releases}/v$v/$a.zip -OutFile \"$a.zip\"\n\
+         Expand-Archive \"$a.zip\" -DestinationPath . -Force\n\
+         .\\$a\\abyssal-agent.exe install `\n  \
+         --control-plane-url {base_url} --enrollment-token {token}"
+    );
+
+    EnrollmentInstructions {
+        token: token.to_string(),
+        linux_oneliner,
+        linux_manual,
+        windows_oneliner,
+        windows_manual,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn render(
     state: &AppState,
     jar: &CookieJar,
     ctx: &abyssal_rbac::AuthContext,
-    enrollment_command: Option<String>,
+    enrollment: Option<EnrollmentInstructions>,
     uninstall_command: Option<String>,
     action_result: Option<String>,
     action_error: Option<String>,
@@ -77,13 +125,18 @@ async fn render(
             revoked: host.revoked_at.is_some(),
             elevation_remaining,
             protocol_mismatch: state.hosts.agent_protocol_mismatch(host.id),
+            os: host.os.clone().unwrap_or_else(|| "unknown".to_string()),
+            agent_version: host
+                .agent_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
         });
     }
 
     let tpl = HostsTemplate {
         base,
         hosts,
-        enrollment_command,
+        enrollment,
         uninstall_command,
         action_result,
         action_error,
@@ -131,10 +184,83 @@ pub async fn generate_enrollment_token(
     .await?;
 
     let base_url = control_plane_base_url(&state, &headers);
-    let command =
-        format!("abyssal-agent run --control-plane-url {base_url} --enrollment-token {token}");
+    let instructions = build_enrollment_instructions(&base_url, &token);
 
-    render(&state, &jar, &ctx, Some(command), None, None, None).await
+    render(&state, &jar, &ctx, Some(instructions), None, None, None).await
+}
+
+/// Pushes the currently-connected agent to update itself to this control
+/// plane's own version, over the existing WebSocket -- the one-click answer
+/// to the "Agent out of date" badge. Only works on an agent build new
+/// enough to understand `AgentOperation::SelfUpdate`; one that predates it
+/// can't deserialize the message and drops the connection, which surfaces
+/// here as a clear "too old to self-update" message pointing back at the
+/// re-deploy path, rather than a silent failure.
+pub async fn update_agent(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let host = repo::hosts::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    // Whether it looked out of date *before* we dispatched -- used only to
+    // phrase the failure message, since a stale agent disconnecting on the
+    // unknown operation is exactly the expected outcome for a mismatch.
+    let was_mismatched = state.hosts.agent_protocol_mismatch(id);
+
+    let version = crate::update_check::CURRENT_VERSION.trim().to_string();
+    let elevated = state.elevation.is_elevated(id);
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            id,
+            &format!("Update agent -- {}", host.name),
+            AgentOperation::SelfUpdate {
+                version: version.clone(),
+            },
+            Permission::HostsManage,
+            OperationKind::Write,
+            false,
+            // Generous: the agent downloads a ~10 MB release and unpacks it
+            // before replying, all ahead of the scheduled restart.
+            Duration::from_secs(180),
+            None,
+            elevated,
+        )
+        .await;
+
+    match result {
+        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
+        Err(e) => {
+            let message = e.to_string();
+            // The signature of an agent too old to know the SelfUpdate
+            // operation: it fails to deserialize the command and drops the
+            // connection instead of replying.
+            let looks_too_old =
+                was_mismatched && message.contains("disconnected before responding");
+            let friendly = if looks_too_old {
+                format!(
+                    "This agent is too old to update itself over its connection (it doesn't \
+                     understand the update command yet, so it dropped the connection). Re-deploy \
+                     it to v{version} using the bootstrap one-liner (generate a token above) or \
+                     the SSH quick-add from a Panopticon scan, then future updates can be done \
+                     from here. Underlying error: {message}"
+                )
+            } else {
+                message
+            };
+            render(&state, &jar, &ctx, None, None, None, Some(friendly)).await
+        }
+    }
 }
 
 pub async fn run_system_info(

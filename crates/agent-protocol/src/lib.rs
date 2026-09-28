@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1122,6 +1122,34 @@ pub enum AgentOperation {
         path: String,
         contents: String,
     },
+    /// Downloads the `version`-tagged agent release for this host's own
+    /// platform from the project's GitHub releases, replaces the installed
+    /// binary in place, and restarts the host's service manager so the new
+    /// build takes over -- the in-band answer to a host showing "Agent out
+    /// of date" without an operator having to SSH in and re-run `install`
+    /// by hand. `version` is the control plane's own version
+    /// (`update_check::CURRENT_VERSION`); the agent derives the exact
+    /// release asset name from it plus `std::env::consts::{OS,ARCH}` rather
+    /// than being handed a raw URL over the wire, so the wire value can
+    /// only ever select a version tag, never an arbitrary download source.
+    /// The transport it arrives over is already TLS-authenticated to the
+    /// control plane, and the download itself is TLS-pinned to
+    /// github.com -- the same trust model the SSH-deploy path
+    /// (`crates/web/src/ssh_deploy.rs`) already relies on. Write: it swaps
+    /// a root/`LocalSystem` binary and bounces the service, but it's not
+    /// destructive to the host's data, and the service is designed to
+    /// reconnect on its own afterward, so it doesn't require the
+    /// `Destructive` confirmation gate.
+    ///
+    /// Only an agent build that already knows this variant can be updated
+    /// this way: one that predates it can't deserialize the operation and
+    /// simply disconnects (see `PROTOCOL_VERSION`), which the control plane
+    /// surfaces as a clear "too old to self-update -- re-deploy it" rather
+    /// than a silent failure. The bootstrap one-liner and SSH deploy cover
+    /// that first jump.
+    SelfUpdate {
+        version: String,
+    },
 }
 
 /// Which Sepulchre-owned config drop-in/include an operation targets --
@@ -1325,6 +1353,9 @@ impl AgentOperation {
             }
             AgentOperation::CreateSepulchreShareDirectory { path, .. } => {
                 format!("Created share directory {path}")
+            }
+            AgentOperation::SelfUpdate { version } => {
+                format!("Updated agent to v{version}")
             }
             other => humanize_variant_name(&variant_debug_name(other)),
         }
@@ -1904,6 +1935,10 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("CreateSepulchreShareDirectory")
                 .field("path", path)
                 .field("owner", owner)
+                .finish(),
+            AgentOperation::SelfUpdate { version } => f
+                .debug_struct("SelfUpdate")
+                .field("version", version)
                 .finish(),
         }
     }

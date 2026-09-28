@@ -22,6 +22,7 @@ mod process;
 mod reanimation;
 mod reliquary;
 mod resurrection;
+mod selfupdate;
 mod sepulchre;
 mod thanatos;
 mod transport;
@@ -54,7 +55,7 @@ const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/abyssal-agent.service";
 /// to be a fixed, root-owned path rather than wherever the operator
 /// happened to run `abyssal-agent` from.
 #[cfg(unix)]
-const INSTALLED_BINARY_PATH: &str = "/usr/local/bin/abyssal-agent";
+pub(crate) const INSTALLED_BINARY_PATH: &str = "/usr/local/bin/abyssal-agent";
 
 #[derive(Parser)]
 #[command(
@@ -454,7 +455,7 @@ async fn install_agent_binary() -> anyhow::Result<PathBuf> {
 /// system tool" convention -- see `crates/agent/src/process.rs`'s own
 /// `run_command`) rather than a raw `libc::chown` FFI call.
 #[cfg(unix)]
-async fn harden_binary_permissions(path: &Path) -> anyhow::Result<()> {
+pub(crate) async fn harden_binary_permissions(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let status = tokio::process::Command::new("chown")

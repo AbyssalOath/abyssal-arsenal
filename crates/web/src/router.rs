@@ -218,6 +218,7 @@ pub fn build(state: AppState) -> Router {
             get(routes::hosts::remove_confirm),
         )
         .route("/admin/hosts/:id/remove", post(routes::hosts::remove))
+        .route("/admin/hosts/:id/update", post(routes::hosts::update_agent))
         .route("/arsenals/cystoolbox", get(routes::cystoolbox::show))
         .route(
             "/arsenals/cystoolbox/:host_id",
@@ -1429,6 +1430,11 @@ pub fn build(state: AppState) -> Router {
         .route("/api/me", get(routes::api::me))
         .route("/api/hosts/enroll", post(routes::agent::enroll))
         .route("/ws/agent", get(routes::agent::ws_upgrade))
+        // Public, unauthenticated bootstrap installers (no secrets in the
+        // served text -- see routes::bootstrap): the target of the copy-
+        // paste enrollment one-liners on /admin/hosts.
+        .route("/install.sh", get(routes::bootstrap::install_sh))
+        .route("/install.ps1", get(routes::bootstrap::install_ps1))
         .nest_service("/static", ServeDir::new(static_dir()))
         .layer(axum::middleware::from_fn(security_headers::apply))
         .layer(axum::middleware::from_fn_with_state(

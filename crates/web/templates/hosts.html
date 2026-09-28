@@ -8,24 +8,43 @@
   <p style="color:var(--text-muted);">
     Arsenals operate on these hosts, not on this control-plane container.
     Generate an enrollment token, then run the <code>abyssal-agent</code>
-    binary on the target Linux host with it.
+    installer on the target Linux or Windows host with it.
   </p>
   <form method="post" action="/admin/hosts/enroll-token">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Generate enrollment token</button>
   </form>
 
-  {% if let Some(cmd) = enrollment_command %}
+  {% if let Some(e) = enrollment %}
   <div class="info-banner" style="margin-top:14px;">
-    <strong>Token expires in 15 minutes.</strong> Run this on the target host:
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ cmd }}</pre>
-    <p style="color:var(--text-muted); margin:8px 0 0;">
-      Don't have <code>abyssal-agent</code> installed on that host yet? From a
-      clone of this repo on the target host:
-      <code>cargo build --release -p abyssal-agent &amp;&amp; sudo install -m 755
-      target/release/abyssal-agent /usr/local/bin/abyssal-agent</code>. See
-      <code>crates/agent/README.md</code> for a quick-test-without-root
-      alternative and running it as a systemd service.
+    <strong>Token expires in 15 minutes, and enrolls one host.</strong>
+    Copy the block for the target host's platform.
+
+    <h4 style="margin:14px 0 4px;">{% call macros::icon("host") %} Linux</h4>
+    <p style="color:var(--text-muted); margin:0 0 4px;">
+      One-liner (downloads the agent, enrolls, installs a systemd service):
+    </p>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.linux_oneliner }}</pre>
+    <details style="margin:6px 0 0;">
+      <summary style="cursor:pointer; color:var(--text-muted);">Prefer to download and run it by hand?</summary>
+      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ e.linux_manual }}</pre>
+    </details>
+
+    <h4 style="margin:16px 0 4px;">{% call macros::icon("host") %} Windows</h4>
+    <p style="color:var(--text-muted); margin:0 0 4px;">
+      One-liner, from an <strong>administrator</strong> PowerShell (downloads
+      the agent, enrolls, registers a LocalSystem service):
+    </p>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.windows_oneliner }}</pre>
+    <details style="margin:6px 0 0;">
+      <summary style="cursor:pointer; color:var(--text-muted);">Prefer to download and run it by hand?</summary>
+      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ e.windows_manual }}</pre>
+    </details>
+
+    <p style="color:var(--text-muted); margin:12px 0 0;">
+      No release binary for this host's architecture, or building the agent
+      itself? See <code>crates/agent/README.md</code> for building from
+      source and the manual service setup.
     </p>
   </div>
   {% endif %}
@@ -51,18 +70,19 @@
 
 <div class="card">
   <table>
-    <thead><tr><th>Name</th><th>Status</th><th>Enrolled</th><th>Last seen</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>Platform</th><th>Status</th><th>Enrolled</th><th>Last seen</th><th>Actions</th></tr></thead>
     <tbody>
       {% for h in hosts %}
       <tr>
         <td>{{ h.name }}</td>
+        <td>{{ h.os }}<br><span style="color:var(--text-muted); font-size:0.85em;">agent v{{ h.agent_version }}</span></td>
         <td>
           {% if h.revoked %}<span class="badge badge-danger">Revoked</span>
           {% else if h.online %}<span class="badge badge-success">Online</span>
           {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
           {% if let Some(remaining) = h.elevation_remaining %}<span class="badge badge-elevated">Elevated ({{ remaining }})</span>
           {% endif %}
-          {% if h.protocol_mismatch %}<span class="badge badge-warning" title="This agent's protocol version doesn't match the control plane's -- rebuild and redeploy abyssal-agent on this host.">{% call macros::icon("warning") %} Agent out of date</span>
+          {% if h.protocol_mismatch %}<span class="badge badge-warning" title="This agent's protocol version doesn't match the control plane's. Use 'Update agent' to push the current build to it over its connection (works on agents new enough to self-update); otherwise re-deploy it with the bootstrap one-liner.">{% call macros::icon("warning") %} Agent out of date</span>
           {% endif %}
         </td>
         <td>{{ h.enrolled_at }}</td>
@@ -73,6 +93,10 @@
             <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>{% call macros::icon("host") %} Run System Info</button>
           </form>
           {% if !h.revoked %}
+          <form method="post" action="/admin/hosts/{{ h.id }}/update" onsubmit="return confirm('Update this host\'s agent to the control plane\'s current version? It will download the new build, swap the binary, and briefly restart its service.');">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="{% if h.protocol_mismatch %}btn-warning{% else %}btn-secondary{% endif %}"{% if !h.online %} disabled title="The host must be connected to update it over its connection."{% endif %}>{% call macros::icon("generate") %} Update agent</button>
+          </form>
           <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">{% call macros::icon("danger") %} Revoke</a>
           {% endif %}
           <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>

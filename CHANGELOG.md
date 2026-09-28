@@ -12,6 +12,31 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Agent lifecycle: one-click updates, self-update, and per-OS
+  bootstrap installers.** A host showing "Agent out of date" in
+  `/admin/hosts` now has an **Update agent** action that dispatches the
+  new `AgentOperation::SelfUpdate` over the host's existing WebSocket:
+  the agent downloads the release matching the control plane's own
+  version for its platform (TLS-pinned to GitHub, the same source and
+  trust model the SSH-deploy path already uses -- the wire only ever
+  carries a version tag, never a URL), replaces its installed binary in
+  place, and restarts its own service (a transient `systemd-run` unit on
+  Linux, deliberately outside the service's cgroup so the restart isn't
+  cut off mid-flight; a detached updater script on Windows, where a
+  running `.exe` can't be overwritten and the swap has to happen after
+  the service stops). An agent too old to understand the operation drops
+  the connection instead of replying, which the Update action reports as
+  a clear "re-deploy it first" rather than a silent failure -- the
+  protocol bump to 24 means every existing agent needs that one
+  re-deploy before it can self-update thereafter. Enrolling a host is now
+  a single copy-paste line for either platform: the enrollment banner
+  shows a **Linux** one-liner (`curl -fsSL <cp>/install.sh | sudo sh -s
+  -- --enrollment-token <token>`) and a **Windows** one-liner (an
+  elevated-PowerShell `scriptblock` over `<cp>/install.ps1`), both
+  targeting new public, secret-free bootstrap scripts the control plane
+  serves at `/install.sh` and `/install.ps1`; the manual download-and-run
+  steps for each platform are still one click away. See
+  `crates/agent/README.md`.
 - **Sepulchre: storage and file-sharing connectivity**, a new Arsenal
   under Operate providing a shared connection layer -- SFTP, SMB/CIFS,
   and allowlisted local paths -- that other Arsenals consume instead of

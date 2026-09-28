@@ -617,6 +617,37 @@ pub struct HostRow {
     /// (or missing) protocol version doesn't match this control plane's --
     /// see `abyssal_hosts::HostConnectionRegistry::agent_protocol_mismatch`.
     pub protocol_mismatch: bool,
+    /// The coarse platform family the agent last reported (`"linux"`,
+    /// `"windows"`, ...), or "unknown" for a host that predates OS
+    /// reporting -- shown so an operator can tell at a glance which install
+    /// path a given host uses.
+    pub os: String,
+    /// The agent binary's own version at its most recent connect, or
+    /// "unknown".
+    pub agent_version: String,
+}
+
+/// The per-OS enrollment guidance shown once, right after an admin
+/// generates a token. Every field is a ready-to-paste command with the
+/// live control-plane URL, agent version, and one-time token already
+/// filled in -- the operator copies the block for whichever platform the
+/// target host runs, rather than editing a placeholder by hand.
+pub struct EnrollmentInstructions {
+    /// The one-time token, shown once (it's single-use and 15-minute).
+    pub token: String,
+    /// A single `curl ... | sudo sh` line that fetches this control
+    /// plane's own `/install.sh`, which downloads the matching Linux
+    /// release and runs `abyssal-agent install` non-interactively.
+    pub linux_oneliner: String,
+    /// The manual Linux path (download the release tarball, then
+    /// `install`), for hosts without outbound access to run the bootstrap
+    /// or operators who'd rather see each step.
+    pub linux_manual: String,
+    /// The Windows equivalent of `linux_oneliner`: a single elevated-
+    /// PowerShell line that runs this control plane's `/install.ps1`.
+    pub windows_oneliner: String,
+    /// The manual Windows path (download the release zip, then `install`).
+    pub windows_manual: String,
 }
 
 #[derive(Template)]
@@ -624,7 +655,7 @@ pub struct HostRow {
 pub struct HostsTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<HostRow>,
-    pub enrollment_command: Option<String>,
+    pub enrollment: Option<EnrollmentInstructions>,
     pub uninstall_command: Option<String>,
     pub action_result: Option<String>,
     pub action_error: Option<String>,

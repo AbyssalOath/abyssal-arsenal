@@ -26,6 +26,48 @@ for how it works. It ultimately runs the same non-interactive install
 described below (`abyssal-agent install --control-plane-url ...
 --enrollment-token ...`), just without you typing it in yourself.
 
+## One-line bootstrap (fastest)
+
+Generate an enrollment token at `/admin/hosts` and copy the ready-made
+command shown for the target host's platform. Each one fetches a small,
+secret-free bootstrap script the control plane serves (`/install.sh`,
+`/install.ps1`), which downloads the matching agent release and runs the
+same non-interactive `install` described below:
+
+```bash
+# Linux (the script needs root, so pipe it through sudo)
+curl -fsSL https://your-control-plane.example.com/install.sh | sudo sh -s -- --enrollment-token <token>
+```
+
+```powershell
+# Windows, from an *administrator* PowerShell
+& ([scriptblock]::Create((irm https://your-control-plane.example.com/install.ps1))) -EnrollmentToken <token>
+```
+
+The scripts carry no secrets -- only the control-plane URL and agent
+version, both already public; the one-time token is the argument you
+supply. They only ever download the pinned GitHub release for the version
+the control plane is on, so the real gate stays the single-use token
+enforced server-side at `/api/hosts/enroll`. Everything below is the
+same install those scripts run, step by step, for when you'd rather do it
+by hand.
+
+## Keeping an agent up to date
+
+When a host's agent is older than the control plane, `/admin/hosts` shows
+an **Agent out of date** badge next to it. Use the **Update agent** action
+there to push the control plane's current version to the connected host
+over its existing WebSocket: the agent downloads the matching release for
+its own platform (TLS-pinned to GitHub -- the wire only carries a version
+tag, never a URL), replaces its installed binary, and restarts its service
+so the new build takes over (a couple of seconds' disconnect/reconnect).
+
+This works on any agent new enough to understand the update operation. An
+agent that predates it can't -- it drops the connection instead of
+replying, and the Update action says so -- so give such a host one
+re-deploy first (the bootstrap one-liner above, or the SSH quick-add from
+a Panopticon scan); after that, future updates are one click from here.
+
 ## Quick install (recommended)
 
 1. In the control plane's web UI, go to `/admin/hosts` and generate an

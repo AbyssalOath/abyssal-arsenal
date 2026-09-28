@@ -31,6 +31,7 @@ pub async fn run(
             exit_code: Some(0),
         }),
         AgentOperation::SystemInfo => system_info().await,
+        AgentOperation::SelfUpdate { version } => crate::selfupdate::self_update(version).await,
         AgentOperation::ResourceUsage => resource_usage().await,
         AgentOperation::LoggedInUsers => logged_in_users().await,
         AgentOperation::SetHostname { hostname } => set_hostname(hostname, elevation).await,

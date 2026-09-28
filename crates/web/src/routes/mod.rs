@@ -4,6 +4,7 @@ pub mod api;
 pub mod apothecary;
 pub mod arsenals;
 pub mod audit;
+pub mod bootstrap;
 pub mod cadavault;
 pub mod catacomb;
 pub mod cryptkeeper;
