@@ -768,6 +768,10 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/arsenals/reanimation", get(routes::reanimation::show))
         .route(
+            "/arsenals/reanimation/overview",
+            get(routes::reanimation::overview),
+        )
+        .route(
             "/arsenals/reanimation/:host_id",
             get(routes::reanimation::show_host),
         )
@@ -780,8 +784,28 @@ pub fn build(state: AppState) -> Router {
             post(routes::reanimation::process_detail),
         )
         .route(
+            "/arsenals/reanimation/:host_id/open-files",
+            post(routes::reanimation::process_open_files),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/limits",
+            post(routes::reanimation::process_limits),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/zombie-report",
+            post(routes::reanimation::zombie_report),
+        )
+        .route(
             "/arsenals/reanimation/:host_id/renice",
             post(routes::reanimation::renice_priority),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/io-priority",
+            post(routes::reanimation::set_io_priority),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/oom-score",
+            post(routes::reanimation::set_oom_score_adj),
         )
         .route(
             "/arsenals/reanimation/:host_id/signal/confirm",
@@ -790,6 +814,14 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/reanimation/:host_id/signal",
             post(routes::reanimation::send_signal),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/signal-by-name/confirm",
+            get(routes::reanimation::signal_by_name_confirm),
+        )
+        .route(
+            "/arsenals/reanimation/:host_id/signal-by-name",
+            post(routes::reanimation::signal_by_name),
         )
         .route(
             "/arsenals/reanimation/:host_id/elevate",

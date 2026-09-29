@@ -393,6 +393,7 @@ const KNOWN_CONTEXT_FIELDS: &[(&str, &str)] = &[
     ("cpu_iowait_percent", "CPU iowait %"),
     ("max_temp_c", "Max temp (°C)"),
     ("mem_pressure_some_avg10", "Memory pressure"),
+    ("zombie_count", "Defunct processes"),
     ("usage_percent", "Usage %"),
     ("usage_bytes", "Usage (bytes)"),
     ("persisted_count", "New events"),

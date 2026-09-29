@@ -108,6 +108,24 @@
     "context_fields": ["pid", "comm", "mem_percent"]
   },
   {
+    "source_arsenal": "reanimation",
+    "source_action": "list_processes",
+    "condition": { "field": "zombie_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate defunct processes with Postmortem",
+    "context_fields": ["zombie_count"]
+  },
+  {
+    "source_arsenal": "reanimation",
+    "source_action": "zombie_report",
+    "condition": { "field": "zombie_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate defunct processes with Postmortem",
+    "context_fields": ["zombie_count"]
+  },
+  {
     "source_arsenal": "mortiscope",
     "source_action": "cpu_utilization",
     "condition": { "field": "cpu_busy_percent", "operator": "greater_than_or_equal", "value": 90 },

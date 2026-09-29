@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 29;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -457,15 +457,59 @@ pub enum AgentOperation {
         pid: u32,
         priority: i32,
     },
-    /// Sends a signal to a process (`kill -s <SIGNAL> <pid>`). Destructive
-    /// regardless of which signal: any signal sent to a process is an
-    /// intentional interruption of whatever it's doing, so the control
-    /// plane requires explicit confirmation before ever dispatching this
-    /// -- there's no "softer" signal choice that bypasses that gate.
+    /// Sends a signal to a process (`kill -s <SIGNAL> <pid>`). The agent
+    /// delivers whatever validated signal it's given; the control plane grades
+    /// the risk -- terminating/interrupting signals (TERM/KILL/QUIT/INT) go
+    /// through the Destructive confirmation gate, while reversible ones
+    /// (HUP/CONT/USR1/USR2/STOP) are Write.
     SendSignal {
         pid: u32,
         signal: String,
     },
+    /// Sends a signal to every process matching a name (pgrep-style), after
+    /// excluding the agent's own process and pid<=1. With `dry_run` it only
+    /// reports the matches without signaling -- the control plane uses that to
+    /// preview which processes an action would hit before confirming. Unix
+    /// only (Windows has no pgrep/POSIX signals).
+    SignalByName {
+        name: String,
+        signal: String,
+        dry_run: bool,
+    },
+    /// Sets a process's I/O scheduling priority (`ionice -c <class> -n <level>
+    /// -p <pid>`). `class` is 1 (realtime), 2 (best-effort), or 3 (idle);
+    /// `level` is 0-7 (ignored for idle). Write -- reversible, non-destructive
+    /// tuning, like `RenicePriority`. Linux only.
+    SetIoPriority {
+        pid: u32,
+        class: u8,
+        level: u8,
+    },
+    /// Adjusts a process's OOM-killer bias by writing
+    /// `/proc/<pid>/oom_score_adj` (-1000 protects it hardest, +1000 makes it
+    /// the first to be killed under memory pressure). Write -- reversible
+    /// tuning; it changes *which* process the kernel would kill if it had to,
+    /// not whether one is killed now. Linux only.
+    SetOomScoreAdj {
+        pid: u32,
+        adj: i32,
+    },
+    /// The files, sockets, and other descriptors a process has open
+    /// (`lsof -p <pid>` when present, else `ls -l /proc/<pid>/fd`). Read-only.
+    ProcessOpenFiles {
+        pid: u32,
+    },
+    /// A process's resource limits (`/proc/<pid>/limits`) plus its executable
+    /// path, working directory, and thread count. Deliberately excludes the
+    /// environment (`/proc/<pid>/environ`), which routinely holds secrets.
+    /// Read-only.
+    ProcessLimits {
+        pid: u32,
+    },
+    /// Every zombie/defunct process on the host and the parent that hasn't
+    /// reaped it. Scans all processes (unlike the truncated `ListProcesses`),
+    /// so it never misses one. Read-only.
+    ZombieReport,
     /// Disk usage of the standard cleanup-relevant locations -- `/tmp`,
     /// `/var/tmp`, and the systemd core dump directory (`du -sh`) --
     /// visibility into what's actually consuming space before deciding
@@ -1479,6 +1523,15 @@ impl AgentOperation {
                 format!("Reniced PID {pid} to priority {priority}")
             }
             AgentOperation::SendSignal { pid, signal } => format!("Sent {signal} to PID {pid}"),
+            AgentOperation::SignalByName { name, signal, .. } => {
+                format!("Sent {signal} to processes named {name}")
+            }
+            AgentOperation::SetIoPriority { pid, class, level } => {
+                format!("Set I/O priority (class {class}, level {level}) for PID {pid}")
+            }
+            AgentOperation::SetOomScoreAdj { pid, adj } => {
+                format!("Set OOM score adjustment {adj} for PID {pid}")
+            }
             AgentOperation::ForceLogRotation => "Forced log rotation".to_string(),
             AgentOperation::ClearTmpFiles { older_than_days } => {
                 format!("Cleared temp files older than {older_than_days}d")
@@ -1853,6 +1906,35 @@ impl fmt::Debug for AgentOperation {
                 .field("pid", pid)
                 .field("signal", signal)
                 .finish(),
+            AgentOperation::SignalByName {
+                name,
+                signal,
+                dry_run,
+            } => f
+                .debug_struct("SignalByName")
+                .field("name", name)
+                .field("signal", signal)
+                .field("dry_run", dry_run)
+                .finish(),
+            AgentOperation::SetIoPriority { pid, class, level } => f
+                .debug_struct("SetIoPriority")
+                .field("pid", pid)
+                .field("class", class)
+                .field("level", level)
+                .finish(),
+            AgentOperation::SetOomScoreAdj { pid, adj } => f
+                .debug_struct("SetOomScoreAdj")
+                .field("pid", pid)
+                .field("adj", adj)
+                .finish(),
+            AgentOperation::ProcessOpenFiles { pid } => f
+                .debug_struct("ProcessOpenFiles")
+                .field("pid", pid)
+                .finish(),
+            AgentOperation::ProcessLimits { pid } => {
+                f.debug_struct("ProcessLimits").field("pid", pid).finish()
+            }
+            AgentOperation::ZombieReport => write!(f, "ZombieReport"),
             AgentOperation::CleanupTargetsSummary => write!(f, "CleanupTargetsSummary"),
             AgentOperation::ForceLogRotation => write!(f, "ForceLogRotation"),
             AgentOperation::ClearTmpFiles { older_than_days } => f
@@ -2480,6 +2562,22 @@ pub fn is_valid_nice_priority(priority: i32) -> bool {
     (-20..=19).contains(&priority)
 }
 
+/// An `ionice` scheduling class: 1 realtime, 2 best-effort, 3 idle.
+pub fn is_valid_ionice_class(class: u8) -> bool {
+    (1..=3).contains(&class)
+}
+
+/// An `ionice` priority level within a class, 0 (highest) to 7 (lowest).
+pub fn is_valid_ionice_level(level: u8) -> bool {
+    level <= 7
+}
+
+/// An OOM-killer score adjustment, -1000 (protect hardest) to 1000 (kill
+/// first), as accepted by `/proc/<pid>/oom_score_adj`.
+pub fn is_valid_oom_score_adj(adj: i32) -> bool {
+    (-1000..=1000).contains(&adj)
+}
+
 /// A `find -mtime +N` day threshold for `ClearTmpFiles`. Bounded well
 /// below `u32`'s range -- there's no legitimate reason to ask for
 /// anything close to that, and an absurd value is more likely a mistake
@@ -2709,6 +2807,18 @@ pub fn is_valid_cron_command(command: &str) -> bool {
 /// safety (this never touches a shell), but so a typo or bogus value
 /// fails clearly here instead of producing a confusing error from `kill`
 /// itself. Case-insensitive; the `SIG` prefix is optional either way.
+/// A process name to match for signal-by-name. Rejects the empty string, an
+/// over-long value, anything with whitespace or control characters, and a
+/// leading `-` (so it can never be read as a flag by `pgrep`). The pattern is
+/// still matched by `pgrep` as a regex against the process name; the point
+/// here is only to reject injection and obviously-malformed input.
+pub fn is_valid_process_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('-')
+        && name.chars().all(|c| !c.is_whitespace() && !c.is_control())
+}
+
 pub fn is_valid_signal_name(signal: &str) -> bool {
     const ALLOWED: &[&str] = &[
         "TERM", "KILL", "HUP", "INT", "QUIT", "USR1", "USR2", "STOP", "CONT",
@@ -2781,6 +2891,26 @@ pub fn is_valid_tightened_permission_mode(mode: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_control_ranges_are_enforced() {
+        assert!(is_valid_ionice_class(1) && is_valid_ionice_class(3));
+        assert!(!is_valid_ionice_class(0) && !is_valid_ionice_class(4));
+        assert!(is_valid_ionice_level(0) && is_valid_ionice_level(7));
+        assert!(!is_valid_ionice_level(8));
+        assert!(is_valid_oom_score_adj(-1000) && is_valid_oom_score_adj(1000));
+        assert!(!is_valid_oom_score_adj(-1001) && !is_valid_oom_score_adj(1001));
+    }
+
+    #[test]
+    fn process_name_validation_rejects_flags_and_whitespace() {
+        assert!(is_valid_process_name("nginx"));
+        assert!(is_valid_process_name("postgres:worker"));
+        assert!(!is_valid_process_name(""));
+        assert!(!is_valid_process_name("-rf")); // must not look like a flag
+        assert!(!is_valid_process_name("two words"));
+        assert!(!is_valid_process_name(&"a".repeat(129)));
+    }
 
     #[test]
     fn ssh_hardening_setting_round_trips_through_its_string() {

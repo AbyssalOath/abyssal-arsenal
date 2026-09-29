@@ -1,0 +1,43 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Reanimation Fleet Processes — Abyssal Arsenal{% endblock %}
+{% block heading %}Reanimation — Fleet Processes{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/reanimation">&larr; Back to host list</a></p>
+
+<div class="card">
+  <h3>{{ total }} connected host{% if total != 1 %}s{% endif %}</h3>
+  <p style="margin-top:0; color:var(--text-muted);">
+    The top CPU-consuming process on each connected host, polled just now. Select one to jump to that host with the PID ready to inspect or act on.
+  </p>
+  {% if rows.is_empty() %}
+  <p class="results-empty">No connected hosts.</p>
+  {% else %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Top process per host">
+    <table>
+      <thead>
+        <tr><th>Host</th><th>Top process</th><th>%CPU</th><th>%MEM</th><th>Act</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><a href="/arsenals/reanimation/{{ row.host_id }}">{{ row.host_name }}</a></td>
+          {% if row.has_data %}
+          <td><code>{{ row.comm }}</code> <span style="color:var(--text-muted);">(pid {{ row.pid }})</span></td>
+          <td>{{ row.cpu }}</td>
+          <td>{{ row.mem }}</td>
+          <td><a class="btn btn-secondary btn-sm" href="/arsenals/reanimation/{{ row.host_id }}?pid={{ row.pid }}">Inspect / act</a></td>
+          {% else %}
+          <td colspan="3"><span style="color:var(--text-muted);">{{ row.note }}</span></td>
+          <td><a class="btn btn-secondary btn-sm" href="/arsenals/reanimation/{{ row.host_id }}">Open</a></td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

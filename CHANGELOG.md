@@ -10,6 +10,65 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Added
+
+- **Reanimation: fleet process hub.** A new overview page (linked from the
+  Reanimation landing and host pages) polls every connected host for its
+  top CPU-consuming process and shows them in one table -- process, PID,
+  %CPU, %MEM per host -- each row linking straight to that host's
+  Reanimation page with the PID pre-filled, ready to inspect, tame, or
+  signal. It's the act-side complement to Mortiscope's observe overview:
+  see the fleet's hottest processes and jump to acting on any of them. No
+  new agent operations (it reuses the existing top-processes read).
+- **Reanimation: deep process introspection.** Three new read-only checks
+  for understanding a process before acting on it. **Open Files** lists a
+  process's descriptors (`lsof -p` when present, else `/proc/<pid>/fd`) --
+  sockets, held files, deleted-but-open files. **Limits & Info** shows a
+  process's resource limits (`/proc/<pid>/limits`) plus its executable,
+  working directory, and thread count; it deliberately omits the environment,
+  which routinely holds secrets. **Zombie Report** scans every process on the
+  host (not the truncated list) for defunct/`Z`-state ones and names the
+  parent that hasn't reaped each, with guidance that signaling a zombie won't
+  help -- and offers "Investigate defunct processes with Postmortem" when any
+  are found. Bumps `PROTOCOL_VERSION` to 29.
+- **Reanimation: resource control ("tame, don't kill").** Two reversible
+  tuning controls for a running process, so a resource hog can be reined in
+  instead of terminated. **I/O priority** (`ionice`) sets a process's I/O
+  scheduling class and level -- e.g. drop a backup job to the idle class so
+  it only uses disk when nothing else needs it. **OOM score adjustment**
+  writes `/proc/<pid>/oom_score_adj` to bias the kernel's out-of-memory
+  killer, protecting a critical process (down to -1000) or volunteering a
+  disposable one (up to 1000) -- the direct lever for a Mortiscope
+  memory-pressure finding. Both are Write (reversible), Linux-only (clear
+  "unsupported" on Windows), and refuse the agent's own PID and PID 1.
+  Bumps `PROTOCOL_VERSION` to 28. (cgroup CPU/memory *caps* are deliberately
+  left to a future Incarnation change: capping an arbitrary PID means moving
+  it between cgroups, which is fragile and better expressed per-service via
+  `systemctl set-property`, respecting the Reanimation/Incarnation boundary.)
+- **Reanimation: signal-by-name and graduated signal risk.** A new
+  signal-by-name flow signals every process matching a name (pgrep-style),
+  after a mandatory **preview** that dispatches a dry run and shows exactly
+  which PIDs would be hit -- the agent always excludes itself and PID 1, so
+  a by-name action can never take out the agent. Signals are now graded by
+  risk instead of all going through the same gate: terminating or
+  interrupting signals (TERM/KILL/QUIT/INT) still require typing the PID (or
+  the name, for by-name) to confirm, while reversible ones
+  (HUP/CONT/STOP/USR1/USR2) are a plain Write -- so the process table's new
+  per-row **Pause** (SIGSTOP) and **Resume** (SIGCONT) buttons are one
+  click. Adds `AgentOperation::SignalByName` (Unix only -- Windows has no
+  pgrep/POSIX signals) and bumps `PROTOCOL_VERSION` to 27; existing agents
+  need one redeploy or self-update to gain it.
+- **Reanimation: structured process table and its first workflow
+  suggestions.** Listing processes now returns a structured, highest-CPU-
+  first view (`ps -eo pid,ppid,user,stat,pcpu,pmem,comm`, with the process
+  state) instead of a flat text dump, rendered as a table with per-row
+  Detail and Signal actions -- so a process picked out by a Mortiscope
+  hand-off (which already pre-fills its PID) lands somewhere you can act.
+  Zombie/defunct processes are flagged inline, and a list that contains any
+  now offers "Investigate defunct processes with Postmortem" -- Reanimation's
+  first turn as a workflow source rather than only a target. No new agent
+  operations; the parsing is on the control plane.
+
 ## [0.1.3] - 2026-09-28
 
 ### Added

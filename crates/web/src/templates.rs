@@ -1835,6 +1835,42 @@ pub struct ReanimationHostTemplate {
     pub context: Vec<WorkflowContextRow>,
     /// Pre-fills Process Detail's PID field when a suggestion carried one.
     pub prefill_pid: Option<String>,
+    /// Parsed process rows, populated when the process list was just run.
+    pub processes: Vec<ProcessRow>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+/// One host row in Reanimation's fleet process hub: the host's top
+/// CPU-consuming process (live-polled), or a note when unavailable.
+pub struct ReanimationOverviewRow {
+    pub host_id: String,
+    pub host_name: String,
+    pub has_data: bool,
+    pub pid: String,
+    pub comm: String,
+    pub cpu: String,
+    pub mem: String,
+    pub note: String,
+}
+
+#[derive(Template)]
+#[template(path = "reanimation_overview.html")]
+pub struct ReanimationOverviewTemplate {
+    pub base: BaseCtx,
+    pub rows: Vec<ReanimationOverviewRow>,
+    pub total: usize,
+}
+
+/// One row of Reanimation's process table.
+pub struct ProcessRow {
+    pub pid: String,
+    pub ppid: String,
+    pub user: String,
+    pub stat: String,
+    pub cpu: String,
+    pub mem: String,
+    pub comm: String,
+    pub is_zombie: bool,
 }
 
 pub struct NecropolisHostRow {

@@ -178,6 +178,22 @@ pub async fn run(
         AgentOperation::RenicePriority { pid, priority } => {
             reanimation::renice_priority(pid, priority, elevation).await
         }
+        AgentOperation::SignalByName {
+            name,
+            signal,
+            dry_run,
+        } => reanimation::signal_by_name(name, signal, dry_run, elevation).await,
+        AgentOperation::SetIoPriority { pid, class, level } => {
+            reanimation::set_io_priority(pid, class, level, elevation).await
+        }
+        AgentOperation::SetOomScoreAdj { pid, adj } => {
+            reanimation::set_oom_score_adj(pid, adj, elevation).await
+        }
+        AgentOperation::ProcessOpenFiles { pid } => {
+            reanimation::process_open_files(pid, elevation).await
+        }
+        AgentOperation::ProcessLimits { pid } => reanimation::process_limits(pid, elevation).await,
+        AgentOperation::ZombieReport => reanimation::zombie_report(elevation).await,
         AgentOperation::SendSignal { pid, signal } => {
             reanimation::send_signal(pid, signal, elevation).await
         }
