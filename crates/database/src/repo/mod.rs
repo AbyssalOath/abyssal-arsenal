@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod backup_records;
 pub mod connection_consumers;
+pub mod grimoire_profiles;
 pub mod host_enrollment_tokens;
 pub mod host_health;
 pub mod host_metrics;

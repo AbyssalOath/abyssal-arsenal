@@ -3,6 +3,13 @@
 {% block heading %}Grimoire — Configuration Management{% endblock %}
 {% block content %}
 
+<div class="card">
+  <div class="actions">
+    <a class="btn" href="/arsenals/grimoire/drift">Fleet config drift</a>
+    <a class="btn btn-secondary" href="/arsenals/grimoire/profiles">Config profiles</a>
+  </div>
+</div>
+
 {% if hosts.is_empty() %}
 <div class="card">
   <p style="color:var(--text-muted);">

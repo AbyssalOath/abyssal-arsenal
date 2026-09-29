@@ -1,0 +1,125 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Grimoire Config Profiles — Abyssal Arsenal{% endblock %}
+{% block heading %}Grimoire — Config Profiles{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/grimoire">&larr; Back to host list</a></p>
+
+{% if let Some(msg) = result_message %}
+<div class="info-banner" style="margin-bottom:14px; white-space:pre-wrap;">{{ msg }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Config profiles</h3>
+  <p style="margin-top:0; color:var(--text-muted);">
+    A named, reusable bundle of declarative settings (sysctl, module blacklist, journald) applied to a host as a unit. "Personal" profiles are visible only to you; "Role" profiles to every member of that role.
+  </p>
+
+  {% if profiles.is_empty() %}
+  <p class="results-empty">No profiles yet. Create one below.</p>
+  {% else %}
+  {% for p in profiles %}
+  <div class="card" style="margin-top:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <h4 style="margin:0;">{{ p.name }} <span class="badge badge-muted">{{ p.scope_label }}</span></h4>
+      {% if can_manage %}
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <form method="post" action="/arsenals/grimoire/apply-profile" style="display:flex; gap:6px; align-items:center;">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="profile_id" value="{{ p.id }}">
+          <select name="host_id" required>
+            <option value="" disabled selected>Apply to host…</option>
+            {% for h in hosts %}<option value="{{ h.id }}">{{ h.name }}</option>{% endfor %}
+          </select>
+          <button type="submit" class="btn-warning btn-sm">Apply</button>
+        </form>
+        <a class="btn btn-danger btn-sm" href="/arsenals/grimoire/apply-profile-fleet/confirm?profile_id={{ p.id }}">Apply to all connected hosts&hellip;</a>
+        {% if p.can_edit %}
+        <form method="post" action="/arsenals/grimoire/profiles/{{ p.id }}/delete">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <button type="submit" class="btn-danger btn-sm">Delete profile</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    {% if p.entries.is_empty() %}
+    <p style="color:var(--text-muted);">No settings in this profile yet.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>Kind</th><th>Key</th><th>Value</th>{% if p.can_edit %}<th></th>{% endif %}</tr></thead>
+      <tbody>
+        {% for e in p.entries %}
+        <tr>
+          <td>{{ e.kind_label }}</td>
+          <td><code>{{ e.key }}</code></td>
+          <td>{% if e.value.is_empty() %}&mdash;{% else %}<code>{{ e.value }}</code>{% endif %}</td>
+          {% if p.can_edit %}
+          <td>
+            <form method="post" action="/arsenals/grimoire/profiles/{{ p.id }}/entries/{{ e.id }}/delete">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-danger btn-sm">Remove</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if p.can_edit %}
+    <form method="post" action="/arsenals/grimoire/profiles/{{ p.id }}/entries" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; align-items:end;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label>Kind
+        <select name="kind">
+          <option value="sysctl">sysctl</option>
+          <option value="module_blacklist">module blacklist</option>
+          <option value="journald">journald</option>
+        </select>
+      </label>
+      <label>Key
+        <input type="text" name="key" placeholder="e.g. vm.swappiness / usb-storage / system_max_use" required>
+      </label>
+      <label>Value
+        <input type="text" name="value" placeholder="e.g. 10 / (none) / 500M">
+      </label>
+      <button type="submit" class="btn-secondary">Add setting</button>
+    </form>
+    <p style="color:var(--text-muted); font-size:0.9em; margin:6px 0 0;">
+      For journald, the key is one of: <code>system_max_use</code>, <code>system_keep_free</code>, <code>max_retention_sec</code>, <code>max_file_sec</code>. Module blacklist needs no value.
+    </p>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% endif %}
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3>Create a profile</h3>
+  <form method="post" action="/arsenals/grimoire/profiles">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="profile-name">Name</label>
+    <input type="text" id="profile-name" name="name" placeholder="e.g. Baseline hardening" required>
+    <label>Visible to</label>
+    <div>
+      <label class="inline-radio"><input type="radio" name="scope" value="personal" checked> Just me</label>
+      {% for (role_id, role_name) in macro_roles %}
+      <label class="inline-radio"><input type="radio" name="scope" value="role"> My role: {{ role_name }}</label>
+      {% endfor %}
+    </div>
+    {% if !macro_roles.is_empty() %}
+    <label for="profile-role">Role (if "My role" selected)</label>
+    <select id="profile-role" name="role_id">
+      {% for (role_id, role_name) in macro_roles %}<option value="{{ role_id }}">{{ role_name }}</option>{% endfor %}
+    </select>
+    {% endif %}
+    <div style="margin-top:8px;"><button type="submit" class="btn">Create profile</button></div>
+  </form>
+</div>
+{% endif %}
+
+{% endblock %}

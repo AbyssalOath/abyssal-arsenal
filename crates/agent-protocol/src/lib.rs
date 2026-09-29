@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 31;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -863,6 +863,11 @@ pub enum AgentOperation {
     /// from scratch can't have that failure mode.
     ViewManagedSysctl,
     ViewManagedCronJobs,
+    /// Drift check for the managed sysctl overrides: for each key in the
+    /// managed file, compares its declared value against the host's live
+    /// value (`sysctl -n <key>`) so an operator can see whether the managed
+    /// config actually took effect or was overridden out of band. Read-only.
+    SysctlManagedDrift,
     /// Idempotently sets `key = value` in the managed sysctl file
     /// (creating it if needed) and applies it immediately
     /// (`sysctl -p <file>`). Write -- a real mutation, but narrowly
@@ -903,6 +908,34 @@ pub enum AgentOperation {
     /// task this tool has set at once. Destructive: broader impact than
     /// removing a single job.
     ClearManagedCronJobs,
+    /// The managed kernel-module blacklist drop-in
+    /// (`/etc/modprobe.d/99-abyssal-arsenal.conf`). Read-only.
+    ViewModuleBlacklist,
+    /// Adds a `blacklist <module>` line to the managed modprobe drop-in so the
+    /// module isn't auto-loaded. Write -- takes effect on the next load/boot;
+    /// no currently-loaded module is touched.
+    BlacklistModule {
+        module: String,
+    },
+    /// Removes one module from the managed modprobe blacklist. Write.
+    RemoveModuleBlacklist {
+        module: String,
+    },
+    /// Wipes the managed modprobe blacklist drop-in. Destructive: re-enables
+    /// auto-loading of every module this tool had blacklisted.
+    ClearModuleBlacklist,
+    /// The managed journald retention drop-in
+    /// (`/etc/systemd/journald.conf.d/99-abyssal-arsenal.conf`). Read-only.
+    ViewJournaldConfig,
+    /// Sets one journald retention setting in the managed drop-in and restarts
+    /// `systemd-journald` to apply it. Write.
+    SetJournaldRetention {
+        setting: JournaldSetting,
+        value: String,
+    },
+    /// Wipes the managed journald retention drop-in (reverting to journald's
+    /// own defaults) and restarts the service. Destructive.
+    ClearJournaldConfig,
     /// Active incident response ("Inquest"): containment (blocking a
     /// specific remote IP, or -- gated, see `IsolateHost` -- isolating
     /// the whole host) and remediation (quarantining a suspicious file
@@ -1349,6 +1382,58 @@ impl SshHardeningSetting {
     }
 }
 
+/// One journald retention setting Grimoire can manage, each mapping to a real
+/// `journald.conf` key. A closed set rather than a free-form key, so the
+/// control plane can only ever write a known journald directive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JournaldSetting {
+    /// Max disk the journal may use (e.g. `500M`).
+    SystemMaxUse,
+    /// Disk to keep free (e.g. `1G`).
+    SystemKeepFree,
+    /// Max age of retained entries (e.g. `2week`).
+    MaxRetentionSec,
+    /// Max age of an individual journal file before rotation (e.g. `1week`).
+    MaxFileSec,
+}
+
+impl JournaldSetting {
+    pub const ALL: [JournaldSetting; 4] = [
+        JournaldSetting::SystemMaxUse,
+        JournaldSetting::SystemKeepFree,
+        JournaldSetting::MaxRetentionSec,
+        JournaldSetting::MaxFileSec,
+    ];
+
+    /// The `journald.conf` key this setting writes.
+    pub fn key(self) -> &'static str {
+        match self {
+            JournaldSetting::SystemMaxUse => "SystemMaxUse",
+            JournaldSetting::SystemKeepFree => "SystemKeepFree",
+            JournaldSetting::MaxRetentionSec => "MaxRetentionSec",
+            JournaldSetting::MaxFileSec => "MaxFileSec",
+        }
+    }
+
+    /// The stable string used in form values and URLs (matches the
+    /// `snake_case` serde renaming above).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JournaldSetting::SystemMaxUse => "system_max_use",
+            JournaldSetting::SystemKeepFree => "system_keep_free",
+            JournaldSetting::MaxRetentionSec => "max_retention_sec",
+            JournaldSetting::MaxFileSec => "max_file_sec",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<JournaldSetting> {
+        JournaldSetting::ALL
+            .into_iter()
+            .find(|s| s.as_str() == value)
+    }
+}
+
 /// One kernel parameter in Cadavault's security-posture baseline: its key,
 /// the hardened value to compare the host's live value against, and a short
 /// reason. Shared by the agent (which reads each key's effective value) and
@@ -1614,6 +1699,19 @@ impl AgentOperation {
             AgentOperation::SetCronJob { job_name, .. } => format!("Set cron job {job_name}"),
             AgentOperation::RemoveCronJob { job_name } => format!("Removed cron job {job_name}"),
             AgentOperation::ClearManagedCronJobs => "Cleared all managed cron jobs".to_string(),
+            AgentOperation::BlacklistModule { module } => {
+                format!("Blacklisted kernel module {module}")
+            }
+            AgentOperation::RemoveModuleBlacklist { module } => {
+                format!("Removed kernel module {module} from the blacklist")
+            }
+            AgentOperation::ClearModuleBlacklist => {
+                "Cleared the managed module blacklist".to_string()
+            }
+            AgentOperation::SetJournaldRetention { setting, value } => {
+                format!("Set journald {}={value}", setting.key())
+            }
+            AgentOperation::ClearJournaldConfig => "Cleared managed journald config".to_string(),
             AgentOperation::BlockRemoteIp { ip } => format!("Blocked IP {ip}"),
             AgentOperation::UnblockRemoteIp { ip } => format!("Unblocked IP {ip}"),
             AgentOperation::QuarantineFile { path } => format!("Quarantined file {path}"),
@@ -2130,6 +2228,7 @@ impl fmt::Debug for AgentOperation {
                 .field("fstype", fstype)
                 .finish(),
             AgentOperation::ViewManagedSysctl => write!(f, "ViewManagedSysctl"),
+            AgentOperation::SysctlManagedDrift => write!(f, "SysctlManagedDrift"),
             AgentOperation::ViewManagedCronJobs => write!(f, "ViewManagedCronJobs"),
             AgentOperation::SetPersistentSysctl { key, value } => f
                 .debug_struct("SetPersistentSysctl")
@@ -2158,6 +2257,23 @@ impl fmt::Debug for AgentOperation {
                 .field("job_name", job_name)
                 .finish(),
             AgentOperation::ClearManagedCronJobs => write!(f, "ClearManagedCronJobs"),
+            AgentOperation::ViewModuleBlacklist => write!(f, "ViewModuleBlacklist"),
+            AgentOperation::BlacklistModule { module } => f
+                .debug_struct("BlacklistModule")
+                .field("module", module)
+                .finish(),
+            AgentOperation::RemoveModuleBlacklist { module } => f
+                .debug_struct("RemoveModuleBlacklist")
+                .field("module", module)
+                .finish(),
+            AgentOperation::ClearModuleBlacklist => write!(f, "ClearModuleBlacklist"),
+            AgentOperation::ViewJournaldConfig => write!(f, "ViewJournaldConfig"),
+            AgentOperation::SetJournaldRetention { setting, value } => f
+                .debug_struct("SetJournaldRetention")
+                .field("setting", setting)
+                .field("value", value)
+                .finish(),
+            AgentOperation::ClearJournaldConfig => write!(f, "ClearJournaldConfig"),
             AgentOperation::ListBlockedIps => write!(f, "ListBlockedIps"),
             AgentOperation::IsolationStatus => write!(f, "IsolationStatus"),
             AgentOperation::ListQuarantinedFiles => write!(f, "ListQuarantinedFiles"),
@@ -2769,6 +2885,29 @@ pub fn is_valid_sysctl_value(value: &str) -> bool {
     !value.is_empty() && value.len() <= 200 && value.chars().all(|c| !c.is_control())
 }
 
+/// A kernel module name for blacklisting. Module names are alphanumeric plus
+/// `_`/`-` (aliases can also contain `.`); reject anything else, a leading
+/// `-`, and over-long input so it can't smuggle a modprobe directive.
+pub fn is_valid_kernel_module_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// A journald retention value (a size like `500M` or a duration like `2week`).
+/// One token, no whitespace or control characters -- it becomes the right-hand
+/// side of one `Key=Value` line.
+pub fn is_valid_journald_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '%'))
+}
+
 /// A cron schedule -- either a `@nickname` (`@reboot`, `@daily`, ...) or
 /// a permissive character set covering real 5-field cron expressions
 /// (digits, `*`, `/`, `,`, `-`, and the month/weekday name abbreviations
@@ -2891,6 +3030,27 @@ pub fn is_valid_tightened_permission_mode(mode: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_and_journald_validation() {
+        assert!(is_valid_kernel_module_name("usb-storage"));
+        assert!(is_valid_kernel_module_name("nvidia.uvm"));
+        assert!(!is_valid_kernel_module_name(""));
+        assert!(!is_valid_kernel_module_name("-rf"));
+        assert!(!is_valid_kernel_module_name("has space"));
+
+        assert!(is_valid_journald_value("500M"));
+        assert!(is_valid_journald_value("2week"));
+        assert!(!is_valid_journald_value(""));
+        assert!(!is_valid_journald_value("500 M"));
+
+        // JournaldSetting round-trips through its wire string.
+        for s in JournaldSetting::ALL {
+            assert_eq!(JournaldSetting::from_wire(s.as_str()), Some(s));
+        }
+        assert_eq!(JournaldSetting::from_wire("nope"), None);
+        assert_eq!(JournaldSetting::SystemMaxUse.key(), "SystemMaxUse");
+    }
 
     #[test]
     fn resource_control_ranges_are_enforced() {

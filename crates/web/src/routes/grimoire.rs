@@ -19,7 +19,10 @@ use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, GrimoireHostRow, GrimoireHostTemplate, GrimoireTemplate};
+use crate::templates::{
+    BaseCtx, GrimoireDriftRow, GrimoireDriftTemplate, GrimoireHostRow, GrimoireHostTemplate,
+    GrimoireProfileEntryView, GrimoireProfileView, GrimoireProfilesTemplate, GrimoireTemplate,
+};
 use crate::theme;
 
 /// Landing page for this arsenal: just a host picker, same as every other
@@ -127,8 +130,36 @@ async fn render_host(
     host_id: Uuid,
     result_label: Option<String>,
     result_output: Option<String>,
+    result_error: Option<String>,
+    load_macro: Option<Uuid>,
+) -> Result<Response, WebError> {
+    render_host_full(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        load_macro,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_host_full(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
     mut result_error: Option<String>,
     load_macro: Option<Uuid>,
+    sysctl_drift: Vec<crate::templates::SysctlDriftRow>,
+    suggested_actions: Vec<crate::templates::SuggestedActionView>,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
@@ -189,6 +220,8 @@ async fn render_host(
         result_label,
         result_output,
         result_error,
+        sysctl_drift,
+        suggested_actions,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -301,6 +334,118 @@ pub async fn view_managed_sysctl(
         "Managed Sysctl",
     )
     .await
+}
+
+/// Parses `SysctlManagedDrift` output (`key\tdeclared\tlive\tstatus` per line)
+/// into table rows, and returns the count of drifted keys.
+fn parse_sysctl_drift(stdout: &str) -> (Vec<crate::templates::SysctlDriftRow>, usize) {
+    let mut rows = Vec::new();
+    let mut drifted = 0;
+    for line in stdout.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() != 4 {
+            continue; // skips the "No managed sysctl overrides set." message
+        }
+        let (status_label, status_badge_class) = match f[3] {
+            "in_sync" => ("in sync", "badge-success"),
+            "drifted" => {
+                drifted += 1;
+                ("drifted", "badge-warning")
+            }
+            _ => ("unavailable", "badge-muted"),
+        };
+        rows.push(crate::templates::SysctlDriftRow {
+            key: f[0].to_string(),
+            declared: f[1].to_string(),
+            live: f[2].to_string(),
+            status_label: status_label.to_string(),
+            status_badge_class: status_badge_class.to_string(),
+        });
+    }
+    (rows, drifted)
+}
+
+pub async fn sysctl_drift(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let result_label = Some(format!("Sysctl Drift -- {}", host.name));
+
+    let elevated = state.elevation.is_elevated(host_id);
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            host_id,
+            &host.name,
+            AgentOperation::SysctlManagedDrift,
+            Permission::SystemsView,
+            OperationKind::Read,
+            false,
+            Duration::from_secs(15),
+            None,
+            elevated,
+        )
+        .await;
+
+    match result {
+        Ok(output) => {
+            let (rows, drifted) = parse_sysctl_drift(&output.stdout);
+            let entry = serde_json::json!({ "drift_count": drifted });
+            let suggested_actions = crate::common::suggested_actions_for(
+                &state,
+                "grimoire",
+                "sysctl_drift",
+                std::slice::from_ref(&entry),
+                host_id,
+            )
+            .await;
+            // When there are no parsed rows (e.g. "No managed sysctl overrides
+            // set."), fall back to showing the raw message as output.
+            let output_text = if rows.is_empty() {
+                Some(output.stdout)
+            } else {
+                None
+            };
+            render_host_full(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                output_text,
+                None,
+                None,
+                rows,
+                suggested_actions,
+            )
+            .await
+        }
+        Err(e) => {
+            state.elevation.mark_deescalated(host_id);
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                None,
+                Some(e.to_string()),
+                None,
+            )
+            .await
+        }
+    }
 }
 
 pub async fn view_managed_cron_jobs(
@@ -1330,5 +1475,1019 @@ pub async fn elevate(
             )
             .await
         }
+    }
+}
+
+// ---- M2: kernel module blacklist (modprobe.d) --------------------------
+
+fn validate_module_name(module: &str) -> Result<String, WebError> {
+    let module = module.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_kernel_module_name(&module) {
+        return Err(WebError(AppError::Validation(
+            "Enter a valid kernel module name (letters, digits, '_', '-', '.').".into(),
+        )));
+    }
+    Ok(module)
+}
+
+pub async fn view_module_blacklist(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    run_read_op(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::ViewModuleBlacklist,
+        "Module Blacklist",
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct ModuleForm {
+    csrf_token: String,
+    module: String,
+}
+
+pub async fn blacklist_module(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ModuleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let module = validate_module_name(&form.module)?;
+    run_write_op(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::BlacklistModule {
+            module: module.clone(),
+        },
+        &format!("Blacklist Module ({module})"),
+    )
+    .await
+}
+
+pub async fn remove_module_blacklist(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ModuleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let module = validate_module_name(&form.module)?;
+    run_write_op(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::RemoveModuleBlacklist {
+            module: module.clone(),
+        },
+        &format!("Remove Module Blacklist ({module})"),
+    )
+    .await
+}
+
+pub async fn clear_module_blacklist_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    let action_url = format!("/arsenals/grimoire/{host_id}/clear-module-blacklist");
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let expected = host.name.clone();
+    destructive_confirm(
+        &state,
+        jar,
+        ctx,
+        host_id,
+        "Clear module blacklist",
+        move |host_name| {
+            format!(
+                "This re-enables auto-loading of every kernel module this tool blacklisted on \
+                 \"{host_name}\"."
+            )
+        },
+        action_url,
+        Some(crate::templates::TypeToConfirm {
+            label: "hostname".to_string(),
+            expected,
+        }),
+    )
+    .await
+}
+
+pub async fn clear_module_blacklist(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ConfirmForm>,
+) -> Result<Response, WebError> {
+    run_destructive_op(
+        &state,
+        jar,
+        ctx,
+        host_id,
+        None,
+        AgentOperation::ClearModuleBlacklist,
+        "Clear Module Blacklist",
+        form,
+    )
+    .await
+}
+
+// ---- M2: journald retention -------------------------------------------
+
+pub async fn view_journald_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    run_read_op(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::ViewJournaldConfig,
+        "Journald Config",
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct JournaldForm {
+    csrf_token: String,
+    setting: String,
+    value: String,
+}
+
+pub async fn set_journald_retention(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<JournaldForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let setting =
+        abyssal_agent_protocol::JournaldSetting::from_wire(&form.setting).ok_or_else(|| {
+            WebError(AppError::Validation(
+                "Choose a valid journald setting.".into(),
+            ))
+        })?;
+    if !abyssal_agent_protocol::is_valid_journald_value(&form.value) {
+        return Err(WebError(AppError::Validation(
+            "Enter a valid value, e.g. 500M or 2week.".into(),
+        )));
+    }
+    run_write_op(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::SetJournaldRetention {
+            setting,
+            value: form.value.clone(),
+        },
+        &format!("Journald {}={}", setting.key(), form.value),
+    )
+    .await
+}
+
+pub async fn clear_journald_config_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    let action_url = format!("/arsenals/grimoire/{host_id}/clear-journald");
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let expected = host.name.clone();
+    destructive_confirm(
+        &state,
+        jar,
+        ctx,
+        host_id,
+        "Clear managed journald config",
+        move |host_name| {
+            format!(
+                "This reverts journald on \"{host_name}\" to its own retention defaults and \
+                 restarts the service."
+            )
+        },
+        action_url,
+        Some(crate::templates::TypeToConfirm {
+            label: "hostname".to_string(),
+            expected,
+        }),
+    )
+    .await
+}
+
+pub async fn clear_journald_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ConfirmForm>,
+) -> Result<Response, WebError> {
+    run_destructive_op(
+        &state,
+        jar,
+        ctx,
+        host_id,
+        None,
+        AgentOperation::ClearJournaldConfig,
+        "Clear Journald Config",
+        form,
+    )
+    .await
+}
+
+// ---- M3: config profiles (config-as-code) ------------------------------
+
+/// Maps a profile entry to the agent operation that applies it, or `None` for
+/// an unknown kind. Pure and unit-tested.
+fn entry_to_operation(kind: &str, key: &str, value: &str) -> Option<AgentOperation> {
+    match kind {
+        "sysctl" => Some(AgentOperation::SetPersistentSysctl {
+            key: key.to_string(),
+            value: value.to_string(),
+        }),
+        "module_blacklist" => Some(AgentOperation::BlacklistModule {
+            module: key.to_string(),
+        }),
+        "journald" => abyssal_agent_protocol::JournaldSetting::from_wire(key).map(|setting| {
+            AgentOperation::SetJournaldRetention {
+                setting,
+                value: value.to_string(),
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "sysctl" => "sysctl",
+        "module_blacklist" => "module blacklist",
+        "journald" => "journald",
+        _ => "unknown",
+    }
+}
+
+/// Validates an entry's key/value for its kind, using the shared protocol
+/// validators. Returns the (possibly normalized) value to store.
+fn validate_entry(kind: &str, key: &str, value: &str) -> Result<String, WebError> {
+    let bad = |m: &str| WebError(AppError::Validation(m.to_string()));
+    match kind {
+        "sysctl" => {
+            if !abyssal_agent_protocol::is_valid_sysctl_key(key)
+                || !abyssal_agent_protocol::is_valid_sysctl_value(value)
+            {
+                return Err(bad("Enter a valid sysctl key and value."));
+            }
+            Ok(value.to_string())
+        }
+        "module_blacklist" => {
+            if !abyssal_agent_protocol::is_valid_kernel_module_name(key) {
+                return Err(bad("Enter a valid kernel module name."));
+            }
+            Ok(String::new()) // module blacklist has no value
+        }
+        "journald" => {
+            if abyssal_agent_protocol::JournaldSetting::from_wire(key).is_none()
+                || !abyssal_agent_protocol::is_valid_journald_value(value)
+            {
+                return Err(bad("Choose a valid journald setting and value."));
+            }
+            Ok(value.to_string())
+        }
+        _ => Err(bad("Unknown config kind.")),
+    }
+}
+
+/// Whether `ctx` may see a profile: their own personal one, a role one for a
+/// role they're in, or anything with `MacrosManageAll`.
+fn can_view_profile(
+    ctx: &AuthContext,
+    profile: &abyssal_database::repo::grimoire_profiles::Profile,
+    user_role_ids: &[Uuid],
+) -> bool {
+    if ctx.has(Permission::MacrosManageAll) {
+        return true;
+    }
+    match profile.scope {
+        MacroScope::Personal => profile.owner_user_id == ctx.user.id,
+        MacroScope::Role => profile.role_id.is_some_and(|r| user_role_ids.contains(&r)),
+    }
+}
+
+fn ensure_can_edit_profile(
+    ctx: &AuthContext,
+    profile: &abyssal_database::repo::grimoire_profiles::Profile,
+) -> Result<(), WebError> {
+    if profile.owner_user_id == ctx.user.id || ctx.has(Permission::MacrosManageAll) {
+        Ok(())
+    } else {
+        Err(WebError(AppError::Forbidden))
+    }
+}
+
+async fn render_profiles(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    result_message: Option<String>,
+) -> Result<Response, WebError> {
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
+
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let role_ids: Vec<Uuid> = user_roles.iter().map(|r| r.id).collect();
+    let macro_roles = user_roles
+        .iter()
+        .map(|r| (r.id.to_string(), r.name.clone()))
+        .collect();
+
+    let mut profiles = Vec::new();
+    for p in
+        repo::grimoire_profiles::list_visible_to_user(&state.pool, ctx.user.id, &role_ids).await?
+    {
+        let entries = repo::grimoire_profiles::list_entries(&state.pool, p.id)
+            .await?
+            .into_iter()
+            .map(|e| GrimoireProfileEntryView {
+                id: e.id.to_string(),
+                kind_label: kind_label(&e.kind).to_string(),
+                key: e.key,
+                value: e.value,
+            })
+            .collect();
+        let scope_label = match p.scope {
+            MacroScope::Personal => "Personal".to_string(),
+            MacroScope::Role => "Role".to_string(),
+        };
+        let can_edit = p.owner_user_id == ctx.user.id || ctx.has(Permission::MacrosManageAll);
+        profiles.push(GrimoireProfileView {
+            id: p.id.to_string(),
+            name: p.name,
+            scope_label,
+            can_edit,
+            entries,
+        });
+    }
+
+    let mut hosts = Vec::new();
+    for host in repo::hosts::list(&state.pool).await? {
+        if host.is_active() && state.hosts.is_connected(host.id) {
+            hosts.push(GrimoireHostRow {
+                id: host.id.to_string(),
+                name: host.name,
+            });
+        }
+    }
+
+    let tpl = GrimoireProfilesTemplate {
+        can_manage: ctx.has(Permission::SystemsManage),
+        base,
+        profiles,
+        macro_roles,
+        hosts,
+        result_message,
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+pub async fn profiles_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
+    render_profiles(&state, &jar, &ctx, None).await
+}
+
+#[derive(Deserialize)]
+pub struct CreateProfileForm {
+    csrf_token: String,
+    name: String,
+    scope: String,
+    #[serde(default)]
+    role_id: Option<String>,
+}
+
+pub async fn create_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<CreateProfileForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let name = form.name.trim();
+    if name.is_empty() || name.len() > 128 {
+        return Err(WebError(AppError::Validation(
+            "Enter a profile name.".into(),
+        )));
+    }
+    let scope = if form.scope == "role" {
+        MacroScope::Role
+    } else {
+        MacroScope::Personal
+    };
+    let role_id = if scope == MacroScope::Role {
+        let rid = form
+            .role_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .ok_or_else(|| {
+                WebError(AppError::Validation(
+                    "Pick a role for a role-scoped profile.".into(),
+                ))
+            })?;
+        let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+        if !user_roles.iter().any(|r| r.id == rid) {
+            return Err(WebError(AppError::Forbidden));
+        }
+        Some(rid)
+    } else {
+        None
+    };
+    repo::grimoire_profiles::create_profile(&state.pool, name, ctx.user.id, scope, role_id).await?;
+    render_profiles(
+        &state,
+        &jar,
+        &ctx,
+        Some(format!("Created profile \"{name}\".")),
+    )
+    .await
+}
+
+pub async fn delete_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let profile = repo::grimoire_profiles::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ensure_can_edit_profile(&ctx, &profile)?;
+    repo::grimoire_profiles::delete_profile(&state.pool, id).await?;
+    render_profiles(&state, &jar, &ctx, Some("Deleted profile.".to_string())).await
+}
+
+#[derive(Deserialize)]
+pub struct AddEntryForm {
+    csrf_token: String,
+    kind: String,
+    key: String,
+    #[serde(default)]
+    value: String,
+}
+
+pub async fn add_profile_entry(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<AddEntryForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let profile = repo::grimoire_profiles::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ensure_can_edit_profile(&ctx, &profile)?;
+    let key = form.key.trim();
+    let value = validate_entry(&form.kind, key, form.value.trim())?;
+    repo::grimoire_profiles::add_entry(&state.pool, id, &form.kind, key, &value).await?;
+    render_profiles(
+        &state,
+        &jar,
+        &ctx,
+        Some("Added setting to profile.".to_string()),
+    )
+    .await
+}
+
+pub async fn remove_profile_entry(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path((id, entry_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let profile = repo::grimoire_profiles::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    ensure_can_edit_profile(&ctx, &profile)?;
+    repo::grimoire_profiles::remove_entry(&state.pool, id, entry_id).await?;
+    render_profiles(
+        &state,
+        &jar,
+        &ctx,
+        Some("Removed setting from profile.".to_string()),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct ApplyProfileForm {
+    csrf_token: String,
+    profile_id: Uuid,
+    host_id: Uuid,
+}
+
+/// Applies every entry of a profile to one host, returning a per-entry result
+/// line. Shared by single-host and fleet apply. A failure de-escalates and
+/// continues so one bad setting doesn't abort the rest.
+async fn apply_entries_to_host(
+    state: &AppState,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    host_name: &str,
+    entries: &[abyssal_database::repo::grimoire_profiles::ProfileEntry],
+) -> Vec<String> {
+    let mut results = Vec::new();
+    for entry in entries {
+        let Some(op) = entry_to_operation(&entry.kind, &entry.key, &entry.value) else {
+            results.push(format!(
+                "{} {}: skipped (unknown kind)",
+                entry.kind, entry.key
+            ));
+            continue;
+        };
+        let elevated = state.elevation.is_elevated(host_id);
+        match state
+            .executor
+            .execute_on_host(
+                ctx,
+                &state.hosts,
+                host_id,
+                host_name,
+                op,
+                Permission::SystemsManage,
+                OperationKind::Write,
+                false,
+                Duration::from_secs(30),
+                None,
+                elevated,
+            )
+            .await
+        {
+            Ok(_) => results.push(format!("{} {}: applied", entry.kind, entry.key)),
+            Err(e) => {
+                state.elevation.mark_deescalated(host_id);
+                results.push(format!("{} {}: failed ({e})", entry.kind, entry.key));
+            }
+        }
+    }
+    results
+}
+
+pub async fn apply_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ApplyProfileForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let profile = repo::grimoire_profiles::find_by_id(&state.pool, form.profile_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let role_ids: Vec<Uuid> = user_roles.iter().map(|r| r.id).collect();
+    if !can_view_profile(&ctx, &profile, &role_ids) {
+        return Err(WebError(AppError::Forbidden));
+    }
+
+    let host = repo::hosts::find_by_id(&state.pool, form.host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let entries = repo::grimoire_profiles::list_entries(&state.pool, profile.id).await?;
+    let results = apply_entries_to_host(&state, &ctx, form.host_id, &host.name, &entries).await;
+
+    let message = if results.is_empty() {
+        format!("Profile \"{}\" has no settings to apply.", profile.name)
+    } else {
+        format!(
+            "Applied profile \"{}\" to {}:\n{}",
+            profile.name,
+            host.name,
+            results.join("\n")
+        )
+    };
+    render_profiles(&state, &jar, &ctx, Some(message)).await
+}
+
+// ---- M5: fleet config-drift hub ----------------------------------------
+
+/// Rolls a host's drift check up to a status label, badge, and rank (2 =
+/// drifted/worst, 1 = unavailable/no-managed-config, 0 = in sync). Pure.
+fn drift_status(op_ok: bool, total: usize, drifted: usize) -> (&'static str, &'static str, u8) {
+    if !op_ok {
+        ("unavailable", "badge-muted", 1)
+    } else if total == 0 {
+        ("no managed config", "badge-muted", 1)
+    } else if drifted == 0 {
+        ("in sync", "badge-success", 0)
+    } else {
+        ("drifted", "badge-warning", 2)
+    }
+}
+
+pub async fn drift_hub(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
+
+    let (mut in_sync, mut drifted_hosts, mut other) = (0usize, 0usize, 0usize);
+    let mut rows: Vec<(u8, GrimoireDriftRow)> = Vec::new();
+    let mut suggested_actions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for host in repo::hosts::list(&state.pool).await? {
+        if !host.is_active() || !state.hosts.is_connected(host.id) {
+            continue;
+        }
+        let elevated = state.elevation.is_elevated(host.id);
+        let res = state
+            .executor
+            .execute_on_host(
+                &ctx,
+                &state.hosts,
+                host.id,
+                &host.name,
+                AgentOperation::SysctlManagedDrift,
+                Permission::SystemsView,
+                OperationKind::Read,
+                false,
+                Duration::from_secs(15),
+                None,
+                elevated,
+            )
+            .await;
+
+        let (op_ok, total, drift_count, detail) = match &res {
+            Ok(output) => {
+                let (drows, drifted) = parse_sysctl_drift(&output.stdout);
+                let total = drows.len();
+                let detail = if total == 0 {
+                    "No managed sysctl overrides".to_string()
+                } else if drifted == 0 {
+                    format!("{total} key(s) in sync")
+                } else {
+                    format!("{drifted} of {total} key(s) drifted")
+                };
+                (true, total, drifted, detail)
+            }
+            Err(e) => (false, 0, 0, e.to_string()),
+        };
+
+        let (status_label, status_badge_class, rank) = drift_status(op_ok, total, drift_count);
+        match rank {
+            2 => drifted_hosts += 1,
+            0 => in_sync += 1,
+            _ => other += 1,
+        }
+
+        // Aggregate the drift → Postmortem suggestion for hosts that drifted.
+        if rank == 2 {
+            let entry = serde_json::json!({ "drift_count": drift_count });
+            for a in crate::common::suggested_actions_for(
+                &state,
+                "grimoire",
+                "sysctl_drift",
+                std::slice::from_ref(&entry),
+                host.id,
+            )
+            .await
+            {
+                if seen.insert(a.url.clone()) {
+                    suggested_actions.push(a);
+                }
+            }
+        }
+
+        rows.push((
+            rank,
+            GrimoireDriftRow {
+                host_id: host.id.to_string(),
+                host_name: host.name,
+                status_label: status_label.to_string(),
+                status_badge_class: status_badge_class.to_string(),
+                detail,
+            },
+        ));
+    }
+
+    rows.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.host_name.cmp(&b.1.host_name))
+    });
+    let rows: Vec<GrimoireDriftRow> = rows.into_iter().map(|(_, r)| r).collect();
+    let total = rows.len();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = GrimoireDriftTemplate {
+        base,
+        rows,
+        total,
+        in_sync,
+        drifted: drifted_hosts,
+        other,
+        suggested_actions,
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+// ---- M4: apply a profile across the fleet ------------------------------
+
+#[derive(Deserialize)]
+pub struct FleetProfileQuery {
+    profile_id: Uuid,
+}
+
+/// Loads a profile and checks the caller may see it, returning the caller's
+/// role ids too (both fleet handlers need the same preamble).
+async fn load_visible_profile(
+    state: &AppState,
+    ctx: &AuthContext,
+    profile_id: Uuid,
+) -> Result<abyssal_database::repo::grimoire_profiles::Profile, WebError> {
+    let profile = repo::grimoire_profiles::find_by_id(&state.pool, profile_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
+    let role_ids: Vec<Uuid> = user_roles.iter().map(|r| r.id).collect();
+    if !can_view_profile(ctx, &profile, &role_ids) {
+        return Err(WebError(AppError::Forbidden));
+    }
+    Ok(profile)
+}
+
+async fn connected_hosts(state: &AppState) -> anyhow::Result<Vec<(Uuid, String)>> {
+    let mut hosts = Vec::new();
+    for host in repo::hosts::list(&state.pool).await? {
+        if host.is_active() && state.hosts.is_connected(host.id) {
+            hosts.push((host.id, host.name));
+        }
+    }
+    Ok(hosts)
+}
+
+pub async fn apply_profile_fleet_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<FleetProfileQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    let profile = load_visible_profile(&state, &ctx, q.profile_id).await?;
+    let hosts = connected_hosts(&state).await?;
+    if hosts.is_empty() {
+        return render_profiles(
+            &state,
+            &jar,
+            &ctx,
+            Some("No connected hosts to apply to.".to_string()),
+        )
+        .await;
+    }
+    let entries = repo::grimoire_profiles::list_entries(&state.pool, profile.id).await?;
+    let host_names: Vec<&str> = hosts.iter().map(|(_, n)| n.as_str()).collect();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::ConfirmTemplate {
+        base,
+        title: format!("Apply \u{201c}{}\u{201d} to the fleet", profile.name),
+        message: format!(
+            "This applies profile \"{}\" ({} setting(s)) to all {} connected host(s):\n\n{}",
+            profile.name,
+            entries.len(),
+            hosts.len(),
+            host_names.join(", ")
+        ),
+        action_url: format!(
+            "/arsenals/grimoire/apply-profile-fleet?profile_id={}",
+            profile.id
+        ),
+        cancel_url: "/arsenals/grimoire/profiles".to_string(),
+        escalate_host_id: None,
+        type_to_confirm: Some(crate::templates::TypeToConfirm {
+            label: "profile name".to_string(),
+            expected: profile.name.clone(),
+        }),
+        extra_hidden_fields: vec![],
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+pub async fn apply_profile_fleet(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<FleetProfileQuery>,
+    Form(form): Form<ConfirmForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Fleet apply was not confirmed.".into(),
+        )));
+    }
+    let profile = load_visible_profile(&state, &ctx, q.profile_id).await?;
+    crate::common::require_typed_confirmation(&form.confirm_text, &profile.name)?;
+
+    let entries = repo::grimoire_profiles::list_entries(&state.pool, profile.id).await?;
+    let hosts = connected_hosts(&state).await?;
+
+    let mut summary = Vec::new();
+    for (host_id, host_name) in &hosts {
+        let results = apply_entries_to_host(&state, &ctx, *host_id, host_name, &entries).await;
+        let failed = results.iter().filter(|r| r.contains(": failed")).count();
+        let applied = results.iter().filter(|r| r.contains(": applied")).count();
+        summary.push(format!("{host_name}: {applied} applied, {failed} failed"));
+    }
+
+    let message = if hosts.is_empty() {
+        "No connected hosts to apply to.".to_string()
+    } else {
+        format!(
+            "Applied profile \"{}\" to {} connected host(s):\n{}",
+            profile.name,
+            hosts.len(),
+            summary.join("\n")
+        )
+    };
+    render_profiles(&state, &jar, &ctx, Some(message)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drift_status_ranks_hosts() {
+        assert_eq!(drift_status(true, 5, 0), ("in sync", "badge-success", 0));
+        assert_eq!(drift_status(true, 5, 2), ("drifted", "badge-warning", 2));
+        assert_eq!(drift_status(true, 0, 0).2, 1); // no managed config
+        assert_eq!(drift_status(false, 0, 0).0, "unavailable");
+    }
+
+    #[test]
+    fn profile_entries_map_to_the_right_operation() {
+        assert!(matches!(
+            entry_to_operation("sysctl", "vm.swappiness", "10"),
+            Some(AgentOperation::SetPersistentSysctl { .. })
+        ));
+        assert!(matches!(
+            entry_to_operation("module_blacklist", "usb-storage", ""),
+            Some(AgentOperation::BlacklistModule { .. })
+        ));
+        assert!(matches!(
+            entry_to_operation("journald", "system_max_use", "500M"),
+            Some(AgentOperation::SetJournaldRetention { .. })
+        ));
+        // Unknown kind, and an invalid journald key, both map to nothing.
+        assert!(entry_to_operation("nonsense", "x", "y").is_none());
+        assert!(entry_to_operation("journald", "not_a_setting", "1").is_none());
+    }
+
+    #[test]
+    fn profile_entry_validation_enforces_per_kind_rules() {
+        assert!(validate_entry("sysctl", "vm.swappiness", "10").is_ok());
+        assert!(validate_entry("sysctl", "bad key", "10").is_err());
+        // module_blacklist stores no value regardless of what was passed.
+        assert_eq!(
+            validate_entry("module_blacklist", "usb-storage", "x").ok(),
+            Some(String::new())
+        );
+        assert!(validate_entry("module_blacklist", "-rf", "").is_err());
+        assert!(validate_entry("journald", "system_max_use", "500M").is_ok());
+        assert!(validate_entry("journald", "system_max_use", "500 M").is_err());
+        assert!(validate_entry("what", "k", "v").is_err());
+    }
+
+    #[test]
+    fn parses_sysctl_drift_rows_and_counts_drift() {
+        let stdout = "net.ipv4.ip_forward\t1\t1\tin_sync\n\
+                      kernel.randomize_va_space\t2\t0\tdrifted\n\
+                      net.ipv6.conf.all.forwarding\t0\tunavailable\tunavailable";
+        let (rows, drifted) = parse_sysctl_drift(stdout);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(drifted, 1);
+        assert_eq!(rows[0].status_label, "in sync");
+        assert_eq!(rows[1].status_label, "drifted");
+        assert_eq!(rows[1].status_badge_class, "badge-warning");
+        assert_eq!(rows[2].status_label, "unavailable");
+    }
+
+    #[test]
+    fn no_managed_message_yields_no_rows() {
+        let (rows, drifted) = parse_sysctl_drift("No managed sysctl overrides set.");
+        assert!(rows.is_empty());
+        assert_eq!(drifted, 0);
+    }
+
+    #[test]
+    fn sysctl_drift_suggests_postmortem() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let hit = serde_json::json!({ "drift_count": 1 });
+        let targets: Vec<String> = registry
+            .evaluate("grimoire", "sysctl_drift", &hit)
+            .matches
+            .into_iter()
+            .map(|m| m.target_arsenal)
+            .collect();
+        assert!(targets.contains(&"postmortem".to_string()));
+
+        let clean = serde_json::json!({ "drift_count": 0 });
+        assert!(
+            registry
+                .evaluate("grimoire", "sysctl_drift", &clean)
+                .matches
+                .is_empty()
+        );
     }
 }

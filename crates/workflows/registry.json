@@ -394,6 +394,15 @@
     "context_fields": ["failing_count"]
   },
   {
+    "source_arsenal": "grimoire",
+    "source_action": "sysctl_drift",
+    "condition": { "field": "drift_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate config drift with Postmortem",
+    "context_fields": ["drift_count"]
+  },
+  {
     "source_arsenal": "cadavault",
     "source_action": "account_policy_audit",
     "condition": {

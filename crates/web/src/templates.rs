@@ -1010,6 +1010,70 @@ pub struct GrimoireHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    /// Managed-sysctl drift rows, populated when the drift check was just run.
+    pub sysctl_drift: Vec<SysctlDriftRow>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+/// One host row in Grimoire's fleet config-drift hub.
+pub struct GrimoireDriftRow {
+    pub host_id: String,
+    pub host_name: String,
+    pub status_label: String,
+    pub status_badge_class: String,
+    pub detail: String,
+}
+
+#[derive(Template)]
+#[template(path = "grimoire_drift.html")]
+pub struct GrimoireDriftTemplate {
+    pub base: BaseCtx,
+    pub rows: Vec<GrimoireDriftRow>,
+    pub total: usize,
+    pub in_sync: usize,
+    pub drifted: usize,
+    pub other: usize,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+/// One config entry within a profile, for the profiles page.
+pub struct GrimoireProfileEntryView {
+    pub id: String,
+    pub kind_label: String,
+    pub key: String,
+    pub value: String,
+}
+
+/// One config profile (a reusable bundle of settings) on the profiles page.
+pub struct GrimoireProfileView {
+    pub id: String,
+    pub name: String,
+    pub scope_label: String,
+    pub can_edit: bool,
+    pub entries: Vec<GrimoireProfileEntryView>,
+}
+
+#[derive(Template)]
+#[template(path = "grimoire_profiles.html")]
+pub struct GrimoireProfilesTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    pub profiles: Vec<GrimoireProfileView>,
+    /// (role_id, role_name) for the scope picker.
+    pub macro_roles: Vec<(String, String)>,
+    /// Connected hosts for the "apply to host" dropdown.
+    pub hosts: Vec<GrimoireHostRow>,
+    pub result_message: Option<String>,
+}
+
+/// One row of Grimoire's managed-sysctl drift table: a key's declared value,
+/// the host's live value, and how they compare.
+pub struct SysctlDriftRow {
+    pub key: String,
+    pub declared: String,
+    pub live: String,
+    pub status_label: String,
+    pub status_badge_class: String,
 }
 
 /// Edit form for one macro -- see `routes/grimoire.rs::macro_edit_*`.

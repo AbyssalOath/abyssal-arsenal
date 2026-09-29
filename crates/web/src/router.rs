@@ -1159,9 +1159,42 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/grimoire/:host_id",
             get(routes::grimoire::show_host),
         )
+        .route("/arsenals/grimoire/drift", get(routes::grimoire::drift_hub))
+        .route(
+            "/arsenals/grimoire/profiles",
+            get(routes::grimoire::profiles_page).post(routes::grimoire::create_profile),
+        )
+        .route(
+            "/arsenals/grimoire/profiles/:id/delete",
+            post(routes::grimoire::delete_profile),
+        )
+        .route(
+            "/arsenals/grimoire/profiles/:id/entries",
+            post(routes::grimoire::add_profile_entry),
+        )
+        .route(
+            "/arsenals/grimoire/profiles/:id/entries/:entry_id/delete",
+            post(routes::grimoire::remove_profile_entry),
+        )
+        .route(
+            "/arsenals/grimoire/apply-profile",
+            post(routes::grimoire::apply_profile),
+        )
+        .route(
+            "/arsenals/grimoire/apply-profile-fleet/confirm",
+            get(routes::grimoire::apply_profile_fleet_confirm),
+        )
+        .route(
+            "/arsenals/grimoire/apply-profile-fleet",
+            post(routes::grimoire::apply_profile_fleet),
+        )
         .route(
             "/arsenals/grimoire/:host_id/view-sysctl",
             post(routes::grimoire::view_managed_sysctl),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/sysctl-drift",
+            post(routes::grimoire::sysctl_drift),
         )
         .route(
             "/arsenals/grimoire/:host_id/view-cron",
@@ -1202,6 +1235,42 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/grimoire/:host_id/clear-cron",
             post(routes::grimoire::clear_managed_cron_jobs),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/view-modules",
+            post(routes::grimoire::view_module_blacklist),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/blacklist-module",
+            post(routes::grimoire::blacklist_module),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/remove-module-blacklist",
+            post(routes::grimoire::remove_module_blacklist),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-module-blacklist/confirm",
+            get(routes::grimoire::clear_module_blacklist_confirm),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-module-blacklist",
+            post(routes::grimoire::clear_module_blacklist),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/view-journald",
+            post(routes::grimoire::view_journald_config),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/set-journald",
+            post(routes::grimoire::set_journald_retention),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-journald/confirm",
+            get(routes::grimoire::clear_journald_config_confirm),
+        )
+        .route(
+            "/arsenals/grimoire/:host_id/clear-journald",
+            post(routes::grimoire::clear_journald_config),
         )
         .route(
             "/arsenals/grimoire/:host_id/elevate",

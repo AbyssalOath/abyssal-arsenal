@@ -4,7 +4,13 @@
 {% block heading %}Grimoire — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/grimoire">&larr; Back to host list</a></p>
+<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+  <a href="/arsenals/grimoire">&larr; Back to host list</a>
+  <span style="display:flex; gap:14px;">
+    <a href="/arsenals/grimoire/drift">{% call macros::icon("route") %} Fleet drift</a>
+    <a href="/arsenals/grimoire/profiles">{% call macros::icon("audit") %} Config profiles</a>
+  </span>
+</p>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -42,6 +48,17 @@
     <p class="results-empty">No output yet -- run a check.</p>
     {% endif %}
   </details>
+
+  {% if !suggested_actions.is_empty() %}
+  <div class="suggested-actions-panel">
+    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+    <div class="action-grid" style="margin-top:8px;">
+      {% for action in suggested_actions %}
+      <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <div class="card kind-read">
@@ -59,8 +76,44 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} View Managed Scheduled Tasks</button>
     </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/sysctl-drift">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("settings") %} Check Sysctl Drift</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/view-modules">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("settings") %} View Module Blacklist</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/view-journald">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} View Journald Config</button>
+    </form>
   </div>
 </div>
+
+{% if !sysctl_drift.is_empty() %}
+<div class="card">
+  <h3>Managed sysctl drift</h3>
+  <p style="margin-top:0; color:var(--text-muted);">
+    Each managed override's declared value against the host's live value -- "drifted" means the setting didn't take effect or was changed out of band.
+  </p>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Managed sysctl drift">
+    <table>
+      <thead><tr><th>Key</th><th>Declared</th><th>Live</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for row in sysctl_drift %}
+        <tr>
+          <td><code>{{ row.key }}</code></td>
+          <td><code>{{ row.declared }}</code></td>
+          <td><code>{{ row.live }}</code></td>
+          <td><span class="badge {{ row.status_badge_class }}">{{ row.status_label }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 {% if can_manage %}
 <div class="card">
@@ -119,6 +172,31 @@
       <label for="rm-sysctl-key">Sysctl key</label>
       <input type="text" id="rm-sysctl-key" name="key" placeholder="e.g. vm.swappiness" required>
       <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Remove Sysctl Key</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/blacklist-module">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="bl-module">Blacklist kernel module</label>
+      <input type="text" id="bl-module" name="module" placeholder="e.g. usb-storage" required>
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Blacklist Module</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/remove-module-blacklist">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="rm-module">Un-blacklist kernel module</label>
+      <input type="text" id="rm-module" name="module" placeholder="e.g. usb-storage" required>
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Remove From Blacklist</button>
+    </form>
+    <form method="post" action="/arsenals/grimoire/{{ host_id }}/set-journald">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="jd-setting">Journald retention setting</label>
+      <select id="jd-setting" name="setting">
+        <option value="system_max_use">SystemMaxUse (max disk, e.g. 500M)</option>
+        <option value="system_keep_free">SystemKeepFree (keep free, e.g. 1G)</option>
+        <option value="max_retention_sec">MaxRetentionSec (max age, e.g. 2week)</option>
+        <option value="max_file_sec">MaxFileSec (rotate after, e.g. 1week)</option>
+      </select>
+      <label for="jd-value">Value</label>
+      <input type="text" id="jd-value" name="value" placeholder="e.g. 500M or 2week" required>
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Set Journald Retention</button>
     </form>
     <form method="post" action="/arsenals/grimoire/{{ host_id }}/set-cron">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
@@ -181,6 +259,12 @@
     </form>
     <form method="get" action="/arsenals/grimoire/{{ host_id }}/clear-cron/confirm">
       <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Clear Managed Scheduled Tasks&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/grimoire/{{ host_id }}/clear-module-blacklist/confirm">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Clear Module Blacklist&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/grimoire/{{ host_id }}/clear-journald/confirm">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Clear Journald Config&hellip;</button>
     </form>
   </div>
 </div>

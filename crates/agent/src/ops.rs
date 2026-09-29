@@ -330,6 +330,7 @@ pub async fn run(
             ossuary::create_filesystem(device, fstype, elevation).await
         }
         AgentOperation::ViewManagedSysctl => grimoire::view_managed_sysctl(elevation).await,
+        AgentOperation::SysctlManagedDrift => grimoire::sysctl_managed_drift(elevation).await,
         AgentOperation::ViewManagedCronJobs => grimoire::view_managed_cron_jobs(elevation).await,
         AgentOperation::SetPersistentSysctl { key, value } => {
             grimoire::set_persistent_sysctl(key, value, elevation).await
@@ -348,6 +349,19 @@ pub async fn run(
             grimoire::remove_cron_job(job_name, elevation).await
         }
         AgentOperation::ClearManagedCronJobs => grimoire::clear_managed_cron_jobs(elevation).await,
+        AgentOperation::ViewModuleBlacklist => grimoire::view_module_blacklist(elevation).await,
+        AgentOperation::BlacklistModule { module } => {
+            grimoire::blacklist_module(module, elevation).await
+        }
+        AgentOperation::RemoveModuleBlacklist { module } => {
+            grimoire::remove_module_blacklist(module, elevation).await
+        }
+        AgentOperation::ClearModuleBlacklist => grimoire::clear_module_blacklist(elevation).await,
+        AgentOperation::ViewJournaldConfig => grimoire::view_journald_config(elevation).await,
+        AgentOperation::SetJournaldRetention { setting, value } => {
+            grimoire::set_journald_retention(setting, value, elevation).await
+        }
+        AgentOperation::ClearJournaldConfig => grimoire::clear_journald_config(elevation).await,
         AgentOperation::ListBlockedIps => inquest::list_blocked_ips(elevation).await,
         AgentOperation::IsolationStatus => inquest::isolation_status(elevation).await,
         AgentOperation::ListQuarantinedFiles => inquest::list_quarantined_files(elevation).await,

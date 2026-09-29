@@ -12,6 +12,60 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Grimoire: fleet config-drift hub.** A new overview page (linked from the
+  Grimoire landing and host pages) polls every connected host's managed
+  sysctl drift at once and shows, per host, whether its managed overrides
+  still match their live values -- in sync / drifted / no-managed-config --
+  sorted worst-first with a fleet summary. It's the "is the fleet in its
+  desired state?" console, and the richest config source: hosts that have
+  drifted aggregate the "Investigate config drift with Postmortem"
+  suggestion. Built from the existing drift read, so no new agent operations.
+  (Detecting hosts *missing* an expected profile is left for a future
+  host-to-profile assignment.)
+- **Grimoire: apply a config profile across the fleet.** A profile can now
+  be applied to every connected host at once, not just one -- the
+  "enforce it everywhere" force-multiplier. Because the blast radius is
+  broad, it goes through a confirmation that lists exactly which hosts will
+  be affected and requires typing the profile name, then applies each
+  setting to each host and reports a per-host applied/failed summary
+  (a failure on one host or setting never aborts the rest). Reuses the same
+  per-host apply path as single-host apply, so a fleet apply is just that,
+  fanned out. No new agent operations.
+- **Grimoire: config profiles (config-as-code).** A profile is a named,
+  reusable bundle of declarative settings -- any mix of sysctl, kernel
+  module blacklist, and journald retention entries -- created on a new
+  Config Profiles page and applied to a host as a unit, with per-entry
+  results. Profiles reuse the Macros scoping model: **Personal** (visible
+  only to you) or **Role** (shared with a role's members), and only the
+  owner or an admin with `macros.manage_all` can edit or delete one.
+  Applying dispatches each entry through the same operations the individual
+  Grimoire actions use, so a profile is just those actions bundled. Adds a
+  `grimoire_profiles`/`grimoire_profile_entries` schema (migration `0029`);
+  no new agent operations.
+- **Grimoire: two new managed config surfaces.** Grimoire's managed-drop-in
+  idiom now extends beyond sysctl and cron to two more domains. **Kernel
+  module blacklist** manages `/etc/modprobe.d/99-abyssal-arsenal.conf` --
+  view, blacklist a module (so it isn't auto-loaded), un-blacklist, or clear
+  the list; blacklisting takes effect on the next load/boot and never
+  touches an already-loaded module. **Journald retention** manages a
+  `/etc/systemd/journald.conf.d/` drop-in with a closed set of retention
+  settings (SystemMaxUse, SystemKeepFree, MaxRetentionSec, MaxFileSec),
+  applied by restarting `systemd-journald`. Both follow the same
+  tool-owns-the-file, never-edit-in-place, validate-both-sides pattern
+  sysctl/cron already use, with the destructive "clear" actions behind the
+  usual typed confirmation. Adds seven `AgentOperation`s and bumps
+  `PROTOCOL_VERSION` to 31.
+- **Grimoire: managed-sysctl drift detection.** A new Check Sysctl Drift
+  action compares every key in Grimoire's managed sysctl file against the
+  host's live value and shows, per key, declared vs live with an in-sync /
+  drifted / unavailable status -- answering "did my managed config actually
+  take effect, or was it overridden out of band?", which Grimoire couldn't
+  ask before. When any key has drifted it offers "Investigate config drift
+  with Postmortem", Grimoire's first turn as a workflow source rather than
+  only a target. Adds one read-only `AgentOperation::SysctlManagedDrift`
+  (bumps `PROTOCOL_VERSION` to 30); the drift comparison is on the control
+  plane.
+
 - **Reanimation: fleet process hub.** A new overview page (linked from the
   Reanimation landing and host pages) polls every connected host for its
   top CPU-consuming process and shows them in one table -- process, PID,

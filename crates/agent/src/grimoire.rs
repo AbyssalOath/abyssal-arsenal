@@ -162,6 +162,52 @@ pub async fn clear_managed_sysctl(elevation: &ElevationState) -> CommandOutcome 
     }
 }
 
+/// For each key in the managed sysctl file, compares its declared value with
+/// the host's live value, so drift (a managed override that didn't take, or
+/// was changed out of band) is visible. Emits one `key\tdeclared\tlive\tstatus`
+/// line per key; `status` is `in_sync`, `drifted`, or `unavailable` (the key
+/// doesn't exist on this kernel). Read-only.
+pub async fn sysctl_managed_drift(elevation: &ElevationState) -> CommandOutcome {
+    let content = match read_managed_file(SYSCTL_FILE, elevation).await {
+        Ok(c) => c,
+        Err(e) => return CommandOutcome::Err(e),
+    };
+    let entries = parse_sysctl(&content);
+    if entries.is_empty() {
+        return CommandOutcome::Ok(OperationOutput {
+            stdout: "No managed sysctl overrides set.".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        });
+    }
+
+    let mut lines = Vec::new();
+    for (key, declared) in &entries {
+        let live = match elevation.run_allow_failure("sysctl", &["-n", key]).await {
+            Ok(o) if o.exit_code == Some(0) => {
+                o.stdout.split_whitespace().collect::<Vec<_>>().join(" ")
+            }
+            _ => "unavailable".to_string(),
+        };
+        // Normalize whitespace on both sides before comparing (some sysctls
+        // print tab-separated fields).
+        let declared_norm = declared.split_whitespace().collect::<Vec<_>>().join(" ");
+        let status = if live == "unavailable" {
+            "unavailable"
+        } else if live == declared_norm {
+            "in_sync"
+        } else {
+            "drifted"
+        };
+        lines.push(format!("{key}\t{declared_norm}\t{live}\t{status}"));
+    }
+    CommandOutcome::Ok(OperationOutput {
+        stdout: lines.join("\n"),
+        stderr: String::new(),
+        exit_code: Some(0),
+    })
+}
+
 // ---------------------------------------------------------------------
 // Cron
 // ---------------------------------------------------------------------
@@ -315,6 +361,204 @@ pub async fn clear_managed_cron_jobs(elevation: &ElevationState) -> CommandOutco
                 output.stdout
             ),
             ..output
+        }),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------
+// Kernel module blacklist (modprobe.d)
+// ---------------------------------------------------------------------
+
+const MODPROBE_FILE: &str = "/etc/modprobe.d/99-abyssal-arsenal.conf";
+const MODPROBE_HEADER: &str = "# Managed by Abyssal Arsenal (Grimoire) -- do not edit manually\n";
+
+fn parse_blacklist(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("blacklist ")
+                .map(|m| m.trim().to_string())
+        })
+        .filter(|m| !m.is_empty())
+        .collect()
+}
+
+fn render_blacklist(modules: &[String]) -> String {
+    let mut out = String::from(MODPROBE_HEADER);
+    for m in modules {
+        out.push_str(&format!("blacklist {m}\n"));
+    }
+    out
+}
+
+pub async fn view_module_blacklist(elevation: &ElevationState) -> CommandOutcome {
+    match read_managed_file(MODPROBE_FILE, elevation).await {
+        Ok(content) => CommandOutcome::Ok(present(
+            OperationOutput {
+                stdout: content,
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+            "No kernel modules are blacklisted by this tool yet.",
+        )),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+pub async fn blacklist_module(module: String, elevation: &ElevationState) -> CommandOutcome {
+    if !abyssal_agent_protocol::is_valid_kernel_module_name(&module) {
+        return CommandOutcome::Err(format!("refusing invalid module name: {module}"));
+    }
+    let current = match read_managed_file(MODPROBE_FILE, elevation).await {
+        Ok(c) => c,
+        Err(e) => return CommandOutcome::Err(e),
+    };
+    let mut modules = parse_blacklist(&current);
+    if !modules.iter().any(|m| m == &module) {
+        modules.push(module.clone());
+    }
+    match write_managed_file(MODPROBE_FILE, &render_blacklist(&modules), elevation).await {
+        Ok(output) => CommandOutcome::Ok(OperationOutput {
+            stdout: format!(
+                "Blacklisted {module}. Takes effect on the next module load or boot; an already-loaded module is unaffected.\n{}",
+                output.stdout
+            ),
+            ..output
+        }),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+pub async fn remove_module_blacklist(module: String, elevation: &ElevationState) -> CommandOutcome {
+    if !abyssal_agent_protocol::is_valid_kernel_module_name(&module) {
+        return CommandOutcome::Err(format!("refusing invalid module name: {module}"));
+    }
+    let current = match read_managed_file(MODPROBE_FILE, elevation).await {
+        Ok(c) => c,
+        Err(e) => return CommandOutcome::Err(e),
+    };
+    let modules: Vec<String> = parse_blacklist(&current)
+        .into_iter()
+        .filter(|m| m != &module)
+        .collect();
+    match write_managed_file(MODPROBE_FILE, &render_blacklist(&modules), elevation).await {
+        Ok(output) => CommandOutcome::Ok(OperationOutput {
+            stdout: format!(
+                "Removed {module} from the managed blacklist.\n{}",
+                output.stdout
+            ),
+            ..output
+        }),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+pub async fn clear_module_blacklist(elevation: &ElevationState) -> CommandOutcome {
+    match write_managed_file(MODPROBE_FILE, MODPROBE_HEADER, elevation).await {
+        Ok(output) => CommandOutcome::Ok(OperationOutput {
+            stdout: format!("Cleared the managed module blacklist.\n{}", output.stdout),
+            ..output
+        }),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------
+// journald retention
+// ---------------------------------------------------------------------
+
+const JOURNALD_DIR: &str = "/etc/systemd/journald.conf.d";
+const JOURNALD_FILE: &str = "/etc/systemd/journald.conf.d/99-abyssal-arsenal.conf";
+const JOURNALD_HEADER: &str = "# Managed by Abyssal Arsenal (Grimoire) -- do not edit manually\n";
+
+fn parse_journald(content: &str) -> Vec<(String, String)> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+                return None;
+            }
+            let (k, v) = line.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
+fn render_journald(entries: &[(String, String)]) -> String {
+    let mut out = String::from(JOURNALD_HEADER);
+    out.push_str("[Journal]\n");
+    for (k, v) in entries {
+        out.push_str(&format!("{k}={v}\n"));
+    }
+    out
+}
+
+async fn write_journald(
+    content: &str,
+    elevation: &ElevationState,
+) -> Result<OperationOutput, String> {
+    // The drop-in directory may not exist yet, unlike sysctl.d / cron.d.
+    elevation.run("mkdir", &["-p", JOURNALD_DIR]).await?;
+    let written = write_managed_file(JOURNALD_FILE, content, elevation).await?;
+    elevation
+        .run("systemctl", &["restart", "systemd-journald"])
+        .await?;
+    Ok(written)
+}
+
+pub async fn view_journald_config(elevation: &ElevationState) -> CommandOutcome {
+    match read_managed_file(JOURNALD_FILE, elevation).await {
+        Ok(content) => CommandOutcome::Ok(present(
+            OperationOutput {
+                stdout: content,
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+            "No managed journald retention settings yet.",
+        )),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+pub async fn set_journald_retention(
+    setting: abyssal_agent_protocol::JournaldSetting,
+    value: String,
+    elevation: &ElevationState,
+) -> CommandOutcome {
+    if !abyssal_agent_protocol::is_valid_journald_value(&value) {
+        return CommandOutcome::Err(format!("refusing invalid journald value: {value}"));
+    }
+    let key = setting.key();
+    let current = match read_managed_file(JOURNALD_FILE, elevation).await {
+        Ok(c) => c,
+        Err(e) => return CommandOutcome::Err(e),
+    };
+    let mut entries = parse_journald(&current);
+    if let Some(existing) = entries.iter_mut().find(|(k, _)| k == key) {
+        existing.1 = value.clone();
+    } else {
+        entries.push((key.to_string(), value.clone()));
+    }
+    match write_journald(&render_journald(&entries), elevation).await {
+        Ok(_) => CommandOutcome::Ok(OperationOutput {
+            stdout: format!("Set journald {key}={value} and restarted systemd-journald."),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+pub async fn clear_journald_config(elevation: &ElevationState) -> CommandOutcome {
+    let content = format!("{JOURNALD_HEADER}[Journal]\n");
+    match write_journald(&content, elevation).await {
+        Ok(_) => CommandOutcome::Ok(OperationOutput {
+            stdout: "Cleared managed journald config and restarted systemd-journald.".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
         }),
         Err(e) => CommandOutcome::Err(e),
     }
