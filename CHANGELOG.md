@@ -10,6 +10,8 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-28
+
 ### Added
 
 - **Cadavault: aggregate Security Posture Report.** A single **Run
