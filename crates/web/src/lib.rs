@@ -6,6 +6,7 @@ pub mod extract;
 mod health_ops;
 pub mod host_context;
 mod middleware;
+mod mortiscope_ops;
 pub mod pagination;
 mod panopticon_arp;
 mod panopticon_mdns;
@@ -25,6 +26,7 @@ pub mod update_check;
 
 pub use audit_export::spawn_audit_syslog_sweep;
 pub use health_ops::spawn_health_sweep;
+pub use mortiscope_ops::spawn_mortiscope_metrics_sweep;
 pub use panopticon_arp::spawn_panopticon_arp_listener;
 pub use panopticon_mdns::spawn_panopticon_mdns_listener;
 pub use panopticon_ops::spawn_panopticon_sweep;

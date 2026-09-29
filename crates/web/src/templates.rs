@@ -886,6 +886,73 @@ pub struct MortiscopeHostTemplate {
     pub result_error: Option<String>,
     pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
+    /// Recent trends from the metrics sweep -- empty until the sweep has run
+    /// at least twice for this host.
+    pub trends: Vec<MortiscopeTrendRow>,
+}
+
+/// One metric's recent trend on the Mortiscope page: its latest value and an
+/// inline-SVG sparkline `points` string over the retained samples.
+pub struct MortiscopeTrendRow {
+    pub label: String,
+    pub latest: String,
+    pub sparkline_points: String,
+    pub samples: usize,
+}
+
+/// One metric cell in the fleet overview: a host's latest value for a metric
+/// and the colour reflecting whether it breaches a threshold.
+pub struct MortiscopeOverviewCell {
+    pub value: String,
+    pub badge_class: String,
+}
+
+/// One host row in the fleet overview.
+pub struct MortiscopeOverviewRow {
+    pub host_id: String,
+    pub host_name: String,
+    pub cells: Vec<MortiscopeOverviewCell>,
+    pub status_label: String,
+    pub status_badge_class: String,
+}
+
+#[derive(Template)]
+#[template(path = "mortiscope_overview.html")]
+pub struct MortiscopeOverviewTemplate {
+    pub base: BaseCtx,
+    pub metric_labels: Vec<String>,
+    pub rows: Vec<MortiscopeOverviewRow>,
+    pub total: usize,
+    pub critical: usize,
+    pub warning: usize,
+    pub ok: usize,
+    pub no_data: usize,
+    pub monitoring_enabled: bool,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+/// One configured threshold row on the Mortiscope monitoring page.
+pub struct MortiscopeThresholdRow {
+    pub id: String,
+    pub metric_label: String,
+    pub comparator_label: String,
+    pub threshold: String,
+    pub severity: String,
+    pub enabled: bool,
+}
+
+#[derive(Template)]
+#[template(path = "mortiscope_thresholds.html")]
+pub struct MortiscopeThresholdsTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    pub monitoring_enabled: bool,
+    pub recipients: String,
+    pub sustained_samples: u32,
+    pub thresholds: Vec<MortiscopeThresholdRow>,
+    /// Metric choices for the add form, as `(key, label)`.
+    pub metric_options: Vec<(String, String)>,
+    pub result_message: Option<String>,
 }
 
 pub struct GrimoireHostRow {

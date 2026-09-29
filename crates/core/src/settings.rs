@@ -42,6 +42,21 @@ pub const HOST_ISOLATION_ENABLED: &str = "inquest.host_isolation_enabled";
 /// controls the unattended sweep.
 pub const THANATOS_MONITORING_ENABLED: &str = "thanatos.monitoring_enabled";
 
+/// Whether Mortiscope's metrics sweep also evaluates configured thresholds
+/// and pushes alerts on a sustained breach. Off by default -- trend history
+/// is always collected, but alerting is opt-in (it needs recipients and
+/// thresholds set up first). Read fresh each sweep tick.
+pub const MORTISCOPE_MONITORING_ENABLED: &str = "mortiscope.monitoring_enabled";
+
+/// Comma-separated notification recipients for Mortiscope threshold alerts,
+/// same format and routing as `THANATOS_ALERT_RECIPIENTS`.
+pub const MORTISCOPE_ALERT_RECIPIENTS: &str = "mortiscope.alert_recipients";
+
+/// How many consecutive breaching samples make a breach "sustained" (and so
+/// worth alerting on) rather than a transient spike. Guards against flapping.
+pub const MORTISCOPE_SUSTAINED_SAMPLES: &str = "mortiscope.sustained_samples";
+pub const MORTISCOPE_SUSTAINED_SAMPLES_DEFAULT: u32 = 3;
+
 /// Comma-separated notification recipient addresses for Thanatos
 /// correlation alerts, routed through whatever notification provider(s)
 /// are configured (SMTP today). Empty by default -- an alert still gets

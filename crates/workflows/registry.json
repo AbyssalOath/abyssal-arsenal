@@ -72,6 +72,78 @@
     "context_fields": ["pid", "comm", "cpu_percent"]
   },
   {
+    "source_arsenal": "mortiscope",
+    "source_action": "load_average",
+    "condition": { "field": "load_per_core", "operator": "greater_than_or_equal", "value": 2 },
+    "target_arsenal": "vivisection",
+    "target_action": "vm_statistics",
+    "label": "Profile with Vivisection",
+    "context_fields": ["load_per_core"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "memory_detail",
+    "condition": { "field": "mem_used_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "vivisection",
+    "target_action": "vm_statistics",
+    "label": "Check VM statistics with Vivisection",
+    "context_fields": ["mem_used_percent"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "memory_detail",
+    "condition": { "field": "swap_used_percent", "operator": "greater_than_or_equal", "value": 50 },
+    "target_arsenal": "vivisection",
+    "target_action": "tuning_parameters_status",
+    "label": "Tune swappiness with Vivisection",
+    "context_fields": ["swap_used_percent"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "top_process_by_memory",
+    "condition": { "field": "mem_percent", "operator": "greater_than_or_equal", "value": 50 },
+    "target_arsenal": "reanimation",
+    "target_action": "process_detail",
+    "label": "Investigate PID {pid} with Reanimation",
+    "context_fields": ["pid", "comm", "mem_percent"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "cpu_utilization",
+    "condition": { "field": "cpu_busy_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "vivisection",
+    "target_action": "vm_statistics",
+    "label": "Profile with Vivisection",
+    "context_fields": ["cpu_busy_percent"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "cpu_utilization",
+    "condition": { "field": "cpu_iowait_percent", "operator": "greater_than_or_equal", "value": 30 },
+    "target_arsenal": "necropsy",
+    "target_action": "disk_health",
+    "label": "Check disk health with Necropsy",
+    "context_fields": ["cpu_iowait_percent"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "thermal_sensors",
+    "condition": { "field": "max_temp_c", "operator": "greater_than_or_equal", "value": 80 },
+    "target_arsenal": "necropsy",
+    "target_action": "show_host",
+    "label": "Inspect hardware with Necropsy",
+    "context_fields": ["max_temp_c"]
+  },
+  {
+    "source_arsenal": "mortiscope",
+    "source_action": "memory_pressure",
+    "condition": { "field": "mem_pressure_some_avg10", "operator": "greater_than_or_equal", "value": 20 },
+    "target_arsenal": "vivisection",
+    "target_action": "vm_statistics",
+    "label": "Check VM statistics with Vivisection",
+    "context_fields": ["mem_pressure_some_avg10"]
+  },
+  {
     "source_arsenal": "thanatos",
     "source_action": "scan_security_events",
     "condition": { "field": "alerted", "operator": "equals", "value": true },

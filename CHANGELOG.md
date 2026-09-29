@@ -14,6 +14,76 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Mortiscope: fleet monitoring overview.** A new overview page (linked
+  from the Mortiscope landing and host pages) shows every active host's
+  latest core metrics -- load per core, CPU busy, memory used, swap used --
+  in one table, each cell coloured against the configured thresholds and
+  each host rolled up to its worst status, sorted worst-first, with a
+  fleet summary (critical / warning / ok / no-data counts). It's built from
+  the swept history in a single query rather than re-polling, works whether
+  or not alerting is enabled, and aggregates the workflow suggestions for
+  every host whose latest values cross a registry threshold -- so one page
+  can point at Vivisection, Reanimation, and Necropsy across the whole
+  fleet, making Mortiscope the richest workflow source in the app. No new
+  agent operations.
+- **Mortiscope: metric thresholds and alerting.** A new Monitoring &
+  Thresholds page (linked from each host's Mortiscope page) lets an
+  operator configure per-metric thresholds (a metric, a `>=`/`<=`
+  condition, a value, and a severity), set alert recipients, and choose
+  how many consecutive breaching samples count as sustained. When alerting
+  is enabled -- opt-in, off by default, since trend history is collected
+  regardless -- the metrics sweep compares each connected host's recent
+  samples against the thresholds and dispatches a notification through the
+  existing provider(s) on the transition into a sustained breach, then a
+  recovery notice when it clears, tracking per-host/metric firing state so
+  it never re-alerts every tick. Requiring N consecutive breaching samples
+  guards against flapping and against alerting on a single spike. An
+  "Evaluate now" action runs the same evaluation on demand. Reuses the
+  Thanatos sweep/alert pattern and recipient format; adds migration
+  `0028_mortiscope_thresholds` and the `mortiscope.monitoring_enabled` /
+  `mortiscope.alert_recipients` / `mortiscope.sustained_samples` settings.
+  No new agent operations.
+- **Mortiscope: metric history and trends.** A new unattended metrics
+  sweep polls a small core set (load per core, CPU busy %, memory used %,
+  swap used %) across connected hosts every few minutes and records a
+  time series in a new `host_metric_samples` table, pruned to a rolling
+  seven-day window so it stays bounded. The Mortiscope host page now shows
+  a "Recent trends" card with the latest value and an inline sparkline for
+  each metric, drawn from that history rather than a fresh poll on every
+  load. The sweep reuses the same parsers the on-demand read handlers use,
+  so a swept sample and an on-demand reading are computed identically, and
+  it follows the established system-initiated sweep pattern
+  (`health_ops`/`thanatos_ops`). Adds migration `0027_mortiscope_metrics`;
+  no new agent operations.
+- **Mortiscope: broader metric coverage.** Four new read-only checks fill
+  the gaps left by the point-in-time snapshots. **CPU Utilization** reports
+  real busy % and iowait % from the delta between two `/proc/stat`
+  snapshots (distinct from load average, which counts runnable tasks) --
+  high busy offers profiling with Vivisection, and high iowait points at
+  storage with Necropsy's disk-health check. **Network Throughput** reports
+  per-interface receive/transmit rates from a `/proc/net/dev` delta.
+  **Thermal Sensors** reads temperatures via `lm-sensors` when present and
+  falls back to `/sys/class/thermal` otherwise (detected, not assumed),
+  offering Necropsy hardware inspection when a zone crosses 80 °C.
+  **Memory Pressure** reports the kernel's Pressure Stall Information for
+  memory, IO, and CPU, offering Vivisection's VM statistics under sustained
+  memory pressure (and reporting plainly when PSI isn't available on the
+  host's kernel). `PROTOCOL_VERSION` bumps to 26 for the new operations --
+  existing agents need one redeploy (or a self-update) to pick them up.
+- **Mortiscope: structured readings and metric-driven workflows.** The
+  monitoring reads now parse their output into numbers instead of only
+  showing text, so a high reading can suggest where to act. Load Average
+  reports load-per-core (the agent now appends the CPU core count, so raw
+  load can be normalized; an older agent that doesn't just omits the
+  per-core figure rather than misreporting it) and offers "Profile with
+  Vivisection" when load exceeds two per core. Memory Detail computes
+  used-memory and swap-used percentages from `/proc/meminfo` and offers
+  Vivisection's VM statistics at >=90% memory and swappiness tuning at
+  >=50% swap. Top Processes by Memory now, like Top Processes by CPU,
+  offers "Investigate PID ... with Reanimation" for a process over half
+  of RAM. No new agent operations -- the parsing is on the control plane,
+  and the rendered text output is unchanged.
+
 - **Cadavault: aggregate Security Posture Report.** A single **Run
   Security Posture Report** action runs every Cadavault check at once
   (firewall, SSH hardening, kernel/sysctl baseline, account policy,

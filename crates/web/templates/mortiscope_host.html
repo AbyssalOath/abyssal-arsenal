@@ -4,7 +4,13 @@
 {% block heading %}Mortiscope — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/mortiscope">&larr; Back to host list</a></p>
+<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+  <a href="/arsenals/mortiscope">&larr; Back to host list</a>
+  <span style="display:flex; gap:14px;">
+    <a href="/arsenals/mortiscope/overview">{% call macros::icon("route") %} Fleet overview</a>
+    <a href="/arsenals/mortiscope/thresholds">{% call macros::icon("route") %} Monitoring &amp; thresholds</a>
+  </span>
+</p>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -62,6 +68,37 @@
   {% endif %}
 </div>
 
+{% if !trends.is_empty() %}
+<div class="card">
+  <h3>Recent trends</h3>
+  <p style="margin-top:0; color:var(--text-muted);">
+    Sampled every few minutes by the background metrics sweep (last {{ trends[0].samples }} points).
+  </p>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Recent metric trends">
+    <table>
+      <thead><tr><th>Metric</th><th>Latest</th><th>Trend</th></tr></thead>
+      <tbody>
+        {% for t in trends %}
+        <tr>
+          <td>{{ t.label }}</td>
+          <td><code>{{ t.latest }}</code></td>
+          <td>
+            {% if t.sparkline_points.is_empty() %}
+            <span style="color:var(--text-muted);">collecting…</span>
+            {% else %}
+            <svg viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="{{ t.label }} sparkline" style="display:block; color:var(--accent, currentColor);">
+              <polyline points="{{ t.sparkline_points }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+            </svg>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 <div class="card kind-read">
   <h3>Read</h3>
   <div class="action-grid">
@@ -80,6 +117,22 @@
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/memory-detail">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Memory Detail</button>
+    </form>
+    <form method="post" action="/arsenals/mortiscope/{{ host_id }}/cpu-utilization">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} CPU Utilization</button>
+    </form>
+    <form method="post" action="/arsenals/mortiscope/{{ host_id }}/network-throughput">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("socket") %} Network Throughput</button>
+    </form>
+    <form method="post" action="/arsenals/mortiscope/{{ host_id }}/memory-pressure">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Memory Pressure</button>
+    </form>
+    <form method="post" action="/arsenals/mortiscope/{{ host_id }}/thermal-sensors">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Thermal Sensors</button>
     </form>
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/disk-io">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">

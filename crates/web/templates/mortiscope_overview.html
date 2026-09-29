@@ -1,0 +1,70 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Mortiscope Fleet Overview — Abyssal Arsenal{% endblock %}
+{% block heading %}Mortiscope — Fleet Overview{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+  <a href="/arsenals/mortiscope">&larr; Back to host list</a>
+  <a href="/arsenals/mortiscope/thresholds">{% call macros::icon("route") %} Monitoring &amp; thresholds</a>
+</p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+    <h2 style="margin:0;">{{ total }} host{% if total != 1 %}s{% endif %}</h2>
+    <span>
+      <span class="badge badge-danger">{{ critical }} critical</span>
+      <span class="badge badge-warning">{{ warning }} warning</span>
+      <span class="badge badge-success">{{ ok }} ok</span>
+      <span class="badge badge-muted">{{ no_data }} no data</span>
+    </span>
+  </div>
+  <p style="margin:8px 0 0; color:var(--text-muted);">
+    Latest values from the background metrics sweep, coloured against configured thresholds.
+    {% if !monitoring_enabled %}Threshold <strong>alerting is off</strong> -- this view still shows current breaches; enable alerting on the thresholds page to get notified.{% endif %}
+  </p>
+</div>
+
+<div class="card">
+  {% if rows.is_empty() %}
+  <p class="results-empty">No metric samples yet -- the sweep runs every few minutes for connected hosts.</p>
+  {% else %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Fleet metric overview">
+    <table>
+      <thead>
+        <tr>
+          <th>Host</th>
+          {% for label in metric_labels %}<th>{{ label }}</th>{% endfor %}
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><a href="/arsenals/mortiscope/{{ row.host_id }}">{{ row.host_name }}</a></td>
+          {% for cell in row.cells %}
+          <td>{% if cell.badge_class.is_empty() %}<span style="color:var(--text-muted);">{{ cell.value }}</span>{% else %}<span class="badge {{ cell.badge_class }}">{{ cell.value }}</span>{% endif %}</td>
+          {% endfor %}
+          <td><span class="badge {{ row.status_badge_class }}">{{ row.status_label }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+{% if !suggested_actions.is_empty() %}
+<div class="card">
+  <div class="suggested-actions-panel">
+    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+    <div class="action-grid" style="margin-top:8px;">
+      {% for action in suggested_actions %}
+      <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

@@ -157,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
     spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());
     abyssal_web::spawn_thanatos_sweep(state.clone());
     abyssal_web::spawn_health_sweep(state.clone());
+    abyssal_web::spawn_mortiscope_metrics_sweep(state.clone());
     abyssal_web::spawn_update_check_sweep(state.clone());
     abyssal_web::spawn_panopticon_sweep(state.pool.clone());
     abyssal_web::spawn_panopticon_snmp_sweep(state.pool.clone(), encryption_key);

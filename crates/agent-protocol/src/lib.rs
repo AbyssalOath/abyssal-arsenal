@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -275,6 +275,19 @@ pub enum AgentOperation {
     /// Currently-failed systemd units (`systemctl --failed`) -- a direct
     /// "is anything broken right now" health signal. systemd-only.
     FailedServices,
+    /// Real CPU utilization (busy % and iowait %), from the delta between two
+    /// `/proc/stat` snapshots -- distinct from `LoadAverage`, which counts
+    /// runnable tasks rather than busy time.
+    CpuUtilization,
+    /// Per-interface receive/transmit rates, from the delta between two
+    /// `/proc/net/dev` snapshots.
+    NetworkThroughput,
+    /// Thermal readings, via `lm-sensors` when present, else
+    /// `/sys/class/thermal` (detected, not assumed).
+    ThermalSensors,
+    /// Pressure Stall Information for memory/io/cpu (`/proc/pressure/*`) -- how
+    /// much time tasks stalled waiting on each resource.
+    MemoryPressure,
     /// Every systemd service unit and its current state
     /// (`systemctl list-units --type=service --all`).
     ListServices,
@@ -1754,6 +1767,10 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::MemoryDetail => write!(f, "MemoryDetail"),
             AgentOperation::DiskIoStats => write!(f, "DiskIoStats"),
             AgentOperation::FailedServices => write!(f, "FailedServices"),
+            AgentOperation::CpuUtilization => write!(f, "CpuUtilization"),
+            AgentOperation::NetworkThroughput => write!(f, "NetworkThroughput"),
+            AgentOperation::ThermalSensors => write!(f, "ThermalSensors"),
+            AgentOperation::MemoryPressure => write!(f, "MemoryPressure"),
             AgentOperation::ListServices => write!(f, "ListServices"),
             AgentOperation::ServiceStatus { unit } => {
                 f.debug_struct("ServiceStatus").field("unit", unit).finish()

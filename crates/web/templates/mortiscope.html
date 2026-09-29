@@ -3,6 +3,13 @@
 {% block heading %}Mortiscope — Health &amp; Resource Monitoring{% endblock %}
 {% block content %}
 
+<div class="card">
+  <div class="actions">
+    <a class="btn" href="/arsenals/mortiscope/overview">Fleet overview</a>
+    <a class="btn btn-secondary" href="/arsenals/mortiscope/thresholds">Monitoring &amp; thresholds</a>
+  </div>
+</div>
+
 {% if hosts.is_empty() %}
 <div class="card">
   <p style="color:var(--text-muted);">

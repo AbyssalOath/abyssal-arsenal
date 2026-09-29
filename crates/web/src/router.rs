@@ -523,6 +523,30 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/arsenals/mortiscope", get(routes::mortiscope::show))
         .route(
+            "/arsenals/mortiscope/overview",
+            get(routes::mortiscope::overview),
+        )
+        .route(
+            "/arsenals/mortiscope/thresholds",
+            get(routes::mortiscope::thresholds_page).post(routes::mortiscope::add_threshold),
+        )
+        .route(
+            "/arsenals/mortiscope/thresholds/:id/delete",
+            post(routes::mortiscope::delete_threshold),
+        )
+        .route(
+            "/arsenals/mortiscope/monitoring/toggle",
+            post(routes::mortiscope::monitoring_toggle),
+        )
+        .route(
+            "/arsenals/mortiscope/monitoring/config",
+            post(routes::mortiscope::monitoring_config),
+        )
+        .route(
+            "/arsenals/mortiscope/evaluate-now",
+            post(routes::mortiscope::evaluate_now),
+        )
+        .route(
             "/arsenals/mortiscope/:host_id",
             get(routes::mortiscope::show_host),
         )
@@ -541,6 +565,22 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/mortiscope/:host_id/memory-detail",
             post(routes::mortiscope::memory_detail),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/cpu-utilization",
+            post(routes::mortiscope::cpu_utilization),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/network-throughput",
+            post(routes::mortiscope::network_throughput),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/thermal-sensors",
+            post(routes::mortiscope::thermal_sensors),
+        )
+        .route(
+            "/arsenals/mortiscope/:host_id/memory-pressure",
+            post(routes::mortiscope::memory_pressure),
         )
         .route(
             "/arsenals/mortiscope/:host_id/disk-io",

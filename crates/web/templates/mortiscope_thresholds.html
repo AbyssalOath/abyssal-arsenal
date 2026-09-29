@@ -1,0 +1,111 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Mortiscope Monitoring — Abyssal Arsenal{% endblock %}
+{% block heading %}Mortiscope — Monitoring &amp; Thresholds{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/mortiscope">&larr; Back to Mortiscope</a></p>
+
+{% if let Some(msg) = result_message %}
+<div class="info-banner" style="margin-bottom:14px;">{{ msg }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Alerting</h3>
+  <p style="margin-top:0; color:var(--text-muted);">
+    Trend history is always collected. When alerting is on, the background sweep
+    compares each host's recent samples against the thresholds below and sends a
+    notification when a metric stays in breach across the configured number of
+    consecutive samples (and again when it recovers).
+  </p>
+  <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+    <span class="toggle-state {% if monitoring_enabled %}on{% endif %}">
+      <span class="toggle-dot"></span>{% if monitoring_enabled %}Enabled{% else %}Disabled{% endif %}
+    </span>
+    {% if can_manage %}
+    <form method="post" action="/arsenals/mortiscope/monitoring/toggle">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <input type="hidden" name="enabled" value="{% if monitoring_enabled %}false{% else %}true{% endif %}">
+      <button type="submit" class="{% if monitoring_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+        {% if monitoring_enabled %}Disable alerting{% else %}Enable alerting{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/arsenals/mortiscope/evaluate-now">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">Evaluate now</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if can_manage %}
+  <form method="post" action="/arsenals/mortiscope/monitoring/config" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="recipients">Alert recipients (comma-separated)</label>
+    <input type="text" id="recipients" name="recipients" value="{{ recipients }}" placeholder="ops@example.com, oncall@example.com" style="width:100%; max-width:460px;">
+    <label for="sustained" style="margin-top:8px;">Consecutive breaching samples before alerting</label>
+    <input type="number" id="sustained" name="sustained_samples" min="1" max="60" value="{{ sustained_samples }}">
+    <div style="margin-top:8px;"><button type="submit" class="btn">Save settings</button></div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Thresholds</h3>
+  {% if thresholds.is_empty() %}
+  <p class="results-empty">No thresholds configured yet.</p>
+  {% else %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Configured thresholds">
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Condition</th><th>Severity</th><th>Enabled</th>{% if can_manage %}<th></th>{% endif %}</tr>
+      </thead>
+      <tbody>
+        {% for t in thresholds %}
+        <tr>
+          <td>{{ t.metric_label }}</td>
+          <td><code>{{ t.comparator_label }} {{ t.threshold }}</code></td>
+          <td>{{ t.severity }}</td>
+          <td>{% if t.enabled %}yes{% else %}no{% endif %}</td>
+          {% if can_manage %}
+          <td>
+            <form method="post" action="/arsenals/mortiscope/thresholds/{{ t.id }}/delete">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-danger btn-sm">Delete</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if can_manage %}
+  <form method="post" action="/arsenals/mortiscope/thresholds" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="metric">Metric</label>
+    <select id="metric" name="metric">
+      {% for (key, label) in metric_options %}
+      <option value="{{ key }}">{{ label }}</option>
+      {% endfor %}
+    </select>
+    <label for="comparator">Condition</label>
+    <select id="comparator" name="comparator">
+      <option value="ge">&ge; at or above</option>
+      <option value="le">&le; at or below</option>
+    </select>
+    <label for="threshold">Value</label>
+    <input type="number" id="threshold" name="threshold" step="any" required>
+    <label for="severity">Severity</label>
+    <select id="severity" name="severity">
+      <option value="warning">warning</option>
+      <option value="critical">critical</option>
+      <option value="info">info</option>
+    </select>
+    <button type="submit" class="btn-warning">Add threshold</button>
+  </form>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -119,6 +119,10 @@ pub async fn run(
         AgentOperation::MemoryDetail => mortiscope::memory_detail(elevation).await,
         AgentOperation::DiskIoStats => mortiscope::disk_io_stats(elevation).await,
         AgentOperation::FailedServices => mortiscope::failed_services(elevation).await,
+        AgentOperation::CpuUtilization => mortiscope::cpu_utilization().await,
+        AgentOperation::NetworkThroughput => mortiscope::network_throughput().await,
+        AgentOperation::ThermalSensors => mortiscope::thermal_sensors().await,
+        AgentOperation::MemoryPressure => mortiscope::memory_pressure().await,
         AgentOperation::ListServices => incarnation::list_services(elevation).await,
         AgentOperation::ServiceStatus { unit } => {
             incarnation::service_status(unit, elevation).await
