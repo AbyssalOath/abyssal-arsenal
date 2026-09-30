@@ -144,6 +144,10 @@ pub async fn run(
         AgentOperation::ReadOnlyFilesystems => resurrection::read_only_filesystems(elevation).await,
         AgentOperation::ReloadSystemdDaemon => resurrection::reload_systemd_daemon(elevation).await,
         AgentOperation::ResetFailedUnits => resurrection::reset_failed_units(elevation).await,
+        AgentOperation::ListFailedUnits => resurrection::list_failed_units(elevation).await,
+        AgentOperation::RecoverUnit { unit } => resurrection::recover_unit(unit, elevation).await,
+        AgentOperation::DiskSpaceCritical => resurrection::disk_space_critical(elevation).await,
+        AgentOperation::FstabCheck => resurrection::fstab_check(elevation).await,
         AgentOperation::RemountReadWrite { target } => {
             resurrection::remount_read_write(target, elevation).await
         }

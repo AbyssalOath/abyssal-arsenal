@@ -102,6 +102,90 @@ pub async fn reset_failed_units(elevation: &ElevationState) -> CommandOutcome {
     }
 }
 
+pub async fn disk_space_critical(elevation: &ElevationState) -> CommandOutcome {
+    // `-P` guarantees one line per filesystem (no wrapping), `-h` human sizes.
+    match elevation.run_allow_failure("df", &["-Ph"]).await {
+        Ok(output) => CommandOutcome::Ok(present(output, "(no filesystems reported)")),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+pub async fn fstab_check(elevation: &ElevationState) -> CommandOutcome {
+    match elevation
+        .run_allow_failure("findmnt", &["--verify", "--verbose"])
+        .await
+    {
+        Ok(output) => {
+            // findmnt --verify exits non-zero when it finds problems; capture
+            // that as a machine-parseable line since the summary text varies
+            // across util-linux versions.
+            let status = if output.exit_code == Some(0) {
+                "ok"
+            } else {
+                "problems"
+            };
+            CommandOutcome::Ok(OperationOutput {
+                stdout: format!("fstab_status: {status}\n\n{}", output.stdout.trim_end()),
+                stderr: output.stderr,
+                exit_code: Some(0),
+            })
+        }
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+pub async fn list_failed_units(elevation: &ElevationState) -> CommandOutcome {
+    if init_system::detect().await != InitSystem::Systemd {
+        return CommandOutcome::Err(NO_SYSTEMD.to_string());
+    }
+    match elevation
+        .run_allow_failure(
+            "systemctl",
+            &[
+                "list-units",
+                "--failed",
+                "--no-legend",
+                "--no-pager",
+                "--plain",
+            ],
+        )
+        .await
+    {
+        Ok(output) => CommandOutcome::Ok(present(output, "No failed units.")),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+/// Targeted recovery of one unit: clear its failed state, then restart it.
+pub async fn recover_unit(unit: String, elevation: &ElevationState) -> CommandOutcome {
+    if init_system::detect().await != InitSystem::Systemd {
+        return CommandOutcome::Err(NO_SYSTEMD.to_string());
+    }
+    if !abyssal_agent_protocol::is_valid_unit_name(&unit) {
+        return CommandOutcome::Err(format!("refusing invalid unit name: {unit}"));
+    }
+    // reset-failed first so a unit past its StartLimit can restart.
+    if let Err(e) = elevation
+        .run("systemctl", &["reset-failed", unit.as_str()])
+        .await
+    {
+        return CommandOutcome::Err(e);
+    }
+    match elevation
+        .run("systemctl", &["restart", unit.as_str()])
+        .await
+    {
+        Ok(output) => CommandOutcome::Ok(OperationOutput {
+            stdout: format!(
+                "Reset failed state and restarted {unit}.\n{}",
+                output.stdout
+            ),
+            ..output
+        }),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
 pub async fn remount_read_write(target: String, elevation: &ElevationState) -> CommandOutcome {
     if !abyssal_agent_protocol::is_valid_mount_target(&target) {
         return CommandOutcome::Err(format!("refusing invalid mount target: {target}"));

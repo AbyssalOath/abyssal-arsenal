@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 31;
+pub const PROTOCOL_VERSION: u32 = 33;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -361,6 +361,25 @@ pub enum AgentOperation {
     /// once whatever broke has actually been fixed -- doesn't touch any
     /// unit's running state. Write, not Destructive.
     ResetFailedUnits,
+    /// The currently-failed systemd units, with their active/sub state and
+    /// description (`systemctl list-units --failed`). Read-only -- richer than
+    /// Mortiscope's failed-unit count and distinct from the blunt
+    /// `ResetFailedUnits`.
+    ListFailedUnits,
+    /// Targeted recovery of one failed unit: clears its failed state and
+    /// restarts it (`systemctl reset-failed <unit>` then `restart`). Write --
+    /// the unit is already failed, so restarting it is recovery, not
+    /// interruption.
+    RecoverUnit {
+        unit: String,
+    },
+    /// Filesystem usage across all mounts (`df -Ph`) -- a full `/`, `/var`, or
+    /// `/boot` blocks logging and recovery. Read-only.
+    DiskSpaceCritical,
+    /// Validates `/etc/fstab` (`findmnt --verify`), catching mount problems
+    /// that can break the next boot. Read-only; the agent prepends a machine
+    /// `fstab_status:` line derived from the exit code.
+    FstabCheck,
     /// Remounts an already-mounted filesystem read-write
     /// (`mount -o remount,rw <target>`) -- restores write access after a
     /// filesystem was forced read-only, most commonly the root filesystem
@@ -1593,6 +1612,7 @@ impl AgentOperation {
             AgentOperation::DisableService { unit } => format!("Disabled service {unit}"),
             AgentOperation::ReloadSystemdDaemon => "Reloaded systemd daemon".to_string(),
             AgentOperation::ResetFailedUnits => "Reset failed systemd units".to_string(),
+            AgentOperation::RecoverUnit { unit } => format!("Recovered unit {unit}"),
             AgentOperation::RemountReadWrite { target } => format!("Remounted {target} read-write"),
             AgentOperation::StartContainer { container } => {
                 format!("Started container {container}")
@@ -1951,6 +1971,12 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::ReadOnlyFilesystems => write!(f, "ReadOnlyFilesystems"),
             AgentOperation::ReloadSystemdDaemon => write!(f, "ReloadSystemdDaemon"),
             AgentOperation::ResetFailedUnits => write!(f, "ResetFailedUnits"),
+            AgentOperation::ListFailedUnits => write!(f, "ListFailedUnits"),
+            AgentOperation::RecoverUnit { unit } => {
+                f.debug_struct("RecoverUnit").field("unit", unit).finish()
+            }
+            AgentOperation::DiskSpaceCritical => write!(f, "DiskSpaceCritical"),
+            AgentOperation::FstabCheck => write!(f, "FstabCheck"),
             AgentOperation::RemountReadWrite { target } => f
                 .debug_struct("RemountReadWrite")
                 .field("target", target)

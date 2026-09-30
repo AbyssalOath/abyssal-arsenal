@@ -3,6 +3,12 @@
 {% block heading %}Resurrection — Disaster Recovery{% endblock %}
 {% block content %}
 
+<div class="card">
+  <div class="actions">
+    <a class="btn" href="/arsenals/resurrection/fleet">Fleet recovery</a>
+  </div>
+</div>
+
 {% if hosts.is_empty() %}
 <div class="card">
   <p style="color:var(--text-muted);">

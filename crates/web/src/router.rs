@@ -645,6 +645,10 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/arsenals/resurrection", get(routes::resurrection::show))
         .route(
+            "/arsenals/resurrection/fleet",
+            get(routes::resurrection::fleet),
+        )
+        .route(
             "/arsenals/resurrection/:host_id",
             get(routes::resurrection::show_host),
         )
@@ -667,6 +671,26 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/resurrection/:host_id/reset-failed",
             post(routes::resurrection::reset_failed_units),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/failed-units",
+            post(routes::resurrection::list_failed_units),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/triage",
+            post(routes::resurrection::triage),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/disk-space",
+            post(routes::resurrection::disk_space_critical),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/fstab-check",
+            post(routes::resurrection::fstab_check),
+        )
+        .route(
+            "/arsenals/resurrection/:host_id/recover-unit",
+            post(routes::resurrection::recover_unit),
         )
         .route(
             "/arsenals/resurrection/:host_id/remount/confirm",

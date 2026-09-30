@@ -2054,6 +2054,64 @@ pub struct ResurrectionHostTemplate {
     pub result_error: Option<String>,
     pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
+    /// Failed systemd units, populated when the Failed Units check was run.
+    pub failed_units: Vec<FailedUnitRow>,
+}
+
+/// One host row in Resurrection's fleet recovery console.
+pub struct ResurrectionFleetRow {
+    pub host_id: String,
+    pub host_name: String,
+    pub status_label: String,
+    pub status_badge_class: String,
+    pub detail: String,
+}
+
+#[derive(Template)]
+#[template(path = "resurrection_fleet.html")]
+pub struct ResurrectionFleetTemplate {
+    pub base: BaseCtx,
+    pub rows: Vec<ResurrectionFleetRow>,
+    pub total: usize,
+    pub critical: usize,
+    pub warning: usize,
+    pub ok: usize,
+    pub unavailable: usize,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+/// One category row of Resurrection's recoverability triage report.
+pub struct TriageCategoryRow {
+    pub name: String,
+    pub status_label: String,
+    pub status_badge_class: String,
+    pub summary: String,
+}
+
+#[derive(Template)]
+#[template(path = "resurrection_triage.html")]
+pub struct ResurrectionTriageTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub protocol_mismatch: bool,
+    pub score_percent: u8,
+    pub score_label: String,
+    pub score_badge_class: String,
+    pub ok: usize,
+    pub warning: usize,
+    pub critical: usize,
+    pub unavailable: usize,
+    pub categories: Vec<TriageCategoryRow>,
+    pub suggested_actions: Vec<SuggestedActionView>,
+}
+
+/// One failed systemd unit row in Resurrection's recovery table.
+pub struct FailedUnitRow {
+    pub unit: String,
+    pub active: String,
+    pub sub: String,
+    pub description: String,
 }
 
 pub struct ReliquaryHostRow {

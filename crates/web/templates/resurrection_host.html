@@ -4,7 +4,10 @@
 {% block heading %}Resurrection — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/resurrection">&larr; Back to host list</a></p>
+<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+  <a href="/arsenals/resurrection">&larr; Back to host list</a>
+  <a href="/arsenals/resurrection/fleet">{% call macros::icon("route") %} Fleet recovery</a>
+</p>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -62,6 +65,19 @@
   {% endif %}
 </div>
 
+<div class="card">
+  <h3>{% call macros::icon("route") %} Recoverability triage</h3>
+  <p style="margin-top:0; color:var(--text-muted);">
+    Run every recovery check at once (system state, failed units, read-only
+    filesystems, boot errors, disk space, fstab) and get a single scored report
+    with prioritized next steps.
+  </p>
+  <form method="post" action="/arsenals/resurrection/{{ host_id }}/triage">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn">{% call macros::icon("route") %} Triage this host</button>
+  </form>
+</div>
+
 <div class="card kind-read">
   <h3>Read</h3>
   <p style="color:var(--text-muted); margin-top:0;">Triage checks for a host that looks like it's in a bad way.</p>
@@ -78,8 +94,50 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Read-Only Filesystems</button>
     </form>
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/failed-units">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Failed Units</button>
+    </form>
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/disk-space">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Disk Space</button>
+    </form>
+    <form method="post" action="/arsenals/resurrection/{{ host_id }}/fstab-check">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Fstab Check</button>
+    </form>
   </div>
 </div>
+
+{% if !failed_units.is_empty() %}
+<div class="card">
+  <h3>Failed units</h3>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Failed systemd units">
+    <table>
+      <thead><tr><th>Unit</th><th>Active</th><th>Sub</th><th>Description</th>{% if can_manage %}<th>Action</th>{% endif %}</tr></thead>
+      <tbody>
+        {% for u in failed_units %}
+        <tr>
+          <td><code>{{ u.unit }}</code></td>
+          <td>{{ u.active }}</td>
+          <td>{{ u.sub }}</td>
+          <td>{{ u.description }}</td>
+          {% if can_manage %}
+          <td>
+            <form method="post" action="/arsenals/resurrection/{{ host_id }}/recover-unit">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <input type="hidden" name="unit" value="{{ u.unit }}">
+              <button type="submit" class="btn-warning btn-sm" title="Reset failed state and restart">Recover</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 {% if can_manage %}
 <div class="card kind-write">

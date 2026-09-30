@@ -262,6 +262,78 @@
   },
   {
     "source_arsenal": "resurrection",
+    "source_action": "system_running_state",
+    "condition": { "field": "is_degraded", "operator": "equals", "value": true },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate degraded state with Postmortem",
+    "context_fields": ["system_state"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "system_running_state",
+    "condition": { "field": "is_degraded", "operator": "equals", "value": true },
+    "target_arsenal": "incarnation",
+    "target_action": "list_services",
+    "label": "Manage services with Incarnation",
+    "context_fields": ["system_state"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "previous_boot_errors",
+    "condition": { "field": "boot_error_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate the previous boot with Postmortem",
+    "context_fields": ["boot_error_count"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "list_failed_units",
+    "condition": { "field": "failed_unit_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "incarnation",
+    "target_action": "list_services",
+    "label": "Manage services with Incarnation",
+    "context_fields": ["failed_unit_count"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "disk_space_critical",
+    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "defleshing",
+    "target_action": "show_host",
+    "label": "Free space on {mount_point} with Defleshing",
+    "context_fields": ["mount_point", "usage_percent"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "disk_space_critical",
+    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "obituary",
+    "target_action": "show_host",
+    "label": "Manage logs on {mount_point} with Obituary",
+    "context_fields": ["mount_point", "usage_percent"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "disk_space_critical",
+    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "target_arsenal": "ossuary",
+    "target_action": "show_host",
+    "label": "Inspect storage with Ossuary",
+    "context_fields": ["mount_point", "usage_percent"]
+  },
+  {
+    "source_arsenal": "resurrection",
+    "source_action": "list_failed_units",
+    "condition": { "field": "failed_unit_count", "operator": "greater_than_or_equal", "value": 1 },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate the failures with Postmortem",
+    "context_fields": ["failed_unit_count"]
+  },
+  {
+    "source_arsenal": "resurrection",
     "source_action": "read_only_filesystems",
     "condition": { "field": "mount_point", "operator": "exists" },
     "target_arsenal": "necropsy",

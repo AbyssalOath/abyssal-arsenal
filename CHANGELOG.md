@@ -12,6 +12,54 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Resurrection: fleet recovery console.** A new overview page (linked from
+  the Resurrection landing and host pages) runs a light recovery poll of
+  every connected host (system state, failed units, read-only filesystems,
+  disk space) and shows them worst-first with a fleet summary -- "which hosts
+  need rescuing right now," complementing the dashboard's needing-attention
+  list. Each host links to its full triage, and the console aggregates the
+  suggested next steps across every host with a problem. Built from the
+  existing recovery reads; no new agent operations.
+- **Resurrection: recoverability triage report.** A single "Triage this
+  host" action runs every recovery check at once (system state, failed
+  units, read-only filesystems, previous-boot errors, disk space, fstab) and
+  presents one scored rollup: each check as ok / warning / critical /
+  unavailable, with a weighted overall score (a warning counts as half;
+  checks that couldn't run are excluded rather than dragging the grade
+  down). It's built by reusing the individual recovery reads -- no new agent
+  operation -- and aggregates and de-duplicates the suggested next steps
+  from every sub-check, so one report can point at Incarnation, Postmortem,
+  Defleshing, Ossuary and more together.
+- **Resurrection: disk-full and fstab recovery checks.** Two more triage
+  reads for the classic "won't come back cleanly" causes. **Disk Space**
+  (`df -Ph`) surfaces filesystem usage, and a filesystem at or above 90%
+  offers to free space with Defleshing, manage logs with Obituary, or
+  inspect storage with Ossuary. **Fstab Check** validates `/etc/fstab`
+  (`findmnt --verify`) to catch mount problems that would break the next
+  boot, reporting a reliable ok/problems status derived from the tool's exit
+  code. Adds `DiskSpaceCritical` and `FstabCheck` operations; bumps
+  `PROTOCOL_VERSION` to 33.
+- **Resurrection: failed-unit recovery.** A new **Failed Units** read lists
+  the host's failed systemd units with their state and description (richer
+  than a bare count, and distinct from the blunt "reset all failed state"),
+  rendered as a table with a per-unit **Recover** button. Recovering a unit
+  clears its failed state and restarts it (`reset-failed` + `restart`) --
+  targeted recovery of one already-failed unit rather than an all-or-nothing
+  clear. When any units are failed, the check offers "Manage services with
+  Incarnation" and "Investigate the failures with Postmortem". Adds
+  `ListFailedUnits` and `RecoverUnit` operations; bumps `PROTOCOL_VERSION`
+  to 32.
+- **Resurrection: structured recovery reads and a broader workflow graph.**
+  The two recovery reads that were plain text now parse into structured
+  results, so Resurrection can suggest next steps beyond its
+  read-only-filesystem axis. **System Running State** reports whether the
+  host is degraded and, when it is, offers "Investigate degraded state with
+  Postmortem" and "Manage services with Incarnation". **Previous Boot
+  Errors** counts real error lines (skipping journalctl markers) and offers
+  "Investigate the previous boot with Postmortem" when any are present. All
+  three recovery reads now share one structured-read path. No new agent
+  operations; the parsing is on the control plane.
+
 - **Grimoire: fleet config-drift hub.** A new overview page (linked from the
   Grimoire landing and host pages) polls every connected host's managed
   sysctl drift at once and shows, per host, whether its managed overrides
