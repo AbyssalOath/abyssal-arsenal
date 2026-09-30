@@ -34,6 +34,9 @@ const FAILURE_WINDOW_HOURS: i64 = 24;
 /// three sample intervals (`self_metrics::SAMPLE_INTERVAL` is 60s), so a
 /// single missed tick doesn't flap the badge but a stalled sampler shows.
 const SELF_METRICS_STALE_SECS: i64 = 180;
+// A single missed 60s tick must not be stale, but a stalled sampler must be:
+// keep the threshold within (one interval, four intervals). Compile-time checked.
+const _: () = assert!(SELF_METRICS_STALE_SECS >= 120 && SELF_METRICS_STALE_SECS < 240);
 /// Percentage at/above which a usage meter turns "warn", then "crit".
 const METER_WARN_PCT: u8 = 70;
 const METER_CRIT_PCT: u8 = 90;
@@ -1480,13 +1483,6 @@ mod tests {
         assert_eq!(format_ago(60), "1m ago");
         assert_eq!(format_ago(3_599), "59m ago");
         assert_eq!(format_ago(3_600), "1h ago");
-    }
-
-    #[test]
-    fn stale_threshold_is_three_intervals() {
-        // A single missed 60s tick isn't stale; a stalled sampler is.
-        assert!(120 <= SELF_METRICS_STALE_SECS);
-        assert!(240 > SELF_METRICS_STALE_SECS);
     }
 
     #[test]
