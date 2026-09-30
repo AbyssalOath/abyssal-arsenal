@@ -21,7 +21,15 @@ pub async fn guard(State(state): State<AppState>, request: Request, next: Next) 
     }
 
     let path = request.uri().path();
-    if path.starts_with("/static/") || path.starts_with("/arsenals/reliquary/backups") {
+    // Health probes bypass the guard: liveness (`/healthz`) must stay 200 so an
+    // orchestrator doesn't kill the container mid-restore, and readiness
+    // (`/readyz`) reports the restore itself as a not-ready component rather
+    // than being masked by this generic maintenance page.
+    if path.starts_with("/static/")
+        || path.starts_with("/arsenals/reliquary/backups")
+        || path == "/healthz"
+        || path == "/readyz"
+    {
         return next.run(request).await;
     }
 

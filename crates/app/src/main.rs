@@ -147,6 +147,8 @@ async fn main() -> anyhow::Result<()> {
         reliquary_backup_provider: backup_provider.clone(),
         reliquary_backup_storage: backup_storage.clone(),
         maintenance_mode: MaintenanceMode::default(),
+        self_metrics: Arc::new(tokio::sync::RwLock::new(None)),
+        task_health: abyssal_web::task_health::TaskHeartbeats::new(),
     };
 
     abyssal_web::reliquary_backup::orchestrator::spawn_scheduled_backup_loop(
@@ -154,16 +156,34 @@ async fn main() -> anyhow::Result<()> {
         backup_provider,
     );
 
-    spawn_elevation_expiry_sweep(state.pool.clone(), state.elevation.clone());
+    spawn_elevation_expiry_sweep(
+        state.pool.clone(),
+        state.elevation.clone(),
+        state.task_health.clone(),
+    );
     abyssal_web::spawn_thanatos_sweep(state.clone());
     abyssal_web::spawn_health_sweep(state.clone());
     abyssal_web::spawn_mortiscope_metrics_sweep(state.clone());
+    abyssal_web::spawn_self_metrics_sampler(
+        state.self_metrics.clone(),
+        state.task_health.clone(),
+        state.pool.clone(),
+    );
     abyssal_web::spawn_update_check_sweep(state.clone());
-    abyssal_web::spawn_panopticon_sweep(state.pool.clone());
-    abyssal_web::spawn_panopticon_snmp_sweep(state.pool.clone(), encryption_key);
-    abyssal_web::spawn_panopticon_traffic_rollup(state.pool.clone());
+    abyssal_web::spawn_self_monitor_sweep(state.clone());
+    abyssal_web::spawn_panopticon_sweep(state.pool.clone(), state.task_health.clone());
+    abyssal_web::spawn_panopticon_snmp_sweep(
+        state.pool.clone(),
+        encryption_key,
+        state.task_health.clone(),
+    );
+    abyssal_web::spawn_panopticon_traffic_rollup(state.pool.clone(), state.task_health.clone());
     spawn_panopticon_listeners(state.pool.clone()).await;
-    abyssal_web::spawn_audit_syslog_sweep(state.pool.clone(), state.notifications.clone());
+    abyssal_web::spawn_audit_syslog_sweep(
+        state.pool.clone(),
+        state.notifications.clone(),
+        state.task_health.clone(),
+    );
 
     let app = abyssal_web::build(state);
 
@@ -186,9 +206,18 @@ async fn main() -> anyhow::Result<()> {
 /// touching that host would otherwise never get an audit record at all.
 /// This loop is the one active, unconditional check, on a fixed interval
 /// regardless of what else is happening.
-fn spawn_elevation_expiry_sweep(pool: DbPool, elevation: Arc<ElevationTracker>) {
+fn spawn_elevation_expiry_sweep(
+    pool: DbPool,
+    elevation: Arc<ElevationTracker>,
+    heartbeats: abyssal_web::task_health::TaskHeartbeats,
+) {
+    use abyssal_web::task_health::names;
+    const INTERVAL_SECS: u64 = 60;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        heartbeats
+            .register(names::ELEVATION_EXPIRY_SWEEP, INTERVAL_SECS)
+            .await;
+        let mut interval = tokio::time::interval(Duration::from_secs(INTERVAL_SECS));
         loop {
             interval.tick().await;
             for (host_id, host_name) in elevation.sweep_expired() {
@@ -200,6 +229,9 @@ fn spawn_elevation_expiry_sweep(pool: DbPool, elevation: Arc<ElevationTracker>) 
                     tracing::error!(error = %e, "failed to write audit record for elevation expiry");
                 }
             }
+            heartbeats
+                .ok(names::ELEVATION_EXPIRY_SWEEP, INTERVAL_SECS)
+                .await;
         }
     });
 }

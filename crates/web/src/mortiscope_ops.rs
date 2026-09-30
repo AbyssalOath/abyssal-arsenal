@@ -22,6 +22,7 @@ use crate::routes::mortiscope::{parse_cpu_utilization, parse_load_average, parse
 use crate::state::AppState;
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(300);
+const SWEEP_INTERVAL_SECS: u64 = 300;
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long swept samples are kept before pruning.
 const RETENTION_DAYS: i64 = 7;
@@ -32,6 +33,10 @@ pub const METRIC_LOAD_PER_CORE: &str = "load_per_core";
 pub const METRIC_CPU_BUSY: &str = "cpu_busy_percent";
 pub const METRIC_MEM_USED: &str = "mem_used_percent";
 pub const METRIC_SWAP_USED: &str = "swap_used_percent";
+/// The busiest real filesystem's usage percent (`df -Ph`, max across mounts) --
+/// the "how close is any disk to full" figure the dashboard fleet table's disk
+/// mini-meter and (optionally) a threshold read from.
+pub const METRIC_DISK_USED: &str = "disk_used_percent";
 
 /// The metrics shown as trends, as `(key, label, unit)`, in display order.
 pub const TREND_METRICS: &[(&str, &str, &str)] = &[
@@ -39,10 +44,18 @@ pub const TREND_METRICS: &[(&str, &str, &str)] = &[
     (METRIC_CPU_BUSY, "CPU busy", "%"),
     (METRIC_MEM_USED, "Memory used", "%"),
     (METRIC_SWAP_USED, "Swap used", "%"),
+    (METRIC_DISK_USED, "Disk used", "%"),
 ];
 
 pub fn spawn_mortiscope_metrics_sweep(state: AppState) {
     tokio::spawn(async move {
+        state
+            .task_health
+            .register(
+                crate::task_health::names::MORTISCOPE_METRICS_SWEEP,
+                SWEEP_INTERVAL_SECS,
+            )
+            .await;
         let mut interval = tokio::time::interval(SWEEP_INTERVAL);
         loop {
             interval.tick().await;
@@ -51,6 +64,14 @@ pub fn spawn_mortiscope_metrics_sweep(state: AppState) {
                 Ok(hosts) => hosts,
                 Err(e) => {
                     tracing::error!(error = %e, "mortiscope metrics sweep failed to list hosts");
+                    state
+                        .task_health
+                        .error(
+                            crate::task_health::names::MORTISCOPE_METRICS_SWEEP,
+                            SWEEP_INTERVAL_SECS,
+                            e.to_string(),
+                        )
+                        .await;
                     continue;
                 }
             };
@@ -82,6 +103,13 @@ pub fn spawn_mortiscope_metrics_sweep(state: AppState) {
                     tracing::error!(error = %e, "failed to read mortiscope monitoring setting")
                 }
             }
+            state
+                .task_health
+                .ok(
+                    crate::task_health::names::MORTISCOPE_METRICS_SWEEP,
+                    SWEEP_INTERVAL_SECS,
+                )
+                .await;
         }
     });
 }
@@ -292,6 +320,34 @@ async fn sample_host(state: &AppState, host_id: Uuid) {
             record(state, host_id, METRIC_SWAP_USED, v).await;
         }
     }
+    if let Some(out) = dispatch(state, host_id, AgentOperation::DiskSpaceCritical).await
+        && let Some(v) = max_disk_used_percent(&out)
+    {
+        record(state, host_id, METRIC_DISK_USED, v).await;
+    }
+}
+
+/// The busiest real filesystem's usage percent from `df -Ph` output -- the max
+/// `Use%` across every data row. `None` when there's nothing parseable (e.g. an
+/// empty or error reading), so no bogus sample is recorded. Mirrors
+/// `routes::resurrection::parse_disk_space`'s per-row field extraction but
+/// collapses to a single fleet-table figure.
+fn max_disk_used_percent(stdout: &str) -> Option<f64> {
+    stdout
+        .lines()
+        .skip(1) // df header row
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 6 {
+                return None;
+            }
+            f.iter()
+                .find(|x| x.ends_with('%'))?
+                .trim_end_matches('%')
+                .parse::<f64>()
+                .ok()
+        })
+        .fold(None, |acc, pct| Some(acc.map_or(pct, |m: f64| m.max(pct))))
 }
 
 #[cfg(test)]
@@ -322,5 +378,20 @@ mod tests {
     fn metric_label_falls_back_to_the_key() {
         assert_eq!(metric_label(METRIC_LOAD_PER_CORE), "Load per core");
         assert_eq!(metric_label("unknown_metric"), "unknown_metric");
+    }
+
+    #[test]
+    fn disk_used_takes_the_busiest_filesystem() {
+        let df = "Filesystem Size Used Avail Use% Mounted on\n\
+                  /dev/sda1 100G 42G 58G 42% /\n\
+                  /dev/sda2 200G 190G 10G 95% /var\n\
+                  tmpfs 8G 0 8G 0% /run";
+        assert_eq!(max_disk_used_percent(df), Some(95.0));
+    }
+
+    #[test]
+    fn disk_used_is_none_for_unparseable_output() {
+        assert_eq!(max_disk_used_percent(""), None);
+        assert_eq!(max_disk_used_percent("df: command not found"), None);
     }
 }

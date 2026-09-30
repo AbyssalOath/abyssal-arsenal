@@ -13,8 +13,10 @@ use abyssal_agent_protocol::{AgentOperation, CommandOutcome};
 use abyssal_database::repo;
 
 use crate::state::AppState;
+use crate::task_health::names;
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(300);
+const SWEEP_INTERVAL_SECS: u64 = 300;
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Parses `systemctl --failed --no-pager` output by reading its own
@@ -35,6 +37,10 @@ fn count_failed_units(stdout: &str) -> i32 {
 
 pub fn spawn_health_sweep(state: AppState) {
     tokio::spawn(async move {
+        state
+            .task_health
+            .register(names::HEALTH_SWEEP, SWEEP_INTERVAL_SECS)
+            .await;
         let mut interval = tokio::time::interval(SWEEP_INTERVAL);
         loop {
             interval.tick().await;
@@ -43,6 +49,10 @@ pub fn spawn_health_sweep(state: AppState) {
                 Ok(hosts) => hosts,
                 Err(e) => {
                     tracing::error!(error = %e, "health sweep failed to list hosts");
+                    state
+                        .task_health
+                        .error(names::HEALTH_SWEEP, SWEEP_INTERVAL_SECS, e.to_string())
+                        .await;
                     continue;
                 }
             };
@@ -74,6 +84,10 @@ pub fn spawn_health_sweep(state: AppState) {
                     tracing::error!(host = %host.name, error = %e, "health sweep failed to persist snapshot");
                 }
             }
+            state
+                .task_health
+                .ok(names::HEALTH_SWEEP, SWEEP_INTERVAL_SECS)
+                .await;
         }
     });
 }

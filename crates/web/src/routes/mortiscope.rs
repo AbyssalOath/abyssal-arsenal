@@ -33,28 +33,7 @@ use crate::theme;
 /// How many recent samples a trend sparkline plots.
 const TREND_SAMPLES: i64 = 40;
 
-/// Builds an SVG `polyline` points string for `values` (oldest-first) scaled
-/// to a `width` x `height` box, y-inverted for SVG's top-left origin. Empty
-/// when there's too little to draw a line.
-fn sparkline_points(values: &[f64], width: f64, height: f64) -> String {
-    if values.len() < 2 {
-        return String::new();
-    }
-    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let range = (max - min).max(f64::EPSILON);
-    let last = values.len() - 1;
-    values
-        .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            let x = i as f64 / last as f64 * width;
-            let y = height - (v - min) / range * height;
-            format!("{x:.1},{y:.1}")
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+use crate::common::sparkline_points;
 
 /// Loads the recent trend for each swept metric, skipping ones with no samples
 /// yet (e.g. before the first sweep). Read on every host-page render, so it's a

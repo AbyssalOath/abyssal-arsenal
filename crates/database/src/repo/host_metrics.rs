@@ -102,6 +102,49 @@ pub async fn latest_per_host_metric(pool: &DbPool) -> anyhow::Result<Vec<LatestM
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
+#[derive(FromRow)]
+struct HostMetricPointRow {
+    host_id: String,
+    value: f64,
+}
+
+/// One metric's recent samples for several hosts at once, oldest-first per
+/// host -- a single query for a whole page of the dashboard fleet table's
+/// sparklines instead of one query per host (no N+1). Returns
+/// `(host_id, value)` pairs ordered by host then time; the caller groups them.
+/// `since_hours` bounds the window so the scan stays small. An empty
+/// `host_ids` returns an empty vec without touching the database.
+pub async fn recent_for_hosts(
+    pool: &DbPool,
+    host_ids: &[Uuid],
+    metric: &str,
+    since_hours: i64,
+) -> anyhow::Result<Vec<(Uuid, f64)>> {
+    if host_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", host_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT host_id, value, sampled_at FROM host_metric_samples \
+         WHERE metric = ? AND sampled_at >= (NOW() - INTERVAL ? HOUR) \
+         AND host_id IN ({placeholders}) \
+         ORDER BY host_id, sampled_at ASC"
+    );
+    let mut query = sqlx::query_as::<_, HostMetricPointRow>(&sql)
+        .bind(metric)
+        .bind(since_hours.max(0));
+    for id in host_ids {
+        query = query.bind(id.to_string());
+    }
+    let rows = query.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (Uuid::parse_str(&r.host_id).unwrap_or_default(), r.value))
+        .collect())
+}
+
 /// Deletes samples older than `days`, keeping the table bounded. Returns how
 /// many rows were removed.
 pub async fn prune_older_than(pool: &DbPool, days: i64) -> anyhow::Result<u64> {

@@ -637,13 +637,21 @@ const ACTIVE_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(30 * 60);
 ///   `PANOPTICON_SWEEP_ENABLED` is on and `PANOPTICON_SWEEP_TARGET` is
 ///   set -- both re-checked fresh every tick, so toggling either in
 ///   Settings takes effect on the next tick, not after a restart.
-pub fn spawn_panopticon_sweep(pool: DbPool) {
+pub fn spawn_panopticon_sweep(pool: DbPool, heartbeats: crate::task_health::TaskHeartbeats) {
+    use crate::task_health::names;
+    const PASSIVE_INTERVAL_SECS: u64 = 60;
     let passive_pool = pool.clone();
     tokio::spawn(async move {
+        heartbeats
+            .register(names::PANOPTICON_SWEEP, PASSIVE_INTERVAL_SECS)
+            .await;
         let mut interval = tokio::time::interval(PASSIVE_REFRESH_INTERVAL);
         loop {
             interval.tick().await;
             run_passive_refresh(&passive_pool).await;
+            heartbeats
+                .ok(names::PANOPTICON_SWEEP, PASSIVE_INTERVAL_SECS)
+                .await;
         }
     });
 

@@ -40,6 +40,7 @@ pub mod sepulchre;
 pub mod settings;
 pub mod setup;
 pub mod style_guide;
+pub mod system_health;
 pub mod thanatos;
 pub mod theme;
 pub mod users;

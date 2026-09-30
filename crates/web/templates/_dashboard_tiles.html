@@ -1,0 +1,23 @@
+{% import "_macros.html" as macros %}
+{# Fleet summary tiles. Each tile is a link when there's a drill-down the
+   viewer can reach, otherwise a plain card. Tone is always paired with the
+   label text + icon, never colour alone. #}
+{% if !summary_tiles.is_empty() %}
+<div class="stat-grid">
+  {% for t in summary_tiles %}
+  {% if let Some(href) = t.href %}
+  <a class="stat-tile stat-tile-{{ t.tone }}" href="{{ href }}">
+  {% else %}
+  <div class="stat-tile stat-tile-{{ t.tone }}">
+  {% endif %}
+    <div class="stat-tile-head">{% call macros::icon(t.icon) %} <span>{{ t.label }}</span></div>
+    <div class="stat-tile-value">{{ t.value }}</div>
+    <div class="stat-tile-sub">{{ t.sub }}</div>
+  {% if t.href.is_some() %}
+  </a>
+  {% else %}
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}

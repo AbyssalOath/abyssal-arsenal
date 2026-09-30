@@ -93,16 +93,35 @@ async fn fetch_latest_release() -> anyhow::Result<GithubRelease> {
 /// instead of an enrolled host, and checks once immediately on startup
 /// rather than waiting a full interval first.
 pub fn spawn_update_check_sweep(state: AppState) {
+    use crate::task_health::names;
+    const CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
     tokio::spawn(async move {
+        state
+            .task_health
+            .register(names::UPDATE_CHECK_SWEEP, CHECK_INTERVAL_SECS)
+            .await;
         loop {
             match fetch_latest_release().await {
                 Ok(release) => {
                     let mut status = state.update_status.write().await;
                     status.latest_version = Some(release.tag_name);
                     status.release_url = Some(release.html_url);
+                    drop(status);
+                    state
+                        .task_health
+                        .ok(names::UPDATE_CHECK_SWEEP, CHECK_INTERVAL_SECS)
+                        .await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "update check failed, keeping last-known status");
+                    state
+                        .task_health
+                        .error(
+                            names::UPDATE_CHECK_SWEEP,
+                            CHECK_INTERVAL_SECS,
+                            e.to_string(),
+                        )
+                        .await;
                 }
             }
             tokio::time::sleep(CHECK_INTERVAL).await;

@@ -517,11 +517,21 @@ const SNMP_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub fn spawn_panopticon_snmp_sweep(
     pool: DbPool,
     encryption_key: Option<std::sync::Arc<EncryptionKey>>,
+    heartbeats: crate::task_health::TaskHeartbeats,
 ) {
+    use crate::task_health::names;
+    const SNMP_SWEEP_INTERVAL_SECS: u64 = 5 * 60;
     tokio::spawn(async move {
+        heartbeats
+            .register(names::PANOPTICON_SNMP_SWEEP, SNMP_SWEEP_INTERVAL_SECS)
+            .await;
         let mut interval = tokio::time::interval(SNMP_SWEEP_INTERVAL);
         loop {
             interval.tick().await;
+            // Beat at the top: alive even with no encryption key / no switches.
+            heartbeats
+                .ok(names::PANOPTICON_SNMP_SWEEP, SNMP_SWEEP_INTERVAL_SECS)
+                .await;
 
             let Some(key) = &encryption_key else {
                 continue;

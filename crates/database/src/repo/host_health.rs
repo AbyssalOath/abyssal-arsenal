@@ -64,6 +64,16 @@ pub async fn upsert(
     Ok(())
 }
 
+/// Every host's latest sweep result (one row per host). For the dashboard
+/// fleet table, which needs each host's health regardless of whether it's
+/// currently flagged -- read once and joined in memory, not per host.
+pub async fn all(pool: &DbPool) -> anyhow::Result<Vec<HostHealth>> {
+    let rows: Vec<HostHealthRow> = sqlx::query_as("SELECT * FROM host_health_snapshots")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
 /// Every host whose latest sweep result needs a look -- failed units or a
 /// sweep error -- most recently checked first.
 pub async fn needing_attention(pool: &DbPool) -> anyhow::Result<Vec<HostHealth>> {

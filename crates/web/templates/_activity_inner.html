@@ -1,0 +1,45 @@
+{% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
+{# Activity feed inner content: shared by activity_feed.html and the
+   /dashboard/fragments/activity htmx poll. #}
+<div class="activity-toolbar">
+  <a class="filter-chip{% if !include_system %} filter-chip-active{% endif %}" href="{{ toggle_href }}">
+    {% if include_system %}
+    {% call macros::icon("user") %} Hide system events
+    {% else %}
+    {% call macros::icon("settings") %} Show system events
+    {% endif %}
+  </a>
+  <a class="activity-audit-link text-muted" href="/admin/audit">Full audit log &rarr;</a>
+</div>
+
+{% if groups.is_empty() %}
+<p class="text-muted">No activity to show.</p>
+{% else %}
+{% for group in groups %}
+<section class="activity-day">
+  <h3 class="activity-day-label">{{ group.label }}</h3>
+  <table class="activity-table">
+    <thead><tr><th>Time</th><th>User</th><th>Activity</th><th>Result</th></tr></thead>
+    <tbody>
+      {% for row in group.rows %}
+      <tr>
+        <td class="activity-time">{{ row.occurred_at }}</td>
+        <td>{{ row.username }}</td>
+        <td>{{ row.summary }}</td>
+        <td>
+          {% if row.result == "SUCCESS" %}
+          <span class="badge badge-success">{{ row.result }}</span>
+          {% else %}
+          <span class="badge badge-danger">{{ row.result }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+
+{% call pager::pagination_nav(page) %}
+{% endif %}

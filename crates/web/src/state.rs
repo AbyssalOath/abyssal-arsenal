@@ -83,4 +83,12 @@ pub struct AppState {
     /// Set for the duration of a restore -- see
     /// `reliquary_backup::restore::MaintenanceMode`.
     pub maintenance_mode: MaintenanceMode,
+    /// The control plane's own most recent resource sample (CPU/memory/disk/
+    /// uptime), refreshed on a timer by `crate::self_metrics` and read by the
+    /// dashboard's Control Plane card. `None` until the first sample lands.
+    pub self_metrics: crate::self_metrics::SelfMetricsCache,
+    /// Liveness of the background sweeps -- each records a beat per tick so a
+    /// stalled or panicked task is visible on the diagnostics page and to
+    /// self-alerting. See `crate::task_health`.
+    pub task_health: crate::task_health::TaskHeartbeats,
 }

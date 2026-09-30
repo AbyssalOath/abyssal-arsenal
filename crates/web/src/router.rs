@@ -12,6 +12,28 @@ use crate::state::AppState;
 pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/", get(routes::dashboard::show))
+        .route("/dashboard/hosts", get(routes::dashboard::hosts))
+        .route("/dashboard/activity", get(routes::dashboard::activity))
+        .route(
+            "/dashboard/preferences",
+            post(routes::dashboard::set_preferences),
+        )
+        .route(
+            "/dashboard/fragments/control-plane",
+            get(routes::dashboard::control_plane_fragment),
+        )
+        .route(
+            "/dashboard/fragments/overview",
+            get(routes::dashboard::overview_fragment),
+        )
+        .route(
+            "/dashboard/fragments/hosts",
+            get(routes::dashboard::hosts_fragment),
+        )
+        .route(
+            "/dashboard/fragments/activity",
+            get(routes::dashboard::activity_fragment),
+        )
         .route(
             "/setup",
             get(routes::setup::show).post(routes::setup::submit),
@@ -127,6 +149,11 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/admin/workflows", get(routes::workflows::list))
         .route("/admin/settings", get(routes::settings::show))
+        .route("/admin/health", get(routes::system_health::show))
+        .route(
+            "/admin/health/self-monitoring",
+            post(routes::system_health::set_monitoring),
+        )
         .route(
             "/admin/settings/registration",
             post(routes::settings::set_registration),
@@ -1648,6 +1675,8 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/arsenals/:key", get(routes::arsenals::show))
         .route("/api/health", get(routes::api::health))
+        .route("/healthz", get(routes::api::healthz))
+        .route("/readyz", get(routes::api::readyz))
         .route("/api/me", get(routes::api::me))
         .route("/api/hosts/enroll", post(routes::agent::enroll))
         .route("/ws/agent", get(routes::agent::ws_upgrade))

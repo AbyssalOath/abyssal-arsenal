@@ -225,13 +225,32 @@ const ROLLUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 *
 /// than device discovery, following the same system-initiated,
 /// `Executor`-bypassing shape every background loop in this codebase
 /// uses.
-pub fn spawn_panopticon_traffic_rollup(pool: DbPool) {
+pub fn spawn_panopticon_traffic_rollup(
+    pool: DbPool,
+    heartbeats: crate::task_health::TaskHeartbeats,
+) {
+    use crate::task_health::names;
+    const ROLLUP_INTERVAL_SECS: u64 = 60 * 60;
     tokio::spawn(async move {
+        heartbeats
+            .register(names::PANOPTICON_TRAFFIC_ROLLUP, ROLLUP_INTERVAL_SECS)
+            .await;
         let mut interval = tokio::time::interval(ROLLUP_INTERVAL);
         loop {
             interval.tick().await;
             if let Err(e) = run_rollup_and_prune(&pool).await {
                 tracing::error!(error = %e, "Panopticon traffic rollup failed");
+                heartbeats
+                    .error(
+                        names::PANOPTICON_TRAFFIC_ROLLUP,
+                        ROLLUP_INTERVAL_SECS,
+                        e.to_string(),
+                    )
+                    .await;
+            } else {
+                heartbeats
+                    .ok(names::PANOPTICON_TRAFFIC_ROLLUP, ROLLUP_INTERVAL_SECS)
+                    .await;
             }
         }
     });

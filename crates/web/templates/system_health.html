@@ -1,0 +1,134 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Control-plane health — Abyssal Arsenal{% endblock %}
+{% block heading %}Control-plane health{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="card-head-row">
+    <h2>{% call macros::icon("shield-check") %} Readiness</h2>
+    {% if ready %}
+    <span class="badge badge-success">{% call macros::icon("check") %} Ready</span>
+    {% else %}
+    <span class="badge badge-danger">{% call macros::icon("danger") %} Degraded</span>
+    {% endif %}
+  </div>
+  <p class="text-muted">The same checks <code>/readyz</code> reports to external monitors.</p>
+  <table>
+    <thead><tr><th>Component</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for c in components %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>
+          {% if c.ok %}
+          <span class="badge badge-success">OK</span>
+          {% else %}
+          <span class="badge badge-danger">Down</span>
+          {% endif %}
+        </td>
+        <td class="text-muted">{{ c.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="card-head-row">
+    <h2>{% call macros::icon("reboot") %} Background tasks</h2>
+    {% if any_task_stale %}
+    <span class="badge badge-warning">{% call macros::icon("warning") %} Attention</span>
+    {% else %}
+    <span class="badge badge-success">All ticking</span>
+    {% endif %}
+  </div>
+  <p class="text-muted">Each unattended sweep records a beat per cycle; a stale row means it hasn't run when expected.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Task</th><th>Last run</th><th>Last clean</th><th>Runs</th><th>Last error</th></tr></thead>
+      <tbody>
+        {% for t in tasks %}
+        <tr>
+          <td>{{ t.label }}</td>
+          <td>
+            {% if t.stale %}
+            <span class="badge badge-warning">{% if t.never_ran %}never{% else %}{{ t.last_run }}{% endif %}</span>
+            {% else %}
+            {{ t.last_run }}
+            {% endif %}
+          </td>
+          <td class="text-muted">{{ t.last_ok }}</td>
+          <td class="text-muted">{{ t.runs }}</td>
+          <td>
+            {% if let Some(err) = t.last_error %}
+            <span class="badge badge-danger" title="{{ err }}">error</span>
+            {% else %}
+            <span class="text-muted">&mdash;</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{% call macros::icon("shield-check") %} Preflight &amp; DR readiness</h2>
+  <p class="text-muted">Configuration worth getting right before it bites -- advisories, not the hard readiness gate above.</p>
+  <table>
+    <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for p in preflight %}
+      <tr>
+        <td>{{ p.label }}</td>
+        <td>
+          {% if p.ok %}
+          <span class="badge badge-success">OK</span>
+          {% else %}
+          <span class="badge badge-warning">Review</span>
+          {% endif %}
+        </td>
+        <td class="text-muted">{{ p.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>{% call macros::icon("warning") %} Self-monitoring</h2>
+  <p class="text-muted">Alert (via the configured notification providers) when the control plane's own resources run hot, a background task stalls, or backups fall behind. Off by default.</p>
+  <form method="post" action="/admin/health/self-monitoring" class="action-grid">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label class="lu-htmx" style="grid-column: 1 / -1;">
+      <input type="checkbox" name="enabled" value="true"{% if monitoring_enabled %} checked{% endif %}> Enable control-plane self-monitoring
+    </label>
+    <div>
+      <label for="cp-cpu">CPU threshold (%)</label>
+      <input type="number" id="cp-cpu" name="cpu_threshold" min="1" max="100" value="{{ cpu_threshold }}">
+    </div>
+    <div>
+      <label for="cp-mem">Memory threshold (%)</label>
+      <input type="number" id="cp-mem" name="mem_threshold" min="1" max="100" value="{{ mem_threshold }}">
+    </div>
+    <div>
+      <label for="cp-disk">Disk threshold (%)</label>
+      <input type="number" id="cp-disk" name="disk_threshold" min="1" max="100" value="{{ disk_threshold }}">
+    </div>
+    <div>
+      <label for="cp-backup">Backups overdue after (hours, 0 = off)</label>
+      <input type="number" id="cp-backup" name="backup_overdue_hours" min="0" value="{{ backup_overdue_hours }}">
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <label for="cp-recipients">Alert recipients (comma or newline separated)</label>
+      <input type="text" id="cp-recipients" name="alert_recipients" value="{{ alert_recipients }}" placeholder="ops@example.com, oncall@example.com">
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <button type="submit">{% call macros::icon("check") %} Save self-monitoring</button>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

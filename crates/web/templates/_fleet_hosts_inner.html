@@ -1,0 +1,93 @@
+{% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
+{# Fleet table inner content: shared by fleet_hosts.html and the
+   /dashboard/fragments/hosts htmx poll. Uses bare `csrf_token`. #}
+<div class="status-strip" style="margin-bottom: var(--space-4);">
+  {% for opt in status_options %}
+  <a class="filter-chip{% if opt.active %} filter-chip-active{% endif %}" href="{{ opt.href }}"{% if opt.active %} aria-current="true"{% endif %}>
+    {{ opt.label }} <span class="filter-chip-count">{{ opt.count }}</span>
+  </a>
+  {% endfor %}
+</div>
+
+<form method="get" action="/dashboard/hosts" class="dashboard-search">
+  <label for="fleet-search-q" class="sr-only">Search hosts</label>
+  <input type="text" id="fleet-search-q" name="q" value="{{ q }}" placeholder="Search hosts by name&hellip;">
+  {% if status != "all" %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+  <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Search</button>
+  {% if !q.is_empty() %}
+  <a href="{% if status != "all" %}/dashboard/hosts?status={{ status }}{% else %}/dashboard/hosts{% endif %}" class="btn-secondary">Clear</a>
+  {% endif %}
+</form>
+
+{% if rows.is_empty() %}
+<p class="text-muted">No hosts match the current filter.</p>
+{% else %}
+<div class="table-scroll">
+  <table class="fleet-table">
+    <thead>
+      <tr>
+        {% for h in headers %}
+        <th{% if h.numeric %} class="col-num"{% endif %}{% if h.active %} aria-sort="{% if h.ascending %}ascending{% else %}descending{% endif %}"{% endif %}>
+          <a href="{{ h.href }}" class="sort-link{% if h.active %} sort-active{% endif %}">
+            {{ h.label }}{% if h.active %} <span aria-hidden="true">{% if h.ascending %}&uarr;{% else %}&darr;{% endif %}</span>{% endif %}
+          </a>
+        </th>
+        {% endfor %}
+        <th>Last seen</th>
+        <th><span class="sr-only">Actions</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <span class="fleet-host-name">{{ row.name }}</span>
+          {% if !row.cpu_sparkline.is_empty() %}
+          <svg class="fleet-spark" viewBox="0 0 90 22" width="90" height="22" preserveAspectRatio="none" role="img" aria-label="{{ row.name }} recent CPU trend">
+            <polyline points="{{ row.cpu_sparkline }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+          </svg>
+          {% endif %}
+        </td>
+        <td>
+          {% if row.online %}
+          <span class="badge badge-success">{% call macros::icon("check") %} Online</span>
+          {% else %}
+          <span class="badge badge-muted">Offline</span>
+          {% endif %}
+          {% if let Some(reason) = row.attention_reason %}
+          <div class="fleet-attention">{% call macros::icon("warning") %} {{ reason }}</div>
+          {% endif %}
+        </td>
+        <td class="col-num">
+          {% if let Some(m) = row.cpu %}{% call macros::cell_meter(m, "CPU") %}{% else %}<span class="text-muted">&mdash;</span>{% endif %}
+        </td>
+        <td class="col-num">
+          {% if let Some(m) = row.mem %}{% call macros::cell_meter(m, "Memory") %}{% else %}<span class="text-muted">&mdash;</span>{% endif %}
+        </td>
+        <td class="col-num">
+          {% if let Some(m) = row.disk %}{% call macros::cell_meter(m, "Disk") %}{% else %}<span class="text-muted">&mdash;</span>{% endif %}
+        </td>
+        <td class="col-num">
+          {% if row.failed_units > 0 %}
+          <span class="badge badge-warning">{{ row.failed_units }}</span>
+          {% else %}
+          <span class="text-muted">0</span>
+          {% endif %}
+        </td>
+        <td class="text-muted fleet-lastseen">{{ row.last_seen }}</td>
+        <td>
+          <form method="post" action="/host-context/select" class="fleet-open-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="host_id" value="{{ row.host_id }}">
+            <button type="submit" class="btn-secondary btn-sm" title="Set this host as the active context">Open</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% call pager::pagination_nav(page) %}
+{% endif %}

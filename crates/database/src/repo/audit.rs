@@ -101,6 +101,63 @@ pub async fn count(pool: &DbPool, filter: &AuditFilter) -> anyhow::Result<i64> {
     Ok(count)
 }
 
+/// The dashboard activity feed's `WHERE` clause, shared by `activity_page` and
+/// `activity_count` so the list and its total always agree. Always excludes
+/// routine reads (`metadata.kind = "read"` -- a row with no `kind` or no
+/// metadata is kept), and, when `include_system` is false, excludes
+/// system-initiated rows (those with no `user_id`). The `?` placeholder binds
+/// `include_system`.
+const ACTIVITY_WHERE: &str = "WHERE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.kind')), '') <> 'read' \
+     AND (? OR user_id IS NOT NULL)";
+
+/// One page of the dashboard activity feed, newest-first. See `ACTIVITY_WHERE`
+/// for what's included. Offset pagination (the feed shows numbered pages, not
+/// the audit log's keyset "Newer/Older").
+pub async fn activity_page(
+    pool: &DbPool,
+    include_system: bool,
+    limit: i64,
+    offset: i64,
+) -> anyhow::Result<Vec<AuditEntry>> {
+    let sql = format!(
+        "SELECT * FROM audit_log {ACTIVITY_WHERE} ORDER BY occurred_at DESC LIMIT ? OFFSET ?"
+    );
+    let rows: Vec<AuditEntry> = sqlx::query_as(&sql)
+        .bind(include_system)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+/// Total rows the activity feed would show under the same filter -- for its
+/// pagination. Matches `activity_page`'s `WHERE` exactly.
+pub async fn activity_count(pool: &DbPool, include_system: bool) -> anyhow::Result<i64> {
+    let sql = format!("SELECT COUNT(*) FROM audit_log {ACTIVITY_WHERE}");
+    let (count,): (i64,) = sqlx::query_as(&sql)
+        .bind(include_system)
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
+/// Count of audit rows whose outcome was a failure within the last `hours`
+/// -- the dashboard's "recent failures" tile. `AuditFilter` deliberately
+/// has no outcome/time fields (it's the list-page filter), so this is its
+/// own small query rather than a general one. `result` stores
+/// `AuditOutcome::as_key`, i.e. the literal `"FAILURE"`.
+pub async fn count_recent_failures(pool: &DbPool, hours: i64) -> anyhow::Result<i64> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM audit_log \
+         WHERE result = 'FAILURE' AND occurred_at >= (NOW(6) - INTERVAL ? HOUR)",
+    )
+    .bind(hours.max(0))
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
 /// A position in the audit log's `(occurred_at, id)` total order -- `id`
 /// (a UUID) is the tiebreaker for rows sharing the same microsecond
 /// timestamp, which `datetime(6)` makes rare but not impossible (e.g. a

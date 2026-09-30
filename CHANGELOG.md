@@ -12,6 +12,75 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Control-plane health & self-observability.** The server running Abyssal
+  Arsenal now watches, alerts on, and diagnoses itself. Real health endpoints:
+  `/healthz` (liveness -- always 200 while serving, even mid-restore) and
+  `/readyz` (readiness -- database reachable, migrations clean, not
+  mid-restore; 200/503 with a compact component report), both unauthenticated
+  for external monitors and load balancers. Every background sweep now records
+  a liveness beat, so a stalled or panicked task becomes visible instead of
+  failing silently. A new **Control-plane health** admin page (`/admin/health`,
+  `SettingsManage`) shows readiness, per-task freshness/last-error, preflight/DR
+  advisories (encryption key, public URL, cookie security, notification
+  providers, backup destination writability and recency), and a self-monitoring
+  config form. The control plane's own CPU/memory/disk are now kept as history
+  (trend sparklines on the Control Plane card), and an opt-in self-monitor can
+  alert -- through the existing notification providers -- on sustained resource
+  pressure, a stalled background task, or overdue backups, firing once on the
+  way into a bad state and clearing on recovery. No JavaScript required; all
+  self-monitoring is off by default.
+- **Dashboard: opt-in live updates (auto-refresh + optional htmx).** The
+  dashboard, fleet, and activity views gained a per-browser "Live updates"
+  control to pick an auto-refresh interval (off / 15s / 30s / 60s), stored as a
+  cookie like the theme and selected-host preferences. By default this drives a
+  plain `<meta http-equiv="refresh">` that reloads the current URL (query string
+  preserved) -- **no JavaScript required**. A "Partial updates" checkbox
+  additionally opts into a **vendored copy of htmx** (served same-origin, never
+  a CDN) that polls per-section fragment endpoints and swaps just the changed
+  region instead of reloading the whole page. New fragment routes
+  `/dashboard/fragments/{control-plane,overview,hosts,activity}` render the same
+  partials the full pages embed, enforce the same permission checks, carry the
+  current filter/sort/page, and read only cached data -- never a live agent
+  dispatch. Everything stays off by default and degrades cleanly to full-page
+  reloads (or nothing) when JS is blocked. Documented in ARCHITECTURE.md.
+- **Dashboard: activity feed.** A new Activity view (`/dashboard/activity`,
+  reached from the dashboard's Recent activity card) shows the audit history
+  grouped by day (Today / Yesterday / date, in the viewer's timezone), newest
+  first, with numbered pagination. A **Show/Hide system events** toggle filters
+  out background-job rows (those with no human actor) so the feed can focus on
+  what people did; routine reads are always excluded. Filtering happens in SQL
+  so pagination totals stay correct, and an out-of-range page clamps to the last
+  real page rather than erroring. Gated on `AuditView`, with a link through to
+  the full audit log. No JavaScript required.
+- **Dashboard: fleet hosts table.** A new Fleet view (`/dashboard/hosts`,
+  reached from the dashboard's Hosts tile) lists every managed host with its
+  cached CPU / memory / disk usage (compact in-cell meters), a recent-CPU
+  sparkline, online/offline state, and any health flag (unreachable, or N
+  failed units). It supports name search, a status filter (all / online /
+  offline / needs attention) with live counts, sortable columns, and
+  pagination -- an out-of-range page clamps to the last real page rather than
+  erroring. Each host has an **Open** action that sets it as the active host
+  context so the next arsenal you open is scoped to it. Reads only cached data:
+  the metrics sweep's latest sample and one batched query for the visible
+  page's sparklines (no per-host queries, no live agent dispatch on load). The
+  metrics sweep now also records each host's busiest-filesystem disk usage
+  (`disk_used_percent`), so the disk meter and a disk threshold have data. No
+  JavaScript required.
+- **Dashboard: at-a-glance operations overview.** The dashboard now opens with
+  a hero banner stating overall fleet state in a word (all systems healthy /
+  degraded / fleet offline) plus a one-line summary, followed by five summary
+  tiles (hosts online/offline, elevated hosts, open alerts, active sessions,
+  recent audit failures) and a **Control plane** card showing the server's own
+  CPU / memory / disk meters, uptime, build version, database reachability and
+  active-session count. Every status uses a word + icon alongside colour, never
+  colour alone, and reads only cached or cheaply-aggregated data -- no live
+  agent dispatch on page load. The control-plane resources come from a new
+  60-second background sampler (`sysinfo`); its card shows "collecting…" until
+  the first sample lands and marks the reading stale if the sampler falls
+  behind. All of it stays behind the existing `HostsView` check, and each tile
+  drills into a fuller view only where the viewer has permission (the recent-
+  failures tile links to the audit log only for `AuditView` holders). No
+  JavaScript required.
 - **Resurrection: fleet recovery console.** A new overview page (linked from
   the Resurrection landing and host pages) runs a light recovery poll of
   every connected host (system state, failed units, read-only filesystems,

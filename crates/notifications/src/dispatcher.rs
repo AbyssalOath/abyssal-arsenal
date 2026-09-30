@@ -20,6 +20,12 @@ impl NotificationDispatcher {
         self.providers.push(provider);
     }
 
+    /// How many delivery providers are registered -- for the diagnostics page's
+    /// "notifications configured?" preflight check.
+    pub fn provider_count(&self) -> usize {
+        self.providers.len()
+    }
+
     pub async fn dispatch(
         &self,
         message: &NotificationMessage,

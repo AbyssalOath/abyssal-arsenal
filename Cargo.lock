@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abyssal-agent"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-agent-protocol",
  "anyhow",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-agent-protocol"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "uuid",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-arsenal"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-audit",
  "abyssal-auth",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-audit"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-database",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-auth"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-database",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-database"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "anyhow",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-execution"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-agent-protocol",
  "abyssal-audit",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-hosts"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-agent-protocol",
  "abyssal-core",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-modules"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-audit",
  "abyssal-core",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-notifications"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-rbac"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-database",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-web"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-agent-protocol",
  "abyssal-audit",
@@ -253,6 +253,7 @@ dependencies = [
  "snmp2",
  "sqlx",
  "ssh-key",
+ "sysinfo",
  "tar",
  "thiserror 1.0.69",
  "time",
@@ -268,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "abyssal-workflows"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "regex",
  "serde",
@@ -461,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-apothecary"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -469,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-cadavault"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -477,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-catacomb"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -485,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-cryptkeeper"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -493,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-cystoolbox"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -501,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-defleshing"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -509,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-grimoire"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -517,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-incarnation"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -525,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-inquest"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -533,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-mortiscope"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -541,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-necrolink"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -549,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-necropolis"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -557,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-necropsy"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -565,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-obituary"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -573,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-ossuary"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -581,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-panopticon"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -589,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-parish"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -597,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-postmortem"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -605,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-reanimation"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -613,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-reliquary"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -621,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-resurrection"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -629,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-sepulchre"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -637,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-thanatos"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -645,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "arsenal-vivisection"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "abyssal-core",
  "abyssal-modules",
@@ -2745,6 +2746,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntapi"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2814,6 +2824,25 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
+]
+
+[[package]]
+name = "objc2-core-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "libc",
+ "objc2-core-foundation",
 ]
 
 [[package]]
@@ -4406,6 +4435,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.39.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2071df9448915b71c4fe6d25deaf1c22f12bd234f01540b77312bb8e41361e6"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows",
 ]
 
 [[package]]

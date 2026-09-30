@@ -1,0 +1,72 @@
+{% import "_macros.html" as macros %}
+{# Control Plane card: the server's OWN resources (from the cached
+   self_metrics sample) plus DB reachability, build version and active
+   sessions. Only rendered when `control_plane` is Some (HostsView). #}
+{% if let Some(cp) = control_plane %}
+<div class="card control-plane-card">
+  <div class="card-head-row">
+    <h2>{% call macros::icon("host") %} Control plane</h2>
+    {% if !cp.collecting %}
+    <span class="freshness{% if cp.stale %} freshness-stale{% endif %}">
+      {% if cp.stale %}{% call macros::icon("warning") %} stale · {% endif %}updated {{ cp.sampled_ago }}
+    </span>
+    {% endif %}
+  </div>
+
+  {% if cp.collecting %}
+  <p class="text-muted">Collecting the first resource sample&hellip; check back in a moment.</p>
+  {% else %}
+  <div class="meter-grid">
+    <div>
+      {% call macros::meter("CPU", "settings", cp.cpu) %}
+      {% if !cp.cpu_spark.is_empty() %}
+      <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="CPU trend">
+        <polyline points="{{ cp.cpu_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+      </svg>
+      {% endif %}
+    </div>
+    <div>
+      {% call macros::meter("Memory", "module", cp.mem) %}
+      {% if !cp.mem_spark.is_empty() %}
+      <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="Memory trend">
+        <polyline points="{{ cp.mem_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+      </svg>
+      {% endif %}
+    </div>
+    <div>
+      {% call macros::meter("Disk", "database", cp.disk) %}
+      {% if !cp.disk_spark.is_empty() %}
+      <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="Disk trend">
+        <polyline points="{{ cp.disk_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+      </svg>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <dl class="control-plane-facts">
+    <div>
+      <dt>Database</dt>
+      <dd>
+        {% if cp.db_ok %}
+        <span class="badge badge-success">{% call macros::icon("check") %} {{ cp.db_label }}</span>
+        {% else %}
+        <span class="badge badge-danger">{% call macros::icon("danger") %} {{ cp.db_label }}</span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt>Uptime</dt>
+      <dd>{{ cp.uptime }}</dd>
+    </div>
+    <div>
+      <dt>Active sessions</dt>
+      <dd>{{ cp.active_sessions }}</dd>
+    </div>
+    <div>
+      <dt>Version</dt>
+      <dd>v{{ cp.version }}</dd>
+    </div>
+  </dl>
+</div>
+{% endif %}

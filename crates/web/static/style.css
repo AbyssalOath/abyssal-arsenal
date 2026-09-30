@@ -967,3 +967,256 @@ th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transf
 }
 
 .btn-sm { padding: 5px 10px; font-size: 0.82rem; }
+
+/* ---- Dashboard redesign ------------------------------------------------ */
+/* Shared muted-text utility (was an inline style repeated per element). */
+.text-muted { color: var(--text-muted); }
+
+/* Hero banner: at-a-glance fleet state. A left accent bar keyed to the
+   status tone gives a colour cue, but the word (`state_label`) + icon always
+   carry the meaning too, so status never rests on colour alone. */
+.hero {
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: var(--space-5);
+}
+.hero-ok { border-left-color: var(--success); }
+.hero-warn { border-left-color: var(--warning); }
+.hero-crit { border-left-color: var(--danger); }
+.hero-muted { border-left-color: var(--neutral); }
+.hero-greeting { font-size: 1.15rem; font-weight: 600; }
+.hero-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.hero-badge .icon { width: 15px; height: 15px; }
+.hero-badge-ok { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.hero-badge-warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
+.hero-badge-crit { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.hero-badge-muted { background: var(--surface-raised); color: var(--text-muted); }
+.hero-summary { color: var(--text-muted); font-size: 0.9rem; }
+
+/* Fleet summary tiles: compact stat cards, some of which are drill-down
+   links. A tone dot + tinted value carry status alongside the always-present
+   label text. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  margin-bottom: var(--space-5);
+}
+.stat-tile {
+  display: block;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  text-decoration: none;
+  color: inherit;
+}
+a.stat-tile:hover { border-color: var(--accent); }
+.stat-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.stat-tile-head .icon { width: 15px; height: 15px; }
+.stat-tile-value { font-size: 1.7rem; font-weight: 700; line-height: 1.2; margin-top: 4px; }
+.stat-tile-sub { color: var(--text-muted); font-size: 0.8rem; }
+.stat-tile-ok .stat-tile-value { color: var(--success); }
+.stat-tile-warn .stat-tile-value { color: var(--warning); }
+.stat-tile-crit .stat-tile-value { color: var(--danger); }
+.stat-tile-muted .stat-tile-value { color: var(--text); }
+
+/* Two-column split for the control-plane + fleet-health cards; collapses to
+   one column on narrow screens. */
+.dashboard-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+.dashboard-split > .card { margin-bottom: 0; }
+
+.card-head-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.card-head-row > h2 { margin: 0; }
+.freshness { color: var(--text-muted); font-size: 0.78rem; display: inline-flex; align-items: center; gap: 4px; }
+.freshness .icon { width: 13px; height: 13px; }
+.freshness-stale { color: var(--warning); }
+
+/* Resource meters (CPU/memory/disk) -- reuse .progress-bar, recolour the
+   fill by tone. */
+.meter-grid { display: grid; gap: var(--space-3); margin: var(--space-4) 0; }
+.meter-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.85rem; }
+.meter-label { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.meter-label .icon { width: 15px; height: 15px; color: var(--text-muted); }
+.meter-value { color: var(--text-muted); }
+.meter .progress-bar { margin-top: 5px; height: 12px; }
+.meter-ok .progress-bar-fill { background: var(--success); }
+.meter-warn .progress-bar-fill { background: var(--warning); }
+.meter-crit .progress-bar-fill { background: var(--danger); }
+
+/* Control-plane fact list: DB / uptime / sessions / version. */
+.control-plane-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+.control-plane-facts dt { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.control-plane-facts dd { margin: 3px 0 0; font-weight: 600; }
+.control-plane-facts .badge { font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.control-plane-facts .badge .icon { width: 13px; height: 13px; }
+.cp-spark { display: block; margin-top: 4px; color: var(--accent); opacity: 0.8; width: 100%; height: 24px; }
+
+/* ---- Fleet hosts table ------------------------------------------------- */
+/* Status filter chips (All / Online / Offline / Needs attention). */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.filter-chip:hover { border-color: var(--accent); color: var(--text); }
+.filter-chip-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.filter-chip-count { color: var(--text-muted); font-weight: 400; }
+.filter-chip-active .filter-chip-count { color: inherit; }
+
+.fleet-table th.col-num, .fleet-table td.col-num { text-align: left; }
+.fleet-table .sort-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.fleet-table .sort-link:hover { color: var(--text); }
+.fleet-table .sort-active { color: var(--text); }
+
+.fleet-host-name { font-weight: 600; }
+.fleet-spark { display: block; margin-top: 4px; color: var(--accent); opacity: 0.85; }
+.fleet-attention {
+  color: var(--warning);
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.fleet-attention .icon { width: 13px; height: 13px; }
+.fleet-lastseen { font-size: 0.82rem; white-space: nowrap; }
+.fleet-open-form { margin: 0; }
+
+/* Compact in-cell usage meter: a value over a thin tone-coloured bar. */
+.cell-meter { min-width: 74px; }
+.cell-meter-val { font-size: 0.82rem; font-weight: 600; }
+.cell-bar {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  overflow: hidden;
+  margin-top: 3px;
+}
+.cell-bar-fill { display: block; height: 100%; border-radius: inherit; background: var(--success); }
+.cell-meter-warn .cell-bar-fill { background: var(--warning); }
+.cell-meter-crit .cell-bar-fill { background: var(--danger); }
+.cell-meter-warn .cell-meter-val { color: var(--warning); }
+.cell-meter-crit .cell-meter-val { color: var(--danger); }
+
+/* ---- Activity feed ----------------------------------------------------- */
+.activity-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+.activity-audit-link { text-decoration: none; font-size: 0.85rem; }
+.activity-audit-link:hover { text-decoration: underline; }
+.activity-day { margin-bottom: var(--space-5); }
+.activity-day:last-of-type { margin-bottom: 0; }
+.activity-day-label {
+  position: sticky;
+  top: 0;
+  margin: 0 0 var(--space-2);
+  padding: 4px 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--surface-solid);
+  border-bottom: 1px solid var(--border);
+}
+.activity-time { white-space: nowrap; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* ---- Live updates (auto-refresh / htmx) preference control ------------- */
+.dashboard-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+.dashboard-topline .update-notice { margin-bottom: 0; }
+.live-updates {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: 0 0 var(--space-4);
+}
+.live-updates label { margin: 0; }
+.live-updates select { margin: 0; width: auto; }
+.live-updates .lu-htmx {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: none;
+  font-size: 0.85rem;
+}
+.live-updates .lu-htmx input { margin: 0; }
+/* Inside the flex topline the control needs no bottom margin. */
+.dashboard-topline .live-updates { margin: 0; }

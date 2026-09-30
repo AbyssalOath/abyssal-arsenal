@@ -141,6 +141,53 @@ pub(crate) fn format_remaining(remaining: std::time::Duration) -> String {
     format!("{minutes}m{seconds:02}s left")
 }
 
+/// One readiness component on the diagnostics page (database, migrations, …).
+pub struct HealthComponentRow {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// One preflight / DR-readiness check on the diagnostics page. `ok` drives the
+/// badge; these are advisories (misconfigurations worth fixing), not the hard
+/// readiness gate that `/readyz` enforces.
+pub struct PreflightRow {
+    pub label: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// One background task's liveness row on the diagnostics page.
+pub struct TaskRow {
+    pub label: String,
+    pub last_run: String,
+    pub last_ok: String,
+    pub stale: bool,
+    pub never_ran: bool,
+    pub runs: u64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "system_health.html")]
+pub struct SystemHealthTemplate {
+    pub base: BaseCtx,
+    pub ready: bool,
+    pub components: Vec<HealthComponentRow>,
+    pub tasks: Vec<TaskRow>,
+    /// True when any background task is overdue -- drives the section banner.
+    pub any_task_stale: bool,
+    /// Preflight / DR-readiness advisories (M5).
+    pub preflight: Vec<PreflightRow>,
+    // Self-monitoring configuration (M4).
+    pub monitoring_enabled: bool,
+    pub cpu_threshold: u32,
+    pub mem_threshold: u32,
+    pub disk_threshold: u32,
+    pub backup_overdue_hours: u32,
+    pub alert_recipients: String,
+}
+
 #[derive(Template)]
 #[template(path = "setup.html")]
 pub struct SetupTemplate {
@@ -223,6 +270,32 @@ pub struct ActivityRow {
     pub result: String,
 }
 
+/// A day's worth of activity rows on the full feed, under a heading like
+/// "Today", "Yesterday", or an ISO date (in the viewer's timezone).
+pub struct ActivityGroup {
+    pub label: String,
+    pub rows: Vec<ActivityRow>,
+}
+
+#[derive(Template)]
+#[template(path = "activity_feed.html")]
+pub struct ActivityFeedTemplate {
+    pub base: BaseCtx,
+    pub groups: Vec<ActivityGroup>,
+    /// Whether system-initiated rows are currently shown.
+    pub include_system: bool,
+    /// Link that flips the show/hide-system filter (resetting to page 1).
+    pub toggle_href: String,
+    pub page: NumberedPageInfo,
+    pub refresh_seconds: u32,
+    pub htmx_pref: bool,
+    pub live_htmx: bool,
+    /// The `/dashboard/fragments/activity?…` URL the live container polls.
+    pub fragment_url: String,
+    /// This page's own path+query, for the preferences form's return-to.
+    pub self_url: String,
+}
+
 /// One host `host_health_snapshots` flags as needing attention.
 pub struct HostAttentionRow {
     pub host_name: String,
@@ -246,6 +319,69 @@ pub struct FleetHealthCtx {
     pub last_backup: Option<LastBackupRow>,
 }
 
+/// The dashboard hero banner: one at-a-glance line on overall fleet state.
+/// `state_class` is `"ok" | "warn" | "crit" | "muted"` (drives colour) and
+/// is always paired with `state_label` + an icon so status is never conveyed
+/// by colour alone (WCAG). Populated with real numbers only when the viewer
+/// has `HostsView`; otherwise `show_fleet` is false and it's a plain welcome.
+pub struct HeroCtx {
+    pub greeting: String,
+    pub show_fleet: bool,
+    pub state_label: String,
+    pub state_class: String,
+    pub state_icon: &'static str,
+    pub summary_line: String,
+}
+
+/// One usage meter's fully-derived display state -- percentage (clamped
+/// 0-100), a human label like `"5.2 / 15.6 GB"`, and a `"ok"/"warn"/"crit"`
+/// tone class. Built by `dashboard::meter` so every meter uses the same
+/// thresholds.
+#[derive(Clone)]
+pub struct MeterCtx {
+    pub pct: u8,
+    pub label: String,
+    pub tone: String,
+}
+
+/// The control plane's own resource card: CPU/memory/disk meters, uptime,
+/// build version, database reachability, and active operator sessions -- all
+/// from the cached `self_metrics` sample plus cheap aggregate queries, never
+/// a live poll on page load. `collecting` is true until the first background
+/// sample lands, when the meters show a "collecting…" placeholder instead.
+pub struct ControlPlaneCtx {
+    pub collecting: bool,
+    pub cpu: MeterCtx,
+    pub mem: MeterCtx,
+    pub disk: MeterCtx,
+    /// SVG polyline points for each meter's recent trend, empty when there
+    /// aren't yet two history samples to draw a line.
+    pub cpu_spark: String,
+    pub mem_spark: String,
+    pub disk_spark: String,
+    pub uptime: String,
+    pub version: String,
+    pub db_ok: bool,
+    pub db_label: String,
+    pub active_sessions: i64,
+    pub sampled_ago: String,
+    pub stale: bool,
+}
+
+/// One fleet summary tile (Hosts / Elevated / Open alerts / Sessions /
+/// Recent failures). `tone` is `"ok"/"warn"/"crit"/"muted"` and always
+/// accompanies the text label + icon, never colour alone. `href` makes the
+/// whole tile a link when there's a natural drill-down and the viewer has
+/// permission to reach it.
+pub struct SummaryTile {
+    pub label: String,
+    pub value: String,
+    pub sub: String,
+    pub tone: String,
+    pub icon: &'static str,
+    pub href: Option<String>,
+}
+
 /// The dashboard's version notice: this build's own version always shown,
 /// plus a newer release's version and link once `update_check` has
 /// confirmed one exists.
@@ -258,6 +394,71 @@ pub struct UpdateNoticeCtx {
     pub update_available: bool,
 }
 
+/// One row of the dashboard fleet table: a host, its connection state, its
+/// three cached usage meters (each `None` until the metrics sweep has a sample
+/// for it), any health flag, and a small CPU sparkline.
+pub struct FleetHostRow {
+    pub host_id: String,
+    pub name: String,
+    pub online: bool,
+    pub cpu: Option<MeterCtx>,
+    pub mem: Option<MeterCtx>,
+    pub disk: Option<MeterCtx>,
+    pub failed_units: i32,
+    /// `Some` when the host needs a look (unreachable, or N failed units) --
+    /// the human phrase to show; `None` when it's reporting clean.
+    pub attention_reason: Option<String>,
+    /// SVG polyline points for the CPU mini-sparkline, empty when there aren't
+    /// yet two samples to draw a line.
+    pub cpu_sparkline: String,
+    pub last_seen: String,
+}
+
+/// One sortable column header in the fleet table. `href` re-sorts by this
+/// column (toggling direction when it's already the active sort); `active` +
+/// `ascending` drive the direction arrow and `aria-sort`.
+pub struct FleetSortHeader {
+    pub label: String,
+    pub href: String,
+    pub active: bool,
+    pub ascending: bool,
+    pub numeric: bool,
+}
+
+/// One status filter chip (All / Online / Offline / Needs attention).
+pub struct FleetStatusOption {
+    pub label: String,
+    pub href: String,
+    pub active: bool,
+    pub count: usize,
+}
+
+#[derive(Template)]
+#[template(path = "fleet_hosts.html")]
+pub struct FleetHostsTemplate {
+    pub base: BaseCtx,
+    /// Bare copy of `base.csrf_token`, so the shared `_fleet_hosts_inner.html`
+    /// partial reads the same whether embedded here or rendered as a fragment.
+    pub csrf_token: String,
+    pub q: String,
+    pub status: String,
+    pub rows: Vec<FleetHostRow>,
+    pub headers: Vec<FleetSortHeader>,
+    pub status_options: Vec<FleetStatusOption>,
+    pub page: NumberedPageInfo,
+    pub total_online: usize,
+    pub total_offline: usize,
+    pub total_attention: usize,
+    pub refresh_seconds: u32,
+    pub htmx_pref: bool,
+    pub live_htmx: bool,
+    /// The `/dashboard/fragments/hosts?…` URL (current filter/sort/page) the
+    /// live container polls when htmx is on.
+    pub fragment_url: String,
+    /// This page's own path+query, for the preferences form's return-to.
+    pub self_url: String,
+}
+
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 pub struct DashboardTemplate {
@@ -265,9 +466,68 @@ pub struct DashboardTemplate {
     pub search_query: String,
     pub pinned: Vec<ModuleTile>,
     pub groups: Vec<ModuleGroup>,
+    pub hero: HeroCtx,
+    /// `Some` only for viewers with `HostsView`; the card is omitted entirely
+    /// otherwise (the self-metrics belong to the operators, not every user).
+    pub control_plane: Option<ControlPlaneCtx>,
+    pub summary_tiles: Vec<SummaryTile>,
     pub fleet_health: FleetHealthCtx,
     pub update_notice: UpdateNoticeCtx,
     pub recent_activity: Vec<ActivityRow>,
+    /// Auto-refresh interval in seconds (`0` = off) -- see `dashboard_prefs`.
+    pub refresh_seconds: u32,
+    /// The raw per-browser htmx opt-in (drives the checkbox state), regardless
+    /// of interval.
+    pub htmx_pref: bool,
+    /// Whether to refresh via htmx partial swaps (true) or a full-page
+    /// `<meta refresh>` (false): `htmx_pref && refresh_seconds > 0`.
+    pub live_htmx: bool,
+    /// This page's own path+query, for the preferences form's return-to.
+    pub self_url: String,
+}
+
+/// Just the Control Plane card, for the `/dashboard/fragments/control-plane`
+/// htmx poll -- renders the same partial the full page embeds.
+#[derive(Template)]
+#[template(path = "_dashboard_control_plane.html")]
+pub struct ControlPlaneFragment {
+    pub control_plane: Option<ControlPlaneCtx>,
+}
+
+/// The hero banner + fleet summary tiles, for the
+/// `/dashboard/fragments/overview` htmx poll.
+#[derive(Template)]
+#[template(path = "_dashboard_overview.html")]
+pub struct OverviewFragment {
+    pub hero: HeroCtx,
+    pub summary_tiles: Vec<SummaryTile>,
+}
+
+/// The fleet table's inner content (toolbar + table + pagination), for the
+/// `/dashboard/fragments/hosts` htmx poll -- the same partial the full page
+/// embeds. `csrf_token` is bare (not `base.csrf_token`) so the partial reads
+/// identically whether rendered inside the page or as a fragment.
+#[derive(Template)]
+#[template(path = "_fleet_hosts_inner.html")]
+pub struct FleetHostsFragment {
+    pub csrf_token: String,
+    pub q: String,
+    pub status: String,
+    pub rows: Vec<FleetHostRow>,
+    pub headers: Vec<FleetSortHeader>,
+    pub status_options: Vec<FleetStatusOption>,
+    pub page: NumberedPageInfo,
+}
+
+/// The activity feed's inner content, for the `/dashboard/fragments/activity`
+/// htmx poll.
+#[derive(Template)]
+#[template(path = "_activity_inner.html")]
+pub struct ActivityFragment {
+    pub groups: Vec<ActivityGroup>,
+    pub include_system: bool,
+    pub toggle_href: String,
+    pub page: NumberedPageInfo,
 }
 
 pub struct UserRow {

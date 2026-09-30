@@ -840,6 +840,54 @@ count nmap itself expands a CIDR into, including the network and broadcast
 addresses) so the bar has a real denominator from the very first paint,
 not just once the first host finishes.
 
+### Dashboard auto-refresh and the optional htmx enhancement
+
+The dashboard family of pages (the dashboard itself, `/dashboard/hosts`, and
+`/dashboard/activity`) can keep themselves current, and the default way they
+do it needs **no JavaScript at all**: a per-browser "Live updates" control
+(`_macros.html::live_updates_control`) lets a viewer pick an auto-refresh
+interval (off / 15s / 30s / 60s), stored as a plain cookie exactly like the
+theme and selected-host preferences (`dashboard_prefs.rs`). When set, the
+page renders a `<meta http-equiv="refresh" content="N">` in its head, which
+reloads the current URL -- query string and all -- on that interval. Off by
+default: with no cookie, these are the same static, server-rendered pages as
+every other page in the app.
+
+The **one new deliberate JavaScript exception** beyond the two progress
+pages above is opt-in per browser: the same control has a "Partial updates"
+checkbox that, when ticked *and* an interval is set, loads a **vendored copy
+of htmx** (`static/vendor/htmx.min.js`, served same-origin -- never a CDN, so
+`script-src 'self'` stays strict and the app has no third-party runtime
+dependency) instead of the `<meta refresh>`. Each volatile section of the
+page then sits in a `.live-region` container that `hx-get`s a fragment
+endpoint on the chosen interval and swaps just that section, so the numbers
+update without a full-page reload flashing or losing the reader's place.
+
+The fragment endpoints are `/dashboard/fragments/{control-plane,overview,
+hosts,activity}`. Each one:
+
+- Renders the *same partial* the full page embeds (`_dashboard_control_plane`,
+  `_dashboard_overview`, `_fleet_hosts_inner`, `_activity_inner`), built from
+  the same shared helper (`build_fleet_view` / `build_activity_view` /
+  `build_control_plane`), so a fragment and the page it came from can never
+  disagree about the current state.
+- Goes through the exact same `abyssal_rbac::ensure` permission check as the
+  section on the full page (`hosts.view` for the fleet/overview/control-plane
+  fragments, `audit.view` for the activity fragment) -- a fragment URL is a
+  new URL, not a new permission boundary, the same rule the progress pages'
+  JSON endpoints follow.
+- Reads only cached/aggregated data (the metrics and health sweeps' stored
+  samples, the connection registry, the audit log) -- never a live agent
+  dispatch -- so a 15-second poll across a browser tab left open all day
+  costs a few cheap indexed queries per tick, not fleet-wide fan-out.
+- Carries the current filter/sort/page in its poll URL, so a poll returns the
+  same view the reader is looking at, not page one of the default sort.
+
+htmx here is strictly an enhancement over the always-present `<meta refresh>`
+fallback: turning the checkbox off (or having JS blocked) drops straight back
+to full-page reloads, and turning the interval off stops both. Nothing about
+the dashboard's data or permissions depends on it.
+
 ## The second-gate pattern for catastrophic-risk operations
 
 Every Destructive operation already requires the caller to explicitly set
@@ -1066,6 +1114,61 @@ below for what that implies for toggling them).
   the same `GET_LOCK`-based lock a manual backup or restore uses, then
   runs retention pruning. See "Reliquary native backups" below for the
   full feature.
+
+## Control-plane self-observability
+
+Every arsenal observes, defends, and recovers *managed hosts*. This is the
+mirror image: the control plane observing, alerting on, and diagnosing
+**itself** -- "who watches the watcher." It has four layers, each usable on
+its own.
+
+**Health endpoints (`crate::health`, `routes::api`).** `/healthz` is liveness:
+it does no I/O and always returns `200` while the process serves, so an
+orchestrator never restarts a container that is merely not-ready (and it
+bypasses the maintenance-mode guard so a restore doesn't trip it). `/readyz`
+is readiness: it runs the cheap checks that decide whether the app can serve --
+database reachable (a timed `SELECT 1`), migrations applied and not dirty (read
+from sqlx's own `_sqlx_migrations` table), and not mid-restore -- and returns
+`200` or `503` with a compact per-component JSON body. Both are unauthenticated
+(an external monitor can't log in) and neither leaks anything sensitive; the
+old `/api/health` stub stays as a liveness alias. Readiness is deliberately
+about *request-serving capability*, not background sweeps -- a stalled metrics
+sweep doesn't make the server "unready," it's surfaced separately.
+
+**Background-task liveness (`crate::task_health`).** Every unattended sweep
+(`spawn_*`) registers itself in a shared `TaskHeartbeats` registry
+(`AppState.task_health`) and records a beat each tick. Loops that are
+toggle-gated (Thanatos, audit-syslog, the backup scheduler) beat at the *top*
+of each iteration, so "the loop is alive" is tracked even on ticks where the
+feature is off and the body `continue`s; always-on loops beat on completion and
+record the error on a failed cycle. A task that panics or stalls stops beating,
+and its row goes stale (past `interval * grace`, with a 30s floor).
+
+**Diagnostics page (`/admin/health`, `SettingsManage`).** One pane showing the
+readiness components, every background task's freshness/last-error, the
+preflight/DR advisories, and the self-monitoring config form. Reads only
+in-memory/aggregate state.
+
+**Self-metrics history + self-alerting (`crate::self_metrics`,
+`crate::self_monitor`).** The self-metrics sampler persists the control plane's
+own CPU/memory/disk percentages to `control_plane_metric_samples` (a dedicated
+table -- no host dimension -- pruned to 7 days), which drives the trend
+sparklines on the Control Plane card. An opt-in self-monitor sweep then watches
+the server the way Mortiscope watches a host: sustained resource-threshold
+breaches, a stalled background task, or overdue backups each fire one
+notification on the transition into the bad state and clear on recovery
+(firing state persisted in `control_plane_alert_state`, so it survives a
+restart and never re-spams). It deliberately does **not** try to alert on
+"database unreachable" -- it reads its own config and firing state from that
+same database, so that condition is what `/readyz` plus an external monitor are
+for.
+
+**Preflight & DR readiness.** The diagnostics page also runs cheap advisory
+checks for the things that are easy to leave misconfigured and only bite later:
+encryption key present, `PUBLIC_URL` set, session cookie `Secure`, at least one
+notification provider registered, the backup destination actually writable (a
+probe write that cleans itself up), and whether a recent successful backup
+exists. These are advisories, not the hard `/readyz` gate.
 
 ## Reliquary native backups (GitHub issue #9)
 

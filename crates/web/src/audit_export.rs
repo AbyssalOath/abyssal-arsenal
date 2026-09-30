@@ -36,10 +36,20 @@ const BATCH_SIZE: i64 = 500;
 pub fn spawn_audit_syslog_sweep(
     pool: DbPool,
     notifications: std::sync::Arc<NotificationDispatcher>,
+    heartbeats: crate::task_health::TaskHeartbeats,
 ) {
+    use crate::task_health::names;
+    const POLL_INTERVAL_SECS: u64 = 10;
     tokio::spawn(async move {
+        heartbeats
+            .register(names::AUDIT_SYSLOG_SWEEP, POLL_INTERVAL_SECS)
+            .await;
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
+            // Beat at the top: the loop is alive even when export is toggled off.
+            heartbeats
+                .ok(names::AUDIT_SYSLOG_SWEEP, POLL_INTERVAL_SECS)
+                .await;
 
             let enabled =
                 match repo::settings::get_bool(&pool, AUDIT_SYSLOG_EXPORT_ENABLED, false).await {

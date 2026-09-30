@@ -917,7 +917,15 @@ pub async fn severity_summary(pool: &DbPool, hours: i64) -> anyhow::Result<Vec<(
 /// sleep -- a lowered interval takes effect after at most one old-length
 /// sleep, never a restart.
 pub fn spawn_thanatos_sweep(state: AppState) {
+    use crate::task_health::names;
     tokio::spawn(async move {
+        state
+            .task_health
+            .register(
+                names::THANATOS_SWEEP,
+                u64::from(THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT),
+            )
+            .await;
         loop {
             let interval_secs = repo::settings::get_u32(
                 &state.pool,
@@ -927,6 +935,12 @@ pub fn spawn_thanatos_sweep(state: AppState) {
             .await
             .unwrap_or(THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT);
             tokio::time::sleep(Duration::from_secs(u64::from(interval_secs))).await;
+            // Beat at the top of each iteration: the loop is alive even on ticks
+            // where monitoring is toggled off and the body `continue`s.
+            state
+                .task_health
+                .ok(names::THANATOS_SWEEP, u64::from(interval_secs))
+                .await;
 
             let enabled =
                 match repo::settings::get_bool(&state.pool, THANATOS_MONITORING_ENABLED, false)

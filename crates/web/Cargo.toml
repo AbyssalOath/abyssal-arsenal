@@ -52,3 +52,4 @@ zstd.workspace = true
 aes-gcm.workspace = true
 sha2.workspace = true
 argon2.workspace = true
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk"] }

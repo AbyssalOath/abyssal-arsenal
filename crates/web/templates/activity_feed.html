@@ -1,0 +1,15 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Activity — Abyssal Arsenal{% endblock %}
+{% block heading %}Activity{% endblock %}
+{% block head_extra %}{% call macros::refresh_head(refresh_seconds, live_htmx) %}{% endblock %}
+{% block content %}
+
+<div class="card">
+  {% call macros::live_updates_control(refresh_seconds, htmx_pref, base.csrf_token, self_url) %}
+  <div class="live-region"{% if live_htmx %} hx-get="{{ fragment_url }}" hx-trigger="every {{ refresh_seconds }}s" hx-swap="innerHTML"{% endif %}>
+    {% include "_activity_inner.html" %}
+  </div>
+</div>
+
+{% endblock %}

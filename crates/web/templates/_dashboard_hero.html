@@ -1,0 +1,20 @@
+{% import "_macros.html" as macros %}
+{# Hero banner: greeting + one at-a-glance fleet-state line. Shared by the
+   full dashboard page and the /dashboard/fragments/control-plane refresh. #}
+<section class="hero hero-{{ hero.state_class }}">
+  <div class="hero-greeting">{{ hero.greeting }}</div>
+  {% if hero.show_fleet %}
+  <div class="hero-state">
+    <span class="hero-badge hero-badge-{{ hero.state_class }}">
+      {% call macros::icon(hero.state_icon) %} {{ hero.state_label }}
+    </span>
+    <span class="hero-summary">{{ hero.summary_line }}</span>
+  </div>
+  {% else if !hero.state_label.is_empty() %}
+  <div class="hero-state">
+    <span class="hero-badge hero-badge-muted">
+      {% call macros::icon(hero.state_icon) %} {{ hero.state_label }}
+    </span>
+  </div>
+  {% endif %}
+</section>

@@ -2,59 +2,68 @@
 {% import "_macros.html" as macros %}
 {% block title %}Dashboard — Abyssal Arsenal{% endblock %}
 {% block heading %}Dashboard{% endblock %}
+{% block head_extra %}{% call macros::refresh_head(refresh_seconds, live_htmx) %}{% endblock %}
 {% block content %}
 
-{% if update_notice.update_available %}
-<a href="{{ update_notice.release_url }}" class="update-notice update-notice-alert" target="_blank" rel="noopener noreferrer">
-  {% call macros::icon("warning") %}
-  <span>Update available: v{{ update_notice.current_version }} &#8594; v{{ update_notice.latest_version }}</span>
-</a>
-{% else %}
-<div class="update-notice">
-  <span>Abyssal Arsenal v{{ update_notice.current_version }}</span>
+<div class="dashboard-topline">
+  {% if update_notice.update_available %}
+  <a href="{{ update_notice.release_url }}" class="update-notice update-notice-alert" target="_blank" rel="noopener noreferrer">
+    {% call macros::icon("warning") %}
+    <span>Update available: v{{ update_notice.current_version }} &#8594; v{{ update_notice.latest_version }}</span>
+  </a>
+  {% else %}
+  <div class="update-notice">
+    <span>Abyssal Arsenal v{{ update_notice.current_version }}</span>
+  </div>
+  {% endif %}
+  {% call macros::live_updates_control(refresh_seconds, htmx_pref, base.csrf_token, self_url) %}
 </div>
-{% endif %}
 
 {% if base.can_hosts_view %}
-<div class="card">
-  <h2>Fleet health</h2>
-  <div class="status-strip">
-    <span class="badge badge-muted">{{ fleet_health.host_count }} host{% if fleet_health.host_count != 1 %}s{% endif %}</span>
-    <span class="badge badge-success">{{ fleet_health.online_count }} online</span>
-    {% let offline = fleet_health.host_count - fleet_health.online_count %}
-    {% if offline > 0 %}
-    <span class="badge badge-muted">{{ offline }} offline</span>
-    {% endif %}
-    {% if fleet_health.open_alerts > 0 %}
-    <span class="badge badge-danger">{{ fleet_health.open_alerts }} open Thanatos alert{% if fleet_health.open_alerts != 1 %}s{% endif %} (24h)</span>
-    {% else %}
-    <span class="badge badge-success">No open Thanatos alerts</span>
-    {% endif %}
-  </div>
-
-  {% if !fleet_health.hosts_needing_attention.is_empty() %}
-  <h3>{% call macros::icon("warning") %} Needs attention</h3>
-  <div class="actions">
-    {% for h in fleet_health.hosts_needing_attention %}
-    <span class="badge badge-warning">{{ h.host_name }}: {{ h.reason }}</span>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <h3>{% call macros::icon("generate") %} Last backup</h3>
-  {% if let Some(b) = fleet_health.last_backup %}
-  <p style="color:var(--text-muted); margin:0;">{{ b.name }} on {{ b.host_name }} &mdash; {{ b.when }}</p>
-  {% else %}
-  <p style="color:var(--text-muted); margin:0;">No backups recorded yet.</p>
-  {% endif %}
+<div class="live-region"{% if live_htmx %} hx-get="/dashboard/fragments/overview" hx-trigger="every {{ refresh_seconds }}s" hx-swap="innerHTML"{% endif %}>
+  {% include "_dashboard_overview.html" %}
 </div>
+
+<div class="dashboard-split">
+  <div class="live-region"{% if live_htmx %} hx-get="/dashboard/fragments/control-plane" hx-trigger="every {{ refresh_seconds }}s" hx-swap="innerHTML"{% endif %}>
+    {% include "_dashboard_control_plane.html" %}
+  </div>
+
+  <div class="card">
+    <h2>{% call macros::icon("shield-check") %} Fleet health</h2>
+
+    {% if !fleet_health.hosts_needing_attention.is_empty() %}
+    <h3>{% call macros::icon("warning") %} Needs attention</h3>
+    <div class="actions">
+      {% for h in fleet_health.hosts_needing_attention %}
+      <span class="badge badge-warning">{{ h.host_name }}: {{ h.reason }}</span>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted">Every host is reporting clean.</p>
+    {% endif %}
+
+    <h3>{% call macros::icon("generate") %} Last backup</h3>
+    {% if let Some(b) = fleet_health.last_backup %}
+    <p class="text-muted" style="margin:0;">{{ b.name }} on {{ b.host_name }} &mdash; {{ b.when }}</p>
+    {% else %}
+    <p class="text-muted" style="margin:0;">No backups recorded yet.</p>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+{# No HostsView: just the welcome hero, no fleet numbers. #}
+{% include "_dashboard_hero.html" %}
 {% endif %}
 
 {% if base.can_audit_view %}
 <div class="card">
-  <h2>Recent activity</h2>
+  <div class="card-head-row">
+    <h2>Recent activity</h2>
+    <a class="text-muted" href="/dashboard/activity">View all activity &rarr;</a>
+  </div>
   {% if recent_activity.is_empty() %}
-  <p style="color:var(--text-muted);">No recent activity.</p>
+  <p class="text-muted">No recent activity.</p>
   {% else %}
   <table>
     <thead><tr><th>When</th><th>User</th><th>Activity</th><th>Result</th></tr></thead>

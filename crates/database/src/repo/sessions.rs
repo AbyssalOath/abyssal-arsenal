@@ -82,6 +82,20 @@ pub async fn find_by_token_hash(
     Ok(row.map(Into::into))
 }
 
+/// Count of sessions that are currently valid: not revoked and not yet
+/// expired. A cheap aggregate for the dashboard's Control Plane card -- how
+/// many operators hold a live session right now -- not an authorization
+/// check (each request still validates its own session the normal way).
+pub async fn count_active(pool: &DbPool) -> anyhow::Result<i64> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sessions \
+         WHERE revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP(6)",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
 pub async fn revoke(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
     sqlx::query("UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP(6) WHERE id = ?")
         .bind(id.to_string())

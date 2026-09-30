@@ -360,11 +360,23 @@ fn select_prune_candidates(
 /// local), so changing that setting takes effect on the next scheduled
 /// run without a restart, same as every other setting here.
 pub fn spawn_scheduled_backup_loop(state: AppState, provider: Arc<dyn BackupProvider>) {
+    use crate::task_health::names;
+    const CHECK_INTERVAL_SECS: u64 = 15 * 60;
     tokio::spawn(async move {
         let pool = state.pool.clone();
-        let mut interval = tokio::time::interval(Duration::from_secs(15 * 60));
+        state
+            .task_health
+            .register(names::BACKUP_SCHEDULE, CHECK_INTERVAL_SECS)
+            .await;
+        let mut interval = tokio::time::interval(Duration::from_secs(CHECK_INTERVAL_SECS));
         loop {
             interval.tick().await;
+            // Beat at the top: the scheduler is alive even on ticks where a
+            // backup isn't yet due or the schedule is disabled.
+            state
+                .task_health
+                .ok(names::BACKUP_SCHEDULE, CHECK_INTERVAL_SECS)
+                .await;
 
             let enabled = repo::settings::get_bool(&pool, RELIQUARY_BACKUP_SCHEDULE_ENABLED, false)
                 .await

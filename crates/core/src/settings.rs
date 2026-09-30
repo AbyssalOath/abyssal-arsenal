@@ -342,3 +342,27 @@ pub const AUDIT_SYSLOG_EXPORT_ENABLED: &str = "audit.syslog_export_enabled";
 /// value already plays, just system-written instead of admin-written (no
 /// dedicated one-row table felt warranted for a single moving string).
 pub const AUDIT_SYSLOG_EXPORT_CURSOR: &str = "audit.syslog_export_cursor";
+
+// ---- Control-plane self-monitoring -------------------------------------
+// The server watching itself: resource thresholds, a background-task
+// liveness check, and a backup-overdue check, alerting through the same
+// NotificationDispatcher the arsenals use. All opt-in (off by default),
+// with safe defaults so enabling it needs no further tuning.
+
+/// Master toggle for the control-plane self-monitoring sweep.
+pub const CONTROL_PLANE_MONITORING_ENABLED: &str = "control_plane.monitoring_enabled";
+/// Percent thresholds at/above which the control plane alerts on its own
+/// sustained CPU / memory / disk usage.
+pub const CONTROL_PLANE_CPU_THRESHOLD: &str = "control_plane.cpu_percent_threshold";
+pub const CONTROL_PLANE_CPU_THRESHOLD_DEFAULT: u32 = 90;
+pub const CONTROL_PLANE_MEM_THRESHOLD: &str = "control_plane.mem_percent_threshold";
+pub const CONTROL_PLANE_MEM_THRESHOLD_DEFAULT: u32 = 90;
+pub const CONTROL_PLANE_DISK_THRESHOLD: &str = "control_plane.disk_percent_threshold";
+pub const CONTROL_PLANE_DISK_THRESHOLD_DEFAULT: u32 = 90;
+/// Hours since the last successful backup after which the control plane
+/// alerts that backups are overdue. `0` disables the backup-overdue check.
+pub const CONTROL_PLANE_BACKUP_OVERDUE_HOURS: &str = "control_plane.backup_overdue_hours";
+pub const CONTROL_PLANE_BACKUP_OVERDUE_HOURS_DEFAULT: u32 = 48;
+/// Comma/newline-separated recipients for control-plane self-alerts (same
+/// format as the Mortiscope/Thanatos recipient lists).
+pub const CONTROL_PLANE_ALERT_RECIPIENTS: &str = "control_plane.alert_recipients";

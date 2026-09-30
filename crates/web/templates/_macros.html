@@ -52,6 +52,54 @@
 {% endmatch %}
 {% endmacro %}
 
+{% macro meter(heading, icon_name, m) %}
+<div class="meter meter-{{ m.tone }}">
+  <div class="meter-head">
+    <span class="meter-label">{% call icon(icon_name) %} {{ heading }}</span>
+    <span class="meter-value">{{ m.label }}</span>
+  </div>
+  <div class="progress-bar" role="img" aria-label="{{ heading }}: {{ m.label }}">
+    <div class="progress-bar-fill" style="width: {{ m.pct }}%"></div>
+  </div>
+</div>
+{% endmacro %}
+
+{# Head auto-refresh: load the vendored htmx enhancement when opted in,
+   otherwise a plain no-JS <meta refresh>. Off entirely when interval is 0. #}
+{% macro refresh_head(refresh_seconds, live_htmx) %}
+{% if live_htmx %}
+<script src="/static/vendor/htmx.min.js" defer></script>
+{% else if refresh_seconds > 0 %}
+<meta http-equiv="refresh" content="{{ refresh_seconds }}">
+{% endif %}
+{% endmacro %}
+
+{# No-JS "Live updates" control: pick an auto-refresh interval and, optionally,
+   opt into htmx partial refreshes. Submitting stores the choice as per-browser
+   cookies -- see `dashboard_prefs`. #}
+{% macro live_updates_control(refresh_seconds, htmx_pref, csrf_token, return_to) %}
+<form method="post" action="/dashboard/preferences" class="live-updates">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="return_to" value="{{ return_to }}">
+  <label for="lu-interval">Auto-refresh</label>
+  <select id="lu-interval" name="refresh">
+    <option value="0"{% if refresh_seconds == 0 %} selected{% endif %}>Off</option>
+    <option value="15"{% if refresh_seconds == 15 %} selected{% endif %}>15s</option>
+    <option value="30"{% if refresh_seconds == 30 %} selected{% endif %}>30s</option>
+    <option value="60"{% if refresh_seconds == 60 %} selected{% endif %}>60s</option>
+  </select>
+  <label class="lu-htmx"><input type="checkbox" name="htmx" value="1"{% if htmx_pref %} checked{% endif %}> Partial updates</label>
+  <button type="submit" class="btn-secondary btn-sm">Apply</button>
+</form>
+{% endmacro %}
+
+{% macro cell_meter(m, aria) %}
+<div class="cell-meter cell-meter-{{ m.tone }}">
+  <span class="cell-meter-val">{{ m.label }}</span>
+  <span class="cell-bar" role="img" aria-label="{{ aria }}: {{ m.label }}"><span class="cell-bar-fill" style="width: {{ m.pct }}%"></span></span>
+</div>
+{% endmacro %}
+
 {% macro module_tile(m, search_query, csrf_token) %}
 <div class="tile">
   <form method="post" action="/modules/{{ m.key }}/{% if m.pinned %}unpin{% else %}pin{% endif %}" class="tile-pin-form">
