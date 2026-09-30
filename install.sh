@@ -114,6 +114,7 @@ else
                 echo "COMPOSE_PROFILES=" >> .env
                 echo "COOKIE_SECURE=false" >> .env
                 public_base_url="http://localhost:${http_port}"
+                echo "PUBLIC_URL=${public_base_url}" >> .env
                 echo ""
                 echo "Skipping HTTPS/reverse proxy. Once containers are up, the app is"
                 echo "reachable directly at ${public_base_url}."
@@ -133,6 +134,7 @@ EOF
 
                         echo "Caddyfile written for domain '${domain}' -- Caddy will obtain a real cert automatically via Let's Encrypt."
                         public_base_url="https://${domain}"
+                        caddy_public_url="https://${domain}"
                 else
                         cat > Caddyfile << EOF
 :443 {
@@ -144,15 +146,22 @@ EOF
                         echo "Caddyfile written for IP-only access -- Caddy will use a self-signed cert."
                         echo "Your browser (and any agent binaries) will need to trust or skip that cert."
                         public_base_url="https://<this-host-ip>"
+                        # No domain and the host's public IP isn't known here,
+                        # so PUBLIC_URL is left blank rather than written as a
+                        # literal placeholder. Set it in .env once the IP/domain
+                        # is known to get clickable links in reset emails.
+                        caddy_public_url=""
                 fi
 
                 echo "COMPOSE_PROFILES=caddy" >> .env
                 echo "COOKIE_SECURE=true" >> .env
+                echo "PUBLIC_URL=${caddy_public_url}" >> .env
         else
                 echo "COMPOSE_PROFILES=" >> .env
                 echo "COOKIE_SECURE=true" >> .env
                 echo ""
                 read -rp "Public HTTPS URL your existing reverse proxy serves Abyssal Arsenal at (e.g. https://arsenal.example.com): " public_base_url
+                echo "PUBLIC_URL=${public_base_url}" >> .env
                 echo ""
                 echo "Point your existing reverse proxy's upstream at:"
                 echo "  http://<this-host-ip>:${http_port}"
@@ -197,6 +206,36 @@ SMTP_PASSWORD=
 SMTP_FROM=
 EOF
                 echo "Skipping SMTP setup for now."
+        fi
+fi
+
+# --- Syslog / external SIEM export (optional) ---
+if grep -q "^SYSLOG_HOST=" .env 2>/dev/null; then
+        echo "Syslog settings already recorded in .env -- skipping prompt."
+else
+        echo ""
+        echo "Forward logs to an external syslog/SIEM collector (RFC 5424 over"
+        echo "UDP)? Leave blank to skip -- you can add this to .env and restart"
+        echo "later. (Thanatos findings stream here once set; the audit-trail"
+        echo "export is a separate toggle in /admin/settings.)"
+        read -rp "Syslog host (blank to skip): " syslog_host
+
+        if [ -n "$syslog_host" ]; then
+                read -rp "Syslog port [default: 514]: " syslog_port
+                syslog_port=${syslog_port:-514}
+                cat >> .env << EOF
+SYSLOG_HOST=${syslog_host}
+SYSLOG_PORT=${syslog_port}
+SYSLOG_APP_NAME=abyssal-arsenal
+EOF
+                echo "Syslog settings saved to .env."
+        else
+                cat >> .env << EOF
+SYSLOG_HOST=
+SYSLOG_PORT=514
+SYSLOG_APP_NAME=abyssal-arsenal
+EOF
+                echo "Skipping syslog setup for now."
         fi
 fi
 

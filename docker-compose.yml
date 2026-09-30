@@ -71,6 +71,18 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # Base URL the control plane is reachable at, used to build the clickable
+      # link in outgoing emails (currently the password-reset email). Left
+      # unset, the reset email still works, just with the raw token instead of
+      # a link. Set by ./install.sh from your reverse-proxy answer.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      # External syslog/SIEM export (RFC 5424 over UDP). Leave SYSLOG_HOST
+      # empty to disable. Whether the audit trail streams here is a separate
+      # runtime toggle in /admin/settings; Thanatos findings always do once a
+      # destination is set.
+      SYSLOG_HOST: ${SYSLOG_HOST:-}
+      SYSLOG_PORT: ${SYSLOG_PORT:-514}
+      SYSLOG_APP_NAME: ${SYSLOG_APP_NAME:-abyssal-arsenal}
       RUST_LOG: ${RUST_LOG:-info}
       STATIC_DIR: static
       # AES-256-GCM master key for Panopticon switches' stored SNMP
