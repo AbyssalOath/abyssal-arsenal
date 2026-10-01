@@ -646,6 +646,71 @@ rescan look like nothing happened.
 that one host, reusing the exact same flow a post-scan picker selection
 does -- see "Deploying agents over SSH" below.
 
+## The agent on Windows vs Linux
+
+The `abyssal-agent` binary is cross-platform (built for Linux and, in the
+`release-windows-agent` CI job, `x86_64-pc-windows-msvc`). The control plane
+learns which it's talking to from the `X-Agent-Os` header the agent sends on
+every connect (`std::env::consts::OS`), persisted onto the `hosts` row so
+features can route per-OS.
+
+**Implementation pattern.** `ops.rs` is one OS-agnostic dispatcher; the per-OS
+work lives in the modules it calls, split with `#[cfg(unix)]` / `#[cfg(windows)]`
+function pairs. Unix paths shell out (`ss`, `journalctl`, `systemctl`, `df`,
+`sha256sum`); Windows paths shell out to `powershell.exe` via
+`process::run_powershell`, hashing/quoting through the same `windows_fim_hash_script`
+/ `ps_quote` / `ps_checked` helpers. Where an operation has real meaning on both
+platforms, both branches emit output in the *same textual shape* so the
+control-plane parser reads either unchanged (e.g. Windows `CpuUtilization` emits
+the same `busy:`/`iowait:` lines the Linux `/proc/stat` path does; Windows
+`DiskSpaceCritical` emits `df -Ph`-shaped rows). An operation that is inherently
+one-platform (load average, LVM, systemd units, the Windows registry) returns a
+clean `process::platform_unsupported()` ("not supported on this platform (os)")
+rather than a raw command-not-found, which the metrics sweep already treats as
+"no sample this tick."
+
+**Telemetry parity.** Core observability (`SystemInfo`, `ResourceUsage`,
+`LoggedInUsers`, `ListeningPorts`, `RecentAuthLog`) and the Mortiscope metric
+feeds have real Windows implementations, so a Windows host populates the fleet
+dashboard and metric trends the same as a Linux one.
+
+**Thanatos (SIEM/EDR) on Windows.** The Windows `scan_security_events`
+(`agent::thanatos`) is a PowerShell pull, same wire format as Linux
+(`severity\tlabel\tsource\traw_line`, plus `fim`/`port`/`module`/`info` tagged
+lines). It covers: Security/System event-log signatures (logons, lateral
+movement, privileged use, account-lifecycle, Kerberos pre-auth failure,
+audit-policy tampering, service/scheduled-task lifecycle, log clearing), opt-in
+PowerShell/Defender/Sysmon channels (Sysmon only if deployed; low-volume
+injection/tampering IDs), a hashed change-watch baseline over the persistence and
+configuration surfaces attackers use (service config, scheduled tasks, WMI
+event-subscription persistence, firewall profiles, Winlogon/IFEO/AppInit
+autoruns, Defender exclusions, Administrators membership), and direct findings
+for unquoted service paths, Defender protection being off/tampered/stale, and
+weak host posture (SMBv1, UAC, RDP NLA, LSASS protection). Each Windows event
+line carries explicit `IpAddress=`/`Account=` fields extracted from the event, so
+the control plane's cross-host correlation and auto-disable-account response fire
+for Windows exactly as for Linux.
+
+**Log-offset tracking (Windows).** Rather than re-reading a fixed recent window
+each scan, the control plane stores a per-host, per-channel Event Log high-water
+mark (`EventRecordID`, `repo::thanatos_windows_log_offsets`) and passes it back
+in the `ScanSecurityEvents` op's `channel_offsets`. The agent then issues a
+server-side `FilterXml` query for `EventRecordID > offset` (bounded by a
+per-scan cap), emits a trailing `offset\t<channel>\t<max>` line per channel, and
+the control plane advances the mark (`GREATEST`, so it never rewinds). The first
+scan has no offset and takes a bounded baseline window. No burst is lost between
+sweeps and nothing is re-processed, which is what makes the high-volume streams
+affordable: native **4688 process creation** and, where Sysmon is deployed,
+**Sysmon process creation (event 1)** are now watched, classified only by the
+shared command-line LOLBin/obfuscation rules (never a blanket per-event finding).
+
+**Known follow-ups (deliberately deferred).** On Linux, SUID/SGID and
+cron-directory enumeration want a hashed-command watch mechanism the file-path
+FIM list doesn't yet have. On Windows, meaningful Kerberos/NTLM *failure*
+detection (4768/4769/4776) needs status-code parsing to separate the rare
+failures from routine high-volume success events, rather than watching those IDs
+wholesale.
+
 ## Deploying agents over SSH ("Quick Add Host From Network Scan")
 
 Enrollment above assumes an operator SSHing into the target by hand and

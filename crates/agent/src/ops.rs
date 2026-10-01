@@ -5,9 +5,13 @@ use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
     apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, incarnation, inquest,
-    mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem,
-    process::run_command, reanimation, reliquary, resurrection, sepulchre, thanatos, vivisection,
+    mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem, reanimation,
+    reliquary, resurrection, sepulchre, thanatos, vivisection,
 };
+// `run_command` is only referenced by the Unix branches of the helpers below;
+// the Windows branches use `process::run_powershell` instead.
+#[cfg(unix)]
+use crate::process::run_command;
 
 /// Executes one of the fixed, whitelisted operations. This match is
 /// exhaustive over `AgentOperation` on purpose — adding a capability means
@@ -409,9 +413,10 @@ pub async fn run(
         AgentOperation::DeleteSshKeypair { path } => {
             cryptkeeper::delete_ssh_keypair(path, elevation).await
         }
-        AgentOperation::ScanSecurityEvents { extra_fim_paths } => {
-            thanatos::scan_security_events(elevation, extra_fim_paths).await
-        }
+        AgentOperation::ScanSecurityEvents {
+            extra_fim_paths,
+            channel_offsets,
+        } => thanatos::scan_security_events(elevation, extra_fim_paths, channel_offsets).await,
         AgentOperation::DetectPackageBackend => sepulchre::detect_package_backend(elevation).await,
         AgentOperation::RenderSepulchreConfig { target, content } => {
             sepulchre::render_sepulchre_config(target, content, elevation).await
@@ -460,6 +465,7 @@ pub async fn run(
     }
 }
 
+#[cfg(unix)]
 async fn system_info() -> CommandOutcome {
     match run_command("uname", &["-a"]).await {
         Ok(mut output) => {
@@ -477,6 +483,22 @@ async fn system_info() -> CommandOutcome {
     }
 }
 
+/// Windows `SystemInfo`: OS caption/version/machine name plus the same
+/// `uptime_seconds:` line the Linux path emits (from `LastBootUpTime`), so any
+/// control-plane consumer of that field works uniformly across platforms.
+#[cfg(windows)]
+async fn system_info() -> CommandOutcome {
+    let script = r#"$os = Get-CimInstance Win32_OperatingSystem
+$up = [int]((Get-Date) - $os.LastBootUpTime).TotalSeconds
+"$($os.Caption) $($os.Version) $([System.Environment]::MachineName)"
+"uptime_seconds: $up""#;
+    match crate::process::run_powershell(script).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+#[cfg(unix)]
 async fn resource_usage() -> CommandOutcome {
     let memory = match run_command("free", &["-h"]).await {
         Ok(output) => output.stdout,
@@ -498,9 +520,40 @@ async fn resource_usage() -> CommandOutcome {
     })
 }
 
+/// Windows `ResourceUsage`: a human-readable memory + fixed-disk summary,
+/// mirroring the Linux `free`/`df` display sections.
+#[cfg(windows)]
+async fn resource_usage() -> CommandOutcome {
+    let script = r#"$os = Get-CimInstance Win32_OperatingSystem
+"== Memory =="
+"Total: {0} MB" -f [math]::Round($os.TotalVisibleMemorySize/1024)
+"Free:  {0} MB" -f [math]::Round($os.FreePhysicalMemory/1024)
+"== Disk =="
+Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+  "{0} {1} GB free of {2} GB" -f $_.DeviceID, [math]::Round($_.FreeSpace/1GB,1), [math]::Round($_.Size/1GB,1)
+}"#;
+    match crate::process::run_powershell(script).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+#[cfg(unix)]
 async fn logged_in_users() -> CommandOutcome {
     match run_command("who", &[]).await {
         Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+/// Windows `LoggedInUsers`: interactive sessions via `query user`. That tool
+/// returns a non-zero exit when nobody is logged on, so failures are tolerated
+/// and turned into a friendly empty-state message.
+#[cfg(windows)]
+async fn logged_in_users() -> CommandOutcome {
+    use crate::process::{present, run_command_allow_failure};
+    match run_command_allow_failure("query", &["user"]).await {
+        Ok(output) => CommandOutcome::Ok(present(output, "No interactive sessions.")),
         Err(e) => CommandOutcome::Err(e),
     }
 }
@@ -596,6 +649,7 @@ async fn elevation_status(elevation: &ElevationState) -> CommandOutcome {
     })
 }
 
+#[cfg(unix)]
 async fn listening_ports() -> CommandOutcome {
     match run_command("ss", &["-tulpn"]).await {
         Ok(output) => CommandOutcome::Ok(output),
@@ -603,9 +657,43 @@ async fn listening_ports() -> CommandOutcome {
     }
 }
 
+/// Windows `ListeningPorts`: listening TCP + UDP endpoints with the owning
+/// process, the `ss -tulpn` analog.
+#[cfg(windows)]
+async fn listening_ports() -> CommandOutcome {
+    let script = r#"$procs = @{}
+Get-Process | ForEach-Object { $procs[$_.Id] = $_.ProcessName }
+Get-NetTCPConnection -State Listen | ForEach-Object {
+  "tcp {0}:{1} {2}" -f $_.LocalAddress, $_.LocalPort, $procs[[int]$_.OwningProcess]
+}
+Get-NetUDPEndpoint | ForEach-Object {
+  "udp {0}:{1} {2}" -f $_.LocalAddress, $_.LocalPort, $procs[[int]$_.OwningProcess]
+}"#;
+    match crate::process::run_powershell(script).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+#[cfg(unix)]
 async fn recent_auth_log() -> CommandOutcome {
     match run_command("journalctl", &["-u", "sshd", "-n", "30", "--no-pager"]).await {
         Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+/// Windows `RecentAuthLog`: the last 30 logon / failed-logon events from the
+/// Security log -- the `journalctl -u sshd` analog for interactive/remote auth.
+/// Tolerates a missing Security log (returns a friendly empty state).
+#[cfg(windows)]
+async fn recent_auth_log() -> CommandOutcome {
+    let script = r#"Get-WinEvent -FilterHashtable @{LogName='Security';Id=4624,4625} -MaxEvents 30 -ErrorAction SilentlyContinue |
+  ForEach-Object { "{0}  EventID={1}  {2}" -f $_.TimeCreated.ToString('s'), $_.Id, ($_.Message -split "`r?`n")[0] }"#;
+    match crate::process::run_powershell(script).await {
+        Ok(output) => {
+            CommandOutcome::Ok(crate::process::present(output, "No recent logon events."))
+        }
         Err(e) => CommandOutcome::Err(e),
     }
 }

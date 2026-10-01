@@ -88,6 +88,18 @@ const FIM_WATCHLIST: &[&str] = &[
     "/etc/shadow",
     "/etc/sudoers",
     "/etc/ssh/sshd_config",
+    // Persistence-sensitive files (M4 Linux parity). Each is a single file the
+    // sha256sum pass already handles; the loop emits nothing for a file that
+    // doesn't exist, so a normally-absent one (ld.so.preload) simply establishes
+    // no baseline until it appears -- at which point its sudden existence is
+    // itself the finding.
+    "/etc/ld.so.preload", // classic rootkit LD preload; should normally not exist
+    "/etc/crontab",       // system crontab
+    "/etc/rc.local",      // legacy boot-time persistence
+    "/root/.bashrc",      // root shell rc (login persistence)
+    "/root/.bash_profile",
+    "/root/.profile",
+    "/etc/profile", // system-wide shell rc
 ];
 
 /// A journal source to fall back to when neither flat log candidate
@@ -118,11 +130,23 @@ const JOURNAL_SOURCES: &[JournalSource] = &[
 /// credential logons (lateral movement/"runas"), privileged-logon use,
 /// account/service/scheduled-task creation and privileged group
 /// membership changes, audit-policy tampering, lockouts, and audit-log
-/// clearing. 4688 (process creation) is deliberately not queried by ID
-/// at all -- see the `RULES` doc comment below for why.
+/// clearing.
 #[cfg(windows)]
 const WINDOWS_SECURITY_EVENT_IDS: &[u32] = &[
     4624, 4625, 4648, 4672, 4697, 4698, 4699, 4700, 4701, 4702, 4719, 4720, 4732, 4740, 1102,
+    // Account-lifecycle depth (M3): deleted/changed/enabled/disabled, and
+    // added-to / removed-from privileged global & universal groups -- the
+    // account-tampering signals the Phase-4 set was missing.
+    4722, 4725, 4726, 4738, 4728, 4756, 4733, 4757,
+    // Kerberos pre-authentication failed -- a failed-logon signal on domain hosts.
+    4771,
+    // 4688 process creation. Formerly excluded as too high-volume for the fixed
+    // 200-event window; now affordable because the scan reads only events newer
+    // than the per-channel high-water mark (`channel_offsets`). It carries no
+    // blanket EventID rule -- only a command line matching a LOLBin/obfuscation
+    // pattern in `RULES` is ever persisted, the "specific signal, not the whole
+    // category" approach process command lines already use.
+    4688,
 ];
 
 /// Windows System-log signals: repeated service-start failures/hangs and
@@ -157,6 +181,17 @@ const WINDOWS_EXTRA_CHANNELS: &[(&str, &str, &[u32])] = &[
         "Microsoft-Windows-Windows Defender/Operational",
         "defender",
         &[1116, 5001],
+    ),
+    // Sysmon: opt-in, never assumed -- the channel exists only if an operator
+    // has deployed Sysmon, in which case nothing fires until it does. IDs 8
+    // (CreateRemoteThread) and 25 (process tampering) carry blanket rules; 1
+    // (process create) is high-volume and now affordable via offset tracking,
+    // classified only by the shared LOLBin/obfuscation command-line rules (its
+    // message carries the full CommandLine), same as native 4688.
+    (
+        "Microsoft-Windows-Sysmon/Operational",
+        "sysmon",
+        &[1, 8, 25],
     ),
 ];
 
@@ -211,6 +246,79 @@ const WINDOWS_FIM_WATCHLIST: &[WindowsFimItem] = &[
         identifier: "local-group:Administrators",
         capture_expr: "(Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue | \
              Select-Object -ExpandProperty Name | Sort-Object)",
+    },
+    // ---- Persistence & configuration surfaces (Windows EDR depth). Each is a
+    // hashed snapshot of a place attackers plant persistence or weaken
+    // security; a change from the per-host baseline raises the same FIM-change
+    // finding the items above do. State/volatile fields are deliberately
+    // excluded (service State, task State) so a running service/task doesn't
+    // produce a spurious "changed" every scan -- only the security-relevant
+    // shape (what runs, from where, as whom) is hashed.
+    WindowsFimItem {
+        // Every service's binary path, start mode and logon account -- catches
+        // a newly-installed service, a hijacked binary path, or a start-mode
+        // flip to Auto.
+        identifier: "services:config",
+        capture_expr: "(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | \
+             ForEach-Object { \"$($_.Name)|$($_.PathName)|$($_.StartMode)|$($_.StartName)\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // Scheduled tasks by path/name, the account they run as, and what they
+        // execute -- a mainstream persistence mechanism.
+        identifier: "scheduled-tasks",
+        capture_expr: "(Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object { \
+             $actions = ($_.Actions | ForEach-Object { \"$($_.Execute) $($_.Arguments)\" }) -join ';'; \
+             \"$($_.TaskPath)$($_.TaskName)|$($_.Principal.UserId)|$actions\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // WMI event-subscription persistence (__EventFilter / __EventConsumer /
+        // binding) -- fileless persistence with, until now, zero coverage. On a
+        // clean host this captures nothing; any appearance/change alerts.
+        identifier: "wmi-persistence",
+        capture_expr: "(@('__EventFilter','__EventConsumer','__FilterToConsumerBinding') | ForEach-Object { \
+             $cls = $_; Get-CimInstance -Namespace 'root/subscription' -ClassName $cls -ErrorAction SilentlyContinue | \
+             ForEach-Object { \"$cls|$($_.Name)|$($_.Query)$($_.CommandLineTemplate)$($_.ScriptText)\" } } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // Firewall profile state -- catches a profile being disabled or its
+        // default inbound/outbound action being loosened.
+        identifier: "firewall-profiles",
+        capture_expr: "(Get-NetFirewallProfile -ErrorAction SilentlyContinue | ForEach-Object { \
+             \"$($_.Name)|$($_.Enabled)|$($_.DefaultInboundAction)|$($_.DefaultOutboundAction)\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // Winlogon autostart values (Shell/Userinit/Taskman/AppSetup) -- classic
+        // logon-persistence ASEP.
+        identifier: r"HKLM\...\Winlogon",
+        capture_expr: "(Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -ErrorAction SilentlyContinue | \
+             ForEach-Object { $_.PSObject.Properties } | Where-Object { $_.Name -in @('Shell','Userinit','Taskman','AppSetup') } | \
+             ForEach-Object { \"$($_.Name)=$($_.Value)\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // Image File Execution Options debugger hijacks -- a per-executable
+        // `Debugger` value silently launches an attacker binary in place of the
+        // real one.
+        identifier: r"HKLM\...\Image File Execution Options",
+        capture_expr: "(Get-ChildItem -Path 'HKLM:\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options' -ErrorAction SilentlyContinue | \
+             ForEach-Object { $dbg = (Get-ItemProperty -Path $_.PSPath -Name Debugger -ErrorAction SilentlyContinue).Debugger; \
+             if ($dbg) { \"$($_.PSChildName)=$dbg\" } } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // AppInit_DLLs -- a DLL loaded into nearly every process at startup.
+        identifier: r"HKLM\...\Windows\AppInit_DLLs",
+        capture_expr: "(Get-ItemProperty -Path 'HKLM:\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows' -ErrorAction SilentlyContinue | \
+             ForEach-Object { $_.PSObject.Properties } | Where-Object { $_.Name -in @('AppInit_DLLs','LoadAppInit_DLLs') } | \
+             ForEach-Object { \"$($_.Name)=$($_.Value)\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // Windows Defender exclusions (paths/processes/extensions) -- adding an
+        // exclusion is a classic evasion, so any change from baseline alerts.
+        // Empty on hosts without Defender (nothing captured, nothing to hash).
+        identifier: "defender-exclusions",
+        capture_expr: "(Get-MpPreference -ErrorAction SilentlyContinue | ForEach-Object { \
+             'ExclusionPath=' + (($_.ExclusionPath | Sort-Object) -join ';'); \
+             'ExclusionProcess=' + (($_.ExclusionProcess | Sort-Object) -join ';'); \
+             'ExclusionExtension=' + (($_.ExclusionExtension | Sort-Object) -join ';') })",
     },
 ];
 
@@ -393,6 +501,34 @@ const RULES: &[(&str, &str, &str)] = &[
         "high",
         "Windows audit log was cleared (anti-forensics)",
     ),
+    // ---- Account-lifecycle + Kerberos depth (M3). Same EventID-marker
+    // matching. Adding a member to a privileged global/universal group is
+    // treated as high, matching the existing local-group rule (4732).
+    ("EventID=4722", "medium", "Windows user account enabled"),
+    ("EventID=4725", "low", "Windows user account disabled"),
+    ("EventID=4726", "medium", "Windows user account deleted"),
+    ("EventID=4738", "low", "Windows user account changed"),
+    (
+        "EventID=4728",
+        "high",
+        "Account added to a privileged global group",
+    ),
+    (
+        "EventID=4756",
+        "high",
+        "Account added to a privileged universal group",
+    ),
+    ("EventID=4733", "low", "Account removed from a local group"),
+    (
+        "EventID=4757",
+        "low",
+        "Account removed from a universal group",
+    ),
+    (
+        "EventID=4771",
+        "medium",
+        "Kerberos pre-authentication failed",
+    ),
     // Windows Defender (`WINDOWS_EXTRA_CHANNELS`) -- populated only if
     // Defender is the active AV.
     ("EventID=1116", "high", "Windows Defender detected malware"),
@@ -400,6 +536,20 @@ const RULES: &[(&str, &str, &str)] = &[
         "EventID=5001",
         "high",
         "Windows Defender real-time protection disabled",
+    ),
+    // Sysmon (M4, source "sysmon", opt-in). The trailing tab is significant:
+    // the line is `EventID=<n>\t...`, and matching `EventID=8\t` (not the bare
+    // `EventID=8`) keeps a single-digit Sysmon ID from also matching a 4-digit
+    // Security ID like 1102/1116 by substring.
+    (
+        "EventID=8\t",
+        "high",
+        "Possible process injection (Sysmon CreateRemoteThread)",
+    ),
+    (
+        "EventID=25\t",
+        "high",
+        "Possible process tampering/hollowing (Sysmon)",
     ),
     // ---- Phase 8: established outbound connections to a remote port
     // long associated with reverse-shells/C2 (source "network-outbound",
@@ -649,6 +799,8 @@ async fn linux_authorized_keys_paths(elevation: &ElevationState) -> Vec<String> 
 pub async fn scan_security_events(
     elevation: &ElevationState,
     extra_fim_paths: Vec<String>,
+    // Windows-only: Linux scans by log tail, not Event Log record ids.
+    _channel_offsets: Vec<(String, u64)>,
 ) -> CommandOutcome {
     let mut lines_with_source: Vec<(&'static str, String)> = Vec::new();
 
@@ -855,6 +1007,63 @@ pub async fn scan_security_events(
     })
 }
 
+/// How many events one channel yields per scan when tailing by offset -- a
+/// safety ceiling so a pathological burst can't make one scan unbounded (the
+/// next scan picks up from the new high-water mark).
+const OFFSET_FETCH_CAP: u32 = 1000;
+/// First-scan (no offset yet) bounded baseline window per channel.
+const BASELINE_FETCH: u32 = 500;
+
+/// Builds the PowerShell for one channel. With a known `offset` (>0) it uses a
+/// `FilterXml` query that filters *server-side* by event id AND
+/// `EventRecordID > offset`, so only genuinely new events are read (no lost
+/// bursts, no re-processing). With no offset (first scan) it takes a bounded
+/// recent window as a baseline. Either way it emits the same tab-delimited event
+/// lines the classify pass expects, then a final `MAXRID=<n>` line carrying the
+/// newest record id seen so the caller can advance the high-water mark. Log
+/// names and ids are fixed constants (never wire input), so no escaping/
+/// injection concern. Pure so it's unit-tested on every platform; only called
+/// from the Windows scan.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_channel_script(log_name: &str, ids: &[u32], offset: u64) -> String {
+    let selector = if offset > 0 {
+        let id_clause = ids
+            .iter()
+            .map(|id| format!("EventID={id}"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let xml = format!(
+            "<QueryList><Query Id='0' Path='{log_name}'><Select Path='{log_name}'>\
+             *[System[({id_clause}) and EventRecordID &gt; {offset}]]</Select></Query></QueryList>"
+        );
+        format!("-FilterXml \"{xml}\" -MaxEvents {OFFSET_FETCH_CAP}")
+    } else {
+        let id_list = ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        format!(
+            "-FilterHashtable @{{LogName='{log_name}';Id={id_list}}} -MaxEvents {BASELINE_FETCH}"
+        )
+    };
+    // `-replace '\r?\n', ' '` flattens the (often multi-line) Message to one
+    // line (the outer wire format is newline-delimited); the 300-char cap keeps
+    // a long template from dwarfing the scan. `EventID=$($_.Id)` is the stable,
+    // non-localized marker `classify()` matches on. IpAddress/Account are pulled
+    // from the raw message so they survive the cap and drive cross-host
+    // correlation. A trailing `MAXRID=` line reports the newest record id.
+    format!(
+        "$events = @(Get-WinEvent {selector} -ErrorAction SilentlyContinue); \
+         $events | ForEach-Object {{ \
+         $raw = $_.Message; \
+         $m = ($raw -replace '\\r?\\n', ' ').Trim(); \
+         if ($m.Length -gt 300) {{ $m = $m.Substring(0, 300) }}; \
+         $ipm = [regex]::Match($raw, 'Source Network Address:\\s+(\\S+)'); \
+         $ip = if ($ipm.Success -and $ipm.Groups[1].Value -ne '-') {{ $ipm.Groups[1].Value }} else {{ '' }}; \
+         $accts = [regex]::Matches($raw, 'Account Name:\\s+(\\S+)') | ForEach-Object {{ $_.Groups[1].Value }} | Where-Object {{ $_ -ne '-' }}; \
+         $acct = if ($accts) {{ @($accts)[-1] }} else {{ '' }}; \
+         \"EventID=$($_.Id)`tTime=$($_.TimeCreated.ToString('o'))`tIpAddress=$ip`tAccount=$acct`t$m\" }}; \
+         if ($events.Count -gt 0) {{ \"MAXRID=\" + (($events | Measure-Object -Property RecordId -Maximum).Maximum) }}"
+    )
+}
+
 /// Windows equivalent of the Unix `scan_security_events` above -- same
 /// wire format, same classify()/RULES pass, different gathering. Reads
 /// via `Get-WinEvent` (shelled out through `powershell.exe`) rather than
@@ -870,10 +1079,20 @@ pub async fn scan_security_events(
 pub async fn scan_security_events(
     _elevation: &ElevationState,
     extra_fim_paths: Vec<String>,
+    channel_offsets: Vec<(String, u64)>,
 ) -> CommandOutcome {
-    let mut lines_with_source: Vec<(&'static str, String)> = Vec::new();
+    use std::collections::HashMap;
+    let offsets: HashMap<&str, u64> = channel_offsets
+        .iter()
+        .map(|(k, v)| (k.as_str(), *v))
+        .collect();
 
-    let mut channels: Vec<(&str, &str, &[u32])> = vec![
+    let mut lines_with_source: Vec<(&'static str, String)> = Vec::new();
+    // (source, new high-water record id) to report back so the control plane
+    // advances this host's offsets.
+    let mut new_offsets: Vec<(&'static str, u64)> = Vec::new();
+
+    let mut channels: Vec<(&'static str, &'static str, &'static [u32])> = vec![
         ("Security", "security", WINDOWS_SECURITY_EVENT_IDS),
         ("System", "system", WINDOWS_SYSTEM_EVENT_IDS),
     ];
@@ -884,22 +1103,10 @@ pub async fn scan_security_events(
     );
 
     for (log_name, source, ids) in channels {
-        let id_list = ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-        // `-replace '\r?\n', ' '` flattens the (often multi-line)
-        // Message property to one line, since the outer wire format is
-        // itself newline-delimited; the 300-char cap keeps a handful of
-        // very long templates from dwarfing everything else in the
-        // scan's output. `EventID=$($_.Id)` is prepended as a stable,
-        // non-localized marker `classify()` matches on -- see the
-        // `RULES` doc comment for why matching on the message text
-        // itself would be unreliable.
-        let script = format!(
-            "Get-WinEvent -FilterHashtable @{{LogName='{log_name}';Id={id_list}}} \
-             -MaxEvents 200 -ErrorAction SilentlyContinue | ForEach-Object {{ \
-             $m = ($_.Message -replace '\\r?\\n', ' ').Trim(); \
-             if ($m.Length -gt 300) {{ $m = $m.Substring(0, 300) }}; \
-             \"EventID=$($_.Id)`tTime=$($_.TimeCreated.ToString('o'))`t$m\" }}"
-        );
+        // Offset keyed by `source` (unique per query), not `log_name` -- two
+        // queries can target the same log with different id sets.
+        let offset = offsets.get(source).copied().unwrap_or(0);
+        let script = windows_channel_script(log_name, ids, offset);
         if let Ok(output) = crate::process::run_command(
             "powershell.exe",
             &["-NoProfile", "-NonInteractive", "-Command", &script],
@@ -907,7 +1114,17 @@ pub async fn scan_security_events(
         .await
         {
             for line in output.stdout.lines() {
-                if !line.trim().is_empty() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // The script's final line reports the newest record id it saw so
+                // the control plane can advance this channel's high-water mark.
+                if let Some(rid) = trimmed.strip_prefix("MAXRID=") {
+                    if let Ok(n) = rid.trim().parse::<u64>() {
+                        new_offsets.push((source, n));
+                    }
+                } else {
                     lines_with_source.push((source, line.to_string()));
                 }
             }
@@ -970,6 +1187,84 @@ pub async fn scan_security_events(
         if let Some((severity, label)) = classify(line) {
             matched_count += 1;
             stdout.push_str(&format!("{severity}\t{label}\t{source}\t{line}\n"));
+        }
+    }
+
+    // Unquoted service paths -- a definitive misconfiguration (not a pattern
+    // match), so emitted directly as a finding. Enumerated here rather than via
+    // the hashed watch-list because we want the specific offending service named.
+    let services_script = "Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | \
+         ForEach-Object { \"$($_.Name)`t$($_.PathName)\" }";
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", services_script],
+    )
+    .await
+    {
+        for line in output.stdout.lines() {
+            if let Some((name, path)) = line.split_once('\t')
+                && unquoted_service_path(path)
+            {
+                matched_count += 1;
+                stdout.push_str(&format!(
+                    "warning\tUnquoted service path\tservice-config\tservice={} path={}\n",
+                    name.trim(),
+                    path.trim()
+                ));
+            }
+        }
+    }
+
+    // Windows Defender protection posture -- direct findings (not pattern
+    // matches) when core protection is off or signatures are stale. Only
+    // present on hosts running Defender; PowerShell emits the wire-format lines
+    // itself, so nothing is added on hosts without it.
+    let defender_script = "$s = Get-MpComputerStatus -ErrorAction SilentlyContinue; if ($s) { \
+         if (-not $s.AntivirusEnabled) { \"high`tDefender antivirus disabled`tdefender-status`tAntivirusEnabled=false\" }; \
+         if (-not $s.RealTimeProtectionEnabled) { \"high`tDefender real-time protection disabled`tdefender-status`tRealTimeProtectionEnabled=false\" }; \
+         if (($s.PSObject.Properties.Name -contains 'IsTamperProtected') -and (-not $s.IsTamperProtected)) { \"medium`tDefender tamper protection off`tdefender-status`tIsTamperProtected=false\" }; \
+         if ($s.AntivirusSignatureAge -gt 7) { \"medium`tDefender signatures stale`tdefender-status`tAntivirusSignatureAge=$($s.AntivirusSignatureAge) days\" } }";
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", defender_script],
+    )
+    .await
+    {
+        for line in output.stdout.lines() {
+            if !line.trim().is_empty() {
+                matched_count += 1;
+                stdout.push_str(line);
+                stdout.push('\n');
+            }
+        }
+    }
+
+    // Host security posture (M5) -- static misconfigurations that weaken the
+    // whole machine, emitted as direct findings. The control plane dedups by
+    // content, so a standing condition is recorded once, not every sweep.
+    let posture_script = "$out = @(); \
+         $smb = Get-SmbServerConfiguration -ErrorAction SilentlyContinue; \
+         if ($smb -and $smb.EnableSMB1Protocol) { $out += \"high`tSMBv1 protocol enabled`tposture`tEnableSMB1Protocol=true\" }; \
+         $lua = (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA; \
+         if ($lua -eq 0) { $out += \"high`tUAC disabled`tposture`tEnableLUA=0\" }; \
+         $rdpDeny = (Get-ItemProperty 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -ErrorAction SilentlyContinue).fDenyTSConnections; \
+         $nla = (Get-ItemProperty 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp' -Name UserAuthentication -ErrorAction SilentlyContinue).UserAuthentication; \
+         if ($rdpDeny -eq 0 -and $nla -eq 0) { $out += \"medium`tRDP without Network Level Authentication`tposture`tUserAuthentication=0\" }; \
+         $ppl = (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name RunAsPPL -ErrorAction SilentlyContinue).RunAsPPL; \
+         if ($ppl -ne 1) { $out += \"low`tLSASS not a protected process (RunAsPPL off)`tposture`tRunAsPPL=$ppl\" }; \
+         $out";
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", posture_script],
+    )
+    .await
+    {
+        for line in output.stdout.lines() {
+            if !line.trim().is_empty() {
+                matched_count += 1;
+                stdout.push_str(line);
+                stdout.push('\n');
+            }
         }
     }
 
@@ -1107,6 +1402,13 @@ pub async fn scan_security_events(
         }
     }
 
+    // Per-channel high-water marks, so the control plane advances this host's
+    // offsets and the next scan reads only newer events. Emitted even when
+    // nothing matched -- advancing past benign events is the whole point.
+    for (source, record_id) in &new_offsets {
+        stdout.push_str(&format!("offset\t{source}\t{record_id}\n"));
+    }
+
     if matched_count == 0 {
         let note = if scanned == 0 {
             "No event log entries were readable for the watched event IDs (Security, System, \
@@ -1126,9 +1428,89 @@ pub async fn scan_security_events(
     })
 }
 
+/// Whether a Win32_Service `PathName` is an exploitable *unquoted service
+/// path*: the executable path (before any arguments) contains a space but isn't
+/// wrapped in quotes, so Windows would try each space-delimited prefix +
+/// `.exe`, letting anyone who can write an intervening path (e.g.
+/// `C:\Program.exe`) hijack the service at next start. Pure so it's unit-tested
+/// on every platform; only *called* from the Windows scan.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn unquoted_service_path(pathname: &str) -> bool {
+    let p = pathname.trim();
+    if p.is_empty() || p.starts_with('"') {
+        return false;
+    }
+    // Consider only the executable portion, up to and including ".exe" -- args
+    // after it (e.g. `svchost.exe -k netsvcs`) don't make the path vulnerable.
+    let exe_path = match p.to_lowercase().find(".exe") {
+        Some(i) => &p[..i + 4],
+        None => p,
+    };
+    exe_path.contains(' ')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_script_uses_offset_filter_when_offset_known() {
+        let s = windows_channel_script("Security", &[4624, 4625], 42);
+        // Server-side record-id filter, not a fixed recent window.
+        assert!(s.contains("-FilterXml"));
+        assert!(s.contains("EventRecordID &gt; 42"));
+        assert!(s.contains("EventID=4624 or EventID=4625"));
+        assert!(s.contains("MAXRID="));
+        assert!(!s.contains("-FilterHashtable"));
+    }
+
+    #[test]
+    fn channel_script_baselines_a_bounded_window_on_first_scan() {
+        let s = windows_channel_script("Security", &[4624], 0);
+        // No offset yet -> bounded baseline, not an unbounded record-id filter.
+        assert!(s.contains("-FilterHashtable"));
+        assert!(s.contains("-MaxEvents 500"));
+        assert!(!s.contains("EventRecordID"));
+        assert!(s.contains("MAXRID="));
+    }
+
+    #[test]
+    fn sysmon_id_marker_does_not_collide_with_four_digit_ids() {
+        // Sysmon 8 line -> injection finding.
+        assert_eq!(
+            classify("EventID=8\tTime=t\tIpAddress=\tAccount=\tCreateRemoteThread"),
+            Some((
+                "high",
+                "Possible process injection (Sysmon CreateRemoteThread)"
+            ))
+        );
+        // A 4-digit ID that *contains* "8" must not match the Sysmon rule; 1102
+        // is the audit-log-cleared finding, not the injection one.
+        assert_eq!(
+            classify("EventID=1102\tTime=t\tIpAddress=\tAccount=\tThe audit log was cleared"),
+            Some(("high", "Windows audit log was cleared (anti-forensics)"))
+        );
+    }
+
+    #[test]
+    fn unquoted_service_path_flags_spaced_unquoted_exe() {
+        // Classic vulnerable case.
+        assert!(unquoted_service_path(r"C:\Program Files\Foo\bar.exe"));
+        assert!(unquoted_service_path(r"C:\Program Files\Foo\bar.exe --run"));
+    }
+
+    #[test]
+    fn unquoted_service_path_ignores_safe_paths() {
+        // Quoted -> safe.
+        assert!(!unquoted_service_path(r#""C:\Program Files\Foo\bar.exe""#));
+        // No space in the exe path -> safe (svchost with args is the classic
+        // false-positive this must not flag).
+        assert!(!unquoted_service_path(
+            r"C:\Windows\system32\svchost.exe -k netsvcs"
+        ));
+        assert!(!unquoted_service_path(r"C:\Windows\system32\lsass.exe"));
+        assert!(!unquoted_service_path(""));
+    }
 
     #[test]
     fn classifies_oom_killer_invocations_as_high() {

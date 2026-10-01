@@ -19,6 +19,16 @@ use crate::process::{command_exists, run_command, truncate_lines};
 /// instantaneous rate without making the operator wait.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Load average is a Unix concept (runnable-task count over 1/5/15 min) with no
+/// native Windows equivalent, so on Windows this is a clean "not applicable"
+/// rather than a fabricated number. Windows CPU pressure is covered by
+/// `cpu_utilization` instead.
+#[cfg(windows)]
+pub async fn load_average(_elevation: &ElevationState) -> CommandOutcome {
+    crate::process::platform_unsupported()
+}
+
+#[cfg(unix)]
 pub async fn load_average(elevation: &ElevationState) -> CommandOutcome {
     let mut output = match elevation.run("uptime", &[]).await {
         Ok(o) => o,
@@ -61,8 +71,25 @@ pub async fn top_processes_by_memory(elevation: &ElevationState) -> CommandOutco
     }
 }
 
+#[cfg(unix)]
 pub async fn memory_detail(elevation: &ElevationState) -> CommandOutcome {
     match elevation.run("cat", &["/proc/meminfo"]).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+/// Windows `MemoryDetail`: emits the `/proc/meminfo`-shaped `MemTotal:` /
+/// `MemAvailable:` lines in kB, so the control plane's existing
+/// `parse_memory_detail` reads it unchanged. Swap is deliberately omitted --
+/// Windows "virtual memory" is a commit limit, not a page-file-only figure, so
+/// reporting it as swap would be misleading (the parser then reports 0% swap).
+#[cfg(windows)]
+pub async fn memory_detail(_elevation: &ElevationState) -> CommandOutcome {
+    let script = r#"$os = Get-CimInstance Win32_OperatingSystem
+"MemTotal: {0} kB" -f [int]$os.TotalVisibleMemorySize
+"MemAvailable: {0} kB" -f [int]$os.FreePhysicalMemory"#;
+    match crate::process::run_powershell(script).await {
         Ok(output) => CommandOutcome::Ok(output),
         Err(e) => CommandOutcome::Err(e),
     }
@@ -75,12 +102,14 @@ pub async fn disk_io_stats(elevation: &ElevationState) -> CommandOutcome {
     }
 }
 
+#[cfg(unix)]
 struct CpuTimes {
     total: u64,
     idle_all: u64,
     iowait: u64,
 }
 
+#[cfg(unix)]
 async fn read_cpu_times() -> Option<CpuTimes> {
     let content = tokio::fs::read_to_string("/proc/stat").await.ok()?;
     let line = content.lines().next()?;
@@ -105,6 +134,22 @@ async fn read_cpu_times() -> Option<CpuTimes> {
 /// distinct from load average, which counts runnable tasks rather than busy
 /// time. Reports overall busy % and iowait % (a high iowait points at a
 /// disk/storage bottleneck rather than CPU-bound work).
+/// Windows `CpuUtilization`: emits the same `busy:` / `iowait:` lines the Linux
+/// path does, so `parse_cpu_utilization` reads it unchanged. `iowait` has no
+/// direct Windows counter, so it's reported as 0.
+#[cfg(windows)]
+pub async fn cpu_utilization() -> CommandOutcome {
+    let script = r#"$c = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+"CPU utilization:"
+"  busy: {0:N1}%" -f [double]$c
+"  iowait: 0.0%""#;
+    match crate::process::run_powershell(script).await {
+        Ok(output) => CommandOutcome::Ok(output),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+#[cfg(unix)]
 pub async fn cpu_utilization() -> CommandOutcome {
     let a = match read_cpu_times().await {
         Some(x) => x,

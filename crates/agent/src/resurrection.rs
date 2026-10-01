@@ -102,9 +102,28 @@ pub async fn reset_failed_units(elevation: &ElevationState) -> CommandOutcome {
     }
 }
 
+#[cfg(unix)]
 pub async fn disk_space_critical(elevation: &ElevationState) -> CommandOutcome {
     // `-P` guarantees one line per filesystem (no wrapping), `-h` human sizes.
     match elevation.run_allow_failure("df", &["-Ph"]).await {
+        Ok(output) => CommandOutcome::Ok(present(output, "(no filesystems reported)")),
+        Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+/// Windows `DiskSpaceCritical`: emits `df -Ph`-shaped rows (one per fixed
+/// volume, six whitespace fields, a `NN%` use column, drive letter as the
+/// mount) so the control plane's `parse_disk_space` / disk-usage parsers read
+/// it unchanged.
+#[cfg(windows)]
+pub async fn disk_space_critical(_elevation: &ElevationState) -> CommandOutcome {
+    let script = r#""Filesystem Size Used Avail Use% Mounted on"
+Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+  $size = [double]$_.Size; $free = [double]$_.FreeSpace; $used = $size - $free
+  $pct = if ($size -gt 0) { [int][math]::Round($used / $size * 100) } else { 0 }
+  "{0} {1}G {2}G {3}G {4}% {0}" -f $_.DeviceID, [math]::Round($size/1GB,1), [math]::Round($used/1GB,1), [math]::Round($free/1GB,1), $pct
+}"#;
+    match crate::process::run_powershell(script).await {
         Ok(output) => CommandOutcome::Ok(present(output, "(no filesystems reported)")),
         Err(e) => CommandOutcome::Err(e),
     }

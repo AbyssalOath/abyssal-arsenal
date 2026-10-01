@@ -60,8 +60,13 @@ fn detection_sources_note(os: Option<&str>) -> &'static str {
             "Scans this host's Security and System event logs (logons, lateral-movement/\
              privileged-logon indicators, account/service/scheduled-task changes, audit-policy \
              tampering, service failures, unexpected shutdowns) plus PowerShell script block \
-             logging and Windows Defender's log where enabled, and hashes its hosts file, \
-             machine-wide Run keys, and local Administrators membership for tampering."
+             logging and Windows Defender's log where enabled, and hashes for tampering its hosts \
+             file, machine-wide autorun locations (Run keys, Winlogon, Image File Execution \
+             Options, AppInit_DLLs), service configuration, scheduled tasks, WMI event-subscription \
+             persistence, firewall profile state, and local Administrators membership. \
+             Where Sysmon is deployed, it also flags process injection and process tampering. \
+             It additionally checks host security posture (SMBv1, UAC, RDP Network Level \
+             Authentication, LSASS protection)."
         }
         Some("macos") => {
             "macOS hosts aren't scanned yet -- Thanatos detection is Linux/Windows only for now."
@@ -588,6 +593,16 @@ pub async fn scan(
         host.os.as_deref(),
     );
 
+    // Windows hosts read only events newer than their stored per-channel
+    // high-water marks; empty (and ignored) for Linux.
+    let channel_offsets = if host.os.as_deref() == Some("windows") {
+        repo::thanatos_windows_log_offsets::offsets_for_host(&state.pool, host_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -596,7 +611,10 @@ pub async fn scan(
             &state.hosts,
             host_id,
             &host.name,
-            AgentOperation::ScanSecurityEvents { extra_fim_paths },
+            AgentOperation::ScanSecurityEvents {
+                extra_fim_paths,
+                channel_offsets,
+            },
             Permission::SecurityView,
             OperationKind::Read,
             false,

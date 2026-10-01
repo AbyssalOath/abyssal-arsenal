@@ -1,5 +1,34 @@
-use abyssal_agent_protocol::OperationOutput;
+use abyssal_agent_protocol::{CommandOutcome, OperationOutput};
 use tokio::io::AsyncWriteExt;
+
+/// A clean, machine-recognizable "this operation has no meaning on this OS"
+/// result -- returned instead of letting a Linux-only shell-out fail with a
+/// raw "command not found" on Windows (or vice-versa). The control plane can
+/// surface these as "not applicable on this platform" rather than an error,
+/// and the metrics sweep already treats them as "no sample this tick."
+// Used from the platform whose op is the *other* OS's (e.g. Windows
+// `load_average`); which side that is varies by build, so allow it to be unused
+// on any given target.
+#[allow(dead_code)]
+pub fn platform_unsupported() -> CommandOutcome {
+    CommandOutcome::Err(format!(
+        "operation not supported on this platform ({})",
+        std::env::consts::OS
+    ))
+}
+
+/// Runs a read-only PowerShell script and returns its output, the Windows
+/// counterpart to a `run_command` shell-out. `-NoProfile`/`-NonInteractive`
+/// keep it hermetic; a write/destructive script should wrap its body in
+/// `ps_checked` first so a cmdlet failure becomes a non-zero exit.
+#[cfg(windows)]
+pub async fn run_powershell(script: &str) -> Result<OperationOutput, String> {
+    run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+    )
+    .await
+}
 
 /// Runs a process with an explicit argument vector -- never a shell string --
 /// matching the same discipline the control plane's own local execution uses

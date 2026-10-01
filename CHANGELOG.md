@@ -12,7 +12,63 @@ for what that means for cloning and updating.
 
 ### Added
 
-- **Control-plane health & self-observability.** The server running Abyssal
+- **Thanatos on Windows: log-offset tracking + high-volume event streams.** The
+  Windows scan no longer re-reads a fixed 200-event window each sweep. The
+  control plane now stores a per-host, per-channel Event Log high-water mark
+  (`EventRecordID`) and hands it back to each scan, so the agent reads only
+  events *newer* than it last saw -- via a server-side `FilterXml`
+  `EventRecordID > offset` query -- with a first-scan bounded baseline and a
+  per-scan safety cap. No burst is lost between sweeps and nothing is
+  re-processed. That makes the high-volume streams affordable, so the scan now
+  also covers native **4688 process creation** and, where Sysmon is deployed,
+  **Sysmon process creation (event 1)** -- both classified only by the shared
+  LOLBin/obfuscation command-line rules (the "specific signal, not the whole
+  category" approach), never a blanket per-event finding. Adds a
+  `channel_offsets` field to the `ScanSecurityEvents` operation (protocol
+  version 34) and a `thanatos_windows_log_offsets` table; the Unix scan ignores
+  it (Linux tails by log position, not record id).
+- **Thanatos: Sysmon (Windows), host posture, and Linux persistence parity.**
+  When Sysmon is deployed on a Windows host, Thanatos now ingests its
+  low-volume/high-signal events (process injection, process tampering) -- opt-in,
+  nothing assumed if Sysmon is absent. Windows hosts also get host-posture
+  findings (SMBv1 enabled, UAC disabled, RDP without Network Level
+  Authentication, LSASS not running protected). On Linux, the file-integrity
+  watch list gains the persistence-sensitive files it was missing
+  (`/etc/ld.so.preload`, `/etc/crontab`, `/etc/rc.local`, root and system shell
+  rc files), so tampering or a rootkit preload appearing raises a finding.
+  (Per-channel log-offset tracking, 4688 process-creation auditing, and the
+  high-volume Kerberos/Sysmon streams are a documented follow-up.)
+- **Thanatos on Windows: persistence, config-drift & posture detection.** The
+  Windows Thanatos scan now baselines and change-alerts on the persistence and
+  configuration surfaces a real EDR watches: service configuration (binary path,
+  start mode, account), scheduled tasks, WMI event-subscription persistence,
+  firewall profile state, machine-wide autorun locations beyond Run keys
+  (Winlogon, Image File Execution Options, AppInit_DLLs), and Windows Defender
+  exclusions -- all via the existing file-integrity hash-diff mechanism, so a
+  change from a host's baseline raises a finding. It also emits direct findings
+  for unquoted service paths and for Defender protection being off/tampered or
+  its signatures stale.
+- **Thanatos on Windows: auth fidelity & correlation parity.** The scan now
+  covers the account-lifecycle and Kerberos-preauth event IDs the earlier set
+  was missing (4722/4725/4726/4738/4728/4756/4733/4757/4771), and each Windows
+  logon event now carries explicit source-IP and account fields extracted from
+  the event (surviving the message-length cap). With that, the control plane's
+  account-targeting correlation and the auto-disable-account response -- which
+  were effectively Linux-only because the username couldn't be parsed from a
+  Windows event -- now fire for Windows hosts too.
+- **Windows agent: cross-platform telemetry foundation.** The core
+  observability operations now have real Windows implementations instead of
+  erroring on Linux-only shell-outs, so a Windows host reports genuine data on
+  the fleet dashboard and in Mortiscope: `SystemInfo` (OS/version/uptime via
+  CIM), `ResourceUsage` (memory + fixed-disk summary), `LoggedInUsers`
+  (`query user`), `ListeningPorts` (`Get-NetTCPConnection`/`Get-NetUDPEndpoint`),
+  `RecentAuthLog` (Security-log logon/failed-logon events), and the Mortiscope
+  metric feeds `CpuUtilization`, `MemoryDetail`, and `DiskSpaceCritical` -- each
+  emitting output the existing control-plane parsers read unchanged, so per-host
+  CPU / memory / disk meters and sparklines populate for Windows hosts with no
+  control-plane change. `LoadAverage` (a Unix concept) now returns a clean "not
+  supported on this platform" rather than a fabricated value or a raw error,
+  via a shared helper that later milestones reuse. No new protocol operations. The server running Abyssal
   Arsenal now watches, alerts on, and diagnoses itself. Real health endpoints:
   `/healthz` (liveness -- always 200 while serving, even mid-restore) and
   `/readyz` (readiness -- database reachable, migrations clean, not

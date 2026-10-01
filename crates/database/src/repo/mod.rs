@@ -30,5 +30,6 @@ pub mod storage_connections;
 pub mod thanatos_file_hashes;
 pub mod thanatos_kernel_module_baseline;
 pub mod thanatos_network_baseline;
+pub mod thanatos_windows_log_offsets;
 pub mod users;
 pub mod validation_runs;

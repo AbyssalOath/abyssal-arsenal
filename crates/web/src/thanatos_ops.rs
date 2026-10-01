@@ -130,6 +130,22 @@ pub async fn persist_scan_output(
             continue;
         }
 
+        // Windows Event Log high-water mark: `offset\t<channel>\t<record_id>`.
+        // Advances this host's per-channel offset so the next scan reads only
+        // newer events. Not a finding.
+        if let Some(rest) = line.strip_prefix("offset\t") {
+            if let Some((channel, rid)) = rest.split_once('\t')
+                && let Ok(record_id) = rid.trim().parse::<u64>()
+                && !channel.is_empty()
+            {
+                repo::thanatos_windows_log_offsets::record_offset(
+                    pool, host_id, channel, record_id,
+                )
+                .await?;
+            }
+            continue;
+        }
+
         if let Some(rest) = line.strip_prefix("fim\t") {
             let Some((path, hash)) = rest.split_once('\t') else {
                 continue;
@@ -509,7 +525,17 @@ pub fn extra_fim_paths_for(all_paths: &[String], os: Option<&str>) -> Vec<String
 /// IPv6 address, `None` if none does (a rule matched by coincidence on a
 /// line with no address at all, e.g. a `sudo:`/systemd-unit-failure line).
 fn extract_source_ip(raw_line: &str) -> Option<IpAddr> {
-    raw_line.split_whitespace().find_map(|tok| tok.parse().ok())
+    // A bare IP token (Linux log lines), or a `key=<ip>` token -- the Windows
+    // path emits `IpAddress=<ip>` (and outbound lines `remote_addr=<ip>`), whose
+    // value would otherwise be hidden inside the token. Taking the substring
+    // after the last '=' recovers it without disturbing bare-token matching.
+    raw_line.split_whitespace().find_map(|tok| {
+        tok.parse::<IpAddr>().ok().or_else(|| {
+            tok.rsplit('=')
+                .next()
+                .and_then(|v| v.parse::<IpAddr>().ok())
+        })
+    })
 }
 
 /// Best-effort extraction of the targeted username from a raw SSH
@@ -535,6 +561,16 @@ fn extract_source_ip(raw_line: &str) -> Option<IpAddr> {
 /// `None` -- a coverage gap, not a wrong answer, the same "best-effort,
 /// not exhaustive" character `extract_source_ip` already has.
 fn extract_username(raw_line: &str) -> Option<String> {
+    // Windows events carry an explicit tab-delimited `Account=<name>` field the
+    // agent extracts from the event (see `agent::thanatos` Windows scan), so
+    // the account-targeting correlation and auto-disable response fire for
+    // Windows too, not just OpenSSH/PAM phrasings.
+    if let Some((_, rest)) = raw_line.split_once("Account=") {
+        let name = rest.split('\t').next().unwrap_or("").trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
     if let Some((_, rest)) = raw_line.split_once("invalid user ") {
         return rest.split_whitespace().next().map(str::to_string);
     }
@@ -995,11 +1031,23 @@ pub fn spawn_thanatos_sweep(state: AppState) {
                 }
 
                 let extra_fim_paths = extra_fim_paths_for(&extra_fim_paths_all, host.os.as_deref());
+                // Windows hosts read only events newer than their stored
+                // per-channel high-water marks; empty (and ignored) for Linux.
+                let channel_offsets = if host.os.as_deref() == Some("windows") {
+                    repo::thanatos_windows_log_offsets::offsets_for_host(&state.pool, host.id)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let outcome = state
                     .hosts
                     .dispatch(
                         host.id,
-                        AgentOperation::ScanSecurityEvents { extra_fim_paths },
+                        AgentOperation::ScanSecurityEvents {
+                            extra_fim_paths,
+                            channel_offsets,
+                        },
                         Duration::from_secs(30),
                     )
                     .await;
@@ -1147,6 +1195,26 @@ mod tests {
             extract_username("Failed password for invalid user root from 203.0.113.5 port 22 ssh2"),
             Some("root".to_string())
         );
+    }
+
+    #[test]
+    fn extracts_windows_account_and_ip_fields() {
+        // The Windows agent emits tab-delimited IpAddress=/Account= fields.
+        let line = "EventID=4625\tTime=2026-01-01T00:00:00Z\tIpAddress=203.0.113.9\tAccount=jdoe\tAn account failed to log on.";
+        assert_eq!(extract_username(line), Some("jdoe".to_string()));
+        assert_eq!(
+            extract_source_ip(line),
+            Some("203.0.113.9".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn empty_windows_account_field_is_not_a_username() {
+        // Account= with no value (e.g. a system logon) must not swallow the
+        // following field.
+        let line = "EventID=4624\tTime=t\tIpAddress=\tAccount=\tSome message";
+        assert_eq!(extract_username(line), None);
+        assert_eq!(extract_source_ip(line), None);
     }
 
     #[test]

@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1148,6 +1148,18 @@ pub enum AgentOperation {
     /// already checked it.
     ScanSecurityEvents {
         extra_fim_paths: Vec<String>,
+        /// Per-channel Windows Event Log high-water marks: `(channel_name,
+        /// last_seen_record_id)`. The control plane persists these
+        /// (`repo::thanatos_windows_log_offsets`) and passes them back each
+        /// scan so the Windows agent reads only events *newer* than it last
+        /// saw -- no lost bursts between scans, no re-processing, and the
+        /// high-volume channels (native 4688 process creation, Sysmon) become
+        /// affordable. Empty for a host's first scan (the agent then baselines
+        /// a bounded recent window and reports the current high-water marks),
+        /// and always empty/ignored on the Unix path (Linux scans by log tail,
+        /// not record id).
+        #[serde(default)]
+        channel_offsets: Vec<(String, u64)>,
     },
 
     // -------------------------------------------------------------
