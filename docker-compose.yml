@@ -47,7 +47,16 @@ services:
       # Container always listens on 8080 internally (PORT below); only the
       # host-side port is configurable, in case 8080 is already taken by
       # something else on this machine. Set HTTP_PORT in .env to change it.
-      - "${HTTP_PORT:-8080}:8080"
+      #
+      # APP_HTTP_BIND controls which host interface that port is published on.
+      # Behind the bundled Caddy, install.sh sets it to 127.0.0.1 so the app is
+      # NOT reachable over plain HTTP from the network -- Caddy reaches it over
+      # the internal `abyssal` network instead, and all browser traffic goes
+      # through Caddy's HTTPS. This matters: COOKIE_SECURE is on behind Caddy,
+      # so a browser that reached the app over plain http:// would have its
+      # session cookie dropped and loop the login. Direct/no-proxy installs
+      # leave APP_HTTP_BIND unset, publishing on all interfaces as before.
+      - "${APP_HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
       # mDNS listener (Panopticon, off by default) -- ordinary UDP, no
       # extra capability needed, just the published port.
       - "5353:5353/udp"

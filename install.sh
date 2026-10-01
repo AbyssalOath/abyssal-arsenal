@@ -137,6 +137,13 @@ EOF
                         caddy_public_url="https://${domain}"
                 else
                         cat > Caddyfile << EOF
+# Plain HTTP (port 80) just redirects to HTTPS so visiting http://<ip>
+# lands on the working TLS site instead of a dead port. {host} keeps
+# whatever IP/hostname the browser used.
+:80 {
+    redir https://{host}{uri}
+}
+
 :443 {
     tls internal
     reverse_proxy app:8080
@@ -145,6 +152,8 @@ EOF
 
                         echo "Caddyfile written for IP-only access -- Caddy will use a self-signed cert."
                         echo "Your browser (and any agent binaries) will need to trust or skip that cert."
+                        echo "Reach it at https://<this-host-ip>  (port 443 -- no extra port number),"
+                        echo "and accept the one-time self-signed-certificate warning."
                         public_base_url="https://<this-host-ip>"
                         # No domain and the host's public IP isn't known here,
                         # so PUBLIC_URL is left blank rather than written as a
@@ -156,6 +165,13 @@ EOF
                 echo "COMPOSE_PROFILES=caddy" >> .env
                 echo "COOKIE_SECURE=true" >> .env
                 echo "PUBLIC_URL=${caddy_public_url}" >> .env
+                # Behind Caddy the app must NOT be reachable over plain HTTP from
+                # the network: Caddy talks to it over the internal Docker network,
+                # and COOKIE_SECURE is on, so a browser hitting the app's own
+                # http://<ip>:${http_port} directly would have its Secure session
+                # cookie dropped and loop the login. Bind that port to localhost
+                # only; all real traffic goes through Caddy's HTTPS on 443.
+                echo "APP_HTTP_BIND=127.0.0.1" >> .env
         else
                 echo "COMPOSE_PROFILES=" >> .env
                 echo "COOKIE_SECURE=true" >> .env
@@ -250,6 +266,13 @@ echo "=== Done ==="
 if grep -q "^COMPOSE_PROFILES=caddy" .env 2>/dev/null; then
         echo "Abyssal Arsenal is starting up behind Caddy. Give it a few seconds, then visit:"
         echo "  https://<this-host-ip-or-domain>"
+        echo ""
+        echo "Important: use https:// on the default port 443 -- do NOT add the"
+        echo "app port (${http_port:-8080}) to the URL. Behind Caddy the app is reached"
+        echo "only through Caddy's HTTPS; it is intentionally not exposed over plain"
+        echo "HTTP on the network (signing in over http:// would loop the login,"
+        echo "because the session cookie is HTTPS-only). With a bare IP you'll get a"
+        echo "one-time self-signed-certificate warning -- that's expected; accept it."
 else
         echo "Abyssal Arsenal is starting up. Give it a few seconds, then visit:"
         echo "  ${public_base_url:-http://localhost:${http_port:-8080}}"
