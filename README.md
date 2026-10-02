@@ -204,6 +204,35 @@ For a single Windows box without GPO: `Import-Certificate -FilePath cert.cer
 `sudo cp cert.pem /usr/local/share/ca-certificates/abyssal-arsenal.crt &&
 sudo update-ca-certificates`.
 
+## Agent distribution (internal / air-gapped networks)
+
+Hosts download the agent from **this control plane** (`/agent/windows`,
+`/agent/linux`), not from GitHub — so an internal or air-gapped network only
+needs to reach the control plane, and every host gets whatever agent build the
+control plane is serving. The bootstrap one-liners and the reusable
+deployment-token command both use this.
+
+The control plane serves from a volume (`abyssal_agent_dist`, mounted at
+`/agent-dist`):
+
+- **Empty volume (default):** on the first `/agent/{os}` request the control
+  plane fetches the matching release from GitHub once and caches it there. Works
+  only if the *control plane itself* can reach GitHub.
+- **Air-gapped, or serving a build newer than the latest release** (e.g. one
+  with a fix that isn't released yet): drop a built archive into the volume and
+  it's served as-is, no internet needed:
+
+  ```bash
+  # Build the agent (per target), package it, and place it in the volume:
+  #   Windows archive -> abyssal-agent-windows.zip   containing abyssal-agent.exe
+  #   Linux archive   -> abyssal-agent-linux.tar.gz  containing abyssal-agent
+  docker compose cp ./abyssal-agent-windows.zip app:/agent-dist/abyssal-agent-windows.zip
+  ```
+
+  The installer finds the binary anywhere inside the archive, so the internal
+  layout doesn't matter. A version-agnostic name (`abyssal-agent-windows.zip` /
+  `abyssal-agent-linux.tar.gz`) is matched first, then the release filename.
+
 ## Releases and branches
 
 - **`main`** is the active development branch. It moves fast and is where

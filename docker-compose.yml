@@ -122,8 +122,15 @@ services:
       # explicitly to allow additional paths, or to an empty string to
       # disable the `local` protocol entirely.
       SEPULCHRE_LOCAL_ROOTS: ${SEPULCHRE_LOCAL_ROOTS:-}
+      # Directory the control plane serves agent binaries from (GET /agent/{os}),
+      # so hosts download the agent from this control plane instead of GitHub --
+      # essential on internal/air-gapped networks. Populate the volume with a
+      # built archive (abyssal-agent-windows.zip / abyssal-agent-linux.tar.gz),
+      # or leave it empty to have the control plane fetch from GitHub on demand.
+      AGENT_DIST_DIR: /agent-dist
     volumes:
       - abyssal_backups:/backups
+      - abyssal_agent_dist:/agent-dist
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 10s
@@ -157,6 +164,7 @@ services:
 volumes:
   abyssal_db_data:
   abyssal_backups:
+  abyssal_agent_dist:
   abyssal_caddy_data:
   abyssal_caddy_config:
 

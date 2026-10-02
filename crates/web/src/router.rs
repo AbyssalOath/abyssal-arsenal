@@ -1706,6 +1706,7 @@ pub fn build(state: AppState) -> Router {
         // paste enrollment one-liners on /admin/hosts.
         .route("/install.sh", get(routes::bootstrap::install_sh))
         .route("/install.ps1", get(routes::bootstrap::install_ps1))
+        .route("/agent/:os", get(routes::bootstrap::serve_agent))
         .nest_service("/static", ServeDir::new(static_dir()))
         .layer(axum::middleware::from_fn(security_headers::apply))
         .layer(axum::middleware::from_fn_with_state(

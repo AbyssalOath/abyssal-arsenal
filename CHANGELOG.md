@@ -12,6 +12,15 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Control plane serves the agent binary (self-contained / air-gapped
+  rollout).** Hosts now download the agent from this control plane
+  (`/agent/windows`, `/agent/linux`) rather than from GitHub, so an internal or
+  air-gapped network only needs to reach the control plane -- and the control
+  plane can distribute an agent build newer than the latest public release.
+  Served from a volume an operator populates with a built archive (installer
+  finds the binary anywhere inside it); if the volume is empty, the control plane
+  fetches the matching release from GitHub once and caches it. The bootstrap
+  one-liners and the deployment-token command both use this path.
 - **Reusable deployment tokens for mass agent rollout (Wazuh/PDQ-style).**
   Alongside the existing single-use, short-lived enrollment token, `/admin/hosts`
   can now mint a **reusable deployment token** with a chosen OS, lifetime, and
