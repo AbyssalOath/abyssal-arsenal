@@ -134,6 +134,64 @@ The dashboard shows this build's version at all times and checks GitHub for
 a newer tagged release every few hours; if one exists, the notice turns into
 a linked, pulsing alert pointing at the release page.
 
+## Reverse proxy / TLS
+
+The control plane expects to be reached over HTTPS: session cookies are
+`Secure` by default, and the agent WebSocket follows the browser's scheme, so
+over plain HTTP a login just loops (the browser drops the Secure cookie).
+`install.sh` asks how you want TLS handled:
+
+1. **I have my own reverse proxy** (NGINX Proxy Manager, Traefik, …) — you
+   point it at `http://<this-host>:<HTTP_PORT>` and terminate HTTPS there. You
+   provide the public HTTPS URL; it's stored as `PUBLIC_URL`.
+2. **Set one up for me (Caddy)** — the bundled Caddy container terminates TLS
+   and reverse-proxies the app over Docker's internal network. The app's own
+   port is then bound to `127.0.0.1` only (not reachable over plain HTTP from
+   the network), so all traffic goes through Caddy's HTTPS on **443**. Reach it
+   at `https://<host>` — **no port number**; don't append `HTTP_PORT`.
+3. **Just testing locally, skip HTTPS** — plain HTTP on `HTTP_PORT`,
+   `COOKIE_SECURE=false`. Fine for a laptop, not for a real deployment.
+
+### Caddy: public domain vs. internal IP/FQDN
+
+When you choose Caddy, the installer asks for a domain:
+
+- **Public domain** (DNS points at this host, ports 80/443 reachable): Caddy
+  obtains a real, browser-trusted certificate automatically via Let's Encrypt.
+  Nothing else to do.
+- **Blank / internal only**: there's no public DNS, so the installer generates
+  a **self-signed certificate** and asks for the IP address *or* internal
+  hostname (FQDN) you'll use in the browser — that address is written onto the
+  certificate (as an `IP:` or `DNS:` SAN) and into `PUBLIC_URL`. Caddy serves
+  that cert directly. (Caddy's automatic internal CA can't serve a *bare IP*
+  reliably — browsers send no SNI for an IP, so there's no name for it to pick
+  a cert for — which is why an explicit cert is generated instead.)
+
+**IP vs FQDN — which to pick?** Either works. An **IP** is zero-setup. An
+**internal FQDN** (e.g. `arsenal.corp.local`) is nicer long-term: it's stable
+if the IP changes, and it's what you'd put on a cert you want clients to
+*trust*. If you go the FQDN route, add an A record for it in your internal DNS
+(e.g. Active Directory DNS) first, then enter that FQDN at the installer prompt.
+
+### Making the self-signed cert trusted (optional)
+
+A self-signed cert shows a one-time "unknown issuer" warning — harmless to
+accept, but to remove it fleet-wide in an Active Directory environment, push
+the generated certificate (`caddy_certs/cert.pem`) to clients' **Trusted Root
+Certification Authorities** store via Group Policy:
+
+1. Copy `caddy_certs/cert.pem` to a domain controller (convert to `.crt`/`.cer`
+   if your tooling wants it — same PEM content).
+2. Group Policy Management → edit a GPO linked to the relevant OU →
+   *Computer Configuration → Policies → Windows Settings → Security Settings →
+   Public Key Policies → Trusted Root Certification Authorities* → **Import**
+   the cert.
+3. `gpupdate /force` on a client (or wait for the next refresh). The browser
+   warning is then gone for every domain-joined machine.
+
+This is also what lets enrolled Windows agents trust the control plane's cert
+without skipping verification.
+
 ## Releases and branches
 
 - **`main`** is the active development branch. It moves fast and is where

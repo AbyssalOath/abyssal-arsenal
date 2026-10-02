@@ -42,6 +42,7 @@ COPY crates/arsenals/catacomb/Cargo.toml crates/arsenals/catacomb/Cargo.toml
 COPY crates/arsenals/parish/Cargo.toml crates/arsenals/parish/Cargo.toml
 COPY crates/arsenals/apothecary/Cargo.toml crates/arsenals/apothecary/Cargo.toml
 COPY crates/arsenals/grimoire/Cargo.toml crates/arsenals/grimoire/Cargo.toml
+COPY crates/arsenals/haruspex/Cargo.toml crates/arsenals/haruspex/Cargo.toml
 COPY crates/arsenals/cryptkeeper/Cargo.toml crates/arsenals/cryptkeeper/Cargo.toml
 COPY crates/arsenals/defleshing/Cargo.toml crates/arsenals/defleshing/Cargo.toml
 COPY crates/arsenals/vivisection/Cargo.toml crates/arsenals/vivisection/Cargo.toml
@@ -54,7 +55,7 @@ RUN for crate in core database auth rbac audit notifications execution hosts mod
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \
-        arsenals/apothecary arsenals/grimoire arsenals/cryptkeeper arsenals/defleshing arsenals/vivisection \
+        arsenals/apothecary arsenals/grimoire arsenals/haruspex arsenals/cryptkeeper arsenals/defleshing arsenals/vivisection \
         arsenals/inquest arsenals/thanatos arsenals/panopticon arsenals/sepulchre; do \
         mkdir -p crates/$crate/src && echo "// stub" > crates/$crate/src/lib.rs; \
     done \
