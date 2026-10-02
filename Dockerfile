@@ -22,6 +22,7 @@ COPY crates/hosts/Cargo.toml crates/hosts/Cargo.toml
 COPY crates/modules/Cargo.toml crates/modules/Cargo.toml
 COPY crates/workflows/Cargo.toml crates/workflows/Cargo.toml
 COPY crates/agent-protocol/Cargo.toml crates/agent-protocol/Cargo.toml
+COPY crates/internal-ca/Cargo.toml crates/internal-ca/Cargo.toml
 COPY crates/web/Cargo.toml crates/web/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
 COPY crates/agent/Cargo.toml crates/agent/Cargo.toml
@@ -51,7 +52,7 @@ COPY crates/arsenals/thanatos/Cargo.toml crates/arsenals/thanatos/Cargo.toml
 COPY crates/arsenals/panopticon/Cargo.toml crates/arsenals/panopticon/Cargo.toml
 COPY crates/arsenals/sepulchre/Cargo.toml crates/arsenals/sepulchre/Cargo.toml
 
-RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol web \
+RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol internal-ca web \
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \
@@ -111,6 +112,16 @@ RUN chown -R abyssal:abyssal /app
 # `abyssal` here, or the volume comes up owned by root and this
 # unprivileged process can never write a backup into it.
 RUN mkdir -p /backups && chown abyssal:abyssal /backups
+
+# Internal TLS (crates/web/src/internal_tls.rs) -- same named-volume seeding
+# trick as /backups: the app creates and renews the private CA and Caddy's
+# server certificate in these, so they must start out owned by `abyssal`.
+# /tls/ca holds the CA's private key and is mounted into no other container;
+# /tls/server is shared read-only with Caddy; /run/caddy-admin holds Caddy's
+# admin socket (how the app tells Caddy to load a renewed certificate).
+RUN mkdir -p /tls/ca /tls/server /run/caddy-admin \
+    && chown abyssal:abyssal /tls/ca /tls/server /run/caddy-admin \
+    && chmod 700 /tls/ca
 
 USER abyssal
 

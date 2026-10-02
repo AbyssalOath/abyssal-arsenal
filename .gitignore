@@ -27,6 +27,9 @@
 # install.sh generates this from a prompted domain/IP -- environment-
 # specific, not something to commit.
 Caddyfile
+# Certificates from installs before the app managed internal TLS (now in the
+# abyssal_tls_* Docker volumes instead).
+/caddy_certs/
 
 # Local-only Docker Compose overrides (a common convention for
 # machine-specific tweaks that shouldn't apply to every deployment).

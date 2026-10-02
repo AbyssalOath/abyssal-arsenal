@@ -84,6 +84,12 @@ impl HostConnectionRegistry {
             .retain(|_, (pending_host_id, _)| *pending_host_id != host_id);
     }
 
+    /// Every currently connected host, e.g. to push something to all of
+    /// them.
+    pub fn connected_ids(&self) -> Vec<Uuid> {
+        self.connections.lock().unwrap().keys().copied().collect()
+    }
+
     pub fn is_connected(&self, host_id: Uuid) -> bool {
         self.connections.lock().unwrap().contains_key(&host_id)
     }

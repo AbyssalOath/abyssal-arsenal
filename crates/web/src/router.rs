@@ -154,6 +154,29 @@ pub fn build(state: AppState) -> Router {
             "/admin/health/self-monitoring",
             post(routes::system_health::set_monitoring),
         )
+        .route("/admin/health/tls", get(routes::internal_tls::show))
+        .route("/admin/health/tls/renew", post(routes::internal_tls::renew))
+        .route(
+            "/admin/health/tls/reload",
+            post(routes::internal_tls::reload),
+        )
+        .route("/admin/health/tls/push", post(routes::internal_tls::push))
+        .route(
+            "/admin/health/tls/rotate",
+            post(routes::internal_tls::rotate),
+        )
+        .route(
+            "/admin/health/tls/rotate/cancel",
+            post(routes::internal_tls::cancel_rotation),
+        )
+        .route(
+            "/admin/health/tls/rotate/activate",
+            post(routes::internal_tls::activate_rotation),
+        )
+        .route(
+            "/admin/health/tls/pending-ca.pem",
+            get(routes::internal_tls::pending_ca),
+        )
         .route(
             "/admin/settings/registration",
             post(routes::settings::set_registration),
@@ -1707,6 +1730,10 @@ pub fn build(state: AppState) -> Router {
         .route("/install.sh", get(routes::bootstrap::install_sh))
         .route("/install.ps1", get(routes::bootstrap::install_ps1))
         .route("/agent/:os", get(routes::bootstrap::serve_agent))
+        // The internal CA's public certificate (if any), fetched by those
+        // one-liners and pinned to the fingerprint shown on /admin/hosts.
+        .route("/ca.crt", get(routes::bootstrap::ca_cert))
+        .route("/ca.pem", get(routes::bootstrap::ca_cert))
         .nest_service("/static", ServeDir::new(static_dir()))
         .layer(axum::middleware::from_fn(security_headers::apply))
         .layer(axum::middleware::from_fn_with_state(

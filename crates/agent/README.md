@@ -31,26 +31,64 @@ described below (`abyssal-agent install --control-plane-url ...
 Generate an enrollment token at `/admin/hosts` and copy the ready-made
 command shown for the target host's platform. Each one fetches a small,
 secret-free bootstrap script the control plane serves (`/install.sh`,
-`/install.ps1`), which downloads the matching agent release and runs the
-same non-interactive `install` described below:
+`/install.ps1`), which downloads the agent from the control plane and runs the
+same non-interactive `install` described below. With a publicly-trusted
+certificate the commands are simply:
 
 ```bash
-# Linux (the script needs root, so pipe it through sudo)
+# Linux (the script needs root)
 curl -fsSL https://your-control-plane.example.com/install.sh | sudo sh -s -- --enrollment-token <token>
 ```
 
 ```powershell
 # Windows, from an *administrator* PowerShell
-& ([scriptblock]::Create((irm https://your-control-plane.example.com/install.ps1))) -EnrollmentToken <token>
+& ([scriptblock]::Create((irm https://your-control-plane.example.com/install.ps1))) -EnrollmentToken '<token>'
 ```
 
+When the control plane uses the **internal CA** `install.sh` creates (no
+public domain), the generated commands are longer: they first fetch
+`/ca.crt`, check its SHA-256 fingerprint against the one embedded in the
+command, and only then trust it and continue -- so a fresh host needs no
+certificate copied to it beforehand. See the top-level README's "Trusting a
+self-signed / internal cert". `/admin/hosts` also shows an unattended Windows
+variant for RMM tools (PDQ, Intune, GPO startup scripts) running as SYSTEM.
+
 The scripts carry no secrets -- only the control-plane URL and agent
-version, both already public; the one-time token is the argument you
-supply. They only ever download the pinned GitHub release for the version
-the control plane is on, so the real gate stays the single-use token
-enforced server-side at `/api/hosts/enroll`. Everything below is the
-same install those scripts run, step by step, for when you'd rather do it
-by hand.
+version, both already public. The token and the CA fingerprint come from the
+command you copied, never from the server, so the real gates stay the token
+enforced server-side at `/api/hosts/enroll` and the fingerprint you pinned.
+Everything below is the same install those scripts run, step by step, for
+when you'd rather do it by hand.
+
+### Install options worth knowing
+
+| Option | Purpose |
+|---|---|
+| `--ca-cert <ca.pem>` | Trust this CA (PEM) for the control plane, in addition to the OS store. `install` copies it next to the credentials file and puts it into the service definition, so enrollment, the WebSocket, and its reconnects use it (self-update downloads come from GitHub and use only the OS store). The control plane keeps this file current when it rotates its CA (`UpdateTrustedCa`, pushed on every connect). Never picked up implicitly. |
+| `--ca-fingerprint <sha256>` | With `--ca-cert`: refuse to install unless the CA matches (hex, colons optional). |
+| `--enrollment-token-file <file>` / `ABYSSAL_ENROLLMENT_TOKEN` | Supply the token without putting it on a command line (visible in `ps` and in RMM job logs). |
+
+### Exit codes
+
+`install` (and `run`, if it can't start) prints `ERROR:` and, when it
+recognises the cause, `HINT:` on **stdout**, and exits with:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Other error |
+| 10 | Control plane's certificate isn't trusted (`UnknownIssuer`) |
+| 11 | Control plane serves a CA certificate as its server cert (`CaUsedAsEndEntity`) |
+| 12 | Certificate doesn't cover the `--control-plane-url` address |
+| 13 | Other certificate problem (expired, not yet valid, ...) |
+| 14 | `--ca-cert` doesn't match `--ca-fingerprint` |
+| 20 | Enrollment token rejected (invalid, expired, used, revoked) |
+| 21 | Host name already in use by a connected host |
+| 30 | Control plane unreachable |
+| 40 | Enrolled, but service registration/start failed |
+
+The served `install.sh` / `install.ps1` pass these through unchanged (and use
+2 for bad arguments, 3 for "not root/elevated").
 
 ## Keeping an agent up to date
 

@@ -128,9 +128,25 @@ services:
       # built archive (abyssal-agent-windows.zip / abyssal-agent-linux.tar.gz),
       # or leave it empty to have the control plane fetch from GitHub on demand.
       AGENT_DIST_DIR: /agent-dist
+      # Internal TLS (Caddy with no public domain): the address(es) the first
+      # private CA and server certificate are created for, at first start.
+      # After that the CA is managed from /admin/health/tls (renewal is
+      # automatic; rotation and address changes are done there) and this only
+      # matters if the abyssal_tls_* volumes are ever lost. Empty = TLS isn't
+      # ours to manage (Let's Encrypt, your own proxy, plain HTTP).
+      INTERNAL_TLS_ADDRESSES: ${INTERNAL_TLS_ADDRESSES:-}
+      # Own reverse proxy with a certificate from your own internal CA? Point
+      # this at that CA's public certificate (mount it in) and the agent
+      # install commands will fetch and pin it the same way.
+      PUBLIC_CA_FILE: ${PUBLIC_CA_FILE:-}
     volumes:
       - abyssal_backups:/backups
       - abyssal_agent_dist:/agent-dist
+      # CA certificate + private key: mounted into this container only.
+      - abyssal_tls_ca:/tls/ca
+      # Server certificate + key, shared read-only with Caddy.
+      - abyssal_tls_server:/tls/server
+      - abyssal_caddy_admin:/run/caddy-admin
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 10s
@@ -144,18 +160,24 @@ services:
     container_name: abyssal-arsenal-caddy
     restart: unless-stopped
     profiles: ["caddy"]
+    # The app creates the internal certificate (when there is one) before it
+    # reports healthy, so Caddy never starts without it.
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Self-signed cert for the internal/IP-only install path (install.sh
-      # generates caddy_certs/{cert,key}.pem and the Caddyfile references them).
-      # Unused on the Let's Encrypt (public domain) path; Docker just mounts an
-      # empty directory there, which is harmless.
-      - ./caddy_certs:/etc/caddy/certs:ro
+      # Server cert + key for the internal/IP-only install path, issued and
+      # renewed by the app (the Caddyfile references /etc/caddy/certs/
+      # {cert,key}.pem). Never the CA's key. Empty and unused on the Let's
+      # Encrypt (public domain) path.
+      - abyssal_tls_server:/etc/caddy/certs:ro
+      # Caddy's admin API as a Unix socket shared only with the app, which
+      # uses it to make Caddy load a renewed certificate. Never on a network.
+      - abyssal_caddy_admin:/run/caddy-admin
       - abyssal_caddy_data:/data
       - abyssal_caddy_config:/config
     networks:
@@ -167,6 +189,9 @@ volumes:
   abyssal_agent_dist:
   abyssal_caddy_data:
   abyssal_caddy_config:
+  abyssal_tls_ca:
+  abyssal_tls_server:
+  abyssal_caddy_admin:
 
 networks:
   abyssal:

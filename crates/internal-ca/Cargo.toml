@@ -1,0 +1,14 @@
+[package]
+name = "abyssal-internal-ca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
+x509-parser = "0.18"
+time = "0.3"
+sha2.workspace = true
+anyhow.workspace = true
+rand.workspace = true

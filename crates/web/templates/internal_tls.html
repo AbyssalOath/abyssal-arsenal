@@ -1,0 +1,199 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Internal TLS — Abyssal Arsenal{% endblock %}
+{% block heading %}Internal TLS certificate{% endblock %}
+{% block content %}
+
+<p><a href="/admin/health">&larr; Control-plane health</a></p>
+
+{% if let Some(msg) = message %}
+<div class="info-banner">{{ msg }}</div>
+{% endif %}
+{% if let Some(err) = error %}
+<div class="error-banner">{{ err }}</div>
+{% endif %}
+
+{% if !tls.managed %}
+<div class="card">
+  <h2>{% call macros::icon("shield-check") %} Not managed here</h2>
+  <p class="text-muted">
+    This control plane's HTTPS certificate comes from Let's Encrypt or your own
+    reverse proxy, so there's nothing to manage on this page. The internal CA is
+    used when <code>install.sh</code> sets up Caddy without a public domain.
+  </p>
+</div>
+{% else %}
+
+<div class="card">
+  <div class="card-head-row">
+    <h2>{% call macros::icon("shield-check") %} Status</h2>
+    {% if tls.healthy %}
+    <span class="badge badge-success">{% call macros::icon("check") %} Healthy</span>
+    {% else %}
+    <span class="badge badge-warning">{% call macros::icon("warning") %} Attention</span>
+    {% endif %}
+  </div>
+  {% for p in tls.problems %}
+  <div class="error-banner" style="margin-bottom:8px;">{{ p }}</div>
+  {% endfor %}
+  {% if let Some(reason) = tls.renewal_due %}
+  <p>Renewal due: {{ reason }}. It renews automatically within six hours, or use
+    <em>Renew now</em> below.</p>
+  {% endif %}
+
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th></th><th>Covers</th><th>Expires</th><th>SHA-256 fingerprint</th></tr></thead>
+      <tbody>
+        {% if let Some(c) = tls.ca %}
+        <tr>
+          <td><strong>Internal CA</strong><br><span class="text-muted">{{ c.subject }}</span></td>
+          <td>{{ c.names }}</td>
+          <td>{{ c.expires }}<br><span class="text-muted">{{ c.days_left }} days</span></td>
+          <td><code style="overflow-wrap:anywhere;">{{ c.fingerprint }}</code></td>
+        </tr>
+        {% endif %}
+        {% if let Some(c) = tls.server %}
+        <tr>
+          <td><strong>Server certificate</strong><br><span class="text-muted">served by Caddy</span></td>
+          <td>{{ c.names }}</td>
+          <td>{{ c.expires }}<br><span class="text-muted">{{ c.days_left }} days</span></td>
+          <td><code style="overflow-wrap:anywhere;">{{ c.fingerprint }}</code></td>
+        </tr>
+        {% endif %}
+        {% if let Some(c) = tls.pending %}
+        <tr>
+          <td><strong>Pending CA</strong><br><span class="badge badge-warning">not active yet</span></td>
+          <td>{{ c.names }}</td>
+          <td>{{ c.expires }}<br><span class="text-muted">{{ c.days_left }} days</span></td>
+          <td><code style="overflow-wrap:anywhere;">{{ c.fingerprint }}</code></td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="text-muted">
+    Clients trust the <strong>CA</strong>, never the server certificate. The server
+    certificate renews automatically 30 days before it expires; nothing has to be
+    re-trusted when it does. Agent install commands on
+    <a href="/admin/hosts">/admin/hosts</a> pin the CA fingerprint above.
+  </p>
+
+  <div class="actions" style="display:flex; flex-wrap:wrap; gap:8px;">
+    <form method="post" action="/admin/health/tls/renew" style="margin:0;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit">{% call macros::icon("generate") %} Renew server certificate now</button>
+    </form>
+    <form method="post" action="/admin/health/tls/reload" style="margin:0;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("reboot") %} Reload Caddy</button>
+    </form>
+    <a class="btn btn-secondary" href="/ca.crt">{% call macros::icon("shield-check") %} Download CA (ca.crt)</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head-row">
+    <h2>{% call macros::icon("host") %} Agents</h2>
+    <form method="post" action="/admin/health/tls/push" style="margin:0;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary btn-sm">{% call macros::icon("route") %} Push CA to connected agents</button>
+    </form>
+  </div>
+  <p class="text-muted">
+    Agents installed with the commands from <code>/admin/hosts</code> keep their own
+    copy of the CA. Every agent is sent the current CA bundle when it connects, so
+    they follow renewals and rotations on their own. Agents that trust the OS
+    certificate store instead (e.g. via GPO) show as <em>OS store</em>; update that
+    store yourself.
+  </p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Host</th><th>Status</th><th>Trusts current CA</th>{% if tls.pending.is_some() %}<th>Trusts pending CA</th>{% endif %}<th>Last push</th></tr></thead>
+      <tbody>
+        {% for h in hosts %}
+        <tr>
+          <td>{{ h.name }}<br>{% if h.online %}<span class="badge badge-success">Online</span>{% else %}<span class="badge badge-muted">Offline</span>{% endif %}</td>
+          <td>
+            {% match h.status %}
+            {% when Some with (s) %}
+              {% if s == "updated" || s == "unchanged" %}<span class="badge badge-success">Managed</span>
+              {% else if s == "unmanaged" %}<span class="badge badge-muted">OS store</span>
+              {% else if s == "too-old" %}<span class="badge badge-warning">Agent too old</span>
+              {% else %}<span class="badge badge-danger">Failed</span>{% endif %}
+              {% if !h.detail.is_empty() %}<br><span class="text-muted">{{ h.detail }}</span>{% endif %}
+            {% when None %}<span class="text-muted">&mdash;</span>
+            {% endmatch %}
+          </td>
+          <td>{% if h.trusts_active %}{% call macros::icon("check") %}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+          {% if tls.pending.is_some() %}
+          <td>{% if h.trusts_pending %}{% call macros::icon("check") %}{% else %}<span class="badge badge-warning">no</span>{% endif %}</td>
+          {% endif %}
+          <td class="text-muted">{{ h.when }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{% call macros::icon("settings") %} Change addresses / rotate the CA</h2>
+  {% if let Some(p) = tls.pending %}
+  <p>
+    A new CA for <strong>{{ p.names }}</strong> is pending. It has been sent to
+    connected agents alongside the current one. Before activating it:
+  </p>
+  <ol>
+    <li>Distribute it to anything else that trusts the current CA: GPO
+      (<em>Trusted Root Certification Authorities</em>), admin workstations' browsers.
+      <a href="/admin/health/tls/pending-ca.pem">Download the pending CA</a>.</li>
+    <li>Check the agent table above: every agent should trust the pending CA.</li>
+    <li>If the address changed, update DNS and <code>PUBLIC_URL</code> in <code>.env</code>
+      to match.</li>
+  </ol>
+  {% if !not_ready_for_activation.is_empty() %}
+  <div class="error-banner" style="margin-bottom:8px;">
+    These hosts don't confirm the pending CA yet and will lose their connection when
+    it's activated (re-run the install command from /admin/hosts on them afterwards):
+    {% for n in not_ready_for_activation %}{{ n }}{% if !loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+  <form method="post" action="/admin/health/tls/rotate/activate" class="action-grid">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div>
+      <label for="tls-confirm">Type <code>activate</code> to switch the server to the new CA</label>
+      <input type="text" id="tls-confirm" name="confirm" autocomplete="off">
+    </div>
+    <div style="grid-column: 1 / -1; display:flex; gap:8px;">
+      <button type="submit" class="btn-warning">{% call macros::icon("warning") %} Activate new CA</button>
+    </div>
+  </form>
+  <form method="post" action="/admin/health/tls/rotate/cancel" style="margin-top:8px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">Cancel rotation</button>
+  </form>
+  {% else %}
+  <p class="text-muted">
+    Creates a new CA for the addresses below (IPs and/or hostnames, comma or
+    space separated). Nothing changes for clients yet: the new CA is pushed to
+    connected agents next to the current one, and you activate it once everything
+    that needs to trust it does. Use this to add or change an address, or to
+    replace the CA well before it expires.
+  </p>
+  <form method="post" action="/admin/health/tls/rotate" class="action-grid">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div style="grid-column: 1 / -1;">
+      <label for="tls-addresses">Addresses the control plane is reached at</label>
+      <input type="text" id="tls-addresses" name="addresses" value="{{ addresses }}" placeholder="10.0.0.5, arsenal.corp.local">
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create new CA (pending)</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

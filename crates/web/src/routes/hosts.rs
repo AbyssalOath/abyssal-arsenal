@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::common::require_csrf;
 use crate::csrf;
+use crate::deploy_commands;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
@@ -39,49 +40,21 @@ fn control_plane_base_url(state: &AppState, headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
-/// Builds the per-OS enrollment guidance for a freshly generated token. All
-/// four commands are fully filled in (control-plane URL, agent version, and
-/// the one-time token) so the operator copies one block verbatim. The
-/// version is this control plane's own (`update_check::CURRENT_VERSION`) --
-/// the release whose agent artifact matches this build's protocol, same
-/// version the SSH-deploy path and self-update install.
+/// Builds the per-OS enrollment guidance for a freshly generated token. Every
+/// command is fully filled in (control-plane URL, agent version, the one-time
+/// token, and -- with an internal CA -- the CA fingerprint to pin) so the
+/// operator copies one block verbatim. See `crate::deploy_commands`.
 fn build_enrollment_instructions(base_url: &str, token: &str) -> EnrollmentInstructions {
-    let version = crate::update_check::CURRENT_VERSION.trim();
-    let linux_asset = format!("abyssal-agent-v{version}-x86_64-unknown-linux-gnu");
-    let windows_asset = format!("abyssal-agent-v{version}-x86_64-pc-windows-msvc");
-    let releases = "https://github.com/AbyssalOath/abyssal-arsenal/releases/download";
-
-    let linux_oneliner =
-        format!("curl -fsSL {base_url}/install.sh | sudo sh -s -- --enrollment-token {token}");
-
-    let linux_manual = format!(
-        "curl -LO {releases}/v{version}/{linux_asset}.tar.gz\n\
-         tar -xzf {linux_asset}.tar.gz\n\
-         sudo ./{linux_asset}/abyssal-agent install \\\n  \
-         --control-plane-url {base_url} --enrollment-token {token}"
-    );
-
-    // Downloads the served script text and invokes it as a scriptblock with
-    // the token as a parameter -- the reliable way to pass an argument to a
-    // remotely fetched PowerShell script (plain `irm ... | iex` can't take
-    // one). Must be run from an elevated ("Run as administrator") prompt.
-    let windows_oneliner =
-        format!("& ([scriptblock]::Create((irm {base_url}/install.ps1))) -EnrollmentToken {token}");
-
-    let windows_manual = format!(
-        "$v = \"{version}\"; $a = \"{windows_asset}\"\n\
-         Invoke-WebRequest {releases}/v$v/$a.zip -OutFile \"$a.zip\"\n\
-         Expand-Archive \"$a.zip\" -DestinationPath . -Force\n\
-         .\\$a\\abyssal-agent.exe install `\n  \
-         --control-plane-url {base_url} --enrollment-token {token}"
-    );
-
+    let ca = crate::public_ca::load();
+    let ca = ca.as_ref();
     EnrollmentInstructions {
         token: token.to_string(),
-        linux_oneliner,
-        linux_manual,
-        windows_oneliner,
-        windows_manual,
+        ca_fingerprint: ca.map(|ca| ca.fingerprint_display()),
+        linux_oneliner: deploy_commands::linux_oneliner(base_url, token, ca),
+        linux_manual: deploy_commands::linux_manual(base_url, token, ca),
+        windows_oneliner: deploy_commands::windows_oneliner(base_url, token, ca),
+        windows_manual: deploy_commands::windows_manual(base_url, token, ca),
+        windows_rmm: deploy_commands::windows_rmm(base_url, token, ca),
     }
 }
 
@@ -214,22 +187,29 @@ pub async fn generate_enrollment_token(
     .await
 }
 
-/// The single install command for a reusable deployment token, by OS -- the
-/// line an operator drops into PDQ Deploy, a GPO startup script, or Intune.
-/// Same bootstrap one-liners as a single-use token; the difference is the token
-/// is reusable, so the same command provisions every machine it's pushed to.
-fn build_deployment_command(base_url: &str, token: &str, os: &str) -> (String, String) {
+/// The install command(s) for a reusable deployment token, by OS -- what an
+/// operator drops into PDQ Deploy, a GPO startup script, or Intune. Same
+/// commands as a single-use token; the difference is the token is reusable,
+/// so the same command provisions every machine it's pushed to. Windows gets
+/// the unattended RMM script as the primary command (that's what deployment
+/// tokens are for) plus the interactive one-liner for a quick manual test.
+fn build_deployment_command(
+    base_url: &str,
+    token: &str,
+    os: &str,
+    ca: Option<&crate::public_ca::PublicCa>,
+) -> (String, String, Option<String>) {
     if os == "linux" {
         (
             "Linux".to_string(),
-            format!("curl -fsSL {base_url}/install.sh | sudo sh -s -- --enrollment-token {token}"),
+            deploy_commands::linux_oneliner(base_url, token, ca),
+            None,
         )
     } else {
         (
             "Windows".to_string(),
-            format!(
-                "& ([scriptblock]::Create((irm {base_url}/install.ps1))) -EnrollmentToken {token}"
-            ),
+            deploy_commands::windows_rmm(base_url, token, ca),
+            Some(deploy_commands::windows_oneliner(base_url, token, ca)),
         )
     }
 }
@@ -292,11 +272,15 @@ pub async fn generate_deployment_token(
     .await?;
 
     let base_url = control_plane_base_url(&state, &headers);
-    let (os_label, command) = build_deployment_command(&base_url, &token, &form.os);
+    let ca = crate::public_ca::load();
+    let (os_label, command, interactive_command) =
+        build_deployment_command(&base_url, &token, &form.os, ca.as_ref());
     let deployment = DeploymentInstructions {
         os_label,
         token,
         command,
+        interactive_command,
+        ca_fingerprint: ca.as_ref().map(|ca| ca.fingerprint_display()),
         expires: crate::common::format_in_tz(
             chrono::Utc::now() + ChronoDuration::hours(i64::from(ttl_hours)),
             &ctx.user.timezone,
@@ -754,27 +738,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deployment_command_windows_uses_the_ps1_one_liner() {
-        let (label, cmd) =
-            build_deployment_command("https://arsenal.corp.local", "TOK123", "windows");
+    fn deployment_command_windows_is_the_rmm_script_plus_the_one_liner() {
+        let (label, cmd, interactive) =
+            build_deployment_command("https://arsenal.corp.local", "TOK123", "windows", None);
         assert_eq!(label, "Windows");
         assert!(cmd.contains("install.ps1"));
-        assert!(cmd.contains("-EnrollmentToken TOK123"));
+        assert!(cmd.contains("-ExitCode"));
+        assert!(cmd.contains("$env:ABYSSAL_ENROLLMENT_TOKEN = 'TOK123'"));
+        assert!(interactive.unwrap().contains("-EnrollmentToken 'TOK123'"));
     }
 
     #[test]
     fn deployment_command_linux_uses_the_sh_one_liner() {
-        let (label, cmd) =
-            build_deployment_command("https://arsenal.corp.local", "TOK123", "linux");
+        let (label, cmd, interactive) =
+            build_deployment_command("https://arsenal.corp.local", "TOK123", "linux", None);
         assert_eq!(label, "Linux");
         assert!(cmd.contains("install.sh"));
-        assert!(cmd.contains("--enrollment-token TOK123"));
+        assert!(cmd.contains("--enrollment-token 'TOK123'"));
+        assert!(interactive.is_none());
     }
 
     #[test]
     fn deployment_command_defaults_to_windows_for_unknown_os() {
         // Anything that isn't "linux" falls back to the Windows command.
-        let (label, _) = build_deployment_command("https://x", "t", "");
+        let (label, _, _) = build_deployment_command("https://x", "t", "", None);
         assert_eq!(label, "Windows");
     }
 }

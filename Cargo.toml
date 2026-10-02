@@ -4,6 +4,7 @@ members = [
     "crates/app",
     "crates/agent",
     "crates/agent-protocol",
+    "crates/internal-ca",
     "crates/core",
     "crates/database",
     "crates/auth",
@@ -61,6 +62,7 @@ abyssal-workflows = { path = "crates/workflows" }
 abyssal-web = { path = "crates/web" }
 abyssal-hosts = { path = "crates/hosts" }
 abyssal-agent-protocol = { path = "crates/agent-protocol" }
+abyssal-internal-ca = { path = "crates/internal-ca" }
 
 arsenal-cystoolbox = { path = "crates/arsenals/cystoolbox" }
 arsenal-cadavault = { path = "crates/arsenals/cadavault" }
@@ -92,11 +94,12 @@ tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "ws"] }
 axum-extra = { version = "0.9", features = ["cookie"] }
 # Native (OS) root store rather than the bundled Mozilla webpki roots, so the
-# agent trusts a control plane behind an internal CA or a self-signed cert the
-# operator has imported into the host's trust store (the on-prem/internal case)
-# -- publicly-trusted certs (Let's Encrypt) keep working via the OS's own public
-# roots. Both the enrollment POST (reqwest) and the WSS control channel
-# (tokio-tungstenite) go through these.
+# agent trusts a control plane behind an internal CA the operator has imported
+# into the host's trust store -- publicly-trusted certs (Let's Encrypt) keep
+# working via the OS's own public roots. The agent additionally builds one
+# shared rustls config (crates/agent/src/tls.rs: native roots + an optional
+# --ca-cert) that both the enrollment POST (reqwest) and the WSS control
+# channel (tokio-tungstenite) are handed explicitly.
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }

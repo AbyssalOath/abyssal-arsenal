@@ -26,6 +26,7 @@ pub mod names {
     pub const PANOPTICON_TRAFFIC_ROLLUP: &str = "panopticon_traffic_rollup";
     pub const ELEVATION_EXPIRY_SWEEP: &str = "elevation_expiry_sweep";
     pub const SELF_MONITOR_SWEEP: &str = "self_monitor_sweep";
+    pub const INTERNAL_TLS_SWEEP: &str = "internal_tls_sweep";
 }
 
 /// One task's most recent liveness state.

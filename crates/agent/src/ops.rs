@@ -36,6 +36,16 @@ pub async fn run(
         }),
         AgentOperation::SystemInfo => system_info().await,
         AgentOperation::SelfUpdate { version } => crate::selfupdate::self_update(version).await,
+        AgentOperation::UpdateTrustedCa { bundle_pem } => {
+            match crate::tls::update_trusted_ca(&bundle_pem) {
+                Ok(update) => CommandOutcome::Ok(OperationOutput {
+                    stdout: serde_json::to_string(&update).unwrap_or_default(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                }),
+                Err(e) => CommandOutcome::Err(format!("updating the trusted CA failed: {e:#}")),
+            }
+        }
         AgentOperation::ResourceUsage => resource_usage().await,
         AgentOperation::LoggedInUsers => logged_in_users().await,
         AgentOperation::SetHostname { hostname } => set_hostname(hostname, elevation).await,

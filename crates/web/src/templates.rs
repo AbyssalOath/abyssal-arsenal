@@ -186,6 +186,60 @@ pub struct SystemHealthTemplate {
     pub disk_threshold: u32,
     pub backup_overdue_hours: u32,
     pub alert_recipients: String,
+    /// Internal TLS (private CA) summary card.
+    pub tls: TlsSummary,
+}
+
+/// One certificate as `/admin/health` shows it.
+pub struct TlsCertView {
+    pub subject: String,
+    /// `AB:CD:...`
+    pub fingerprint: String,
+    pub expires: String,
+    pub days_left: i64,
+    /// What it's for: the SANs (server cert) or the name constraints (CA).
+    pub names: String,
+}
+
+/// Internal TLS state for the health card and the management page.
+pub struct TlsSummary {
+    /// False when TLS isn't ours (Let's Encrypt / the operator's own proxy).
+    pub managed: bool,
+    pub ca: Option<TlsCertView>,
+    pub pending: Option<TlsCertView>,
+    pub server: Option<TlsCertView>,
+    pub renewal_due: Option<String>,
+    pub problems: Vec<String>,
+    /// Nothing due, nothing wrong.
+    pub healthy: bool,
+}
+
+/// One enrolled host's view of the CA, on the management page.
+pub struct TlsHostRow {
+    pub name: String,
+    pub online: bool,
+    /// Last push outcome (`updated`, `unchanged`, `unmanaged`, `too-old`,
+    /// `failed`), or `None` if nothing has been pushed since startup.
+    pub status: Option<String>,
+    pub detail: String,
+    pub trusts_active: bool,
+    pub trusts_pending: bool,
+    pub when: String,
+}
+
+#[derive(Template)]
+#[template(path = "internal_tls.html")]
+pub struct InternalTlsTemplate {
+    pub base: BaseCtx,
+    pub tls: TlsSummary,
+    /// The CA's addresses, prefilled into the rotation form.
+    pub addresses: String,
+    pub hosts: Vec<TlsHostRow>,
+    /// Connected, CA-file-managed agents that don't yet confirm the pending
+    /// CA -- they'd lose their connection on activation.
+    pub not_ready_for_activation: Vec<String>,
+    pub message: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Template)]
@@ -904,10 +958,15 @@ pub struct EnrollmentInstructions {
     /// or operators who'd rather see each step.
     pub linux_manual: String,
     /// The Windows equivalent of `linux_oneliner`: a single elevated-
-    /// PowerShell line that runs this control plane's `/install.ps1`.
+    /// PowerShell block that runs this control plane's `/install.ps1`.
     pub windows_oneliner: String,
-    /// The manual Windows path (download the release zip, then `install`).
+    /// The manual Windows path (download the agent zip, then `install`).
     pub windows_manual: String,
+    /// Unattended Windows variant for RMM tools running as SYSTEM.
+    pub windows_rmm: String,
+    /// `AB:CD:...` when the control plane has an internal CA -- every
+    /// command above verifies the fetched CA against it.
+    pub ca_fingerprint: Option<String>,
 }
 
 /// The just-created reusable deployment token and the ready-to-paste command
@@ -917,8 +976,13 @@ pub struct EnrollmentInstructions {
 pub struct DeploymentInstructions {
     pub os_label: String,
     pub token: String,
-    /// The single command to drop into the deploy tool.
+    /// The command (Windows: the unattended RMM script) to drop into the
+    /// deploy tool.
     pub command: String,
+    /// Windows only: the interactive one-liner, for trying it by hand first.
+    pub interactive_command: Option<String>,
+    /// `AB:CD:...` when the control plane has an internal CA.
+    pub ca_fingerprint: Option<String>,
     pub expires: String,
 }
 

@@ -159,50 +159,140 @@ When you choose Caddy, the installer asks for a domain:
 - **Public domain** (DNS points at this host, ports 80/443 reachable): Caddy
   obtains a real, browser-trusted certificate automatically via Let's Encrypt.
   Nothing else to do.
-- **Blank / internal only**: there's no public DNS, so the installer generates
-  a **self-signed certificate** and asks for the IP address *or* internal
-  hostname (FQDN) you'll use in the browser — that address is written onto the
-  certificate (as an `IP:` or `DNS:` SAN) and into `PUBLIC_URL`. Caddy serves
-  that cert directly. (Caddy's automatic internal CA can't serve a *bare IP*
-  reliably — browsers send no SNI for an IP, so there's no name for it to pick
-  a cert for — which is why an explicit cert is generated instead.)
+- **Blank / internal only**: there's no public DNS, so the control plane
+  runs its own small **private CA** and issues the server certificate Caddy
+  serves. The installer asks for the IP address(es) and/or internal
+  hostname(s) you'll use in the browser (comma-separated); they go onto the
+  server certificate (as `IP:`/`DNS:` SANs), into the CA's name constraints,
+  and the first one into `PUBLIC_URL`. (Caddy's automatic internal CA can't
+  serve a *bare IP* reliably -- browsers send no SNI for an IP, so there's no
+  name for it to pick a cert for -- which is why an explicit certificate is
+  used instead.) The app creates the CA on its first start, before Caddy
+  starts, and the installer prints its SHA-256 fingerprint at the end.
 
-**IP vs FQDN — which to pick?** Either works. An **IP** is zero-setup. An
+  **From then on everything is managed in the web UI**, under
+  **Control-plane health → Internal TLS certificate** (`/admin/health/tls`):
+
+  - **Renewal is automatic.** The server certificate (825 days, `CA:FALSE`,
+    `serverAuth`) is re-issued from the same CA 30 days before it expires
+    and Caddy is told to load it -- no restart, and nothing to re-trust:
+    clients only ever trust the CA. *Renew now* and *Reload Caddy* buttons
+    are there too.
+  - **Changing addresses / rotating the CA** (to add an FQDN, follow an IP
+    change, or replace the 10-year CA well before it expires) is two-phase so
+    nothing gets stranded: *Create new CA* makes a **pending** CA and pushes
+    it, alongside the current one, to every connected agent (agents that
+    connect later get it on connect); the page shows which agents confirm it
+    and lets you download it for GPO/browsers. *Activate* then switches the
+    server over -- by which point the agents already trust it.
+  - **Expiry alerts**: with self-monitoring on, you're notified if renewal
+    starts failing or the CA nears its end.
+
+  | Where | What | Who can read it |
+  |---|---|---|
+  | `abyssal_tls_ca` volume | CA certificate + private key, pending CA during a rotation | The app container only |
+  | `abyssal_tls_server` volume | Server certificate (+ CA chain) and key | The app, and Caddy read-only |
+  | `abyssal_caddy_admin` volume | Caddy's admin API socket (how the app makes Caddy reload) | The app and Caddy -- never on a network |
+
+  The CA's key lives inside the app container, which is what makes web
+  management possible. It's name-constrained to the control plane's own
+  addresses, so even a leaked key can't vouch for anything else -- and the
+  app container already controls every enrolled agent anyway.
+
+  Break-glass, if the web UI itself is unreachable:
+  `docker compose exec app /app/abyssal-arsenal tls status` (also `renew`,
+  `reload`, `ensure`).
+
+**IP vs FQDN — which to pick?** Either works, and you can use both (and
+change your mind later from the web UI). An **IP** is zero-setup. An
 **internal FQDN** (e.g. `arsenal.corp.local`) is nicer long-term: it's stable
-if the IP changes, and it's what you'd put on a cert you want clients to
-*trust*. If you go the FQDN route, add an A record for it in your internal DNS
-(e.g. Active Directory DNS) first, then enter that FQDN at the installer prompt.
+if the IP changes. If you go the FQDN route, add an A record for it in your
+internal DNS (e.g. Active Directory DNS) first. Either way, the certificate
+covers exactly the addresses you gave -- reach the control plane by anything
+else and TLS fails with a name mismatch (see Troubleshooting below).
 
 ### Trusting a self-signed / internal cert
 
 The agent validates the control plane's certificate against the **host's OS
-trust store** (not a bundled CA list), so a publicly-trusted cert (Let's
-Encrypt) works with no extra steps. For a self-signed or internal-CA cert this
-has two consequences:
+trust store**, plus -- for an internal CA -- the CA certificate it was given
+at install time (`--ca-cert`, kept beside its credentials). A
+publicly-trusted certificate (Let's Encrypt) needs nothing extra. For the
+internal CA:
 
-- **Browsers** show a one-time "unknown issuer" warning — harmless to accept.
-- **Agents require the cert to be trusted**, or enrollment and the control
-  channel fail with a TLS error (this is also why the PowerShell bootstrap
-  one-liner's `irm …` fails until the cert is trusted). So on any host that
-  will run the agent against an internal cert, import it first.
+**A single machine (or a handful): nothing to do by hand.** Generate a token
+at `/admin/hosts` and run the command shown there. When the control plane has
+an internal CA, that command:
 
-**Windows / Active Directory** — push `caddy_certs/cert.pem` to the **Trusted
-Root Certification Authorities** store via Group Policy (fixes browsers,
-PowerShell `irm`, and the agent in one go):
+1. fetches the CA certificate from `https://<host>/ca.crt` -- without
+   trusting the connection, since nothing trusts it yet;
+2. refuses to go any further unless the certificate's SHA-256 fingerprint
+   matches the one embedded in the command (and shown on `/admin/hosts` --
+   the same value `install.sh` printed). The admin got that fingerprint over
+   an authenticated session, so a tampered `/ca.crt` can't get past it;
+3. trusts it: on Windows it's added to `Cert:\LocalMachine\Root` (PowerShell
+   needs that for its own download of the agent), on Linux it's only used via
+   `curl --cacert` (add `--trust-system` to also put it in the OS store);
+4. installs the agent with `--ca-cert`, so the agent's enrollment request
+   and its control-channel WebSocket (and every reconnect) trust that CA --
+   independently of the OS store. When you rotate the CA from
+   `/admin/health/tls`, the control plane updates that file on the agent
+   over the control channel. (Self-update downloads come from GitHub and
+   only ever use the OS store: the control plane's CA can't vouch for them.)
 
-1. Copy `caddy_certs/cert.pem` to a domain controller (rename to `.crt`/`.cer`
-   if your tooling wants it — same PEM content).
+The Windows command must run in an **elevated** PowerShell (or as SYSTEM
+from an RMM tool -- `/admin/hosts` shows an unattended variant for PDQ /
+Intune / GPO startup scripts that exits non-zero with the error on stdout).
+The Linux one needs `sudo`.
+
+**A whole fleet (Active Directory)** -- push the **CA** to the **Trusted Root
+Certification Authorities** store via Group Policy. That also makes browsers
+trust the control plane:
+
+1. Download the CA from `https://<host>/ca.crt` (or the *Download CA*
+   button on `/admin/health/tls`) onto a domain controller, renamed to
+   `.cer` if your tooling wants it -- same PEM content. **Distribute the CA,
+   not the server certificate** your browser shows: the server certificate
+   is renewed automatically; the CA isn't. When you rotate the CA, import the
+   pending one (downloadable on `/admin/health/tls`) *before* activating it.
 2. Group Policy Management → edit a GPO linked to the relevant OU →
    *Computer Configuration → Policies → Windows Settings → Security Settings →
    Public Key Policies → Trusted Root Certification Authorities* → **Import**.
 3. `gpupdate /force` on a client (or wait for the next refresh).
 
-For a single Windows box without GPO: `Import-Certificate -FilePath cert.cer
--CertStoreLocation Cert:\LocalMachine\Root` in an elevated PowerShell.
+With the CA already trusted that way, the deployment-token command works
+as-is (it still verifies the fingerprint before running anything).
 
-**Linux agent hosts** — copy the cert into the system store:
-`sudo cp cert.pem /usr/local/share/ca-certificates/abyssal-arsenal.crt &&
-sudo update-ca-certificates`.
+**Browsers on admin workstations** show an "unknown issuer" warning until the
+CA is trusted -- import `ca.pem` into the machine's trusted roots (or let the
+GPO above do it). By hand: `Import-Certificate -FilePath ca.cer
+-CertStoreLocation Cert:\LocalMachine\Root` (Windows, elevated), or
+`sudo cp ca.pem /usr/local/share/ca-certificates/abyssal-arsenal-ca.crt &&
+sudo update-ca-certificates` (Debian/Ubuntu).
+
+**Removing trust (test machines).** Windows, elevated:
+`& ([scriptblock]::Create((irm https://<host>/install.ps1))) -RemoveTrust`
+(only the CA), or `-Uninstall` (service, binary, credentials, and the CA).
+Linux: `curl -fsSLk https://<host>/install.sh | sudo sh -s -- --remove-trust`
+or `--uninstall`. (Those two fetch the script without verifying the
+connection; fine for removing things, but if that bothers you, run the same
+switches on a copy you already trust.)
+
+### Troubleshooting TLS
+
+The agent and the install scripts exit with distinct codes, and print an
+`ERROR:` line plus a `HINT:` on stdout:
+
+| Exit | Symptom | Cause / fix |
+|---|---|---|
+| 11 | `invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))` | The control plane is serving a CA certificate as its server certificate -- what installs before the private CA did (`openssl req -x509` makes `CA:TRUE` certs; Windows tolerates them, the agent's TLS stack correctly doesn't). Pull and re-run `./install.sh`: it moves the install onto the managed CA. Then re-trust (next row). |
+| 10 | `UnknownIssuer`, `unable to get local issuer certificate`, PowerShell *"Could not establish trust relationship"* | The machine doesn't trust the control plane's CA -- or trusts an **old** one: after a legacy migration, or a rotation activated while this agent was offline (online agents are updated automatically), it has to trust the new CA. Re-run the command from `/admin/hosts` (it carries the new fingerprint), or re-import `ca.pem` via GPO; remove the old one with `-RemoveTrust`. |
+| 12 | `certificate not valid for name ...`, `RemoteCertificateNameMismatch` | You're reaching the control plane by a name or IP that isn't on the certificate (e.g. its IP, when the cert was made for an FQDN). Use one of the certificate's addresses, or add this one at `/admin/health/tls` (*Create new CA* with both addresses, then *Activate*). |
+| 13 | expired / not yet valid | Check the client's clock; check `/admin/health/tls` (renewal is automatic -- its last error shows under background tasks). |
+| 14 | `CA fingerprint mismatch` | What the host fetched isn't the CA `/admin/hosts` knows about. Stop: either traffic is being intercepted, or the CA was regenerated after you copied the command -- copy a fresh one. |
+| 20 | `enrollment rejected ... (HTTP 401)` | Token invalid, expired (single-use tokens last 15 minutes), already used, or revoked. |
+| 21 | `(HTTP 409)` | A connected host already has that name. |
+| 30 | connection refused / DNS / timeout | The host can't reach the control plane. |
+| 40 | service registration failed | Enrollment worked; re-run the same command (it skips enrollment). |
 
 ## Agent distribution (internal / air-gapped networks)
 

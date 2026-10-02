@@ -132,17 +132,34 @@ pub fn shell_quote(value: &str) -> String {
 /// This exact nesting is what this module's own
 /// `nested_shell_quoting_survives_two_levels_of_shell_parsing` test
 /// actually runs through a real `/bin/sh`, not just eyeballs.
+///
+/// `ca_pem` is the control plane's internal CA (`crate::public_ca`), if it
+/// has one: written next to the staged binary and passed as `--ca-cert`, so
+/// the agent trusts the control plane without any OS-store change. It comes
+/// from the control plane itself over the already-authenticated SSH session,
+/// so there's no fingerprint to check here.
 fn build_install_command(
     control_plane_url: &str,
     enrollment_token: &str,
     hostname: &str,
+    ca_pem: Option<&str>,
 ) -> String {
+    let (write_ca, ca_arg) = match ca_pem {
+        Some(pem) => (
+            format!(
+                "printf '%s' {} > /tmp/abyssal-agent-deploy/ca.pem && ",
+                shell_quote(pem)
+            ),
+            " --ca-cert /tmp/abyssal-agent-deploy/ca.pem",
+        ),
+        None => (String::new(), ""),
+    };
     let install_binary_cmd = format!(
-        "mkdir -p /opt/abyssal-agent && \
+        "{write_ca}mkdir -p /opt/abyssal-agent && \
          cp /tmp/abyssal-agent-deploy/abyssal-agent /opt/abyssal-agent/abyssal-agent && \
          chmod +x /opt/abyssal-agent/abyssal-agent && \
          /opt/abyssal-agent/abyssal-agent install --control-plane-url {} \
-         --enrollment-token {} --name {}",
+         --enrollment-token {} --name {}{ca_arg}",
         shell_quote(control_plane_url),
         shell_quote(enrollment_token),
         shell_quote(hostname)
@@ -720,8 +737,16 @@ async fn deploy_one_host(
         ));
     }
 
-    let install_cmd =
-        build_install_command(control_plane_url, enrollment_token, &resolved_hostname);
+    // The managed CA's full trust bundle (active + pending during a
+    // rotation), else an operator-supplied CA.
+    let ca_pem =
+        crate::internal_tls::trust_bundle().or_else(|| crate::public_ca::load().map(|ca| ca.pem));
+    let install_cmd = build_install_command(
+        control_plane_url,
+        enrollment_token,
+        &resolved_hostname,
+        ca_pem.as_deref(),
+    );
     let mut sudo_stdin = Zeroizing::new(String::with_capacity(
         target.credentials.sudo_password.len() + 1,
     ));
@@ -969,8 +994,9 @@ mod tests {
 
     #[test]
     fn install_command_installs_from_a_permanent_location_not_the_temp_one() {
-        let cmd = build_install_command("https://cp.example.com", "tok", "myhost");
+        let cmd = build_install_command("https://cp.example.com", "tok", "myhost", None);
         assert!(cmd.starts_with("sudo -S sh -c "));
+        assert!(!cmd.contains("--ca-cert"));
         assert!(cmd.contains("mkdir -p /opt/abyssal-agent"));
         assert!(cmd.contains(
             "cp /tmp/abyssal-agent-deploy/abyssal-agent /opt/abyssal-agent/abyssal-agent"
@@ -981,6 +1007,14 @@ mod tests {
         // service now depends on for every future restart and reboot.
         assert!(cmd.ends_with("rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz"));
         assert!(!cmd.contains("rm -rf /opt"));
+    }
+
+    #[test]
+    fn install_command_hands_over_the_internal_ca() {
+        let pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        let cmd = build_install_command("https://10.0.0.5", "tok", "myhost", Some(pem));
+        assert!(cmd.contains("/tmp/abyssal-agent-deploy/ca.pem"));
+        assert!(cmd.contains("--ca-cert /tmp/abyssal-agent-deploy/ca.pem"));
     }
 
     #[tokio::test]

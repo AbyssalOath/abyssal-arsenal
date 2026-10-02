@@ -74,6 +74,43 @@
   </div>
 </div>
 
+{% if tls.managed %}
+<div class="card">
+  <div class="card-head-row">
+    <h2>{% call macros::icon("shield-check") %} Internal TLS certificate</h2>
+    {% if tls.healthy %}
+    <span class="badge badge-success">{% call macros::icon("check") %} Healthy</span>
+    {% else %}
+    <span class="badge badge-warning">{% call macros::icon("warning") %} Attention</span>
+    {% endif %}
+  </div>
+  <p class="text-muted">This control plane's private CA and the server certificate Caddy serves. The server certificate renews itself; rotating the CA or changing addresses is done from the management page.</p>
+  {% for p in tls.problems %}
+  <div class="error-banner" style="margin-bottom:8px;">{{ p }}</div>
+  {% endfor %}
+  <table>
+    <tbody>
+      {% if let Some(c) = tls.ca %}
+      <tr><td>Internal CA</td><td>{{ c.names }}</td><td class="text-muted">expires in {{ c.days_left }} days</td></tr>
+      {% endif %}
+      {% if let Some(c) = tls.server %}
+      <tr><td>Server certificate</td><td>{{ c.names }}</td><td class="text-muted">expires in {{ c.days_left }} days{% if let Some(r) = tls.renewal_due %} &mdash; renewal due ({{ r }}){% endif %}</td></tr>
+      {% endif %}
+      {% if let Some(c) = tls.pending %}
+      <tr><td>Pending CA</td><td>{{ c.names }}</td><td><span class="badge badge-warning">rotation in progress</span></td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  {% if let Some(c) = tls.ca %}
+  <p class="text-muted" style="overflow-wrap:anywhere;">CA fingerprint (SHA-256): <code>{{ c.fingerprint }}</code></p>
+  {% endif %}
+  <div style="display:flex; flex-wrap:wrap; gap:8px;">
+    <a class="btn" href="/admin/health/tls">{% call macros::icon("settings") %} Manage certificate</a>
+    <a class="btn btn-secondary" href="/ca.crt">Download CA (ca.crt)</a>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>{% call macros::icon("shield-check") %} Preflight &amp; DR readiness</h2>
   <p class="text-muted">Configuration worth getting right before it bites -- advisories, not the hard readiness gate above.</p>

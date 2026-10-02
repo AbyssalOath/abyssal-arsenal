@@ -18,6 +18,7 @@ abyssal-modules.workspace = true
 abyssal-workflows.workspace = true
 abyssal-notifications.workspace = true
 abyssal-web.workspace = true
+abyssal-internal-ca.workspace = true
 abyssal-execution.workspace = true
 abyssal-hosts.workspace = true
 

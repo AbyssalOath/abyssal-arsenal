@@ -46,6 +46,88 @@ pub struct ArchiveArgs {
     passphrase_file: Option<PathBuf>,
 }
 
+#[derive(Subcommand)]
+pub enum TlsCommand {
+    /// Shows the internal CA, the server certificate, and anything due.
+    Status,
+    /// What the server does at startup: creates the CA from
+    /// INTERNAL_TLS_ADDRESSES if there's none, renews the server
+    /// certificate if it's due.
+    Ensure,
+    /// Issues a new server certificate from the CA and reloads Caddy.
+    /// Nothing needs re-trusting.
+    Renew,
+    /// Has Caddy re-read the certificate files.
+    Reload,
+}
+
+/// Break-glass internal TLS management. Changes made here are not in the
+/// audit trail (there's no user session); the web UI is the normal path.
+pub async fn run_tls(command: TlsCommand) -> anyhow::Result<()> {
+    use abyssal_web::internal_tls;
+    match command {
+        TlsCommand::Status => {
+            let status = internal_tls::status();
+            if !status.managed {
+                println!("Internal TLS is not in use (Let's Encrypt or your own proxy).");
+                return Ok(());
+            }
+            let now = chrono::Utc::now().timestamp();
+            let show = |label: &str, info: &abyssal_internal_ca::CertInfo, names: String| {
+                println!(
+                    "{label}: {names}\n  {}\n  expires in {} days\n  SHA-256 {}",
+                    info.subject,
+                    info.days_left(now),
+                    info.fingerprint
+                );
+            };
+            let ca_names = |i: &abyssal_internal_ca::CertInfo| {
+                abyssal_internal_ca::format_addresses(&i.permitted_addresses())
+            };
+            if let Some(ca) = &status.ca {
+                show("Internal CA", ca, ca_names(ca));
+            }
+            if let Some(pending) = &status.pending {
+                show("Pending CA", pending, ca_names(pending));
+            }
+            if let Some(server) = &status.server {
+                show("Server certificate", server, server.sans.join(", "));
+            }
+            if let Some(reason) = &status.renewal_due {
+                println!("Renewal due: {reason} (run `tls renew`).");
+            }
+            for problem in &status.problems {
+                println!("Attention: {problem}");
+            }
+            Ok(())
+        }
+        TlsCommand::Ensure => {
+            match internal_tls::ensure_at_startup().await? {
+                Some(message) => println!("Internal TLS: {message}."),
+                None => println!("Internal TLS: nothing to do."),
+            }
+            Ok(())
+        }
+        TlsCommand::Renew => {
+            let info = internal_tls::renew_server_cert(false).await?;
+            println!(
+                "Issued a new server certificate (SHA-256 {}).",
+                info.fingerprint
+            );
+            match internal_tls::reload_caddy().await {
+                Ok(()) => println!("Caddy reloaded it."),
+                Err(e) => println!("Caddy didn't reload ({e:#})."),
+            }
+            Ok(())
+        }
+        TlsCommand::Reload => {
+            internal_tls::reload_caddy().await?;
+            println!("Caddy reloaded the certificate files.");
+            Ok(())
+        }
+    }
+}
+
 pub async fn run(command: ReliquaryCommand) -> anyhow::Result<()> {
     match command {
         ReliquaryCommand::Backup { action } => match action {

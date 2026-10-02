@@ -94,6 +94,40 @@ else
         echo "HTTP_PORT=${http_port}" >> .env
 fi
 
+# --- Internal TLS helpers ---
+# The "Caddy, no public domain" path: the app creates a private CA and the
+# server certificate Caddy serves (crates/web/src/internal_tls.rs) the first
+# time it starts, from INTERNAL_TLS_ADDRESSES, and renews/rotates them from
+# then on -- see /admin/health/tls. This script only records the address(es)
+# and writes the Caddyfile.
+write_internal_caddyfile() {
+        cat > Caddyfile << 'EOF'
+# Written by install.sh for the internal (no public domain) setup.
+{
+    # Admin API on a Unix socket shared only with the app container, which
+    # uses it to make Caddy load a renewed certificate. Never on a network.
+    admin unix//run/caddy-admin/admin.sock|0666
+}
+
+# Plain HTTP (port 80) redirects to HTTPS so visiting http://<host> lands on
+# the working TLS site instead of a dead port. {host} keeps whatever
+# IP/hostname the browser used.
+:80 {
+    redir https://{host}{uri}
+}
+
+# Server certificate issued by the app's private CA, served for every
+# connection on :443 -- no SNI/IP guesswork, which is what Caddy's automatic
+# 'tls internal' can't do for a bare IP. Clients trust the CA (served at
+# /ca.crt), never this certificate. Managed at /admin/health/tls.
+:443 {
+    tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+    reverse_proxy app:8080
+}
+EOF
+}
+internal_tls_new=0
+
 # --- Reverse proxy setup ---
 # HTTPS is good practice generally, and matters specifically for the
 # /ws/agent connection managed Linux hosts use (wss:// vs ws://) -- but
@@ -140,59 +174,30 @@ EOF
                         # isn't an option and Caddy's internal CA can't reliably
                         # serve a bare IP over TLS (browsers send no SNI for an
                         # IP, so Caddy has no name to pick a cert for and aborts
-                        # the handshake). Instead, generate an explicit
-                        # self-signed cert that carries the exact address the
-                        # browser will use, and hand it to Caddy directly -- that
-                        # serves for every connection on :443 regardless of SNI.
+                        # the handshake). Instead the app runs a private CA and
+                        # issues a server certificate for the exact address(es)
+                        # the browser will use; Caddy serves that for every
+                        # connection on :443 regardless of SNI.
                         default_access_host="$(hostname -I 2>/dev/null | awk '{print $1}')"
                         echo ""
-                        echo "No public domain, so this will use a self-signed certificate. Enter the"
-                        echo "IP address or internal hostname (FQDN) you'll reach this server at in the"
-                        echo "browser -- it's put on the certificate so the URL matches."
-                        read -rp "IP or internal hostname [default: ${default_access_host:-<none detected>}]: " access_host
-                        access_host="${access_host:-$default_access_host}"
-                        if [ -z "$access_host" ]; then
-                                echo "No address given and none could be detected; defaulting the cert to 'localhost'."
-                                access_host="localhost"
+                        echo "No public domain, so this will use a private certificate authority (CA)."
+                        echo "Enter the IP address and/or internal hostname(s) you'll reach this server"
+                        echo "at, comma-separated (e.g. '10.0.0.5, arsenal.corp.local'). They go onto the"
+                        echo "certificate so the URL matches; you can change them later from the web UI"
+                        echo "(/admin/health/tls)."
+                        read -rp "Address(es) [default: ${default_access_host:-<none detected>}]: " access_hosts
+                        access_hosts="${access_hosts:-$default_access_host}"
+                        if [ -z "$access_hosts" ]; then
+                                echo "No address given and none could be detected; defaulting to 'localhost'."
+                                access_hosts="localhost"
                         fi
+                        access_host="$(printf '%s' "$access_hosts" | tr ',' ' ' | awk '{print $1}')"
 
-                        # IP vs DNS SAN so the cert validates for whichever the
-                        # browser uses.
-                        if printf '%s' "$access_host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-                                cert_san="IP:${access_host}"
-                        else
-                                cert_san="DNS:${access_host}"
-                        fi
-                        mkdir -p caddy_certs
-                        if openssl req -x509 -newkey rsa:2048 -nodes \
-                                -keyout caddy_certs/key.pem -out caddy_certs/cert.pem \
-                                -days 3650 -subj "/CN=${access_host}" \
-                                -addext "subjectAltName=${cert_san}" >/dev/null 2>&1; then
-                                echo "Self-signed certificate generated for ${access_host} (valid 10 years)."
-                        else
-                                echo "WARNING: could not generate a certificate (is 'openssl' installed and >= 1.1.1?)."
-                                echo "Caddy will fall back to its internal CA, which may not serve a bare IP."
-                        fi
-
-                        cat > Caddyfile << EOF
-# Plain HTTP (port 80) redirects to HTTPS so visiting http://<host> lands on
-# the working TLS site instead of a dead port. {host} keeps whatever
-# IP/hostname the browser used.
-:80 {
-    redir https://{host}{uri}
-}
-
-# Explicit self-signed cert (generated by install.sh with the access address on
-# it) served for every connection on :443 -- no SNI/IP guesswork, which is what
-# Caddy's automatic 'tls internal' can't do for a bare IP.
-:443 {
-    tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
-    reverse_proxy app:8080
-}
-EOF
+                        write_internal_caddyfile
+                        echo "INTERNAL_TLS_ADDRESSES=${access_hosts}" >> .env
+                        internal_tls_new=1
 
                         echo "Caddyfile written for internal access at https://${access_host}"
-                        echo "Your browser will show a one-time 'unknown issuer' warning -- accept it."
                         public_base_url="https://${access_host}"
                         caddy_public_url="https://${access_host}"
                 fi
@@ -219,6 +224,36 @@ EOF
                 echo "and make sure it terminates HTTPS on the browser-facing side (and"
                 echo "passes WebSocket upgrades through for /ws/agent -- most proxies do"
                 echo "this by default for HTTP/1.1 upstreams)."
+        fi
+fi
+
+# --- Internal TLS on existing installs ---
+# Installs from before the app managed internal TLS have either the original
+# lone self-signed certificate (CA:TRUE -- agents reject it with
+# CaUsedAsEndEntity) or a Caddyfile without the admin socket. Move them onto
+# the managed setup: the app creates a private CA on its next start.
+if [ "$internal_tls_new" = "0" ] && grep -qs '/etc/caddy/certs/cert.pem' Caddyfile; then
+        if ! grep -q "^INTERNAL_TLS_ADDRESSES=" .env; then
+                access_host="$(grep -E '^PUBLIC_URL=' .env | cut -d '=' -f2- | sed -E 's#^https?://##; s#[:/].*$##')"
+                if [ -z "$access_host" ]; then
+                        echo "ERROR: this is an internal-TLS install but .env has no PUBLIC_URL to take its"
+                        echo "address from. Add INTERNAL_TLS_ADDRESSES=<ip-or-hostname> to .env and re-run."
+                        exit 1
+                fi
+                echo ""
+                echo "Upgrading internal TLS to the managed private CA (address: ${access_host})."
+                echo "The original self-signed certificate is replaced: agents reject it"
+                echo "(\"CaUsedAsEndEntity\"). Machines that trusted it (GPO, Import-Certificate,"
+                echo "update-ca-certificates, browsers) must trust the new CA instead -- its"
+                echo "fingerprint is printed below and shown at /admin/health/tls, and the agent"
+                echo "commands on /admin/hosts trust it automatically. The old caddy_certs/"
+                echo "directory is no longer used and can be deleted."
+                echo "INTERNAL_TLS_ADDRESSES=${access_host}" >> .env
+                internal_tls_new=1
+        fi
+        if ! grep -qs 'admin unix//run/caddy-admin/admin.sock' Caddyfile; then
+                write_internal_caddyfile
+                echo "Caddyfile updated so the app can reload renewed certificates in Caddy."
         fi
 fi
 
@@ -291,13 +326,13 @@ EOF
 fi
 
 # --- Build and start ---
-# Ensure the Caddy cert mount source exists even on the Let's Encrypt / no-proxy
-# paths (it's only populated on the internal self-signed path), so the bind
-# mount never fails on a Docker setup that won't auto-create it.
-mkdir -p caddy_certs
 echo ""
 echo "Building and starting containers..."
 docker compose up -d --build
+# Caddy reads its Caddyfile only at startup; pick up a rewritten one.
+if grep -qs 'admin unix//run/caddy-admin/admin.sock' Caddyfile; then
+        docker compose restart caddy >/dev/null 2>&1 || true
+fi
 
 echo ""
 echo "=== Done ==="
@@ -310,8 +345,29 @@ if grep -q "^COMPOSE_PROFILES=caddy" .env 2>/dev/null; then
         echo "app port (${http_port:-8080}) to the URL. Behind Caddy the app is reached"
         echo "only through Caddy's HTTPS; it is intentionally not exposed over plain"
         echo "HTTP on the network (signing in over http:// would loop the login,"
-        echo "because the session cookie is HTTPS-only). With a bare IP you'll get a"
-        echo "one-time self-signed-certificate warning -- that's expected; accept it."
+        echo "because the session cookie is HTTPS-only)."
+        if grep -q "^INTERNAL_TLS_ADDRESSES=" .env 2>/dev/null; then
+                echo ""
+                # The app creates the CA on first start, before it's healthy.
+                tls_status=""
+                for _ in $(seq 1 30); do
+                        tls_status="$(docker compose exec -T app /app/abyssal-arsenal tls status 2>/dev/null || true)"
+                        case "$tls_status" in *SHA-256*) break ;; esac
+                        tls_status=""
+                        sleep 2
+                done
+                if [ -n "$tls_status" ]; then
+                        printf '%s\n' "$tls_status"
+                else
+                        echo "(The internal CA's details will be at /admin/health/tls once the app is up.)"
+                fi
+                echo ""
+                echo "Agent install commands on /admin/hosts verify the CA fingerprint"
+                echo "automatically -- no certificate needs copying to the hosts. Renewal is"
+                echo "automatic; rotation and address changes are done at /admin/health/tls."
+                echo "Browsers warn ('unknown issuer') until the CA is trusted: download it from"
+                echo "/ca.crt and import it into the trusted roots, or push it by GPO."
+        fi
 else
         echo "Abyssal Arsenal is starting up. Give it a few seconds, then visit:"
         echo "  ${public_base_url:-http://localhost:${http_port:-8080}}"
@@ -322,10 +378,8 @@ echo "Visit /setup to create the first administrator account -- there is no"
 echo "default password to change, the account simply doesn't exist until you"
 echo "create it there."
 echo ""
-echo "To manage a Linux host, sign in, go to /admin/hosts, generate an"
-echo "enrollment token, and run the abyssal-agent binary on that host with it"
-echo "(download it from the project's releases, or build it with"
-echo "\`cargo build --release -p abyssal-agent\`). Arsenals operate on"
-echo "enrolled hosts, not on this container."
+echo "To manage a Linux or Windows host, sign in, go to /admin/hosts, generate"
+echo "an enrollment token, and run the command shown there on that host."
+echo "Arsenals operate on enrolled hosts, not on this container."
 echo ""
 echo "Installation complete."

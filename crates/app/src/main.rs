@@ -42,6 +42,13 @@ enum Command {
         #[command(subcommand)]
         action: cli::ReliquaryCommand,
     },
+    /// Internal TLS (private CA) -- the same operations as
+    /// /admin/health/tls, for when the web UI itself is unreachable:
+    /// `docker compose exec app /app/abyssal-arsenal tls status`.
+    Tls {
+        #[command(subcommand)]
+        action: cli::TlsCommand,
+    },
 }
 
 #[tokio::main]
@@ -51,8 +58,10 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    if let Some(Command::Reliquary { action }) = Cli::parse().command {
-        return cli::run(action).await;
+    match Cli::parse().command {
+        Some(Command::Reliquary { action }) => return cli::run(action).await,
+        Some(Command::Tls { action }) => return cli::run_tls(action).await,
+        None => {}
     }
 
     let mut config = Config::from_env()?;
@@ -123,6 +132,16 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Internal TLS (no public domain): create the CA / renew the server
+    // certificate before serving, so Caddy -- which waits for this app to be
+    // healthy -- always has a certificate to load. Failing here is fatal on
+    // purpose: an internal install without a certificate serves nothing.
+    match abyssal_web::internal_tls::ensure_at_startup().await {
+        Ok(Some(message)) => tracing::info!("internal TLS: {message}"),
+        Ok(None) => {}
+        Err(e) => return Err(e.context("internal TLS setup failed")),
+    }
+
     let state = AppState {
         pool,
         modules: Arc::new(registry),
@@ -171,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
     );
     abyssal_web::spawn_update_check_sweep(state.clone());
     abyssal_web::spawn_self_monitor_sweep(state.clone());
+    abyssal_web::spawn_internal_tls_sweep(state.clone());
     abyssal_web::spawn_panopticon_sweep(state.pool.clone(), state.task_health.clone());
     abyssal_web::spawn_panopticon_snmp_sweep(
         state.pool.clone(),

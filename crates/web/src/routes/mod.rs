@@ -17,6 +17,7 @@ pub mod host_context;
 pub mod hosts;
 pub mod incarnation;
 pub mod inquest;
+pub mod internal_tls;
 pub mod login;
 pub mod modules;
 pub mod mortiscope;

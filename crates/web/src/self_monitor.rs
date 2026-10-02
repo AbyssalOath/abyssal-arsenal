@@ -1,7 +1,7 @@
 //! The control plane watching itself. An opt-in background sweep that raises
 //! notifications when the server's own health degrades: sustained CPU / memory
-//! / disk pressure, a background task that has stalled, or backups gone
-//! overdue. Fires once on the transition into a bad state and clears once on
+//! / disk pressure, a background task that has stalled, backups gone
+//! overdue, or its internal TLS certificate/CA nearing expiry. Fires once on the transition into a bad state and clears once on
 //! recovery (firing state persisted in `control_plane_alert_state`), so a
 //! standing problem doesn't spam every tick.
 //!
@@ -118,7 +118,56 @@ pub async fn evaluate(state: &AppState) -> anyhow::Result<()> {
 
     evaluate_tasks(state, &recipients).await?;
     evaluate_backup_overdue(state, &recipients).await?;
+    evaluate_internal_tls(state, &recipients).await?;
     Ok(())
+}
+
+/// The server certificate auto-renews 30 days out, so one inside 14 days
+/// means renewal is failing; the CA can't renew itself at all, so warn a
+/// quarter ahead -- rotating it means every machine re-trusts.
+async fn evaluate_internal_tls(state: &AppState, recipients: &[String]) -> anyhow::Result<()> {
+    if !crate::internal_tls::is_managed() {
+        return Ok(());
+    }
+    let status = crate::internal_tls::status();
+    let now = Utc::now().timestamp();
+    let mut issues = Vec::new();
+    match &status.server {
+        Some(server) if server.days_left(now) < 14 => issues.push(format!(
+            "the server certificate expires in {} days (automatic renewal is failing)",
+            server.days_left(now).max(0)
+        )),
+        None => issues.push("there is no server certificate".to_string()),
+        _ => {}
+    }
+    if let Some(ca) = &status.ca
+        && ca.days_left(now) < 90
+    {
+        issues.push(format!(
+            "the internal CA expires in {} days -- rotate it from /admin/health/tls",
+            ca.days_left(now).max(0)
+        ));
+    }
+    let body = issues.join("; ");
+    reconcile(
+        state,
+        "internal_tls",
+        !issues.is_empty(),
+        || NotificationMessage {
+            subject: "[Abyssal Arsenal] Internal TLS certificate needs attention".to_string(),
+            body: format!("{body}. See /admin/health/tls."),
+            severity: Severity::Warning,
+            recipients: recipients.to_vec(),
+        },
+        || NotificationMessage {
+            subject: "[Abyssal Arsenal] Internal TLS certificate healthy again".to_string(),
+            body: "The internal TLS certificate and CA are within their validity margins."
+                .to_string(),
+            severity: Severity::Info,
+            recipients: recipients.to_vec(),
+        },
+    )
+    .await
 }
 
 /// Fires/clears a sustained-usage alert for one resource metric.

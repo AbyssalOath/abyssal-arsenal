@@ -213,12 +213,17 @@ impl PlatformAsset {
 }
 
 async fn download(url: &str) -> anyhow::Result<Vec<u8>> {
-    let client = reqwest::Client::builder()
-        .timeout(DOWNLOAD_TIMEOUT)
-        // GitHub's release redirect chain is friendlier with a UA set;
-        // reqwest follows the redirects to the object store by default.
-        .user_agent(concat!("abyssal-agent/", env!("CARGO_PKG_VERSION")))
-        .build()
+    // OS roots only: this goes to GitHub, and the control plane's own CA
+    // (`--ca-cert`, which the control plane can update) must never be able
+    // to vouch for where the agent's next binary comes from.
+    let client = crate::tls::Trust::os_only()?
+        .http_client(
+            reqwest::Client::builder()
+                .timeout(DOWNLOAD_TIMEOUT)
+                // GitHub's release redirect chain is friendlier with a UA set;
+                // reqwest follows the redirects to the object store by default.
+                .user_agent(concat!("abyssal-agent/", env!("CARGO_PKG_VERSION"))),
+        )
         .context("failed to build the download client")?;
 
     let response = client

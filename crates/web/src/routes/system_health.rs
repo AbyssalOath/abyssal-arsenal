@@ -80,8 +80,11 @@ pub async fn show(
 
     let preflight = build_preflight(&state).await;
 
+    let tls = crate::routes::internal_tls::summary(&ctx.user.timezone);
+
     let tpl = SystemHealthTemplate {
         base,
+        tls,
         ready,
         components,
         tasks,

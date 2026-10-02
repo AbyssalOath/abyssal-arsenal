@@ -17,6 +17,7 @@ abyssal-notifications.workspace = true
 abyssal-execution.workspace = true
 abyssal-hosts.workspace = true
 abyssal-agent-protocol.workspace = true
+abyssal-internal-ca.workspace = true
 tokio-util.workspace = true
 axum.workspace = true
 axum-extra.workspace = true

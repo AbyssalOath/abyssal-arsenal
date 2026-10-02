@@ -19,6 +19,15 @@
   <div class="info-banner" style="margin-top:14px;">
     <strong>Token expires in 15 minutes, and enrolls one host.</strong>
     Copy the block for the target host's platform.
+    {% if let Some(fp) = e.ca_fingerprint %}
+    <p style="color:var(--text-muted); margin:8px 0 0;">
+      This control plane uses an internal CA. Each command fetches it from
+      <code>/ca.crt</code> and refuses to continue unless its SHA-256
+      fingerprint is <code style="overflow-wrap:anywhere;">{{ fp }}</code>
+      (the value <code>install.sh</code> printed), so no certificate needs
+      copying to the host beforehand.
+    </p>
+    {% endif %}
 
     <h4 style="margin:14px 0 4px;">{% call macros::icon("host") %} Linux</h4>
     <p style="color:var(--text-muted); margin:0 0 4px;">
@@ -39,6 +48,16 @@
     <details style="margin:6px 0 0;">
       <summary style="cursor:pointer; color:var(--text-muted);">Prefer to download and run it by hand?</summary>
       <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ e.windows_manual }}</pre>
+    </details>
+    <details style="margin:6px 0 0;">
+      <summary style="cursor:pointer; color:var(--text-muted);">Running it from PDQ, Intune, or another RMM tool as SYSTEM?</summary>
+      <p style="color:var(--text-muted); margin:6px 0 4px;">
+        Unattended script: no dependence on the working directory, the token
+        kept off the command line, errors on stdout, and a non-zero exit code
+        on failure (codes are listed at the top of <code>/install.ps1</code>).
+        For many machines, use a deployment token below instead.
+      </p>
+      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.windows_rmm }}</pre>
     </details>
 
     <p style="color:var(--text-muted); margin:12px 0 0;">
@@ -105,11 +124,28 @@
     <strong>{{ d.os_label }} deployment command</strong> &mdash; expires {{ d.expires }}.
     Save this now: the token is shown only once (revoke and recreate if you lose it).
     <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ d.command }}</pre>
+    {% if let Some(cmd) = d.interactive_command %}
+    <details style="margin:6px 0 0;">
+      <summary style="cursor:pointer; color:var(--text-muted);">Try it by hand first (elevated PowerShell)</summary>
+      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ cmd }}</pre>
+    </details>
+    {% endif %}
+    {% if let Some(fp) = d.ca_fingerprint %}
     <p style="color:var(--text-muted); margin:8px 0 0;">
-      If this control plane uses a self-signed certificate, the target machines
-      must trust it first (see the README's "Reverse proxy / TLS" section), or
-      enrollment fails with a TLS error.
+      This control plane uses an internal CA. The command fetches it and
+      refuses to continue unless its SHA-256 fingerprint is
+      <code style="overflow-wrap:anywhere;">{{ fp }}</code>, so target machines
+      need no certificate pushed beforehand. (Already distributing the CA by
+      GPO? That works too.)
     </p>
+    {% else %}
+    <p style="color:var(--text-muted); margin:8px 0 0;">
+      Target machines must trust this control plane's certificate. A
+      publicly-trusted one (Let's Encrypt) already is; for a certificate from
+      your own internal CA, distribute that CA by GPO first (see the README's
+      "Reverse proxy / TLS" section).
+    </p>
+    {% endif %}
   </div>
   {% endif %}
 

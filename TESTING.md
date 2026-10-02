@@ -75,6 +75,96 @@ cargo clippy --workspace --all-targets -- -D warnings
   arithmetic, and scan/deploy progress-percentage math (never divides by
   zero, never overshoots 100%).
 
+- **Internal TLS**: `crates/internal-ca` checks the CA is `CA:TRUE,
+  pathlen:0` and name-constrained to exactly its addresses (refusing to issue
+  outside them), the server certificate is `CA:FALSE` with the right SANs
+  for IPs, FQDNs (including one over the 64-character CN limit) and both,
+  and every CA subject is unique -- and cross-checks it all with `openssl
+  verify` / `x509 -text` (needs `openssl`; mandatory under `CI`).
+  `crates/web/src/internal_tls.rs` runs the whole lifecycle against a temp
+  directory: bootstrap from `INTERNAL_TLS_ADDRESSES`, idempotent restart,
+  manual renewal, a foreign server cert detected as due, rotation to new
+  addresses (old+new trust bundle), activation (old CA archived, key
+  gone), cancellation, and key file modes. `crates/agent/src/tls_tests.rs`
+  serves those certificates from a real TLS server and connects with the
+  agent's own `tls::Trust` -- the exact rustls configuration enrollment and
+  the WebSocket use -- trusting only the CA: IP, FQDN, both, and a rotation
+  bundle against servers from either CA succeed; a name mismatch, a
+  different CA, and the old installer's `CA:TRUE` cert
+  (`CaUsedAsEndEntity`) each fail with the right classification. It also
+  covers pushed CA bundles (`UpdateTrustedCa`): unmanaged agents untouched,
+  atomic replacement, idempotence, a bundle with a key refused.
+- **Bootstrap scripts and generated commands**: the served `install.sh`
+  and every generated Linux command pass `sh -n`; the served `install.ps1`
+  and every generated Windows command go through the real PowerShell parser
+  and PSScriptAnalyzer (Error + Warning) when `pwsh` is available
+  (mandatory under `CI`). Unit tests pin the commands' safety properties:
+  the CA fingerprint is checked before anything is trusted, Windows commands
+  abort as one block, the RMM script keeps the token off the command line,
+  tokens starting with `-` are quoted.
+
+## Manual test plan: internal-CA deployment
+
+Run after changing `install.sh`, `crates/internal-ca`, `internal_tls.rs`,
+the bootstrap scripts, or the agent's TLS/enrollment code.
+
+1. **Control plane.** On a fresh Linux VM: `./install.sh`, choose Caddy,
+   leave the domain blank, accept the detected IP. Confirm it ends by
+   printing the internal CA and server certificate with their SHA-256
+   fingerprints; that `https://<ip>/ca.crt` returns the CA (and nothing
+   containing `PRIVATE KEY`); that `docker compose exec caddy ls
+   /etc/caddy/certs` shows only `cert.pem`/`key.pem`; and that the
+   `abyssal_tls_ca` volume isn't mounted in the Caddy container (`docker
+   inspect abyssal-arsenal-caddy`).
+2. **Web management.** `/admin/health` shows the *Internal TLS certificate*
+   card. On `/admin/health/tls`: *Renew now* changes the server certificate
+   fingerprint and the browser (after a refresh) shows the new one without
+   any container restart; *Reload Caddy* succeeds; both appear in
+   `/admin/audit`. The *Internal TLS sweep* row is listed under background
+   tasks.
+3. **Windows 11, clean VM.** Generate a token at `/admin/hosts`; the banner
+   shows the same CA fingerprint. In an **elevated** PowerShell 5.1 window,
+   paste the Windows command. Expect "CA certificate verified", the agent's
+   "Trusting control-plane CA ... fingerprint verified", "Enrolled as host
+   ...", and "Done". `sc qc abyssal-agent` shows `--ca-cert
+   C:\ProgramData\abyssal-agent\ca.pem`; the host is **Online**; on
+   `/admin/health/tls` its row shows *Managed* and trusts the current CA.
+   Restart the VM; it comes back online. Repeat in PowerShell 7.
+4. **Rotation / address change.** On `/admin/health/tls`, *Create new CA*
+   with `<ip>, <fqdn>`. The Windows host's row shows it trusts the pending
+   CA, and `C:\ProgramData\abyssal-agent\ca.pem` now holds two
+   certificates. Download the pending CA. Type `activate` and activate:
+   the host stays (or comes back) online without anything being run on it,
+   its `ca.pem` drops to one certificate, `https://<fqdn>` works once the
+   browser trusts the new CA, and `/admin/hosts` commands carry the new
+   fingerprint. Repeat with the agent stopped during the pending phase: the
+   page lists it as not ready, and after activation it can't reconnect until
+   the install command is re-run on it.
+5. **Windows trust removal / negative checks.** `-RemoveTrust` removes the
+   CA from `certlm.msc` → Trusted Root and the host stays online after
+   `Restart-Service abyssal-agent`. `-Uninstall` removes the service,
+   `C:\Program Files\AbyssalAgent` and `C:\ProgramData\abyssal-agent`.
+   Editing one hex digit of `$fp` stops the command with "CA fingerprint
+   mismatch" before anything is imported; a consumed token gives exit code
+   20 with the token hint.
+6. **RMM.** Create a Windows deployment token and run the generated script
+   from PDQ (or `psexec -s powershell -File script.ps1`) as SYSTEM: exit
+   code 0 and the host enrolls; with a revoked token, the output shows the
+   `ERROR:` line and exit code 20, never the token.
+7. **Linux agent host.** On a clean Ubuntu VM, run the Linux command: the
+   host enrolls, `systemctl cat abyssal-agent` shows `--ca-cert
+   /etc/abyssal-agent/ca.pem`, and the OS trust store is untouched. It
+   follows a rotation like step 4. `--uninstall` removes everything.
+8. **Migration.** On a control plane installed by an older `install.sh`
+   (a lone `CA:TRUE` `caddy_certs/cert.pem`, no `INTERNAL_TLS_ADDRESSES`),
+   pull and re-run `./install.sh`: it explains the switch, the app creates
+   a new CA on restart, Caddy serves a certificate from it, and a fresh
+   command from `/admin/hosts` enrolls an agent that previously failed with
+   `CaUsedAsEndEntity`.
+9. **Break-glass.** `docker compose exec app /app/abyssal-arsenal tls
+   status` shows the same fingerprints as the web page; `tls renew` renews
+   and reloads Caddy.
+
 ## What isn't covered yet
 
 - **Integration tests against a real MariaDB.** The `repo::` query

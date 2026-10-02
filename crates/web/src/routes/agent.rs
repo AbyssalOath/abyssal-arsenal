@@ -170,6 +170,16 @@ async fn handle_socket(
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(16);
     state.hosts.register(host.id, tx, protocol_version);
+    // Keep the agent's trusted control-plane CA current (a rotation may have
+    // started or finished while it was away). Off the connection's own task:
+    // the response arrives through the read loop below.
+    if crate::internal_tls::is_managed() {
+        let hosts = state.hosts.clone();
+        let host_id = host.id;
+        tokio::spawn(async move {
+            crate::internal_tls::push_to_host(&hosts, host_id).await;
+        });
+    }
     if state.hosts.agent_protocol_mismatch(host.id) {
         tracing::warn!(
             host_id = %host.id,

@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 35;
+pub const PROTOCOL_VERSION: u32 = 36;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1345,6 +1345,21 @@ pub enum AgentOperation {
     SelfUpdate {
         version: String,
     },
+    /// Replaces the CA bundle the agent trusts for the control plane (the
+    /// file it was installed with via `--ca-cert`) -- how the control plane
+    /// rotates or re-addresses its internal CA without stranding agents: it
+    /// pushes `active + new` before switching Caddy over, then `new` alone.
+    /// Only certificates, never a key (`is_valid_ca_bundle`). Arrives over
+    /// the already-authenticated, already-TLS-verified control channel, and
+    /// only affects connections *to the control plane*: self-update
+    /// downloads from GitHub never use this CA. An agent installed without
+    /// `--ca-cert` (trust from the OS store, e.g. via GPO) reports itself
+    /// unmanaged and changes nothing. Write, not Destructive: it can't
+    /// lock the agent out on its own, since the bundle always includes the
+    /// CA currently serving the control plane.
+    UpdateTrustedCa {
+        bundle_pem: String,
+    },
 }
 
 /// Which Sepulchre-owned config drop-in/include an operation targets --
@@ -1821,6 +1836,9 @@ impl AgentOperation {
             }
             AgentOperation::SelfUpdate { version } => {
                 format!("Updated agent to v{version}")
+            }
+            AgentOperation::UpdateTrustedCa { .. } => {
+                "Updated the agent's trusted control-plane CA".to_string()
             }
             other => humanize_variant_name(&variant_debug_name(other)),
         }
@@ -2484,6 +2502,13 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("SelfUpdate")
                 .field("version", version)
                 .finish(),
+            AgentOperation::UpdateTrustedCa { bundle_pem } => f
+                .debug_struct("UpdateTrustedCa")
+                .field(
+                    "certificates",
+                    &bundle_pem.matches("BEGIN CERTIFICATE").count(),
+                )
+                .finish(),
         }
     }
 }
@@ -2519,6 +2544,25 @@ pub enum AgentMessage {
         outcome: CommandOutcome,
     },
     Pong,
+}
+
+/// Upper bound on an `UpdateTrustedCa` bundle -- a handful of CA
+/// certificates, nowhere near this.
+pub const MAX_CA_BUNDLE_BYTES: usize = 64 * 1024;
+
+/// An `UpdateTrustedCa` bundle: 1-4 PEM `CERTIFICATE` blocks and nothing
+/// else (in particular, never a private key). Checked by the control plane
+/// before dispatch and again by the agent, which also parses each one.
+pub fn is_valid_ca_bundle(pem: &str) -> bool {
+    let count = pem.matches("-----BEGIN CERTIFICATE-----").count();
+    pem.len() <= MAX_CA_BUNDLE_BYTES
+        && (1..=4).contains(&count)
+        && count == pem.matches("-----END CERTIFICATE-----").count()
+        && !pem.contains("PRIVATE KEY")
+        && pem
+            .lines()
+            .filter(|l| l.starts_with("-----"))
+            .all(|l| l == "-----BEGIN CERTIFICATE-----" || l == "-----END CERTIFICATE-----")
 }
 
 /// Shared by both the control plane (for a useful validation error before
@@ -3090,6 +3134,24 @@ pub fn is_valid_tightened_permission_mode(mode: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ca_bundles_are_certificates_only() {
+        let cert = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        assert!(super::is_valid_ca_bundle(cert));
+        assert!(super::is_valid_ca_bundle(&cert.repeat(2)));
+        assert!(!super::is_valid_ca_bundle(""));
+        assert!(!super::is_valid_ca_bundle(&cert.repeat(5)));
+        assert!(!super::is_valid_ca_bundle(&format!(
+            "{cert}-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"
+        )));
+        assert!(!super::is_valid_ca_bundle(&format!(
+            "{cert}-----BEGIN EC PARAMETERS-----\nAAAA\n-----END EC PARAMETERS-----\n"
+        )));
+        assert!(!super::is_valid_ca_bundle(
+            "-----BEGIN CERTIFICATE-----\nAAAA\n"
+        ));
+    }
+
     use super::*;
 
     #[test]

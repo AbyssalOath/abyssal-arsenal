@@ -20,6 +20,29 @@ struct EnrollResponse {
     credential: String,
 }
 
+/// The control plane answered the enrollment request with an error status.
+/// Kept typed (rather than folded into a string) so `tls::classify` can map
+/// 401 / 409 to their own exit codes, and so the server's explanation -- which
+/// `error_for_status` would discard -- reaches the operator.
+#[derive(Debug)]
+pub struct EnrollRejected {
+    pub status: u16,
+    pub body: String,
+}
+
+impl std::fmt::Display for EnrollRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "enrollment rejected by control plane (HTTP {}): {}",
+            self.status,
+            self.body.trim()
+        )
+    }
+}
+
+impl std::error::Error for EnrollRejected {}
+
 /// Loads persisted credentials if they exist; otherwise enrolls with the
 /// control plane using a one-time token and persists the result. Idempotent
 /// across restarts — once credentials exist, `enrollment_token` is ignored.
@@ -28,6 +51,7 @@ pub async fn load_or_enroll(
     enrollment_token: Option<String>,
     name: Option<String>,
     credentials_file: &Path,
+    trust: &crate::tls::Trust,
 ) -> anyhow::Result<Credentials> {
     if let Ok(existing) = tokio::fs::read_to_string(credentials_file).await {
         tracing::info!(path = %credentials_file.display(), "using existing credentials");
@@ -59,7 +83,7 @@ pub async fn load_or_enroll(
 
     let host_name = name.unwrap_or_else(default_hostname);
 
-    let client = reqwest::Client::new();
+    let client = trust.http_client(reqwest::Client::builder())?;
     let url = format!(
         "{}/api/hosts/enroll",
         control_plane_url.trim_end_matches('/')
@@ -71,11 +95,17 @@ pub async fn load_or_enroll(
             name: &host_name,
         })
         .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!("enrollment rejected by control plane: {e}"))?
-        .json::<EnrollResponse>()
         .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(EnrollRejected {
+            status: status.as_u16(),
+            body,
+        }
+        .into());
+    }
+    let response = response.json::<EnrollResponse>().await?;
 
     let credentials = Credentials {
         host_id: response.host_id,

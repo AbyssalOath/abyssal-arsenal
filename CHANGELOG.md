@@ -10,6 +10,108 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+> **Action needed for internal (self-signed) installs.** Pull and re-run
+> `./install.sh` once: it moves the install onto the new web-managed private
+> CA (the app creates it on its next start) and updates the Caddyfile.
+> Every machine that trusted the old self-signed certificate must then trust
+> the **new CA** -- the agent commands on `/admin/hosts` do that
+> automatically; for GPO/browsers download it from `/ca.crt`. Existing
+> agents need re-installing with the new command (they couldn't connect to
+> the old certificate anyway). Agents report protocol version 36, so older
+> builds show "Agent out of date". Let's Encrypt and own-proxy installs are
+> unaffected.
+
+### Fixed
+
+- **Agents couldn't enroll against an internal (self-signed) control plane:
+  `invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`.** Root
+  cause: `install.sh` generated its certificate with `openssl req -x509`,
+  which marks it `basicConstraints: CA:TRUE`, and Caddy served that CA
+  certificate as the TLS server certificate. Windows SChannel (browsers,
+  `Invoke-WebRequest`) tolerates that, so importing the cert looked like it
+  worked; rustls/webpki -- the agent's TLS stack -- correctly refuses a CA
+  certificate in the end-entity position. The control plane now runs a small
+  private CA (`CA:TRUE, pathlen:0`, name-constrained to its own addresses,
+  10 years, ECDSA P-256) and serves a certificate issued by it (`CA:FALSE`,
+  `serverAuth`, SANs = the addresses, 825 days) -- see "Web-managed internal
+  TLS" below.
+- **The Windows manual-install command didn't run** (`.\$a\abyssal-agent.exe`
+  is not something PowerShell expands as a command path: "term is not
+  recognized"). It now calls the exe with `&`, and finds it whether the zip
+  extracts into a folder or flat.
+- **Installer failures were invisible under RMM tools** (PDQ, Intune, SYSTEM
+  account): truncated output, no exit code. The agent and both bootstrap
+  scripts now print `ERROR:`/`HINT:` on stdout and exit with distinct codes
+  (certificate untrusted / CA used as leaf / name mismatch / fingerprint
+  mismatch / token rejected / unreachable / service registration -- see
+  `crates/agent/README.md`). The agent's enrollment error now includes the
+  control plane's explanation instead of a bare status.
+- The Linux internal-CA one-liner no longer reports success when a download
+  fails partway (`curl | sh` with an empty script exits 0).
+
+### Added
+
+- **Web-managed internal TLS** (`/admin/health/tls`, summarized on
+  `/admin/health`). For installs with no public domain, the app owns the
+  private CA and Caddy's server certificate (new `abyssal-internal-ca`
+  crate); `install.sh` only records the address(es)
+  (`INTERNAL_TLS_ADDRESSES`) and the app creates everything on first start,
+  before Caddy starts. After that, nothing on the server needs touching:
+  - the server certificate **renews automatically** 30 days before expiry
+    (background task, every 6 h) and Caddy loads it live through its admin
+    API on a Unix socket shared only by the two containers -- no restart, no
+    re-trust; *Renew now* / *Reload Caddy* buttons too;
+  - **changing addresses or rotating the CA** is two-phase: a pending CA is
+    pushed with the current one to every connected agent (new protocol
+    operation `UpdateTrustedCa`, also sent on every agent connect), the page
+    shows which agents confirm it and offers it for download (GPO,
+    browsers), then *Activate* switches the server over;
+  - self-monitoring alerts when renewal is failing or the CA nears expiry;
+  - every action is audited; `docker compose exec app /app/abyssal-arsenal
+    tls status|renew|reload|ensure` is the break-glass CLI.
+  Storage moved to Docker volumes owned by the app (`abyssal_tls_ca`, app
+  only -- it holds the CA key; `abyssal_tls_server`, read-only in Caddy;
+  `abyssal_caddy_admin`). Caddy now waits for the app to be healthy.
+- **No-manual-step bootstrap against an internal CA.** The control plane
+  serves its CA certificate (public half only) at `/ca.crt` / `/ca.pem`, and
+  every command `/admin/hosts` generates -- single-use, deployment-token,
+  Linux and Windows -- embeds the CA's SHA-256 fingerprint: it fetches the
+  CA without trusting the connection, refuses to continue on a mismatch,
+  then trusts it and installs. One command on a fresh machine; nothing to
+  copy, rename, or import first.
+- **Agent `--ca-cert` / `--ca-fingerprint`.** The agent trusts an
+  operator-supplied CA in addition to the OS store for enrollment and the
+  control-channel WebSocket (including reconnects), using one shared rustls
+  configuration. `install` persists it next to the credentials and in the
+  service definition, and the control plane keeps it current
+  (`UpdateTrustedCa`); the agent re-reads it on every reconnect. Never
+  auto-discovered from disk; certificate validation is never relaxed.
+  Self-update downloads (from GitHub) deliberately use only the OS store, so
+  the control plane's CA can never vouch for the agent's next binary.
+- **`install.ps1`**: `-CaFingerprint`, `-Uninstall`, `-RemoveTrust`,
+  `-ExitCode` (exit with the documented codes, for RMM tools),
+  `-EnrollmentTokenFile` / `$env:ABYSSAL_ENROLLMENT_TOKEN`; the token is
+  passed to the agent by environment variable and redacted from output.
+  **`install.sh`**: `--ca-cert`, `--ca-fingerprint`, `--trust-system`,
+  `--remove-trust`, `--uninstall`, `--enrollment-token-file` /
+  `ABYSSAL_ENROLLMENT_TOKEN`.
+- **Unattended Windows deployment script** on `/admin/hosts` for PDQ /
+  Intune / GPO running as SYSTEM: no dependence on the working directory or
+  an interactive session, token kept off the command line, non-zero exit on
+  failure. It's now the primary command for Windows deployment tokens.
+- SSH deploy hands the control plane's CA bundle to the agent
+  (`--ca-cert`) as part of the remote install.
+- `PUBLIC_CA_FILE`: an operator with their own proxy and their own internal
+  CA can publish it at `/ca.crt` and get the same pinned install commands.
+- Tests: the internal CA (constraints, SANs, renewal/rotation lifecycle,
+  OpenSSL cross-check of the chain and extensions); agent tests that
+  complete a real TLS handshake with the agent's own rustls client against
+  those certificates trusting only the CA -- IP, FQDN, both, and an
+  old+new rotation bundle -- and show the old installer's cert failing with
+  `CaUsedAsEndEntity`; pushed CA bundles (atomic replace, key refused); the
+  served `install.ps1` and every generated Windows command through the
+  PowerShell parser and PSScriptAnalyzer.
+
 ### Added
 
 - **Control plane serves the agent binary (self-contained / air-gapped

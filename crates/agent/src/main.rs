@@ -27,6 +27,9 @@ mod resurrection;
 mod selfupdate;
 mod sepulchre;
 mod thanatos;
+mod tls;
+#[cfg(test)]
+mod tls_tests;
 mod transport;
 mod vivisection;
 #[cfg(windows)]
@@ -97,6 +100,14 @@ pub enum Command {
         /// Where to persist credentials after enrollment.
         #[arg(long, default_value = DEFAULT_CREDENTIALS_FILE)]
         credentials_file: PathBuf,
+        /// PEM CA certificate to trust for the control plane, in addition
+        /// to the OS trust store -- the internal CA of a control plane with
+        /// no public domain. Applies to enrollment and the control channel
+        /// (self-update downloads come from GitHub and use the OS store
+        /// only). The control plane can replace this file's contents over
+        /// the control channel to rotate its CA.
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
     },
     /// Interactively enrolls this host and installs/enables a systemd
     /// service for it, prompting for anything not already given as a flag
@@ -108,12 +119,26 @@ pub enum Command {
     Install {
         #[arg(long)]
         control_plane_url: Option<String>,
+        /// Also read from the ABYSSAL_ENROLLMENT_TOKEN environment variable
+        /// or --enrollment-token-file, which keep it out of the process
+        /// list.
         #[arg(long, allow_hyphen_values = true)]
         enrollment_token: Option<String>,
+        #[arg(long, conflicts_with = "enrollment_token")]
+        enrollment_token_file: Option<PathBuf>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long, default_value = DEFAULT_CREDENTIALS_FILE)]
         credentials_file: PathBuf,
+        /// PEM CA certificate to trust for the control plane (see `run`).
+        /// Copied next to the credentials file and baked into the service
+        /// definition, so every later connection uses it too.
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+        /// Expected SHA-256 fingerprint of --ca-cert (hex, colons optional),
+        /// as shown on /admin/hosts. Install refuses a CA that doesn't match.
+        #[arg(long, requires = "ca_cert")]
+        ca_fingerprint: Option<String>,
     },
 }
 
@@ -137,21 +162,94 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
-    match cli.command {
+    let result = match cli.command {
         Some(Command::Run {
             control_plane_url,
             enrollment_token,
             name,
             credentials_file,
-        }) => run(control_plane_url, enrollment_token, name, credentials_file).await,
+            ca_cert,
+        }) => {
+            run(
+                control_plane_url,
+                enrollment_token,
+                name,
+                credentials_file,
+                ca_cert,
+            )
+            .await
+        }
         Some(Command::Install {
             control_plane_url,
             enrollment_token,
+            enrollment_token_file,
             name,
             credentials_file,
-        }) => install(control_plane_url, enrollment_token, name, credentials_file).await,
-        None => install(None, None, None, PathBuf::from(DEFAULT_CREDENTIALS_FILE)).await,
+            ca_cert,
+            ca_fingerprint,
+        }) => {
+            install(InstallArgs {
+                control_plane_url,
+                enrollment_token,
+                enrollment_token_file,
+                name,
+                credentials_file,
+                ca_cert,
+                ca_fingerprint,
+            })
+            .await
+        }
+        None => {
+            install(InstallArgs {
+                credentials_file: PathBuf::from(DEFAULT_CREDENTIALS_FILE),
+                ..InstallArgs::default()
+            })
+            .await
+        }
+    };
+
+    if let Err(e) = result {
+        std::process::exit(report_failure(&e));
     }
+    Ok(())
+}
+
+/// Prints a failure to **stdout** (RMM tools like PDQ often show only that)
+/// with a hint for the recognizable causes, and returns the exit code
+/// documented in `tls::Failure` -- the same codes the served install scripts
+/// translate for the operator.
+fn report_failure(err: &anyhow::Error) -> i32 {
+    let failure = tls::classify(err);
+    println!("ERROR: {err:#}");
+    let hint = failure.hint();
+    if !hint.is_empty() {
+        println!("HINT: {hint}");
+    }
+    eprintln!("abyssal-agent: {err:#}");
+    failure.exit_code()
+}
+
+/// `--enrollment-token`, else `--enrollment-token-file`, else the
+/// `ABYSSAL_ENROLLMENT_TOKEN` environment variable. The latter two exist so
+/// the token needn't appear on a command line (visible in the process list
+/// and in RMM job logs).
+fn resolve_enrollment_token(
+    flag: Option<String>,
+    file: Option<&std::path::Path>,
+) -> anyhow::Result<Option<String>> {
+    if let Some(token) = flag {
+        return Ok(Some(token));
+    }
+    if let Some(path) = file {
+        let token = std::fs::read_to_string(path).with_context(|| {
+            format!("could not read --enrollment-token-file {}", path.display())
+        })?;
+        return Ok(Some(token.trim().to_string()).filter(|t| !t.is_empty()));
+    }
+    Ok(std::env::var("ABYSSAL_ENROLLMENT_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty()))
 }
 
 async fn run(
@@ -159,12 +257,21 @@ async fn run(
     enrollment_token: Option<String>,
     name: Option<String>,
     credentials_file: PathBuf,
+    ca_cert: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    let trust = tls::Trust::load(ca_cert.as_deref())?;
+    if let Some(path) = &ca_cert {
+        tracing::info!(path = %path.display(), "trusting additional CA for the control plane");
+    }
+    tls::set_process_trust(trust.clone(), ca_cert.clone());
+
+    let enrollment_token = resolve_enrollment_token(enrollment_token, None)?;
     let credentials = enroll::load_or_enroll(
         &control_plane_url,
         enrollment_token,
         name,
         &credentials_file,
+        &trust,
     )
     .await?;
     let ws_url = transport::to_ws_url(&control_plane_url)?;
@@ -177,7 +284,12 @@ async fn run(
 
     let mut backoff = Duration::from_secs(1);
     loop {
-        match transport::connect_and_serve(&ws_url, &credentials.credential, &elevation).await {
+        // Re-read every attempt: the control plane may have pushed a new CA
+        // bundle (UpdateTrustedCa) during the last connection.
+        let trust = tls::current_trust().unwrap_or_else(|| trust.clone());
+        match transport::connect_and_serve(&ws_url, &credentials.credential, &elevation, &trust)
+            .await
+        {
             Ok(()) => tracing::warn!("connection to control plane closed; reconnecting"),
             Err(e) => tracing::error!(error = %e, "connection error; retrying"),
         }
@@ -193,15 +305,39 @@ async fn run(
 /// a reboot without the operator having to hand-author one -- see
 /// `crates/agent/README.md` for the manual equivalent this mirrors
 /// exactly.
-async fn install(
+#[derive(Default)]
+struct InstallArgs {
     control_plane_url: Option<String>,
     enrollment_token: Option<String>,
+    enrollment_token_file: Option<PathBuf>,
     name: Option<String>,
     credentials_file: PathBuf,
-) -> anyhow::Result<()> {
+    ca_cert: Option<PathBuf>,
+    ca_fingerprint: Option<String>,
+}
+
+async fn install(args: InstallArgs) -> anyhow::Result<()> {
+    let InstallArgs {
+        control_plane_url,
+        enrollment_token,
+        enrollment_token_file,
+        name,
+        credentials_file,
+        ca_cert,
+        ca_fingerprint,
+    } = args;
     println!("Abyssal Arsenal agent setup\n");
 
     ensure_root_or_reexec()?;
+
+    let enrollment_token =
+        resolve_enrollment_token(enrollment_token, enrollment_token_file.as_deref())?;
+    let ca_cert = install_ca_cert(
+        ca_cert.as_deref(),
+        ca_fingerprint.as_deref(),
+        &credentials_file,
+    )?;
+    let trust = tls::Trust::load(ca_cert.as_deref())?;
 
     let already_enrolled = tokio::fs::metadata(&credentials_file).await.is_ok();
     if already_enrolled {
@@ -230,13 +366,15 @@ async fn install(
         enrollment_token,
         name,
         &credentials_file,
+        &trust,
     )
     .await?;
     println!("Enrolled as host {}", credentials.host_id);
 
     #[cfg(windows)]
     {
-        winservice::install_service(&control_plane_url, &credentials_file)?;
+        winservice::install_service(&control_plane_url, &credentials_file, ca_cert.as_deref())
+            .context(tls::ServiceSetupFailed)?;
         println!(
             "\nDone. abyssal-agent is enrolled and running as a Windows service.\n\
              Check on it any time with: sc query abyssal-agent (or the Services console)"
@@ -254,7 +392,9 @@ async fn install(
             return Ok(());
         }
 
-        install_systemd_service(&control_plane_url, &credentials_file).await?;
+        install_systemd_service(&control_plane_url, &credentials_file, ca_cert.as_deref())
+            .await
+            .context(tls::ServiceSetupFailed)?;
 
         println!(
             "\nDone. abyssal-agent is enrolled and running as a systemd service.\n\
@@ -270,6 +410,75 @@ async fn install(
     );
 
     Ok(())
+}
+
+/// Validates `--ca-cert` (against `--ca-fingerprint`, if given) and copies it
+/// to `ca.pem` beside the credentials file -- a root-/admin-owned location --
+/// returning that path for the service definition. The downloaded original
+/// usually lives in a temp directory that's about to be deleted.
+///
+/// Without `--ca-cert`, nothing is trusted beyond the OS store, even if a
+/// `ca.pem` from an earlier install is sitting there: a file in that
+/// directory only becomes trusted when an administrator names it.
+fn install_ca_cert(
+    source: Option<&std::path::Path>,
+    expected_fingerprint: Option<&str>,
+    credentials_file: &std::path::Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let dest = credentials_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("ca.pem");
+
+    let Some(source) = source else {
+        if dest.exists() {
+            println!(
+                "Note: {} exists from an earlier install but --ca-cert wasn't given, so the \
+                 service will trust only the OS certificate store. Pass --ca-cert {} to keep \
+                 using it.",
+                dest.display(),
+                dest.display()
+            );
+        }
+        return Ok(None);
+    };
+
+    let certs = tls::read_ca_file(source)?;
+    if let Some(expected) = expected_fingerprint {
+        tls::verify_fingerprint(&certs, expected)?;
+    }
+    let fingerprint = tls::fingerprint(&certs[0]);
+
+    if source != dest {
+        let bytes = std::fs::read(source)
+            .with_context(|| format!("could not read {}", source.display()))?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&dest, bytes)
+            .with_context(|| format!("failed to write {}", dest.display()))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("failed to chmod {}", dest.display()))?;
+    }
+    // Only SYSTEM/Administrators may change what the service trusts.
+    #[cfg(windows)]
+    winservice::harden_binary_acls(&dest)?;
+
+    println!(
+        "Trusting control-plane CA {fingerprint}{} (saved to {})",
+        if expected_fingerprint.is_some() {
+            " -- fingerprint verified"
+        } else {
+            ""
+        },
+        dest.display()
+    );
+    Ok(Some(dest))
 }
 
 fn prompt(label: &str) -> anyhow::Result<String> {
@@ -485,6 +694,7 @@ pub(crate) async fn harden_binary_permissions(path: &Path) -> anyhow::Result<()>
 async fn install_systemd_service(
     control_plane_url: &str,
     credentials_file: &Path,
+    ca_cert: Option<&Path>,
 ) -> anyhow::Result<()> {
     let binary_path = install_agent_binary().await?;
 
@@ -497,6 +707,9 @@ async fn install_systemd_service(
             " --credentials-file {}",
             credentials_file.display()
         ));
+    }
+    if let Some(ca_cert) = ca_cert {
+        exec_start.push_str(&format!(" --ca-cert {}", ca_cert.display()));
     }
 
     let unit = format!(

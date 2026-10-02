@@ -59,7 +59,11 @@ define_windows_service!(ffi_service_main, service_main);
 /// `--control-plane-url` (and `--credentials-file`, if non-default) the
 /// same way the systemd unit's `ExecStart` line does, since neither
 /// platform persists the control-plane URL anywhere credentials do.
-pub fn install_service(control_plane_url: &str, credentials_file: &Path) -> anyhow::Result<()> {
+pub fn install_service(
+    control_plane_url: &str,
+    credentials_file: &Path,
+    ca_cert: Option<&Path>,
+) -> anyhow::Result<()> {
     let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
     let manager = ServiceManager::local_computer(None::<&str>, manager_access)?;
 
@@ -72,6 +76,10 @@ pub fn install_service(control_plane_url: &str, credentials_file: &Path) -> anyh
     if credentials_file != Path::new(crate::DEFAULT_CREDENTIALS_FILE) {
         launch_arguments.push(OsString::from("--credentials-file"));
         launch_arguments.push(credentials_file.as_os_str().to_owned());
+    }
+    if let Some(ca_cert) = ca_cert {
+        launch_arguments.push(OsString::from("--ca-cert"));
+        launch_arguments.push(ca_cert.as_os_str().to_owned());
     }
 
     let service_info = ServiceInfo {
@@ -230,9 +238,17 @@ fn run_service(arguments: Vec<OsString>) -> anyhow::Result<()> {
             enrollment_token,
             name,
             credentials_file,
+            ca_cert,
         }) = cli.command
         {
-            let _ = crate::run(control_plane_url, enrollment_token, name, credentials_file).await;
+            let _ = crate::run(
+                control_plane_url,
+                enrollment_token,
+                name,
+                credentials_file,
+                ca_cert,
+            )
+            .await;
         }
     });
 

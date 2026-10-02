@@ -25,6 +25,7 @@ pub async fn connect_and_serve(
     ws_url: &str,
     credential: &str,
     elevation: &ElevationState,
+    trust: &crate::tls::Trust,
 ) -> anyhow::Result<()> {
     let uri: Uri = ws_url.parse()?;
     let authority = uri
@@ -56,7 +57,13 @@ pub async fn connect_and_serve(
         .header("Sec-WebSocket-Key", generate_key())
         .body(())?;
 
-    let (ws_stream, _response) = tokio_tungstenite::connect_async(request).await?;
+    let (ws_stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        false,
+        Some(tokio_tungstenite::Connector::Rustls(trust.rustls_config())),
+    )
+    .await?;
     tracing::info!("connected to control plane");
 
     let (mut sink, mut stream) = ws_stream.split();

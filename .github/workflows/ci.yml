@@ -39,6 +39,19 @@ jobs:
       # No database needed: everything in crates/database and crates/web uses
       # runtime sqlx::query (not the query! macro), and the existing tests
       # (core, auth, rbac, execution, hosts) are all pure unit tests.
+      #
+      # TLS checks: the internal CA (crates/internal-ca, cross-checked with
+      # openssl); the agent's own rustls client against its certificates
+      # (crates/agent/src/tls_tests.rs); and the served install.ps1 /
+      # generated Windows commands through the PowerShell parser and
+      # PSScriptAnalyzer (crates/web bootstrap tests). openssl and pwsh both
+      # ship on ubuntu-latest, and those tests fail rather than skip under CI.
+      - name: Ensure PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          }
       - run: cargo test --workspace
 
   clippy:
