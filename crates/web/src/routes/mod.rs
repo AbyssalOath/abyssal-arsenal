@@ -12,6 +12,7 @@ pub mod cystoolbox;
 pub mod dashboard;
 pub mod defleshing;
 pub mod grimoire;
+pub mod haruspex;
 pub mod host_context;
 pub mod hosts;
 pub mod incarnation;

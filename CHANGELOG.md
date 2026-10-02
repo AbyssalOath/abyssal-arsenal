@@ -12,6 +12,19 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Haruspex: Active Directory DNS & domain-controller health diagnostics (new
+  arsenal).** A new Observe-category arsenal for Windows domain controllers that
+  runs the classic AD health toolchain on demand through the agent and returns a
+  sectioned report in the UI. Two read-only reports against a given domain FQDN:
+  an **AD DNS check** (`dcdiag /test:dns`, a domain lookup, and the
+  `_ldap._tcp.dc._msdcs.<domain>` SRV lookup) and an **AD health check**
+  (`dcdiag /v`, `repadmin /replsummary` + `/showrepl`, `nltest /dsgetdc` +
+  `/dclist`, `ipconfig /all`, time status, the core AD services, and the
+  SYSVOL/NETLOGON shares). The domain FQDN is validated control-plane-side and
+  again on the agent; a tool that isn't present (i.e. the host isn't a DC)
+  becomes a note in its section rather than failing the report. Adds the
+  `AdDnsReport` / `AdHealthReport` operations (protocol version 35); Windows-only
+  (a clean "not supported on this platform" elsewhere).
 - **Thanatos on Windows: log-offset tracking + high-volume event streams.** The
   Windows scan no longer re-reads a fixed 200-event window each sweep. The
   control plane now stores a per-host, per-channel Event Log high-water mark

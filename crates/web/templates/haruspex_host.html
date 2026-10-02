@@ -1,0 +1,55 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Haruspex — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Haruspex — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/haruspex">&larr; Back to host list</a></p>
+
+<div class="card">
+  <h2 style="margin-top:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    The Active Directory report operations were added in a newer agent build, so
+    this host can't run them until <code>abyssal-agent</code> is rebuilt and
+    redeployed. See <code>crates/agent/README.md</code>.
+  </div>
+  {% endif %}
+
+  <p class="text-muted" style="margin:0;">
+    Run read-only Active Directory diagnostics against this domain controller.
+    Enter the AD domain FQDN (used by the DNS, SRV, and DC-discovery lookups),
+    then run a report. The full health report runs <code>dcdiag /v</code> and
+    replication checks and can take a minute or two on a large forest.
+  </p>
+
+  <form method="post" class="dashboard-search" style="margin-top:14px;" id="haruspex-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="haruspex-domain" class="sr-only">Active Directory domain FQDN</label>
+    <input type="text" id="haruspex-domain" name="domain" value="{{ domain }}"
+           placeholder="Active Directory domain FQDN (e.g. corp.example.com)" required>
+    <button type="submit" class="btn-secondary" formaction="/arsenals/haruspex/{{ host_id }}/dns-report">
+      {% call macros::icon("dns") %} AD DNS check
+    </button>
+    <button type="submit" class="btn-secondary" formaction="/arsenals/haruspex/{{ host_id }}/health-report">
+      {% call macros::icon("shield-check") %} AD health check
+    </button>
+  </form>
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Report{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No report yet -- enter the domain and run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+{% endblock %}

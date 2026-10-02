@@ -38,6 +38,7 @@ arsenal-catacomb.workspace = true
 arsenal-parish.workspace = true
 arsenal-apothecary.workspace = true
 arsenal-grimoire.workspace = true
+arsenal-haruspex.workspace = true
 arsenal-cryptkeeper.workspace = true
 arsenal-defleshing.workspace = true
 arsenal-vivisection.workspace = true

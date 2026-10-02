@@ -4,9 +4,9 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, incarnation, inquest,
-    mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem, reanimation,
-    reliquary, resurrection, sepulchre, thanatos, vivisection,
+    apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, haruspex, incarnation,
+    inquest, mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem,
+    reanimation, reliquary, resurrection, sepulchre, thanatos, vivisection,
 };
 // `run_command` is only referenced by the Unix branches of the helpers below;
 // the Windows branches use `process::run_powershell` instead.
@@ -417,6 +417,8 @@ pub async fn run(
             extra_fim_paths,
             channel_offsets,
         } => thanatos::scan_security_events(elevation, extra_fim_paths, channel_offsets).await,
+        AgentOperation::AdDnsReport { domain } => haruspex::ad_dns_report(domain).await,
+        AgentOperation::AdHealthReport { domain } => haruspex::ad_health_report(domain).await,
         AgentOperation::DetectPackageBackend => sepulchre::detect_package_backend(elevation).await,
         AgentOperation::RenderSepulchreConfig { target, content } => {
             sepulchre::render_sepulchre_config(target, content, elevation).await

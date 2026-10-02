@@ -144,6 +144,11 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Self-signed cert for the internal/IP-only install path (install.sh
+      # generates caddy_certs/{cert,key}.pem and the Caddyfile references them).
+      # Unused on the Let's Encrypt (public domain) path; Docker just mounts an
+      # empty directory there, which is harmless.
+      - ./caddy_certs:/etc/caddy/certs:ro
       - abyssal_caddy_data:/data
       - abyssal_caddy_config:/config
     networks:

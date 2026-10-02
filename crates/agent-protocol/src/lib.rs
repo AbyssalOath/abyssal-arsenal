@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u32 = 35;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1160,6 +1160,27 @@ pub enum AgentOperation {
         /// not record id).
         #[serde(default)]
         channel_offsets: Vec<(String, u64)>,
+    },
+
+    // -------------------------------------------------------------
+    // Haruspex: Windows Active Directory / directory-services health
+    // diagnostics. Read-only report generators that run the standard domain-
+    // controller toolchain and return a sectioned text report. Windows-only;
+    // a clean "not supported on this platform" on anything else.
+    // -------------------------------------------------------------
+    /// AD DNS diagnostics: `dcdiag /test:dns`, a domain record lookup, and the
+    /// `_ldap._tcp.dc._msdcs.<domain>` SRV lookup. `domain` is the AD DNS
+    /// domain FQDN, validated (`is_valid_hostname`) both control-plane-side and
+    /// here before it ever reaches a command's argv.
+    AdDnsReport {
+        domain: String,
+    },
+    /// Broader AD/DC health: `dcdiag /v`, `repadmin /replsummary` +
+    /// `/showrepl`, `nltest /dsgetdc` + `/dclist`, `ipconfig /all`, time
+    /// status, the core AD services (NTDS/Netlogon/DNS/KDC), and the
+    /// SYSVOL/NETLOGON shares. Same `domain` validation as `AdDnsReport`.
+    AdHealthReport {
+        domain: String,
     },
 
     // -------------------------------------------------------------
@@ -2382,6 +2403,8 @@ impl fmt::Debug for AgentOperation {
                 .field("path", path)
                 .finish(),
             AgentOperation::ScanSecurityEvents { .. } => write!(f, "ScanSecurityEvents"),
+            AgentOperation::AdDnsReport { .. } => write!(f, "AdDnsReport"),
+            AgentOperation::AdHealthReport { .. } => write!(f, "AdHealthReport"),
             AgentOperation::DetectPackageBackend => write!(f, "DetectPackageBackend"),
             AgentOperation::RenderSepulchreConfig { target, content } => f
                 .debug_struct("RenderSepulchreConfig")

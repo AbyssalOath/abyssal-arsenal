@@ -246,6 +246,19 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/admin/hosts/:id/remove", post(routes::hosts::remove))
         .route("/admin/hosts/:id/update", post(routes::hosts::update_agent))
+        .route("/arsenals/haruspex", get(routes::haruspex::show))
+        .route(
+            "/arsenals/haruspex/:host_id",
+            get(routes::haruspex::show_host),
+        )
+        .route(
+            "/arsenals/haruspex/:host_id/dns-report",
+            post(routes::haruspex::dns_report),
+        )
+        .route(
+            "/arsenals/haruspex/:host_id/health-report",
+            post(routes::haruspex::health_report),
+        )
         .route("/arsenals/cystoolbox", get(routes::cystoolbox::show))
         .route(
             "/arsenals/cystoolbox/:host_id",

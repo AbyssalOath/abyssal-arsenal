@@ -7,6 +7,7 @@ mod elevation;
 mod enroll;
 mod firewall;
 mod grimoire;
+mod haruspex;
 mod incarnation;
 mod init_system;
 mod inquest;

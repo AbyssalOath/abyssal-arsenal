@@ -32,6 +32,7 @@ members = [
     "crates/arsenals/parish",
     "crates/arsenals/apothecary",
     "crates/arsenals/grimoire",
+    "crates/arsenals/haruspex",
     "crates/arsenals/cryptkeeper",
     "crates/arsenals/defleshing",
     "crates/arsenals/vivisection",
@@ -78,6 +79,7 @@ arsenal-catacomb = { path = "crates/arsenals/catacomb" }
 arsenal-parish = { path = "crates/arsenals/parish" }
 arsenal-apothecary = { path = "crates/arsenals/apothecary" }
 arsenal-grimoire = { path = "crates/arsenals/grimoire" }
+arsenal-haruspex = { path = "crates/arsenals/haruspex" }
 arsenal-cryptkeeper = { path = "crates/arsenals/cryptkeeper" }
 arsenal-defleshing = { path = "crates/arsenals/defleshing" }
 arsenal-vivisection = { path = "crates/arsenals/vivisection" }

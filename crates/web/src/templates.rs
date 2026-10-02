@@ -963,6 +963,35 @@ pub struct CystoolboxHostRow {
     pub name: String,
 }
 
+pub struct HaruspexHostRow {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Template)]
+#[template(path = "haruspex.html")]
+pub struct HaruspexTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<HaruspexHostRow>,
+}
+
+#[derive(Template)]
+#[template(path = "haruspex_host.html")]
+pub struct HaruspexHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// True when connected but the agent's protocol version doesn't match --
+    /// these ops were added in protocol v35, so an older agent can't run them.
+    pub protocol_mismatch: bool,
+    /// The last-submitted domain, echoed back so a report run keeps the field
+    /// populated.
+    pub domain: String,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
 #[derive(Template)]
 #[template(path = "cystoolbox.html")]
 pub struct CystoolboxTemplate {

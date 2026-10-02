@@ -22,6 +22,7 @@ pub fn all() -> Vec<Box<dyn Arsenal>> {
         Box::new(arsenal_parish::ParishArsenal),
         Box::new(arsenal_apothecary::ApothecaryArsenal),
         Box::new(arsenal_grimoire::GrimoireArsenal),
+        Box::new(arsenal_haruspex::HaruspexArsenal),
         Box::new(arsenal_cryptkeeper::CryptkeeperArsenal),
         Box::new(arsenal_defleshing::DefleshingArsenal),
         Box::new(arsenal_vivisection::VivisectionArsenal),
