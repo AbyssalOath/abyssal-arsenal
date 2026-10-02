@@ -12,6 +12,30 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Reusable deployment tokens for mass agent rollout (Wazuh/PDQ-style).**
+  Alongside the existing single-use, short-lived enrollment token, `/admin/hosts`
+  can now mint a **reusable deployment token** with a chosen OS, lifetime, and
+  label. It generates a single install command to drop into PDQ Deploy, a GPO
+  startup script, or Intune; every machine that runs it enrolls automatically
+  under its own hostname, until the token expires or is revoked. Active
+  deployment tokens are listed with their host-enrollment counts and a revoke
+  button. (New `host_enrollment_tokens` columns; the single-use path is
+  unchanged.)
+
+### Changed
+
+- **Agent TLS now validates against the OS trust store (native roots)** instead
+  of a bundled CA list, for both the enrollment request and the WebSocket
+  control channel. This lets the agent connect to a control plane behind an
+  internal CA or a self-signed certificate once that certificate is trusted on
+  the host (e.g. imported via Group Policy / `update-ca-certificates`) -- the
+  on-prem/internal case; publicly-trusted certificates (Let's Encrypt) keep
+  working via the OS's own public roots. Previously an internal/self-signed
+  control plane could not be enrolled against at all. **Agents must be rebuilt
+  to pick this up.**
+
+### Added
+
 - **Haruspex: Active Directory DNS & domain-controller health diagnostics (new
   arsenal).** A new Observe-category arsenal for Windows domain controllers that
   runs the classic AD health toolchain on demand through the agent and returns a

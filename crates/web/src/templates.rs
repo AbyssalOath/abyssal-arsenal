@@ -910,12 +910,37 @@ pub struct EnrollmentInstructions {
     pub windows_manual: String,
 }
 
+/// The just-created reusable deployment token and the ready-to-paste command
+/// for the chosen OS -- shown once (the raw token is hashed at rest). Built for
+/// mass rollout via PDQ Deploy / GPO / Intune; each machine that runs it
+/// auto-enrolls under its own hostname.
+pub struct DeploymentInstructions {
+    pub os_label: String,
+    pub token: String,
+    /// The single command to drop into the deploy tool.
+    pub command: String,
+    pub expires: String,
+}
+
+/// One active deployment token in the management list.
+pub struct DeploymentTokenView {
+    pub id: String,
+    pub label: String,
+    pub created: String,
+    pub expires: String,
+    pub use_count: i64,
+}
+
 #[derive(Template)]
 #[template(path = "hosts.html")]
 pub struct HostsTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<HostRow>,
     pub enrollment: Option<EnrollmentInstructions>,
+    /// A deployment token + command that was just generated (shown once).
+    pub deployment: Option<DeploymentInstructions>,
+    /// Active reusable deployment tokens, for review/revoke.
+    pub deployment_tokens: Vec<DeploymentTokenView>,
     pub uninstall_command: Option<String>,
     pub action_result: Option<String>,
     pub action_error: Option<String>,

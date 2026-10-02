@@ -228,6 +228,14 @@ pub fn build(state: AppState) -> Router {
             post(routes::hosts::generate_enrollment_token),
         )
         .route(
+            "/admin/hosts/deployment-token",
+            post(routes::hosts::generate_deployment_token),
+        )
+        .route(
+            "/admin/hosts/deployment-token/:id/revoke",
+            post(routes::hosts::revoke_deployment_token),
+        )
+        .route(
             "/admin/hosts/:id/system-info",
             post(routes::hosts::run_system_info),
         )

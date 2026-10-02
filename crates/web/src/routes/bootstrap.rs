@@ -107,6 +107,14 @@ const INSTALL_PS1_TEMPLATE: &str = r#"#Requires -RunAsAdministrator
     & ([scriptblock]::Create((irm __CONTROL_PLANE_URL__/install.ps1))) -EnrollmentToken <token>
 
   Generate a token at __CONTROL_PLANE_URL__/admin/hosts (valid 15 minutes).
+
+  If this control plane uses a self-signed or internal-CA certificate (the
+  default when you install behind Caddy without a public domain), import that
+  certificate into this machine's "Trusted Root Certification Authorities"
+  store FIRST -- otherwise both this `irm` download and the agent's own
+  enrollment will fail with a TLS trust error. In an AD environment, push it
+  via Group Policy (see the project README's "Reverse proxy / TLS" section).
+  A publicly-trusted certificate (e.g. Let's Encrypt) needs no such step.
 #>
 param(
   [Parameter(Mandatory = $true)]

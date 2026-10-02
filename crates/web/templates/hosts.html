@@ -69,6 +69,77 @@
 </div>
 
 <div class="card">
+  <h2>{% call macros::icon("host") %} Deployment tokens (mass rollout)</h2>
+  <p style="color:var(--text-muted); margin-top:0;">
+    A <strong>reusable</strong> token for rolling the agent out to many machines
+    at once -- paste the generated command into PDQ Deploy, a GPO startup script,
+    or Intune. Every machine that runs it enrolls automatically under its own
+    hostname. Unlike the single-use token above, one deployment token provisions
+    every host it reaches until it expires or you revoke it.
+  </p>
+
+  <form method="post" action="/admin/hosts/deployment-token" class="action-grid">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div>
+      <label for="dep-os">Target OS</label>
+      <select id="dep-os" name="os">
+        <option value="windows">Windows</option>
+        <option value="linux">Linux</option>
+      </select>
+    </div>
+    <div>
+      <label for="dep-ttl">Valid for (hours)</label>
+      <input type="number" id="dep-ttl" name="ttl_hours" min="1" max="8760" value="720">
+    </div>
+    <div>
+      <label for="dep-label">Label (optional)</label>
+      <input type="text" id="dep-label" name="label" placeholder="e.g. Finance OU rollout">
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create deployment token</button>
+    </div>
+  </form>
+
+  {% if let Some(d) = deployment %}
+  <div class="info-banner" style="margin-top:14px;">
+    <strong>{{ d.os_label }} deployment command</strong> &mdash; expires {{ d.expires }}.
+    Save this now: the token is shown only once (revoke and recreate if you lose it).
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ d.command }}</pre>
+    <p style="color:var(--text-muted); margin:8px 0 0;">
+      If this control plane uses a self-signed certificate, the target machines
+      must trust it first (see the README's "Reverse proxy / TLS" section), or
+      enrollment fails with a TLS error.
+    </p>
+  </div>
+  {% endif %}
+
+  {% if !deployment_tokens.is_empty() %}
+  <h3 style="margin-top:18px;">Active deployment tokens</h3>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Label</th><th>Created</th><th>Expires</th><th>Hosts enrolled</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for t in deployment_tokens %}
+        <tr>
+          <td>{{ t.label }}</td>
+          <td class="text-muted">{{ t.created }}</td>
+          <td class="text-muted">{{ t.expires }}</td>
+          <td class="text-muted">{{ t.use_count }}</td>
+          <td>
+            <form method="post" action="/admin/hosts/deployment-token/{{ t.id }}/revoke" style="margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-danger btn-sm">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
   <table>
     <thead><tr><th>Name</th><th>Platform</th><th>Status</th><th>Enrolled</th><th>Last seen</th><th>Actions</th></tr></thead>
     <tbody>

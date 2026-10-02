@@ -21,7 +21,9 @@ use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
-use crate::templates::{BaseCtx, EnrollmentInstructions, HostRow, HostsTemplate};
+use crate::templates::{
+    BaseCtx, DeploymentInstructions, EnrollmentInstructions, HostRow, HostsTemplate,
+};
 use crate::theme;
 
 fn control_plane_base_url(state: &AppState, headers: &HeaderMap) -> String {
@@ -89,6 +91,7 @@ async fn render(
     jar: &CookieJar,
     ctx: &abyssal_rbac::AuthContext,
     enrollment: Option<EnrollmentInstructions>,
+    deployment: Option<crate::templates::DeploymentInstructions>,
     uninstall_command: Option<String>,
     action_result: Option<String>,
     action_error: Option<String>,
@@ -131,10 +134,24 @@ async fn render(
         });
     }
 
+    let deployment_tokens = repo::host_enrollment_tokens::list_active_deployment(&state.pool)
+        .await?
+        .into_iter()
+        .map(|t| crate::templates::DeploymentTokenView {
+            id: t.id.to_string(),
+            label: t.label.unwrap_or_else(|| "(unlabeled)".to_string()),
+            created: crate::common::format_in_tz(t.created_at, &ctx.user.timezone),
+            expires: crate::common::format_in_tz(t.expires_at, &ctx.user.timezone),
+            use_count: t.use_count,
+        })
+        .collect();
+
     let tpl = HostsTemplate {
         base,
         hosts,
         enrollment,
+        deployment,
+        deployment_tokens,
         uninstall_command,
         action_result,
         action_error,
@@ -153,7 +170,7 @@ pub async fn list(
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsView)?;
-    render(&state, &jar, &ctx, None, None, None, None).await
+    render(&state, &jar, &ctx, None, None, None, None, None).await
 }
 
 #[derive(Deserialize)]
@@ -184,7 +201,137 @@ pub async fn generate_enrollment_token(
     let base_url = control_plane_base_url(&state, &headers);
     let instructions = build_enrollment_instructions(&base_url, &token);
 
-    render(&state, &jar, &ctx, Some(instructions), None, None, None).await
+    render(
+        &state,
+        &jar,
+        &ctx,
+        Some(instructions),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
+/// The single install command for a reusable deployment token, by OS -- the
+/// line an operator drops into PDQ Deploy, a GPO startup script, or Intune.
+/// Same bootstrap one-liners as a single-use token; the difference is the token
+/// is reusable, so the same command provisions every machine it's pushed to.
+fn build_deployment_command(base_url: &str, token: &str, os: &str) -> (String, String) {
+    if os == "linux" {
+        (
+            "Linux".to_string(),
+            format!("curl -fsSL {base_url}/install.sh | sudo sh -s -- --enrollment-token {token}"),
+        )
+    } else {
+        (
+            "Windows".to_string(),
+            format!(
+                "& ([scriptblock]::Create((irm {base_url}/install.ps1))) -EnrollmentToken {token}"
+            ),
+        )
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DeploymentForm {
+    csrf_token: String,
+    #[serde(default)]
+    os: String,
+    #[serde(default)]
+    ttl_hours: u32,
+    #[serde(default)]
+    label: String,
+}
+
+/// Creates a reusable deployment token and shows the OS-specific install
+/// command for mass rollout. The command (which contains the token) is shown
+/// once -- the token is hashed at rest -- so save it into your deploy tool now.
+pub async fn generate_deployment_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    headers: HeaderMap,
+    Form(form): Form<DeploymentForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    // Default 30 days; clamp to [1 hour, 1 year] so a hand-posted value can't
+    // mint an effectively-permanent key by accident.
+    let ttl_hours = if form.ttl_hours == 0 {
+        720
+    } else {
+        form.ttl_hours.clamp(1, 24 * 365)
+    };
+    let label = form.label.trim();
+    let token = generate_token();
+    let hash = hash_token(&token);
+    repo::host_enrollment_tokens::create_deployment(
+        &state.pool,
+        &hash,
+        Some(ctx.user.id),
+        ChronoDuration::hours(i64::from(ttl_hours)),
+        (!label.is_empty()).then_some(label),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("host.deployment_token")
+            .metadata(
+                serde_json::json!({ "action": "create", "label": label, "ttl_hours": ttl_hours }),
+            ),
+    )
+    .await?;
+
+    let base_url = control_plane_base_url(&state, &headers);
+    let (os_label, command) = build_deployment_command(&base_url, &token, &form.os);
+    let deployment = DeploymentInstructions {
+        os_label,
+        token,
+        command,
+        expires: crate::common::format_in_tz(
+            chrono::Utc::now() + ChronoDuration::hours(i64::from(ttl_hours)),
+            &ctx.user.timezone,
+        ),
+    };
+
+    render(&state, &jar, &ctx, None, Some(deployment), None, None, None).await
+}
+
+/// Revokes a reusable deployment token (it stops enrolling new hosts
+/// immediately; already-enrolled hosts are unaffected).
+pub async fn revoke_deployment_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::host_enrollment_tokens::revoke(&state.pool, id).await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("host.deployment_token")
+            .metadata(serde_json::json!({ "action": "revoke", "id": id.to_string() })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/hosts").into_response())
 }
 
 /// Pushes the currently-connected agent to update itself to this control
@@ -237,7 +384,19 @@ pub async fn update_agent(
         .await;
 
     match result {
-        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
+        Ok(output) => {
+            render(
+                &state,
+                &jar,
+                &ctx,
+                None,
+                None,
+                None,
+                Some(output.stdout),
+                None,
+            )
+            .await
+        }
         Err(e) => {
             let message = e.to_string();
             // The signature of an agent too old to know the SelfUpdate
@@ -256,7 +415,7 @@ pub async fn update_agent(
             } else {
                 message
             };
-            render(&state, &jar, &ctx, None, None, None, Some(friendly)).await
+            render(&state, &jar, &ctx, None, None, None, None, Some(friendly)).await
         }
     }
 }
@@ -294,8 +453,32 @@ pub async fn run_system_info(
         .await;
 
     match result {
-        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
-        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
+        Ok(output) => {
+            render(
+                &state,
+                &jar,
+                &ctx,
+                None,
+                None,
+                None,
+                Some(output.stdout),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            render(
+                &state,
+                &jar,
+                &ctx,
+                None,
+                None,
+                None,
+                None,
+                Some(e.to_string()),
+            )
+            .await
+        }
     }
 }
 
@@ -334,8 +517,32 @@ pub async fn deescalate(
     state.elevation.mark_deescalated(id);
 
     match result {
-        Ok(output) => render(&state, &jar, &ctx, None, None, Some(output.stdout), None).await,
-        Err(e) => render(&state, &jar, &ctx, None, None, None, Some(e.to_string())).await,
+        Ok(output) => {
+            render(
+                &state,
+                &jar,
+                &ctx,
+                None,
+                None,
+                None,
+                Some(output.stdout),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            render(
+                &state,
+                &jar,
+                &ctx,
+                None,
+                None,
+                None,
+                None,
+                Some(e.to_string()),
+            )
+            .await
+        }
     }
 }
 
@@ -534,9 +741,40 @@ pub async fn remove(
         &jar,
         &ctx,
         None,
+        None,
         Some(uninstall_command),
         None,
         None,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_command_windows_uses_the_ps1_one_liner() {
+        let (label, cmd) =
+            build_deployment_command("https://arsenal.corp.local", "TOK123", "windows");
+        assert_eq!(label, "Windows");
+        assert!(cmd.contains("install.ps1"));
+        assert!(cmd.contains("-EnrollmentToken TOK123"));
+    }
+
+    #[test]
+    fn deployment_command_linux_uses_the_sh_one_liner() {
+        let (label, cmd) =
+            build_deployment_command("https://arsenal.corp.local", "TOK123", "linux");
+        assert_eq!(label, "Linux");
+        assert!(cmd.contains("install.sh"));
+        assert!(cmd.contains("--enrollment-token TOK123"));
+    }
+
+    #[test]
+    fn deployment_command_defaults_to_windows_for_unknown_os() {
+        // Anything that isn't "linux" falls back to the Windows command.
+        let (label, _) = build_deployment_command("https://x", "t", "");
+        assert_eq!(label, "Windows");
+    }
 }

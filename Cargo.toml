@@ -91,10 +91,16 @@ arsenal-sepulchre = { path = "crates/arsenals/sepulchre" }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "ws"] }
 axum-extra = { version = "0.9", features = ["cookie"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# Native (OS) root store rather than the bundled Mozilla webpki roots, so the
+# agent trusts a control plane behind an internal CA or a self-signed cert the
+# operator has imported into the host's trust store (the on-prem/internal case)
+# -- publicly-trusted certs (Let's Encrypt) keep working via the OS's own public
+# roots. Both the enrollment POST (reqwest) and the WSS control channel
+# (tokio-tungstenite) go through these.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 http = "1"
 tower = "0.5"
 tower-http = { version = "0.5", features = ["trace", "fs", "set-header"] }

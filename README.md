@@ -173,24 +173,36 @@ if the IP changes, and it's what you'd put on a cert you want clients to
 *trust*. If you go the FQDN route, add an A record for it in your internal DNS
 (e.g. Active Directory DNS) first, then enter that FQDN at the installer prompt.
 
-### Making the self-signed cert trusted (optional)
+### Trusting a self-signed / internal cert
 
-A self-signed cert shows a one-time "unknown issuer" warning — harmless to
-accept, but to remove it fleet-wide in an Active Directory environment, push
-the generated certificate (`caddy_certs/cert.pem`) to clients' **Trusted Root
-Certification Authorities** store via Group Policy:
+The agent validates the control plane's certificate against the **host's OS
+trust store** (not a bundled CA list), so a publicly-trusted cert (Let's
+Encrypt) works with no extra steps. For a self-signed or internal-CA cert this
+has two consequences:
 
-1. Copy `caddy_certs/cert.pem` to a domain controller (convert to `.crt`/`.cer`
+- **Browsers** show a one-time "unknown issuer" warning — harmless to accept.
+- **Agents require the cert to be trusted**, or enrollment and the control
+  channel fail with a TLS error (this is also why the PowerShell bootstrap
+  one-liner's `irm …` fails until the cert is trusted). So on any host that
+  will run the agent against an internal cert, import it first.
+
+**Windows / Active Directory** — push `caddy_certs/cert.pem` to the **Trusted
+Root Certification Authorities** store via Group Policy (fixes browsers,
+PowerShell `irm`, and the agent in one go):
+
+1. Copy `caddy_certs/cert.pem` to a domain controller (rename to `.crt`/`.cer`
    if your tooling wants it — same PEM content).
 2. Group Policy Management → edit a GPO linked to the relevant OU →
    *Computer Configuration → Policies → Windows Settings → Security Settings →
-   Public Key Policies → Trusted Root Certification Authorities* → **Import**
-   the cert.
-3. `gpupdate /force` on a client (or wait for the next refresh). The browser
-   warning is then gone for every domain-joined machine.
+   Public Key Policies → Trusted Root Certification Authorities* → **Import**.
+3. `gpupdate /force` on a client (or wait for the next refresh).
 
-This is also what lets enrolled Windows agents trust the control plane's cert
-without skipping verification.
+For a single Windows box without GPO: `Import-Certificate -FilePath cert.cer
+-CertStoreLocation Cert:\LocalMachine\Root` in an elevated PowerShell.
+
+**Linux agent hosts** — copy the cert into the system store:
+`sudo cp cert.pem /usr/local/share/ca-certificates/abyssal-arsenal.crt &&
+sudo update-ca-certificates`.
 
 ## Releases and branches
 
