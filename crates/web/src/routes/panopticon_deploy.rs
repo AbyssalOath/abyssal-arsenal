@@ -251,7 +251,16 @@ pub async fn scan_picker_refresh(
     } else {
         "linux".to_string()
     };
-    render_scan_picker(&state, &jar, &ctx, all_ips, all_checked, rescan_notice, bulk_os).await
+    render_scan_picker(
+        &state,
+        &jar,
+        &ctx,
+        all_ips,
+        all_checked,
+        rescan_notice,
+        bulk_os,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------
