@@ -1896,6 +1896,22 @@ pub struct PanopticonDeployCredentialsTemplate {
     pub error: Option<String>,
 }
 
+/// Windows "add host" result from a scan: there's no SSH to push over, so the
+/// operator gets a ready-to-run install command (built from a reusable
+/// deployment token, CA-aware) to run on the selected hosts or push via
+/// PDQ/GPO/Intune. The hosts are shown for reference; nothing is pushed.
+#[derive(Template)]
+#[template(path = "panopticon_deploy_windows.html")]
+pub struct PanopticonDeployWindowsTemplate {
+    pub base: BaseCtx,
+    pub hosts: Vec<DeployCredentialHostRow>,
+    /// The interactive one-liner.
+    pub oneliner: String,
+    /// The unattended variant for RMM tools (PDQ/Intune/GPO).
+    pub rmm: String,
+    pub expires: String,
+}
+
 /// One host's host-key probe result, plus its credential fields carried
 /// forward verbatim as hidden inputs (not re-derived -- see
 /// `routes/panopticon_deploy.rs::deploy_hostkeys`) so the final confirm

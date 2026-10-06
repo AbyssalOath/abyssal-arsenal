@@ -1,0 +1,48 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Add Windows Hosts — Abyssal Arsenal{% endblock %}
+{% block heading %}Add Windows Hosts From Scan{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Windows hosts aren't pushed to over SSH. Run the command below on each of the
+    selected hosts (from an elevated PowerShell), or push it with your deployment
+    tool &mdash; PDQ Deploy, a GPO startup script, or Intune. It downloads the
+    agent from this control plane, trusts the control plane's CA, and enrolls;
+    each machine registers automatically under its own hostname. The command uses
+    a reusable deployment token that <strong>expires {{ expires }}</strong> and
+    can be revoked any time from <a href="/admin/hosts">Hosts</a>.
+  </p>
+
+  <h3>Selected hosts</h3>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>IP address</th><th>Hostname</th></tr></thead>
+      <tbody>
+        {% for h in hosts %}
+        <tr><td>{{ h.ip }}</td><td>{{ h.hostname }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:18px;">Interactive (run on the host)</h3>
+  <p style="color:var(--text-muted); margin:0 0 6px;">
+    Elevated PowerShell ("Run as administrator"):
+  </p>
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ oneliner }}</pre>
+
+  <h3 style="margin-top:18px;">Unattended (PDQ Deploy / Intune / GPO)</h3>
+  <p style="color:var(--text-muted); margin:0 0 6px;">
+    Non-interactive variant with exit codes for RMM tooling:
+  </p>
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ rmm }}</pre>
+
+  <div style="margin-top:16px;">
+    <a class="btn btn-secondary" href="/arsenals/panopticon">Back to Panopticon</a>
+    <a class="btn btn-secondary" href="/admin/hosts">Manage hosts &amp; tokens</a>
+  </div>
+</div>
+
+{% endblock %}

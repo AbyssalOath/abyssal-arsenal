@@ -9,38 +9,65 @@
   <div class="success-banner" style="margin-bottom:14px;">{% call macros::icon("check") %} {{ notice }}</div>
   {% endif %}
   <p style="color:var(--text-muted); margin-top:0;">
-    Every device this scan found is already saved to the inventory below, whether
-    or not you add any of them here. Pick which ones to deploy the agent to over
-    SSH, or cancel and add them later from the device inventory.
+    Every device this scan found is already saved to the inventory, whether or not
+    you add any here. <strong>Linux</strong> hosts are deployed to over SSH.
+    <strong>Windows</strong> hosts have no SSH to push over, so choosing Windows
+    hands you a ready-to-run install command to run on them (or push via
+    PDQ/GPO/Intune). Pick several and use <em>Add Hosts</em>, or add one at a time
+    with <em>Quick add</em>.
   </p>
 
   {% if hosts.is_empty() %}
   <p style="color:var(--text-muted);">No devices were discovered by this scan.</p>
   <a class="btn btn-secondary" href="/arsenals/panopticon">Back to Panopticon</a>
   {% else %}
-  <form method="post" action="/arsenals/panopticon/deploy/credentials">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    {% if let Some(notice) = rescan_notice %}
-    <input type="hidden" name="rescan_notice" value="{{ notice }}">
-    {% endif %}
+  {# The table is NOT wrapped in the bulk form: each row has its own standalone
+     "Quick add" form, and the bulk selection inputs associate with the bulk
+     form below via the HTML5 `form="picker-bulk"` attribute (forms can't nest). #}
+  <div class="table-scroll">
     <table>
       <thead>
-        <tr><th></th><th>IP address</th><th>Hostname</th><th>MAC</th></tr>
+        <tr><th></th><th>IP address</th><th>Hostname</th><th>MAC</th><th>Quick add</th></tr>
       </thead>
       <tbody>
         {% for h in hosts %}
         <tr>
           <td>
-            <input type="checkbox" name="selected_ips" value="{{ h.ip }}" {% if h.checked %}checked{% endif %}>
-            <input type="hidden" name="all_ips" value="{{ h.ip }}">
+            <input type="checkbox" form="picker-bulk" name="selected_ips" value="{{ h.ip }}" {% if h.checked %}checked{% endif %}>
+            <input type="hidden" form="picker-bulk" name="all_ips" value="{{ h.ip }}">
           </td>
           <td>{{ h.ip }}</td>
           <td>{{ h.hostname }}</td>
           <td>{{ h.mac }}</td>
+          <td>
+            <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline-flex; gap:6px; align-items:center; margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <input type="hidden" name="selected_ips" value="{{ h.ip }}">
+              <select name="os" aria-label="Target OS for {{ h.ip }}" style="width:auto; margin:0;">
+                <option value="linux">Linux (SSH)</option>
+                <option value="windows">Windows</option>
+              </select>
+              <button type="submit" class="btn btn-secondary btn-sm">{% call macros::icon("host") %} Quick add</button>
+            </form>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+  </div>
+
+  <form id="picker-bulk" method="post" action="/arsenals/panopticon/deploy/credentials">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    {% if let Some(notice) = rescan_notice %}
+    <input type="hidden" name="rescan_notice" value="{{ notice }}">
+    {% endif %}
+    <div style="margin-top:14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <label for="deploy-os" style="margin:0;">Target OS for selected</label>
+      <select id="deploy-os" name="os" style="width:auto; margin:0;">
+        <option value="linux">Linux (push over SSH)</option>
+        <option value="windows">Windows (get deploy command)</option>
+      </select>
+    </div>
     <div style="margin-top:14px;">
       <button type="submit" formaction="/arsenals/panopticon/deploy/picker/refresh" name="select" value="all" class="btn-secondary">Select all</button>
       <button type="submit" formaction="/arsenals/panopticon/deploy/picker/refresh" name="select" value="none" class="btn-secondary">Deselect all</button>

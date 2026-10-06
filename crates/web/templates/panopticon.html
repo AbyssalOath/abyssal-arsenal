@@ -127,9 +127,13 @@
           {% if can_manage || can_deploy %}
           <td class="actions">
             {% if can_deploy && d.managed_host_name.is_none() %}
-            <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline;">
+            <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline-flex; gap:6px; align-items:center;">
               <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
               <input type="hidden" name="selected_ips" value="{{ d.ip_address }}">
+              <select name="os" aria-label="Target OS" style="width:auto; margin:0;">
+                <option value="linux">Linux (SSH)</option>
+                <option value="windows">Windows</option>
+              </select>
               <button type="submit" class="btn btn-secondary">{% call macros::icon("host") %} Quick add</button>
             </form>
             {% endif %}
@@ -223,9 +227,13 @@
               {% if can_manage || can_deploy %}
               <td class="actions">
                 {% if can_deploy && d.managed_host_name.is_none() %}
-                <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline;">
+                <form method="post" action="/arsenals/panopticon/deploy/credentials" style="display:inline-flex; gap:6px; align-items:center;">
                   <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                   <input type="hidden" name="selected_ips" value="{{ d.ip_address }}">
+                  <select name="os" aria-label="Target OS" style="width:auto; margin:0;">
+                    <option value="linux">Linux (SSH)</option>
+                    <option value="windows">Windows</option>
+                  </select>
                   <button type="submit" class="btn btn-secondary">{% call macros::icon("host") %} Quick add</button>
                 </form>
                 {% endif %}

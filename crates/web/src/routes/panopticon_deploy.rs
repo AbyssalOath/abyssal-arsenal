@@ -37,9 +37,11 @@ use zeroize::Zeroizing;
 
 use crate::common::require_csrf;
 use crate::csrf;
+use crate::deploy_commands;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
+use crate::public_ca;
 use crate::ssh_deploy::{
     DeployJob, DeployTarget, HostDeployState, HostDeployStatus, RusshClient, SshAuthMethod,
     SshClient, SshCredentials, run_deploy_job,
@@ -48,7 +50,8 @@ use crate::state::AppState;
 use crate::templates::{
     BaseCtx, DeployCredentialHostRow, DeployHostKeyRow, DeployStatusHostRow,
     PanopticonDeployCredentialsTemplate, PanopticonDeployHostKeysTemplate,
-    PanopticonDeployStatusTemplate, PanopticonScanPickerTemplate, ScanPickerHostRow,
+    PanopticonDeployStatusTemplate, PanopticonDeployWindowsTemplate, PanopticonScanPickerTemplate,
+    ScanPickerHostRow,
 };
 use crate::theme;
 
@@ -248,6 +251,7 @@ pub async fn credentials_form(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
@@ -255,6 +259,14 @@ pub async fn credentials_form(
     require_csrf(&jar, &fields.one("csrf_token"))?;
     let selected_ips = fields.many("selected_ips");
     validate_ips(&selected_ips)?;
+
+    // Windows hosts have no SSH to push over: instead of the credentials form,
+    // hand back a ready-to-run install command (reusable token, CA-aware) to run
+    // on them or push via PDQ/GPO/Intune. Covers both the scan picker's bulk
+    // "Add Hosts" and the inventory's per-host "Quick add".
+    if fields.one("os") == "windows" {
+        return windows_deploy_page(&state, &jar, &ctx, &headers, selected_ips).await;
+    }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -284,6 +296,79 @@ pub async fn credentials_form(
         hosts,
         error: None,
     };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+/// Windows path for "add host from scan": mint a reusable deployment token so a
+/// single command enrolls every selected host, build the CA-aware Windows
+/// install commands, and show them alongside the host list. Nothing is pushed --
+/// Windows has no SSH equivalent here -- so the operator runs the command on the
+/// hosts (or pushes it via PDQ/GPO/Intune). The token is listed and revocable on
+/// `/admin/hosts`.
+async fn windows_deploy_page(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &abyssal_rbac::AuthContext,
+    headers: &HeaderMap,
+    selected_ips: Vec<String>,
+) -> Result<Response, WebError> {
+    let (csrf_token, new_cookie) = csrf::ensure_token(jar);
+    let base = BaseCtx::build(
+        ctx,
+        &theme::current(jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(jar),
+    )
+    .await?;
+
+    let mut hosts = Vec::with_capacity(selected_ips.len());
+    for ip in selected_ips {
+        let device = repo::network_devices::find_by_ip(&state.pool, &ip).await?;
+        hosts.push(DeployCredentialHostRow {
+            ip,
+            hostname: device
+                .and_then(|d| d.hostname)
+                .unwrap_or_else(|| "-".to_string()),
+        });
+    }
+
+    // One reusable deployment token covers every selected host; valid 24h.
+    const TTL_HOURS: i64 = 24;
+    let token = generate_token();
+    let hash = hash_token(&token);
+    repo::host_enrollment_tokens::create_deployment(
+        &state.pool,
+        &hash,
+        Some(ctx.user.id),
+        ChronoDuration::hours(TTL_HOURS),
+        Some("Panopticon Windows add"),
+    )
+    .await?;
+
+    let base_url = control_plane_base_url(state, headers);
+    let ca = public_ca::load();
+    let oneliner = deploy_commands::windows_oneliner(&base_url, &token, ca.as_ref());
+    let rmm = deploy_commands::windows_rmm(&base_url, &token, ca.as_ref());
+    let expires = crate::common::format_in_tz(
+        chrono::Utc::now() + ChronoDuration::hours(TTL_HOURS),
+        &ctx.user.timezone,
+    );
+
+    let tpl = PanopticonDeployWindowsTemplate {
+        base,
+        hosts,
+        oneliner,
+        rmm,
+        expires,
+    };
+    let jar = jar.clone();
     let jar = match new_cookie {
         Some(c) => jar.add(c),
         None => jar,
