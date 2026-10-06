@@ -123,12 +123,19 @@ Docker Compose. Once it's running:
    installs itself as a systemd service in one step. See
    [`crates/agent/README.md`](crates/agent/README.md) for the full
    walkthrough and non-interactive/scripted install options.
-4. Already have Panopticon's network discovery finding hosts you want to
+4. To manage a Windows host, go to `/admin/hosts` and generate a deployment
+   command (single-use, or a reusable deployment token for mass rollout). Run
+   it in an elevated PowerShell on the host, or push it with PDQ Deploy / a GPO
+   startup script / Intune; it downloads the agent from the control plane,
+   trusts its CA, enrolls, and installs itself as a service in one step.
+5. Already have Panopticon's network discovery finding hosts you want to
    manage? Run a discovery scan from `/arsenals/panopticon`, then use "Add
-   Hosts" on the results to deploy the agent to several of them over SSH at
-   once, instead of repeating step 3 by hand for each one -- see
+   Hosts" (or per-device "Quick add") on the results and pick the target OS:
+   **Linux** deploys the agent over SSH at once, instead of repeating step 3
+   by hand (see
    [ARCHITECTURE.md](ARCHITECTURE.md#deploying-agents-over-ssh-quick-add-host-from-network-scan)
-   for how credentials and host-key trust are handled.
+   for how credentials and host-key trust are handled); **Windows** hands you
+   the ready-to-run deploy command from step 4 for the selected hosts.
 
 The dashboard shows this build's version at all times and checks GitHub for
 a newer tagged release every few hours; if one exists, the notice turns into

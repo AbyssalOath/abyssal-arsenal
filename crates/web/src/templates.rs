@@ -1859,6 +1859,9 @@ pub struct PanopticonScanPickerTemplate {
     /// small banner so skipping the old confirm dialog doesn't leave the
     /// rescan looking like nothing happened.
     pub rescan_notice: Option<String>,
+    /// The bulk "target OS" selection carried across a "select all"/"none"
+    /// refresh so it doesn't reset to Linux each time -- "linux" or "windows".
+    pub bulk_os: String,
 }
 
 /// A running discovery scan's progress -- see

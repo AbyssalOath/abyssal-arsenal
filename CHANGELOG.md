@@ -132,6 +132,16 @@ for what that means for cloning and updating.
   deployment tokens are listed with their host-enrollment counts and a revoke
   button. (New `host_enrollment_tokens` columns; the single-use path is
   unchanged.)
+- **Panopticon "Add Host" now covers Windows, not just Linux/SSH.** The
+  post-scan picker and the Device Inventory's "Quick add" gained a target-OS
+  selector. Linux is unchanged (pushed to over SSH). Choosing Windows -- which
+  has no SSH to push over -- mints a reusable deployment token and shows a
+  ready-to-run install command (interactive, plus an unattended variant for PDQ
+  Deploy / Intune / GPO) that downloads the agent from the control plane, trusts
+  its CA by pinned fingerprint, and enrolls; each machine registers
+  automatically under its own hostname. The bulk picker lets you add several at
+  once; "Quick add" adds one at a time (its OS choice now persists across the
+  picker's "select all"/"none" refresh).
 
 ### Changed
 

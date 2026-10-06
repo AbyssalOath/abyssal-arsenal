@@ -64,8 +64,8 @@
     <div style="margin-top:14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
       <label for="deploy-os" style="margin:0;">Target OS for selected</label>
       <select id="deploy-os" name="os" style="width:auto; margin:0;">
-        <option value="linux">Linux (push over SSH)</option>
-        <option value="windows">Windows (get deploy command)</option>
+        <option value="linux"{% if bulk_os != "windows" %} selected{% endif %}>Linux (push over SSH)</option>
+        <option value="windows"{% if bulk_os == "windows" %} selected{% endif %}>Windows (get deploy command)</option>
       </select>
     </div>
     <div style="margin-top:14px;">

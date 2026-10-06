@@ -159,7 +159,8 @@ pub(crate) async fn render_scan_picker_from_discovered(
             checked: true,
         })
         .collect();
-    render_picker_response(state, jar, ctx, hosts, rescan_notice).await
+    // Fresh picker straight off a scan -- default the bulk OS selector to Linux.
+    render_picker_response(state, jar, ctx, hosts, rescan_notice, "linux".to_string()).await
 }
 
 /// Called by "select all"/"none" (`scan_picker_refresh`), which only has
@@ -173,6 +174,7 @@ pub(crate) async fn render_scan_picker(
     ips: Vec<String>,
     all_checked: bool,
     rescan_notice: Option<String>,
+    bulk_os: String,
 ) -> Result<Response, WebError> {
     let mut hosts = Vec::with_capacity(ips.len());
     for ip in ips {
@@ -190,7 +192,7 @@ pub(crate) async fn render_scan_picker(
             checked: all_checked,
         });
     }
-    render_picker_response(state, jar, ctx, hosts, rescan_notice).await
+    render_picker_response(state, jar, ctx, hosts, rescan_notice, bulk_os).await
 }
 
 async fn render_picker_response(
@@ -199,6 +201,7 @@ async fn render_picker_response(
     ctx: &abyssal_rbac::AuthContext,
     hosts: Vec<ScanPickerHostRow>,
     rescan_notice: Option<String>,
+    bulk_os: String,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -216,6 +219,7 @@ async fn render_picker_response(
         base,
         hosts,
         rescan_notice,
+        bulk_os,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -240,7 +244,14 @@ pub async fn scan_picker_refresh(
         if n.is_empty() { None } else { Some(n) }
     };
     let all_checked = fields.one("select") == "all";
-    render_scan_picker(&state, &jar, &ctx, all_ips, all_checked, rescan_notice).await
+    // Carry the bulk OS selection across the refresh so it doesn't snap back to
+    // Linux when the admin clicks "select all"/"none".
+    let bulk_os = if fields.one("os") == "windows" {
+        "windows".to_string()
+    } else {
+        "linux".to_string()
+    };
+    render_scan_picker(&state, &jar, &ctx, all_ips, all_checked, rescan_notice, bulk_os).await
 }
 
 // ---------------------------------------------------------------------
