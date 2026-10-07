@@ -6,7 +6,7 @@ use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
     THANATOS_DASHBOARD_RENDER_BUDGET, THANATOS_DASHBOARD_RENDER_BUDGET_DEFAULT,
 };
-use abyssal_core::{AppError, EventStatus, Permission, Severity};
+use abyssal_core::{AppError, EventStatus, IocType, Permission, Severity};
 use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use abyssal_rbac::AuthContext;
@@ -25,8 +25,10 @@ use crate::host_context;
 use crate::pagination;
 use crate::state::AppState;
 use crate::templates::{
-    AlertRow, BaseCtx, GroupPageInfo, SecurityEventRow, SeverityCountRow, SuggestedActionView,
-    ThanatosHostGroup, ThanatosHostTemplate, ThanatosTemplate,
+    AlertRow, BaseCtx, FacetHost, GroupPageInfo, IocView, SearchResultRow, SecurityEventRow,
+    SeverityCountRow, SuggestedActionView, SuppressionRuleView, ThanatosHostGroup,
+    ThanatosHostTemplate, ThanatosIocsTemplate, ThanatosRulesTemplate, ThanatosSearchTemplate,
+    ThanatosTemplate,
 };
 use crate::theme;
 
@@ -102,6 +104,7 @@ fn security_event_row(event: abyssal_core::SecurityEvent, timezone: &str) -> Sec
         severity_label,
         badge_class,
         label: event.label,
+        technique: event.technique,
         source: event.source,
         raw_line: event.raw_line,
         occurred_at: crate::common::format_in_tz(event.occurred_at, timezone),
@@ -278,6 +281,7 @@ pub async fn show(
         recent_alerts.push(AlertRow {
             host_name,
             label: event.label,
+            technique: event.technique,
             raw_line: event.raw_line,
             occurred_at: crate::common::format_in_tz(event.occurred_at, &ctx.user.timezone),
         });
@@ -406,6 +410,7 @@ pub async fn show(
     let tpl = ThanatosTemplate {
         base,
         can_manage: ctx.has(Permission::SecurityManage),
+        can_respond: ctx.has(Permission::IncidentsRespond),
         severity_summary,
         recent_alerts,
         total_event_count,
@@ -421,6 +426,643 @@ pub async fn show(
         None => jar,
     };
     Ok((jar, tpl).into_response())
+}
+
+// ---- Investigation console (M3) -------------------------------------------
+
+/// Results per page in the cross-host investigation console.
+const SEARCH_PER_PAGE: u32 = 50;
+
+/// Raw, string-form investigation-console filters parsed from the query string
+/// (echoed back into the form, and re-serialized onto pagination/toggle links).
+#[derive(Default)]
+struct SearchParams {
+    host: String,
+    source: String,
+    severity: String,
+    technique: String,
+    text: String,
+    from: String,
+    to: String,
+    show_resolved: bool,
+    page: u32,
+}
+
+fn parse_search_params(raw: Option<&str>) -> SearchParams {
+    let mut p = SearchParams {
+        page: 1,
+        ..Default::default()
+    };
+    let Some(raw) = raw else { return p };
+    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+        let value = value.trim().to_string();
+        match key.as_ref() {
+            "host" => p.host = value,
+            "source" => p.source = value,
+            "severity" => p.severity = value,
+            "technique" => p.technique = value,
+            "q" => p.text = value,
+            "from" => p.from = value,
+            "to" => p.to = value,
+            "show_resolved" => p.show_resolved = value == "1",
+            "page" => p.page = value.parse::<u32>().ok().filter(|n| *n >= 1).unwrap_or(1),
+            _ => {}
+        }
+    }
+    p
+}
+
+/// Every set filter as `(key, value)` pairs (excluding `page`) -- the basis for
+/// pagination/toggle links so a page change preserves the active filters.
+fn search_link_params(p: &SearchParams) -> Vec<(&'static str, String)> {
+    let mut v = Vec::new();
+    if !p.host.is_empty() {
+        v.push(("host", p.host.clone()));
+    }
+    if !p.source.is_empty() {
+        v.push(("source", p.source.clone()));
+    }
+    if !p.severity.is_empty() {
+        v.push(("severity", p.severity.clone()));
+    }
+    if !p.technique.is_empty() {
+        v.push(("technique", p.technique.clone()));
+    }
+    if !p.text.is_empty() {
+        v.push(("q", p.text.clone()));
+    }
+    if !p.from.is_empty() {
+        v.push(("from", p.from.clone()));
+    }
+    if !p.to.is_empty() {
+        v.push(("to", p.to.clone()));
+    }
+    if p.show_resolved {
+        v.push(("show_resolved", "1".to_string()));
+    }
+    v
+}
+
+fn search_href(params: &[(&'static str, String)]) -> String {
+    if params.is_empty() {
+        return "/arsenals/thanatos/search".to_string();
+    }
+    let mut ser = form_urlencoded::Serializer::new(String::new());
+    for (k, v) in params {
+        ser.append_pair(k, v);
+    }
+    format!("/arsenals/thanatos/search?{}", ser.finish())
+}
+
+/// A `YYYY-MM-DD` filter value as the start-of-day UTC instant (`None` if
+/// unset/unparseable). Interpreted as UTC -- a deliberate simplification for a
+/// date-granularity filter.
+fn parse_date_start(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    date.and_hms_opt(0, 0, 0)
+        .map(|ndt| chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc))
+}
+
+/// A `YYYY-MM-DD` filter value as the inclusive end-of-day UTC instant.
+fn parse_date_end(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    date.and_hms_micro_opt(23, 59, 59, 999_999)
+        .map(|ndt| chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc))
+}
+
+/// The cross-host SIEM investigation console (M3): full-text + faceted search
+/// over every stored security event, with pagination and the same
+/// acknowledge/resolve/suppress lifecycle actions the per-host page has.
+pub async fn search(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityView)?;
+    let params = parse_search_params(raw.as_deref());
+
+    let mut filter = repo::security_events::EventSearchFilter {
+        only_active: !params.show_resolved,
+        ..Default::default()
+    };
+    if !params.host.is_empty()
+        && let Ok(id) = Uuid::parse_str(&params.host)
+    {
+        filter.host_id = Some(id);
+    }
+    if !params.source.is_empty() {
+        filter.source = Some(params.source.clone());
+    }
+    if !params.severity.is_empty() {
+        filter.severity = Severity::from_key(&params.severity);
+    }
+    if !params.technique.is_empty() {
+        filter.technique = Some(params.technique.clone());
+    }
+    if !params.text.is_empty() {
+        filter.text = Some(params.text.clone());
+    }
+    filter.from = parse_date_start(&params.from);
+    filter.to = parse_date_end(&params.to);
+
+    // Facets for the filter dropdowns.
+    let all_hosts = repo::hosts::list(&state.pool).await?;
+    let host_names: HashMap<Uuid, String> =
+        all_hosts.iter().map(|h| (h.id, h.name.clone())).collect();
+    let hosts: Vec<FacetHost> = all_hosts
+        .iter()
+        .map(|h| FacetHost {
+            id: h.id.to_string(),
+            name: h.name.clone(),
+        })
+        .collect();
+    let sources = repo::security_events::distinct_sources(&state.pool).await?;
+    let techniques = repo::security_events::distinct_techniques(&state.pool).await?;
+
+    // Count, clamp the page, fetch the result window.
+    let total = repo::security_events::count_events(&state.pool, &filter).await? as u64;
+    let (_, per_page) = pagination::normalize(
+        Some(params.page),
+        Some(SEARCH_PER_PAGE),
+        SEARCH_PER_PAGE,
+        pagination::MAX_PER_PAGE,
+    );
+    let total_pages = pagination::total_pages(total, per_page);
+    let page_num = params.page.max(1).min(total_pages.max(1));
+    let offset = pagination::offset(page_num, per_page);
+    let events =
+        repo::security_events::search_events(&state.pool, &filter, i64::from(per_page), offset)
+            .await?;
+
+    let results: Vec<SearchResultRow> = events
+        .into_iter()
+        .map(|e| {
+            let host_id = e.host_id;
+            let host_name = host_names
+                .get(&host_id)
+                .cloned()
+                .unwrap_or_else(|| "(removed host)".to_string());
+            SearchResultRow {
+                host_id: host_id.to_string(),
+                host_name,
+                event: security_event_row(e, &ctx.user.timezone),
+            }
+        })
+        .collect();
+
+    // Pagination links preserve every active filter.
+    let link_params = search_link_params(&params);
+    let page_meta = pagination::Page::<()>::new(Vec::new(), page_num, per_page, total);
+    let page = pagination::numbered_page_info(&page_meta, |p| {
+        let refs: Vec<(&str, &str)> = link_params.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        pagination::page_link("/arsenals/thanatos/search", &refs, p)
+    });
+
+    // Toggle-resolved link: same filters, flipped show_resolved, back to page 1.
+    let mut toggle_params = link_params.clone();
+    toggle_params.retain(|(k, _)| *k != "show_resolved");
+    if !params.show_resolved {
+        toggle_params.push(("show_resolved", "1".to_string()));
+    }
+    let toggle_resolved_href = search_href(&toggle_params);
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+
+    let tpl = ThanatosSearchTemplate {
+        base,
+        can_manage: ctx.has(Permission::SecurityManage),
+        can_respond: ctx.has(Permission::IncidentsRespond),
+        f_host: params.host,
+        f_source: params.source,
+        f_severity: params.severity,
+        f_technique: params.technique,
+        f_text: params.text,
+        f_from: params.from,
+        f_to: params.to,
+        show_resolved: params.show_resolved,
+        hosts,
+        sources,
+        techniques,
+        results,
+        page,
+        toggle_resolved_href,
+        clear_href: "/arsenals/thanatos/search".to_string(),
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+// ---- Suppression / allowlist rules (M4) -----------------------------------
+
+/// Minimum length for a `text_contains` allowlist value -- a one- or two-char
+/// token would match far too broadly, so creation rejects it.
+const MIN_TEXT_CONTAINS_LEN: usize = 3;
+
+fn optional_trimmed(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+/// The suppression/allowlist rule management page (`security.manage`).
+pub async fn rules(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+
+    let all = repo::thanatos_suppression_rules::list_all(&state.pool).await?;
+    let all_hosts = repo::hosts::list(&state.pool).await?;
+    let host_names: HashMap<Uuid, String> =
+        all_hosts.iter().map(|h| (h.id, h.name.clone())).collect();
+    let hosts: Vec<FacetHost> = all_hosts
+        .iter()
+        .map(|h| FacetHost {
+            id: h.id.to_string(),
+            name: h.name.clone(),
+        })
+        .collect();
+    let sources = repo::security_events::distinct_sources(&state.pool).await?;
+    let techniques = repo::security_events::distinct_techniques(&state.pool).await?;
+
+    let now = chrono::Utc::now();
+    let rules: Vec<SuppressionRuleView> = all
+        .into_iter()
+        .map(|r| {
+            let scope = match r.host_id {
+                None => "All hosts".to_string(),
+                Some(h) => host_names
+                    .get(&h)
+                    .cloned()
+                    .unwrap_or_else(|| format!("host {h}")),
+            };
+            let active = r.expires_at.is_none_or(|e| e > now);
+            SuppressionRuleView {
+                id: r.id.to_string(),
+                scope,
+                source: r.source.unwrap_or_else(|| "any".to_string()),
+                label: r.label.unwrap_or_else(|| "any".to_string()),
+                technique: r.technique.unwrap_or_else(|| "any".to_string()),
+                text_contains: r.text_contains.unwrap_or_else(|| "any".to_string()),
+                reason: r.reason.unwrap_or_default(),
+                created_at: crate::common::format_in_tz(r.created_at, &ctx.user.timezone),
+                expires: match r.expires_at {
+                    None => "Never".to_string(),
+                    Some(e) => crate::common::format_in_tz(e, &ctx.user.timezone),
+                },
+                active,
+            }
+        })
+        .collect();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = ThanatosRulesTemplate {
+        base,
+        rules,
+        hosts,
+        sources,
+        techniques,
+    };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct CreateRuleForm {
+    csrf_token: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    technique: String,
+    #[serde(default)]
+    text_contains: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    expires_days: String,
+}
+
+pub async fn create_rule(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<CreateRuleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let host_id = match optional_trimmed(&form.host) {
+        Some(h) => Some(
+            Uuid::parse_str(&h)
+                .map_err(|_| WebError(AppError::Validation("Invalid host selection.".into())))?,
+        ),
+        None => None,
+    };
+    let source = optional_trimmed(&form.source);
+    let label = optional_trimmed(&form.label);
+    let technique = optional_trimmed(&form.technique);
+    let text_contains = optional_trimmed(&form.text_contains);
+    let reason = optional_trimmed(&form.reason);
+
+    // At least one criterion, or the rule would suppress everything.
+    if host_id.is_none()
+        && source.is_none()
+        && label.is_none()
+        && technique.is_none()
+        && text_contains.is_none()
+    {
+        return Err(WebError(AppError::Validation(
+            "A rule needs at least one criterion (host, source, label, technique, or text).".into(),
+        )));
+    }
+    // A too-short text token matches far too broadly.
+    if let Some(t) = &text_contains
+        && t.chars().count() < MIN_TEXT_CONTAINS_LEN
+    {
+        return Err(WebError(AppError::Validation(format!(
+            "Text to match must be at least {MIN_TEXT_CONTAINS_LEN} characters."
+        ))));
+    }
+
+    let expires_at = match optional_trimmed(&form.expires_days) {
+        None => None,
+        Some(d) => {
+            let days: i64 = d.parse().map_err(|_| {
+                WebError(AppError::Validation(
+                    "Expiry must be a whole number of days.".into(),
+                ))
+            })?;
+            if days <= 0 || days > 3650 {
+                return Err(WebError(AppError::Validation(
+                    "Expiry must be between 1 and 3650 days (leave blank for never).".into(),
+                )));
+            }
+            Some(chrono::Utc::now() + chrono::Duration::days(days))
+        }
+    };
+
+    repo::thanatos_suppression_rules::create(
+        &state.pool,
+        host_id,
+        source.as_deref(),
+        label.as_deref(),
+        technique.as_deref(),
+        text_contains.as_deref(),
+        reason.as_deref(),
+        Some(ctx.user.id),
+        expires_at,
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("thanatos.suppression_rule"),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/thanatos/rules").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct DeleteRuleForm {
+    csrf_token: String,
+}
+
+pub async fn delete_rule(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(rule_id): Path<Uuid>,
+    Form(form): Form<DeleteRuleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::thanatos_suppression_rules::delete(&state.pool, rule_id).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("thanatos.suppression_rule"),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/thanatos/rules").into_response())
+}
+
+// ---- Threat-intel IOCs (M5) -----------------------------------------------
+
+/// The threat-intel IOC management page (`security.manage`).
+pub async fn iocs(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+
+    let all = repo::thanatos_iocs::list_all(&state.pool).await?;
+    let now = chrono::Utc::now();
+    let iocs: Vec<IocView> = all
+        .into_iter()
+        .map(|i| IocView {
+            id: i.id.to_string(),
+            ioc_type: i.ioc_type.to_string(),
+            value: i.value,
+            severity: i.severity.to_string(),
+            label: i.label.unwrap_or_default(),
+            created_at: crate::common::format_in_tz(i.created_at, &ctx.user.timezone),
+            expires: match i.expires_at {
+                None => "Never".to_string(),
+                Some(e) => crate::common::format_in_tz(e, &ctx.user.timezone),
+            },
+            active: i.expires_at.is_none_or(|e| e > now),
+        })
+        .collect();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = ThanatosIocsTemplate { base, iocs };
+    let jar = jar.clone();
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct CreateIocsForm {
+    csrf_token: String,
+    ioc_type: String,
+    #[serde(default)]
+    severity: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    values: String,
+    #[serde(default)]
+    expires_days: String,
+}
+
+pub async fn create_iocs(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<CreateIocsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let ioc_type = IocType::from_key(form.ioc_type.trim())
+        .ok_or_else(|| WebError(AppError::Validation("Invalid IOC type.".into())))?;
+    let severity = if form.severity.trim().is_empty() {
+        Severity::High
+    } else {
+        Severity::from_key(form.severity.trim())
+            .ok_or_else(|| WebError(AppError::Validation("Invalid severity.".into())))?
+    };
+    let label = optional_trimmed(&form.label);
+    let expires_at = match optional_trimmed(&form.expires_days) {
+        None => None,
+        Some(d) => {
+            let days: i64 = d.parse().map_err(|_| {
+                WebError(AppError::Validation(
+                    "Expiry must be a whole number of days.".into(),
+                ))
+            })?;
+            if days <= 0 || days > 3650 {
+                return Err(WebError(AppError::Validation(
+                    "Expiry must be between 1 and 3650 days (leave blank for never).".into(),
+                )));
+            }
+            Some(chrono::Utc::now() + chrono::Duration::days(days))
+        }
+    };
+
+    // One indicator per line; normalize per type and skip blanks/duplicates.
+    let mut added = 0usize;
+    for raw in form.values.lines() {
+        let Some(value) = ioc_type.normalize(raw) else {
+            continue;
+        };
+        if value.len() > 255 {
+            continue;
+        }
+        if repo::thanatos_iocs::create(
+            &state.pool,
+            ioc_type,
+            &value,
+            severity,
+            label.as_deref(),
+            Some(ctx.user.id),
+            expires_at,
+        )
+        .await?
+        {
+            added += 1;
+        }
+    }
+
+    if added == 0 {
+        return Err(WebError(AppError::Validation(
+            "No new indicators were added (all were blank or already present).".into(),
+        )));
+    }
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("thanatos.ioc")
+            .metadata(serde_json::json!({ "added": added, "type": ioc_type.as_key() })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/thanatos/iocs").into_response())
+}
+
+pub async fn delete_ioc(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(ioc_id): Path<Uuid>,
+    Form(form): Form<DeleteRuleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::thanatos_iocs::delete(&state.pool, ioc_id).await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("thanatos.ioc"),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/thanatos/iocs").into_response())
 }
 
 async fn render_host(
@@ -514,6 +1156,7 @@ async fn render_host_with_suggestions(
 
     let tpl = ThanatosHostTemplate {
         can_manage: ctx.has(Permission::SecurityManage),
+        can_respond: ctx.has(Permission::IncidentsRespond),
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         base,
@@ -603,6 +1246,14 @@ pub async fn scan(
         Vec::new()
     };
 
+    let c2_ports_raw = repo::settings::get_string(
+        &state.pool,
+        abyssal_core::settings::THANATOS_C2_PORTS,
+        abyssal_core::settings::THANATOS_C2_PORTS_DEFAULT,
+    )
+    .await?;
+    let c2_ports = crate::thanatos_ops::parse_c2_ports(&c2_ports_raw);
+
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor
@@ -614,6 +1265,8 @@ pub async fn scan(
             AgentOperation::ScanSecurityEvents {
                 extra_fim_paths,
                 channel_offsets,
+                c2_ports,
+                fast_only: false,
             },
             Permission::SecurityView,
             OperationKind::Read,
@@ -902,6 +1555,61 @@ pub async fn suppress_event(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_search_params_reads_every_filter() {
+        let p = parse_search_params(Some(
+            "q=lsass&host=abc&source=sysmon&severity=high&technique=T1003.001&from=2026-01-01&to=2026-01-31&show_resolved=1&page=3",
+        ));
+        assert_eq!(p.text, "lsass");
+        assert_eq!(p.host, "abc");
+        assert_eq!(p.source, "sysmon");
+        assert_eq!(p.severity, "high");
+        assert_eq!(p.technique, "T1003.001");
+        assert_eq!(p.from, "2026-01-01");
+        assert_eq!(p.to, "2026-01-31");
+        assert!(p.show_resolved);
+        assert_eq!(p.page, 3);
+    }
+
+    #[test]
+    fn parse_search_params_defaults_page_to_one() {
+        let p = parse_search_params(None);
+        assert_eq!(p.page, 1);
+        assert!(!p.show_resolved);
+        assert!(p.text.is_empty());
+        // A non-numeric/zero page falls back to 1.
+        assert_eq!(parse_search_params(Some("page=0")).page, 1);
+        assert_eq!(parse_search_params(Some("page=abc")).page, 1);
+    }
+
+    #[test]
+    fn date_filters_cover_the_whole_day() {
+        let start = parse_date_start("2026-01-15").unwrap();
+        let end = parse_date_end("2026-01-15").unwrap();
+        assert_eq!(start.to_rfc3339(), "2026-01-15T00:00:00+00:00");
+        assert!(end > start);
+        assert_eq!(parse_date_start(""), None);
+        assert_eq!(parse_date_start("not-a-date"), None);
+    }
+
+    #[test]
+    fn search_href_preserves_set_filters_only() {
+        let p = parse_search_params(Some("q=foo&severity=high&page=2"));
+        let href = search_href(&search_link_params(&p));
+        assert!(href.starts_with("/arsenals/thanatos/search?"));
+        assert!(href.contains("q=foo"));
+        assert!(href.contains("severity=high"));
+        // page isn't a link param (pagination adds it separately).
+        assert!(!href.contains("page="));
+        // Empty filters produce the bare path.
+        assert_eq!(
+            search_href(&search_link_params(&parse_search_params(None))),
+            "/arsenals/thanatos/search"
+        );
+    }
+
     #[test]
     fn alerted_scan_suggests_inquest_and_postmortem() {
         let registry = abyssal_workflows::WorkflowRegistry::load_builtin();

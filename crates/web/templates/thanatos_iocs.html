@@ -1,0 +1,89 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Thanatos IOCs — Abyssal Arsenal{% endblock %}
+{% block heading %}Thanatos — Threat-Intel Indicators{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Indicators of compromise matched against every stored finding. When an IP, domain or file
+    hash below appears in a finding, a high-signal <code>ioc</code> finding is raised at the
+    chosen severity (and alerted through your notification channels). Matching is on whole tokens
+    &mdash; a domain also matches its subdomains, an IP/hash matches exactly.
+    <a href="/arsenals/thanatos">&larr; Back to the Thanatos dashboard</a>
+  </p>
+
+  <h3>Import indicators</h3>
+  <form method="post" action="/arsenals/thanatos/iocs" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-start;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <div style="display:flex; flex-direction:column; gap:12px; flex:1 1 180px;">
+      <div>
+        <label for="ioc_type">Type</label>
+        <select id="ioc_type" name="ioc_type" style="width:100%;">
+          <option value="ip">IP address</option>
+          <option value="domain">Domain</option>
+          <option value="hash">File hash</option>
+        </select>
+      </div>
+      <div>
+        <label for="severity">Severity on match</label>
+        <select id="severity" name="severity" style="width:100%;">
+          <option value="high" selected>High</option>
+          <option value="critical">Critical</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <div>
+        <label for="label">Feed / source label</label>
+        <input type="text" id="label" name="label" placeholder="e.g. AlienVault OTX" style="width:100%;">
+      </div>
+      <div>
+        <label for="expires_days">Expires (days)</label>
+        <input type="number" id="expires_days" name="expires_days" min="1" max="3650" placeholder="never" style="width:100%;">
+      </div>
+    </div>
+    <div style="flex:2 1 300px;">
+      <label for="values">Indicators (one per line)</label>
+      <textarea id="values" name="values" rows="8" placeholder="203.0.113.9&#10;evil.example.com&#10;44d88612fea8a8f36de82e1278abb02f" style="width:100%;"></textarea>
+    </div>
+    <div>
+      <button type="submit" class="btn-danger">{% call macros::icon("generate") %} Import</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Indicators</h3>
+  {% if iocs.is_empty() %}
+  <p class="results-empty">No indicators yet.</p>
+  {% else %}
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Type</th><th>Indicator</th><th>Severity</th><th>Feed</th><th>Added</th><th>Expires</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for i in iocs %}
+        <tr{% if !i.active %} style="opacity:0.55;"{% endif %}>
+          <td><span class="badge badge-muted">{{ i.ioc_type }}</span></td>
+          <td style="overflow-wrap:anywhere;">{{ i.value }}</td>
+          <td>{{ i.severity }}</td>
+          <td>{{ i.label }}</td>
+          <td>{{ i.created_at }}</td>
+          <td>{{ i.expires }}{% if !i.active %} <span class="badge badge-muted">expired</span>{% endif %}</td>
+          <td class="actions">
+            <form method="post" action="/arsenals/thanatos/iocs/{{ i.id }}/delete" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn btn-secondary btn-sm">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

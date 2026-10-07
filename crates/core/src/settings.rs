@@ -142,6 +142,38 @@ pub const THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT: u32 = 60;
 pub const THANATOS_CROSS_HOST_THRESHOLD: &str = "thanatos.cross_host_threshold";
 pub const THANATOS_CROSS_HOST_THRESHOLD_DEFAULT: u32 = 3;
 
+/// Comma/space/newline-separated list of remote TCP ports an *outbound*
+/// connection to which Thanatos flags as a likely reverse-shell/C2 beacon
+/// (`AgentOperation::ScanSecurityEvents.c2_ports`, matched by exact numeric
+/// port on both platforms). Promoted from a hardcoded agent-side list to a
+/// setting so an operator can add their environment's own known-bad ports
+/// without rebuilding and redeploying every agent. The default is a short,
+/// high-confidence set of classic reverse-shell/RAT/backdoor ports -- kept
+/// deliberately narrow (no 80/443/8080/8443 and the like) because outbound to
+/// common ports is ordinary traffic and would drown the signal. Clearing it
+/// disables port-based outbound flagging entirely (the event-log and
+/// command-line detections are unaffected).
+pub const THANATOS_C2_PORTS: &str = "thanatos.c2_ports";
+pub const THANATOS_C2_PORTS_DEFAULT: &str = "1337,4444,4445,5555,6666,6667,12345,31337,31338,54321";
+
+/// How many days of Thanatos security events to keep before the retention
+/// sweep (`thanatos_ops::spawn_thanatos_retention`) prunes them -- the SIEM
+/// event store's data-lifecycle policy, so `thanatos_events` stops growing
+/// unbounded. Pruned strictly by age regardless of status/source. `0` disables
+/// pruning entirely (keep everything). Default 90 days.
+pub const THANATOS_EVENT_RETENTION_DAYS: &str = "thanatos.event_retention_days";
+pub const THANATOS_EVENT_RETENTION_DAYS_DEFAULT: u32 = 90;
+
+/// Interval (seconds) of the fast "act-now" sweep (M6 Option A,
+/// `thanatos_ops::spawn_thanatos_fast_sweep`), which polls every connected host
+/// for only a small curated set of high-signal events (ransomware/LOLBin
+/// command lines, log clearing, process injection, Defender off) to cut
+/// detection latency between the full 60s sweeps. `0` disables it (the default
+/// -- it's extra endpoint load, so opt-in). When set, clamped to 5-60s. Only
+/// runs while background monitoring (`THANATOS_MONITORING_ENABLED`) is also on.
+pub const THANATOS_FAST_SWEEP_SECONDS: &str = "thanatos.fast_sweep_seconds";
+pub const THANATOS_FAST_SWEEP_SECONDS_DEFAULT: u32 = 0;
+
 /// Gates Panopticon's unattended periodic *active* discovery sweep (real
 /// nmap traffic against `PANOPTICON_SWEEP_TARGET`, on a long fixed
 /// interval -- see `spawn_panopticon_sweep`). Off by default, same

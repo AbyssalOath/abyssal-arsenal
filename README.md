@@ -30,7 +30,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 
 ## Arsenals
 
-All 24 arsenals are fully implemented -- each gated by its own
+All 25 arsenals are fully implemented -- each gated by its own
 permission(s) and, where the blast radius warrants it, a second layer of
 admin opt-in on top of the usual confirmation. Grouped by function:
 
@@ -53,6 +53,7 @@ admin opt-in on top of the usual confirmation. Grouped by function:
 
 | Arsenal | Covers |
 | --- | --- |
+| Haruspex | Active Directory DNS and domain-controller health diagnostics (Windows) |
 | Mortiscope | System health and resource monitoring |
 | Necropsy | Hardware inspection and diagnostics |
 | Obituary | Historical logging and audit record management |
@@ -67,7 +68,7 @@ admin opt-in on top of the usual confirmation. Grouped by function:
 | Cryptkeeper | Secrets, credentials, certificates, keys, sensitive configuration |
 | Inquest | Incident containment and remediation (IP blocklisting, file quarantine, full host isolation) |
 | Postmortem | Forensic examination after failures or suspected compromise |
-| Thanatos | Security telemetry collection, threat detection, event correlation, and alerting |
+| Thanatos | Security telemetry (SIEM/EDR): MITRE-tagged detection, cross-host search & retention, correlation, suppression/allowlist & threat-intel IOC rules, multi-channel alerting (email/syslog/Slack/Teams/webhook), and inline response |
 
 **Preserve / Recover**
 

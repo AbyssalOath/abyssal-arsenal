@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod error;
 pub mod host;
+pub mod ioc;
 pub mod macros;
 pub mod module;
 pub mod network_device;
@@ -19,6 +20,7 @@ pub mod user;
 pub use crypto::{CryptoError, EncryptionKey};
 pub use error::AppError;
 pub use host::Host;
+pub use ioc::{Ioc, IocType};
 pub use macros::{Macro, MacroScope, MacroType};
 pub use module::ModuleCategory;
 pub use network_device::{
@@ -32,7 +34,7 @@ pub use reliquary_backup::{
     EncryptionMetadata, ManifestEntry, VerificationStatus,
 };
 pub use role::{BUILT_IN_ROLES, MAX_ROLE_DEPTH, Role};
-pub use security_event::{EventStatus, SecurityEvent, Severity};
+pub use security_event::{EventStatus, SecurityEvent, Severity, SuppressionRule};
 pub use session::Session;
 pub use storage::{
     AccessMethod, Capability, ConnectionAccessMethod, ConnectionCapability, ConnectionOrigin,

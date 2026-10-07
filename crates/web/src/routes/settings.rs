@@ -8,11 +8,12 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
     THANATOS_ALERT_RECIPIENTS, THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED,
-    THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, THANATOS_CORRELATION_THRESHOLD,
-    THANATOS_CORRELATION_THRESHOLD_DEFAULT, THANATOS_CORRELATION_WINDOW_MINUTES,
-    THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_EXTRA_FIM_PATHS,
-    THANATOS_MONITORING_ENABLED, THANATOS_SWEEP_INTERVAL_SECONDS,
-    THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
+    THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, THANATOS_C2_PORTS, THANATOS_C2_PORTS_DEFAULT,
+    THANATOS_CORRELATION_THRESHOLD, THANATOS_CORRELATION_THRESHOLD_DEFAULT,
+    THANATOS_CORRELATION_WINDOW_MINUTES, THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT,
+    THANATOS_EVENT_RETENTION_DAYS, THANATOS_EVENT_RETENTION_DAYS_DEFAULT, THANATOS_EXTRA_FIM_PATHS,
+    THANATOS_FAST_SWEEP_SECONDS, THANATOS_FAST_SWEEP_SECONDS_DEFAULT, THANATOS_MONITORING_ENABLED,
+    THANATOS_SWEEP_INTERVAL_SECONDS, THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
 };
 use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
@@ -67,6 +68,9 @@ pub async fn show(
         repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "").await?;
     let thanatos_extra_fim_paths =
         repo::settings::get_string(&state.pool, THANATOS_EXTRA_FIM_PATHS, "").await?;
+    let thanatos_c2_ports =
+        repo::settings::get_string(&state.pool, THANATOS_C2_PORTS, THANATOS_C2_PORTS_DEFAULT)
+            .await?;
     let thanatos_auto_quarantine_ssh_keys_enabled = repo::settings::get_bool(
         &state.pool,
         THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED,
@@ -91,6 +95,18 @@ pub async fn show(
         &state.pool,
         THANATOS_SWEEP_INTERVAL_SECONDS,
         THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
+    )
+    .await?;
+    let thanatos_event_retention_days = repo::settings::get_u32(
+        &state.pool,
+        THANATOS_EVENT_RETENTION_DAYS,
+        THANATOS_EVENT_RETENTION_DAYS_DEFAULT,
+    )
+    .await?;
+    let thanatos_fast_sweep_seconds = repo::settings::get_u32(
+        &state.pool,
+        THANATOS_FAST_SWEEP_SECONDS,
+        THANATOS_FAST_SWEEP_SECONDS_DEFAULT,
     )
     .await?;
     let panopticon_sweep_enabled =
@@ -133,11 +149,14 @@ pub async fn show(
         thanatos_monitoring_enabled,
         thanatos_alert_recipients,
         thanatos_extra_fim_paths,
+        thanatos_c2_ports,
         thanatos_auto_quarantine_ssh_keys_enabled,
         thanatos_auto_disable_account_enabled,
         thanatos_correlation_threshold,
         thanatos_correlation_window_minutes,
         thanatos_sweep_interval_seconds,
+        thanatos_fast_sweep_seconds,
+        thanatos_event_retention_days,
         panopticon_sweep_enabled,
         panopticon_sweep_target,
         panopticon_mdns_enabled,
@@ -547,11 +566,121 @@ pub async fn set_thanatos_extra_fim_paths(
 }
 
 #[derive(Deserialize)]
+pub struct ThanatosC2PortsForm {
+    csrf_token: String,
+    #[serde(default)]
+    ports: String,
+}
+
+/// Saves `THANATOS_C2_PORTS` (the outbound-flagging port set). An all-blank
+/// value is accepted and stored as empty -- that deliberately disables
+/// port-based outbound flagging. A non-blank value that yields no valid port
+/// is rejected (a typo shouldn't silently turn the feature off); otherwise the
+/// value is normalized to a sorted, de-duplicated, comma-separated canonical
+/// form so it round-trips cleanly.
+pub async fn set_thanatos_c2_ports(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosC2PortsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let parsed = crate::thanatos_ops::parse_c2_ports(&form.ports);
+    if parsed.is_empty() && !form.ports.trim().is_empty() {
+        return Err(WebError(AppError::Validation(
+            "No valid ports found. Enter comma-separated TCP port numbers (1-65535), or leave blank to disable outbound port flagging.".into(),
+        )));
+    }
+    if parsed.len() > 256 {
+        return Err(WebError(AppError::Validation(
+            "Too many ports (max 256).".into(),
+        )));
+    }
+    let canonical = parsed
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_C2_PORTS,
+        serde_json::json!(canonical),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(THANATOS_C2_PORTS),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ThanatosRetentionForm {
+    csrf_token: String,
+    retention_days: u32,
+}
+
+/// Saves `THANATOS_EVENT_RETENTION_DAYS` -- the SIEM event store's
+/// data-lifecycle window. `0` disables pruning (keep everything); otherwise
+/// bounded to a sane range so a typo can't silently keep one day or an absurd
+/// span.
+pub async fn set_thanatos_retention(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ThanatosRetentionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if form.retention_days > 3650 {
+        return Err(WebError(AppError::Validation(
+            "Retention must be between 0 (keep everything) and 3650 days.".into(),
+        )));
+    }
+
+    repo::settings::set(
+        &state.pool,
+        THANATOS_EVENT_RETENTION_DAYS,
+        serde_json::json!(form.retention_days),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(THANATOS_EVENT_RETENTION_DAYS),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
 pub struct ThanatosCorrelationForm {
     csrf_token: String,
     threshold: u32,
     window_minutes: u32,
     sweep_interval_seconds: u32,
+    #[serde(default)]
+    fast_sweep_seconds: u32,
 }
 
 /// One form, three related tunables -- the correlation threshold/window
@@ -584,11 +713,25 @@ pub async fn set_thanatos_correlation(
             "Sweep interval must be between 10 and 3600 seconds.".into(),
         )));
     }
+    // Fast "act-now" sweep: 0 disables; otherwise 5-60s (clamped agent-side too).
+    if form.fast_sweep_seconds != 0 && (form.fast_sweep_seconds < 5 || form.fast_sweep_seconds > 60)
+    {
+        return Err(WebError(AppError::Validation(
+            "Fast sweep interval must be 0 (off) or between 5 and 60 seconds.".into(),
+        )));
+    }
 
     repo::settings::set(
         &state.pool,
         THANATOS_CORRELATION_THRESHOLD,
         serde_json::json!(form.threshold),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        THANATOS_FAST_SWEEP_SECONDS,
+        serde_json::json!(form.fast_sweep_seconds),
         Some(ctx.user.id),
     )
     .await?;
@@ -619,6 +762,7 @@ pub async fn set_thanatos_correlation(
                 "threshold": form.threshold,
                 "window_minutes": form.window_minutes,
                 "sweep_interval_seconds": form.sweep_interval_seconds,
+                "fast_sweep_seconds": form.fast_sweep_seconds,
             })),
     )
     .await?;

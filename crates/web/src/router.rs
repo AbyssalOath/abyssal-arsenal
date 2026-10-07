@@ -210,6 +210,14 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_thanatos_extra_fim_paths),
         )
         .route(
+            "/admin/settings/thanatos-c2-ports",
+            post(routes::settings::set_thanatos_c2_ports),
+        )
+        .route(
+            "/admin/settings/thanatos-retention",
+            post(routes::settings::set_thanatos_retention),
+        )
+        .route(
             "/admin/settings/thanatos-auto-quarantine-ssh-keys",
             post(routes::settings::set_thanatos_auto_quarantine_ssh_keys),
         )
@@ -1693,6 +1701,23 @@ pub fn build(state: AppState) -> Router {
             get(routes::panopticon_scan::scan_view),
         )
         .route("/arsenals/thanatos", get(routes::thanatos::show))
+        .route("/arsenals/thanatos/search", get(routes::thanatos::search))
+        .route(
+            "/arsenals/thanatos/rules",
+            get(routes::thanatos::rules).post(routes::thanatos::create_rule),
+        )
+        .route(
+            "/arsenals/thanatos/rules/:rule_id/delete",
+            post(routes::thanatos::delete_rule),
+        )
+        .route(
+            "/arsenals/thanatos/iocs",
+            get(routes::thanatos::iocs).post(routes::thanatos::create_iocs),
+        )
+        .route(
+            "/arsenals/thanatos/iocs/:ioc_id/delete",
+            post(routes::thanatos::delete_ioc),
+        )
         .route(
             "/arsenals/thanatos/:host_id",
             get(routes::thanatos::show_host),

@@ -441,14 +441,16 @@ mod tests {
 
     #[test]
     fn asset_names_match_the_release_workflow() {
-        let asset = PlatformAsset {
-            stem: "abyssal-agent-v0.1.3-x86_64-unknown-linux-gnu".to_string(),
-        };
         #[cfg(not(windows))]
-        assert_eq!(
-            asset.archive_name(),
-            "abyssal-agent-v0.1.3-x86_64-unknown-linux-gnu.tar.gz"
-        );
+        {
+            let asset = PlatformAsset {
+                stem: "abyssal-agent-v0.1.3-x86_64-unknown-linux-gnu".to_string(),
+            };
+            assert_eq!(
+                asset.archive_name(),
+                "abyssal-agent-v0.1.3-x86_64-unknown-linux-gnu.tar.gz"
+            );
+        }
         #[cfg(windows)]
         {
             let asset = PlatformAsset {

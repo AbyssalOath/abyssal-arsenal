@@ -24,10 +24,12 @@ use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::Severity;
 use abyssal_core::settings::{
     THANATOS_ALERT_RECIPIENTS, THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED,
-    THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, THANATOS_CORRELATION_THRESHOLD,
-    THANATOS_CORRELATION_THRESHOLD_DEFAULT, THANATOS_CORRELATION_WINDOW_MINUTES,
-    THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT, THANATOS_CROSS_HOST_THRESHOLD,
-    THANATOS_CROSS_HOST_THRESHOLD_DEFAULT, THANATOS_EXTRA_FIM_PATHS, THANATOS_MONITORING_ENABLED,
+    THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, THANATOS_C2_PORTS, THANATOS_C2_PORTS_DEFAULT,
+    THANATOS_CORRELATION_THRESHOLD, THANATOS_CORRELATION_THRESHOLD_DEFAULT,
+    THANATOS_CORRELATION_WINDOW_MINUTES, THANATOS_CORRELATION_WINDOW_MINUTES_DEFAULT,
+    THANATOS_CROSS_HOST_THRESHOLD, THANATOS_CROSS_HOST_THRESHOLD_DEFAULT,
+    THANATOS_EVENT_RETENTION_DAYS, THANATOS_EVENT_RETENTION_DAYS_DEFAULT, THANATOS_EXTRA_FIM_PATHS,
+    THANATOS_FAST_SWEEP_SECONDS, THANATOS_FAST_SWEEP_SECONDS_DEFAULT, THANATOS_MONITORING_ENABLED,
     THANATOS_SWEEP_INTERVAL_SECONDS, THANATOS_SWEEP_INTERVAL_SECONDS_DEFAULT,
 };
 use abyssal_database::{DbPool, repo};
@@ -75,6 +77,107 @@ const NEW_LISTENING_PORT_LABEL: &str = "New listening port";
 /// thanatos_kernel_module_baseline::record_seen_modules`.
 const NEW_KERNEL_MODULE_LABEL: &str = "New kernel module/driver loaded";
 
+/// Maps a finding's (stable, static) label to its MITRE ATT&CK technique ID,
+/// or `""` when none applies (reliability/health findings, or a label not yet
+/// mapped). This is the single source of ATT&CK truth for the control plane
+/// (M1): the agent owns detection *rules*; the control plane owns the
+/// rule-to-technique mapping, so techniques can be added or refined without
+/// rebuilding and redeploying every agent. The join key is the label, so every
+/// agent-side rule label (and every control-plane synthetic/correlation label)
+/// must appear here to be tagged -- `label_techniques_are_exhaustive` in the
+/// agent's own test asserts the agent's RULES labels all resolve here. Labels
+/// are matched exactly; an unmapped label simply yields no technique (a soft,
+/// non-breaking default), never an error.
+pub fn technique_for(label: &str) -> &'static str {
+    match label {
+        // --- Linux / cross-platform auth & brute force ---
+        "SSH invalid-user login attempt"
+        | "SSH failed login"
+        | "SSH login attempt for nonexistent user"
+        | "Authentication failure"
+        | "su authentication failure"
+        | "Windows failed logon"
+        | "Windows account locked out"
+        | "Kerberos pre-authentication failed" => "T1110",
+        "SSH successful login (key)"
+        | "SSH successful login (password)"
+        | "Root session opened"
+        | "Windows successful logon"
+        | "Explicit-credential logon (possible lateral movement)"
+        | "Privileged logon (admin/SYSTEM-level)" => "T1078",
+        "Sudo activity" => "T1548.003",
+        "Password changed" | "Windows user account changed" => "T1098",
+        "User created" | "Windows user account created" => "T1136.001",
+        // --- Account & group manipulation ---
+        "Windows account added to a security group"
+        | "Account added to a privileged global group"
+        | "Account added to a privileged universal group"
+        | "Windows user account enabled" => "T1098",
+        "Windows user account disabled"
+        | "Windows user account deleted"
+        | "Account removed from a local group"
+        | "Account removed from a universal group" => "T1531",
+        // --- Execution / scripting / obfuscation ---
+        "Possible reverse shell (bash /dev/tcp construct)"
+        | "Possible reverse shell (netcat -e)"
+        | "Possible reverse shell (ncat --exec)"
+        | "Possible reverse shell (ncat -e)" => "T1059",
+        "Suspicious encoded PowerShell command" => "T1059.001",
+        "Suspicious base64-decode-and-execute pattern" => "T1140",
+        // --- Persistence ---
+        "Windows service installed" => "T1543.003",
+        "Scheduled task created"
+        | "Scheduled task deleted"
+        | "Scheduled task enabled"
+        | "Scheduled task disabled"
+        | "Scheduled task updated" => "T1053.005",
+        // --- Defense evasion / anti-forensics ---
+        "System audit policy changed (possible log tampering)" => "T1562.002",
+        "Windows audit log was cleared (anti-forensics)" => "T1070.001",
+        "Windows Defender real-time protection disabled" => "T1562.001",
+        // --- Credential access ---
+        "Possible LSASS memory access (credential theft)" => "T1003.001",
+        // --- Injection / tampering ---
+        "Possible process injection (Sysmon CreateRemoteThread)" => "T1055",
+        "Possible process tampering/hollowing (Sysmon)" => "T1055.012",
+        // --- Command & control ---
+        "Outbound connection to a flagged C2/reverse-shell port" => "T1571",
+        "Known command-and-control named pipe" => "T1071",
+        // --- M1 command-line LOLBin signals ---
+        "Ingress tool transfer via certutil" | "Download via bitsadmin" => "T1105",
+        "Proxied execution via regsvr32" => "T1218.010",
+        "Proxied execution via mshta" => "T1218.005",
+        "Proxied execution via rundll32" => "T1218.011",
+        "Shadow copy / backup deletion (ransomware precursor)" => "T1490",
+        "Event log cleared via wevtutil" => "T1070.001",
+        "Run-key persistence added via reg.exe" => "T1547.001",
+        "Local account created via net.exe" => "T1136.001",
+        // --- M1 process ancestry ---
+        "Office application spawned a command interpreter" => "T1059",
+        "Script host or LOLBin spawned by an office/browser process" => "T1059",
+        "Command shell spawned by a long-running service host" => "T1059",
+        // --- M1 host posture ---
+        "WDigest cleartext credential caching enabled" => "T1003.001",
+        "Credential Guard not running" => "T1003",
+        "SMB signing not required (AiTM/relay exposure)" => "T1557",
+        "LLMNR enabled (name-resolution poisoning exposure)" => "T1557.001",
+        "PowerShell v2 engine present (logging bypass)" => "T1059.001",
+        // --- Kernel ---
+        "New kernel module/driver loaded" => "T1547.006",
+        // --- Correlation (control-plane raised) ---
+        CROSS_HOST_LABEL | CROSS_HOST_USERNAME_LABEL => "T1110",
+        // Reliability/health, generic, or intentionally untagged:
+        // "Session opened", "New login session", "SSH connection closed...",
+        // "Process segfault", "OOM killer invoked", "Hardware machine-check
+        // event", "Disk I/O error", "systemd unit failed", "Group created",
+        // "Unexpected system shutdown", "Windows service failed to start",
+        // "Windows service control timeout", "Windows Defender detected
+        // malware", "File-integrity watch-list change", "New listening port",
+        // "Repeated high-severity security events", BitLocker/unquoted-path...
+        _ => "",
+    }
+}
+
 /// Parses `stdout` from `AgentOperation::ScanSecurityEvents` -- five
 /// explicitly tagged line shapes (see `crates/agent/src/thanatos.rs`'s
 /// module doc comment): `severity\tlabel\tsource\traw_line` for a
@@ -102,6 +205,60 @@ const NEW_KERNEL_MODULE_LABEL: &str = "New kernel module/driver loaded";
 /// re-scanning the same tail window reports the same lines again every
 /// time) and, when the agent sent an `info` line, that message to show
 /// instead.
+/// Truncates a finding line that's being embedded inside an IOC-match finding's
+/// own text, so a long original line can't bloat the derived finding.
+fn truncate_for_ioc(s: &str) -> String {
+    const MAX: usize = 300;
+    if s.chars().count() <= MAX {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(MAX).collect::<String>())
+    }
+}
+
+/// Raises a dedicated `ioc` finding for every active IOC whose indicator appears
+/// (as a whole token) in `raw_line` (M5). Deduped by content hash and exported
+/// like any finding. Returns how many new IOC findings were persisted. The
+/// derived finding carries the original source and a (truncated) copy of the
+/// matched line for context.
+async fn raise_ioc_matches(
+    pool: &DbPool,
+    notifications: &NotificationDispatcher,
+    host_name: &str,
+    host_id: Uuid,
+    iocs: &[abyssal_core::Ioc],
+    origin_source: &str,
+    raw_line: &str,
+) -> anyhow::Result<usize> {
+    let mut raised = 0usize;
+    for ioc in iocs.iter().filter(|i| i.matches(raw_line)) {
+        let label = format!("Threat-intel IOC match ({})", ioc.ioc_type);
+        let feed = ioc.label.as_deref().unwrap_or("manual");
+        let line = format!(
+            "IOC {} {} (feed: {feed}) matched in {origin_source}: {}",
+            ioc.ioc_type,
+            ioc.value,
+            truncate_for_ioc(raw_line)
+        );
+        if repo::security_events::insert_if_new(
+            pool,
+            host_id,
+            "ioc",
+            ioc.severity,
+            &label,
+            "",
+            &line,
+        )
+        .await?
+        {
+            raised += 1;
+            export_event_to_syslog(notifications, host_name, ioc.severity, "ioc", &label, &line)
+                .await;
+        }
+    }
+    Ok(raised)
+}
+
 pub async fn persist_scan_output(
     pool: &DbPool,
     hosts: &HostConnectionRegistry,
@@ -114,6 +271,21 @@ pub async fn persist_scan_output(
     let mut informational_lines: Vec<&str> = Vec::new();
     let mut current_ports: Vec<String> = Vec::new();
     let mut current_modules: Vec<String> = Vec::new();
+
+    // Active suppression/allowlist rules (M4): a finding matching any of these
+    // is dropped (not persisted, not alerted). Loaded once per ingest and
+    // matched in memory -- rules are few. A read failure degrades safe (no
+    // suppression) rather than dropping the whole scan.
+    let suppression_rules = repo::thanatos_suppression_rules::list_active(pool)
+        .await
+        .unwrap_or_default();
+
+    // Active threat-intel IOCs (M5): a finding whose text matches one raises a
+    // dedicated high-signal `ioc` finding. Loaded once per ingest, matched in
+    // memory; a read failure degrades safe (no IOC matching this scan).
+    let iocs = repo::thanatos_iocs::list_active(pool)
+        .await
+        .unwrap_or_default();
 
     for line in stdout.lines() {
         if let Some(port_key) = line.strip_prefix("port\t") {
@@ -152,15 +324,28 @@ pub async fn persist_scan_output(
             };
             if repo::thanatos_file_hashes::upsert_if_changed(pool, host_id, path, hash).await? {
                 let raw_line = format!("{path} hash changed to {hash}");
-                if repo::security_events::insert_if_new(
-                    pool,
-                    host_id,
-                    "fim",
-                    Severity::High,
-                    FIM_CHANGE_LABEL,
-                    &raw_line,
-                )
-                .await?
+                // The baseline above is updated regardless; a suppression match
+                // only drops the finding, so a suppressed change won't re-fire.
+                let suppressed = suppression_rules.iter().any(|r| {
+                    r.matches(
+                        host_id,
+                        "fim",
+                        FIM_CHANGE_LABEL,
+                        technique_for(FIM_CHANGE_LABEL),
+                        &raw_line,
+                    )
+                });
+                if !suppressed
+                    && repo::security_events::insert_if_new(
+                        pool,
+                        host_id,
+                        "fim",
+                        Severity::High,
+                        FIM_CHANGE_LABEL,
+                        technique_for(FIM_CHANGE_LABEL),
+                        &raw_line,
+                    )
+                    .await?
                 {
                     persisted += 1;
                     export_event_to_syslog(
@@ -173,8 +358,24 @@ pub async fn persist_scan_output(
                     )
                     .await;
                 }
-                if is_per_user_ssh_authorized_keys(path) {
+                // Respect suppression for the automated response too: an
+                // allowlisted key change is "known good," so don't auto-quarantine.
+                if !suppressed && is_per_user_ssh_authorized_keys(path) {
                     maybe_auto_quarantine_ssh_key(pool, hosts, host_id, path).await;
+                }
+                // IOC matching (M5): a changed file whose hash is a known-bad
+                // indicator is a strong signal. Skipped when suppressed.
+                if !suppressed {
+                    persisted += raise_ioc_matches(
+                        pool,
+                        notifications,
+                        host_name,
+                        host_id,
+                        &iocs,
+                        "fim",
+                        &raw_line,
+                    )
+                    .await?;
                 }
             }
             continue;
@@ -192,13 +393,34 @@ pub async fn persist_scan_output(
         let Some(severity) = Severity::from_key(severity_str) else {
             continue;
         };
-        if repo::security_events::insert_if_new(pool, host_id, source, severity, label, raw_line)
-            .await?
+        let technique = technique_for(label);
+        // Suppression/allowlist (M4): drop a matching finding before it's stored.
+        if suppression_rules
+            .iter()
+            .any(|r| r.matches(host_id, source, label, technique, raw_line))
+        {
+            continue;
+        }
+        if repo::security_events::insert_if_new(
+            pool, host_id, source, severity, label, technique, raw_line,
+        )
+        .await?
         {
             persisted += 1;
             export_event_to_syslog(notifications, host_name, severity, source, label, raw_line)
                 .await;
         }
+        // Threat-intel IOC matching (M5) on the (non-suppressed) finding text.
+        persisted += raise_ioc_matches(
+            pool,
+            notifications,
+            host_name,
+            host_id,
+            &iocs,
+            source,
+            raw_line,
+        )
+        .await?;
     }
 
     if !current_ports.is_empty() {
@@ -207,12 +429,24 @@ pub async fn persist_scan_output(
                 .await?;
         for port_key in new_ports {
             let raw_line = format!("New listening port: {port_key}");
+            if suppression_rules.iter().any(|r| {
+                r.matches(
+                    host_id,
+                    "network",
+                    NEW_LISTENING_PORT_LABEL,
+                    technique_for(NEW_LISTENING_PORT_LABEL),
+                    &raw_line,
+                )
+            }) {
+                continue;
+            }
             if repo::security_events::insert_if_new(
                 pool,
                 host_id,
                 "network",
                 Severity::High,
                 NEW_LISTENING_PORT_LABEL,
+                technique_for(NEW_LISTENING_PORT_LABEL),
                 &raw_line,
             )
             .await?
@@ -240,12 +474,24 @@ pub async fn persist_scan_output(
         .await?;
         for module_key in new_modules {
             let raw_line = format!("New kernel module/driver loaded: {module_key}");
+            if suppression_rules.iter().any(|r| {
+                r.matches(
+                    host_id,
+                    "kernel_module",
+                    NEW_KERNEL_MODULE_LABEL,
+                    technique_for(NEW_KERNEL_MODULE_LABEL),
+                    &raw_line,
+                )
+            }) {
+                continue;
+            }
             if repo::security_events::insert_if_new(
                 pool,
                 host_id,
                 "kernel_module",
                 Severity::High,
                 NEW_KERNEL_MODULE_LABEL,
+                technique_for(NEW_KERNEL_MODULE_LABEL),
                 &raw_line,
             )
             .await?
@@ -438,6 +684,7 @@ pub async fn check_and_raise_alert(
         "correlation",
         Severity::Critical,
         label,
+        technique_for(label),
         &raw_line,
     )
     .await?;
@@ -497,6 +744,25 @@ pub fn parse_extra_fim_paths(raw: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Parses `THANATOS_C2_PORTS` -- comma/space/newline-separated port numbers --
+/// into a deduplicated, sorted `Vec<u16>` for
+/// `AgentOperation::ScanSecurityEvents.c2_ports`. Anything that isn't a valid
+/// `u16` (0, out-of-range, non-numeric) is silently dropped rather than
+/// failing the whole scan; an empty/garbage setting yields an empty list,
+/// which simply disables port-based outbound flagging.
+pub fn parse_c2_ports(raw: &str) -> Vec<u16> {
+    let mut ports: Vec<u16> = raw
+        .split([',', ' ', '\n', '\t'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<u16>().ok())
+        .filter(|&p| p != 0)
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
 }
 
 /// Filters `all_paths` down to the ones valid for `os` (`Host.os`) --
@@ -653,6 +919,7 @@ async fn check_cross_host_burst(
                 "correlation",
                 Severity::Critical,
                 CROSS_HOST_LABEL,
+                technique_for(CROSS_HOST_LABEL),
                 &raw_line,
             )
             .await?;
@@ -847,6 +1114,7 @@ async fn check_cross_host_username_reuse(
                 "correlation",
                 Severity::Critical,
                 CROSS_HOST_USERNAME_LABEL,
+                technique_for(CROSS_HOST_USERNAME_LABEL),
                 &raw_line,
             )
             .await?;
@@ -920,6 +1188,40 @@ pub async fn ingest_scan(
     ))
 }
 
+/// Ingests security telemetry an agent pushed up the WebSocket unsolicited (M6
+/// Option B, real-time "fast channel" -- **scaffold**). The agent does not yet
+/// produce `AgentMessage::Telemetry`; this is the control-plane landing point so
+/// that enabling real-time push later is purely agent-side work. It reuses the
+/// exact `ingest_scan` path a poll uses, so the push transport needs no bespoke
+/// detection/suppression/IOC/alerting logic -- `stdout` is the same tab-
+/// delimited line format and is treated as untrusted input the same way. A
+/// production push producer should pair this with a per-host rate limit; that's
+/// deferred with the producer itself.
+pub async fn ingest_pushed_telemetry(
+    state: &AppState,
+    host_id: Uuid,
+    stdout: &str,
+) -> anyhow::Result<()> {
+    let Some(host) = repo::hosts::find_by_id(&state.pool, host_id).await? else {
+        return Ok(());
+    };
+    let recipients_raw = repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "")
+        .await
+        .unwrap_or_default();
+    let recipients = parse_recipients(&recipients_raw);
+    ingest_scan(
+        &state.pool,
+        &state.hosts,
+        &state.notifications,
+        &recipients,
+        host_id,
+        &host.name,
+        stdout,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Fleet-wide severity counts over the last `hours`, rendered as
 /// `(label, count)` pairs in a fixed Low/Medium/High/Critical order
 /// (rather than whatever order the database happened to return) for the
@@ -952,6 +1254,178 @@ pub async fn severity_summary(pool: &DbPool, hours: i64) -> anyhow::Result<Vec<(
 /// itself is re-read from `THANATOS_SWEEP_INTERVAL_SECONDS` before every
 /// sleep -- a lowered interval takes effect after at most one old-length
 /// sleep, never a restart.
+/// Prunes `thanatos_events` older than `THANATOS_EVENT_RETENTION_DAYS` on a
+/// fixed cadence (every 6 h), so the SIEM event store doesn't grow unbounded
+/// (M3). Runs independently of `THANATOS_MONITORING_ENABLED` -- retention is a
+/// storage policy, not part of the detection sweep -- and is read fresh each
+/// tick, so a changed retention window takes effect within one interval. `0`
+/// disables pruning (keep everything). Prunes once on startup after a short
+/// delay so a long-running install with retention newly enabled doesn't wait
+/// six hours for the first cleanup.
+pub fn spawn_thanatos_retention(state: AppState) {
+    use crate::task_health::names;
+    const RETENTION_INTERVAL_SECS: u64 = 6 * 60 * 60;
+    tokio::spawn(async move {
+        state
+            .task_health
+            .register(names::THANATOS_RETENTION, RETENTION_INTERVAL_SECS)
+            .await;
+        // Small startup delay so this doesn't contend with other boot-time work.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        loop {
+            state
+                .task_health
+                .ok(names::THANATOS_RETENTION, RETENTION_INTERVAL_SECS)
+                .await;
+            let days = repo::settings::get_u32(
+                &state.pool,
+                THANATOS_EVENT_RETENTION_DAYS,
+                THANATOS_EVENT_RETENTION_DAYS_DEFAULT,
+            )
+            .await
+            .unwrap_or(THANATOS_EVENT_RETENTION_DAYS_DEFAULT);
+            if days > 0 {
+                match repo::security_events::prune_older_than(&state.pool, i64::from(days)).await {
+                    Ok(pruned) if pruned > 0 => {
+                        tracing::info!(pruned, days, "Thanatos retention pruned old events");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "Thanatos retention prune failed");
+                        state
+                            .task_health
+                            .error(
+                                names::THANATOS_RETENTION,
+                                RETENTION_INTERVAL_SECS,
+                                e.to_string(),
+                            )
+                            .await;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(RETENTION_INTERVAL_SECS)).await;
+        }
+    });
+}
+
+/// The fast "act-now" sweep (M6 Option A): on a short interval
+/// (`THANATOS_FAST_SWEEP_SECONDS`, `0` = off, default) polls every connected
+/// host for only a small curated set of high-signal events (`fast_only`), to cut
+/// detection latency between the 60s full sweeps. Runs only while background
+/// monitoring is on. Results flow through the same `ingest_scan` path as the
+/// full sweep, and content-hash dedup collapses the overlap, so a fast-caught
+/// event is one row whether or not the next full sweep also sees it. A
+/// scaffold for a future real-time push (`AgentMessage::Telemetry`, M6 Option B)
+/// reuses that same ingest path -- see `routes::agent`.
+pub fn spawn_thanatos_fast_sweep(state: AppState) {
+    use crate::task_health::names;
+    // A generous staleness threshold: when disabled the loop idle-polls the
+    // setting every 30s, so a tight expectation would flap.
+    const FAST_HEARTBEAT_SECS: u64 = 120;
+    tokio::spawn(async move {
+        state
+            .task_health
+            .register(names::THANATOS_FAST_SWEEP, FAST_HEARTBEAT_SECS)
+            .await;
+        loop {
+            state
+                .task_health
+                .ok(names::THANATOS_FAST_SWEEP, FAST_HEARTBEAT_SECS)
+                .await;
+
+            let configured = repo::settings::get_u32(
+                &state.pool,
+                THANATOS_FAST_SWEEP_SECONDS,
+                THANATOS_FAST_SWEEP_SECONDS_DEFAULT,
+            )
+            .await
+            .unwrap_or(THANATOS_FAST_SWEEP_SECONDS_DEFAULT);
+            // Disabled: idle-poll the setting so enabling it takes effect
+            // without a restart.
+            if configured == 0 {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+            let interval = configured.clamp(5, 60);
+            tokio::time::sleep(Duration::from_secs(u64::from(interval))).await;
+
+            // Fast sweep only runs alongside the full monitoring sweep.
+            if !repo::settings::get_bool(&state.pool, THANATOS_MONITORING_ENABLED, false)
+                .await
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let recipients_raw =
+                repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "")
+                    .await
+                    .unwrap_or_default();
+            let recipients = parse_recipients(&recipients_raw);
+            let c2_ports = {
+                let raw = repo::settings::get_string(
+                    &state.pool,
+                    THANATOS_C2_PORTS,
+                    THANATOS_C2_PORTS_DEFAULT,
+                )
+                .await
+                .unwrap_or_else(|_| THANATOS_C2_PORTS_DEFAULT.to_string());
+                parse_c2_ports(&raw)
+            };
+
+            let hosts = match repo::hosts::list(&state.pool).await {
+                Ok(hosts) => hosts,
+                Err(e) => {
+                    tracing::error!(error = %e, "Thanatos fast sweep failed to list hosts");
+                    continue;
+                }
+            };
+            for host in hosts {
+                if !host.is_active() || !state.hosts.is_connected(host.id) {
+                    continue;
+                }
+                let outcome = state
+                    .hosts
+                    .dispatch(
+                        host.id,
+                        AgentOperation::ScanSecurityEvents {
+                            extra_fim_paths: Vec::new(),
+                            channel_offsets: Vec::new(),
+                            c2_ports: c2_ports.clone(),
+                            fast_only: true,
+                        },
+                        Duration::from_secs(15),
+                    )
+                    .await;
+                let stdout = match outcome {
+                    Ok(CommandOutcome::Ok(output)) => output.stdout,
+                    Ok(CommandOutcome::Err(message)) => {
+                        tracing::warn!(host = %host.name, error = %message, "Thanatos fast sweep scan failed");
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(host = %host.name, error = %e, "Thanatos fast sweep dispatch failed");
+                        continue;
+                    }
+                };
+                if let Err(e) = ingest_scan(
+                    &state.pool,
+                    &state.hosts,
+                    &state.notifications,
+                    &recipients,
+                    host.id,
+                    &host.name,
+                    &stdout,
+                )
+                .await
+                {
+                    tracing::error!(host = %host.name, error = %e, "Thanatos fast sweep ingest failed");
+                }
+            }
+        }
+    });
+}
+
 pub fn spawn_thanatos_sweep(state: AppState) {
     use crate::task_health::names;
     tokio::spawn(async move {
@@ -1017,6 +1491,17 @@ pub fn spawn_thanatos_sweep(state: AppState) {
                 };
             let extra_fim_paths_all = parse_extra_fim_paths(&extra_fim_paths_raw);
 
+            let c2_ports = {
+                let raw = repo::settings::get_string(
+                    &state.pool,
+                    THANATOS_C2_PORTS,
+                    THANATOS_C2_PORTS_DEFAULT,
+                )
+                .await
+                .unwrap_or_else(|_| THANATOS_C2_PORTS_DEFAULT.to_string());
+                parse_c2_ports(&raw)
+            };
+
             let hosts = match repo::hosts::list(&state.pool).await {
                 Ok(hosts) => hosts,
                 Err(e) => {
@@ -1047,6 +1532,8 @@ pub fn spawn_thanatos_sweep(state: AppState) {
                         AgentOperation::ScanSecurityEvents {
                             extra_fim_paths,
                             channel_offsets,
+                            c2_ports: c2_ports.clone(),
+                            fast_only: false,
                         },
                         Duration::from_secs(30),
                     )
@@ -1112,6 +1599,47 @@ pub fn spawn_thanatos_sweep(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn technique_for_maps_key_labels_and_defaults_empty() {
+        // Representative mappings across tactics.
+        assert_eq!(technique_for("Windows failed logon"), "T1110");
+        assert_eq!(
+            technique_for("Possible LSASS memory access (credential theft)"),
+            "T1003.001"
+        );
+        assert_eq!(
+            technique_for("Windows audit log was cleared (anti-forensics)"),
+            "T1070.001"
+        );
+        assert_eq!(
+            technique_for("Shadow copy / backup deletion (ransomware precursor)"),
+            "T1490"
+        );
+        assert_eq!(
+            technique_for("Office application spawned a command interpreter"),
+            "T1059"
+        );
+        assert_eq!(
+            technique_for("WDigest cleartext credential caching enabled"),
+            "T1003.001"
+        );
+        assert_eq!(technique_for(CROSS_HOST_LABEL), "T1110");
+        // Generic/reliability labels and unknown labels map to empty.
+        assert_eq!(technique_for(FIM_CHANGE_LABEL), "");
+        assert_eq!(technique_for("Process segfault"), "");
+        assert_eq!(technique_for("some label with no mapping"), "");
+    }
+
+    #[test]
+    fn parse_c2_ports_dedups_sorts_and_drops_invalid() {
+        assert_eq!(
+            parse_c2_ports("4444, 1337 1337\n70000\nabc\t6667"),
+            vec![1337u16, 4444, 6667]
+        );
+        assert!(parse_c2_ports("").is_empty());
+        assert!(parse_c2_ports("0, 99999, nope").is_empty());
+    }
 
     #[test]
     fn extracts_the_source_ip_from_an_ssh_failure_line() {

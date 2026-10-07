@@ -12,6 +12,11 @@
     (Settings &rarr; Thanatos background monitoring) does this automatically on a fixed interval
     when enabled; otherwise, run a scan from a host's own page below.
   </p>
+  <p style="margin-top:0;">
+    <a class="btn btn-secondary btn-sm" href="/arsenals/thanatos/search">{% call macros::icon("scan") %} Search &amp; investigate events</a>
+    {% if can_manage %}<a class="btn btn-secondary btn-sm" href="/arsenals/thanatos/rules">{% call macros::icon("audit") %} Suppression &amp; allowlist rules</a>
+    <a class="btn btn-secondary btn-sm" href="/arsenals/thanatos/iocs">{% call macros::icon("warning") %} Threat-intel IOCs</a>{% endif %}
+  </p>
   <h3>Last 24h, across the fleet</h3>
   {% if severity_summary.is_empty() %}
   <p style="color:var(--text-muted);">No events recorded yet.</p>
@@ -35,7 +40,7 @@
       {% for a in recent_alerts %}
       <tr>
         <td>{{ a.host_name }}</td>
-        <td><span class="badge badge-danger">{{ a.label }}</span></td>
+        <td><span class="badge badge-danger">{{ a.label }}</span>{% if !a.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ a.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ a.technique }}</a>{% endif %}</td>
         <td>{{ a.raw_line }}</td>
         <td>{{ a.occurred_at }}</td>
       </tr>
@@ -73,6 +78,10 @@
       <span class="badge badge-muted">{{ group.event_count }} event{% if group.event_count != 1 %}s{% endif %}</span>
       <span class="inventory-group-actions actions">
         <a class="btn btn-secondary btn-sm" href="/arsenals/thanatos/{{ group.host_id }}">{% call macros::icon("scan") %} Open host page</a>
+        {% if can_respond %}
+        <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ group.host_id }}">{% call macros::icon("warning") %} Respond</a>
+        <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ group.host_id }}/isolate/confirm">{% call macros::icon("danger") %} Isolate</a>
+        {% endif %}
       </span>
     </summary>
 
@@ -92,7 +101,7 @@
             {% for e in group.events %}
             <tr>
               <td><span class="badge {{ e.badge_class }}">{{ e.severity_label }}</span></td>
-              <td>{{ e.label }}</td>
+              <td>{{ e.label }}{% if !e.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ e.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ e.technique }}</a>{% endif %}</td>
               <td>{{ e.source }}</td>
               <td style="overflow-wrap:anywhere;">{{ e.raw_line }}</td>
               <td>

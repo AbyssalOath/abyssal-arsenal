@@ -426,7 +426,18 @@ pub async fn run(
         AgentOperation::ScanSecurityEvents {
             extra_fim_paths,
             channel_offsets,
-        } => thanatos::scan_security_events(elevation, extra_fim_paths, channel_offsets).await,
+            c2_ports,
+            fast_only,
+        } => {
+            thanatos::scan_security_events(
+                elevation,
+                extra_fim_paths,
+                channel_offsets,
+                c2_ports,
+                fast_only,
+            )
+            .await
+        }
         AgentOperation::AdDnsReport { domain } => haruspex::ad_dns_report(domain).await,
         AgentOperation::AdHealthReport { domain } => haruspex::ad_health_report(domain).await,
         AgentOperation::DetectPackageBackend => sepulchre::detect_package_backend(elevation).await,

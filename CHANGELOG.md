@@ -17,9 +17,121 @@ for what that means for cloning and updating.
 > the **new CA** -- the agent commands on `/admin/hosts` do that
 > automatically; for GPO/browsers download it from `/ca.crt`. Existing
 > agents need re-installing with the new command (they couldn't connect to
-> the old certificate anyway). Agents report protocol version 36, so older
+> the old certificate anyway). Agents report protocol version 38, so older
 > builds show "Agent out of date". Let's Encrypt and own-proxy installs are
 > unaffected.
+
+### Added
+
+- **Thanatos Windows EDR/SIEM depth, phase 1 (telemetry breadth, process
+  ancestry & MITRE ATT&CK).** A broad deepening of what the Windows security
+  scan detects, with every finding now tagged to an ATT&CK technique:
+  - **MITRE ATT&CK mapping.** Each finding that maps to a technique records the
+    technique ID (new `technique` column on `thanatos_events`, migration 0034),
+    shown as a badge in the Thanatos dashboard and per-host views that links to
+    the technique on attack.mitre.org. The rule-to-technique map lives
+    control-plane-side (`thanatos_ops::technique_for`), so techniques can be
+    refined without rebuilding agents; findings with no mapped technique (health
+    /reliability events) simply show none.
+  - **Credential-theft detection: LSASS memory access** (Sysmon event 10,
+    T1003.001) -- a dedicated, tightly-scoped query flags handles opened to
+    `lsass.exe` with memory-reading access masks (the Mimikatz-style signal),
+    naming the accessing process; benign process-access is never collected.
+  - **Process ancestry** (T1059) -- flags suspicious parent->child chains from a
+    live process snapshot: an Office app or browser spawning a shell/script
+    host/LOLBin, or a service host (WMI) spawning a command shell, with the
+    specific chain named.
+  - **Command-line LOLBin detection** (multi-substring rules, case-insensitive):
+    ingress tool transfer via `certutil`/`bitsadmin` (T1105), proxied execution
+    via `mshta`/`regsvr32`/`rundll32` (T1218), shadow-copy/backup deletion
+    (`vssadmin`/`wmic`/`wbadmin`/`bcdedit`, T1490 -- a ransomware precursor),
+    event-log clearing via `wevtutil` (T1070.001), Run-key persistence via
+    `reg.exe` (T1547.001), and local-account creation via `net.exe` (T1136.001).
+  - **Known command-and-control named pipes** (Sysmon 17/18, T1071) -- default
+    pipe-name patterns from offensive C2 frameworks.
+  - **Host posture expansion** -- WDigest cleartext credential caching
+    (T1003.001), Credential Guard not running (T1003), SMB signing not required
+    (T1557), LLMNR enabled (T1557.001), PowerShell v2 engine present (T1059.001),
+    and BitLocker off, alongside the existing SMBv1/UAC/RDP-NLA/RunAsPPL checks.
+  - **Persistence surfaces** added to the file-integrity watch-list: Startup
+    folders (all-users + per-user), LSA Security/Authentication/Notification
+    packages, and netsh helper DLLs -- plus (from the preceding quick-win pass)
+    per-user `Run`/`RunOnce` keys of every loaded user hive.
+  No protocol or wire-format change: the richer detections produce more of the
+  same classified-line shape, and techniques are annotated on ingest.
+- **Thanatos SIEM store: investigation console & retention (phase 3).** The
+  event store graduates from per-host lists to a searchable SIEM:
+  - **Investigation console** (Thanatos &rarr; Search, `/arsenals/thanatos/search`,
+    `security.view`) -- a cross-host, faceted search over every stored event:
+    free-text over the finding detail/label (pivot on a source IP, username,
+    process or pipe name), plus filters by host, severity, source, ATT&CK
+    technique and date range, paginated, with the same acknowledge/resolve/
+    suppress lifecycle actions the per-host page has. Builds on the technique
+    column added in phase 1.
+  - **Retention policy** -- a background job (every 6 h) prunes events older than
+    `THANATOS_EVENT_RETENTION_DAYS` (Settings &rarr; Thanatos event retention,
+    default 90 days; `0` keeps everything), so `thanatos_events` no longer grows
+    unbounded. Pruning is strictly by age, independent of the detection sweep.
+  New repo queries (`search_events`/`count_events`/`distinct_sources`/
+  `distinct_techniques`/`prune_older_than`); a `technique` index already backs
+  the technique filter (migration 0034).
+- **Thanatos response & tuning: suppression/allowlist rules + inline response
+  (phase 4) -- closing the EDR "R" loop.**
+  - **Suppression & allowlist rules** (Thanatos &rarr; Suppression & allowlist
+    rules, `security.manage`). A rule drops a matching finding at ingest (never
+    stored, never alerted) -- silence a noisy-but-benign finding class (match by
+    source/label/technique/host) or allowlist a known-good indicator (match by
+    text: a monitoring host's IP, a service account). Criteria are ANDed; a blank
+    field is a wildcard; rules can expire. Text is matched on **whole-token**
+    boundaries, not as a raw substring, so an allowlisted `10.0.0.5` can't be
+    satisfied by an attacker embedding it in `210.0.0.59` or arbitrary log text
+    (a detection-evasion bypass); a suppressed `authorized_keys` change also
+    skips its auto-quarantine response. Migration 0035; new `SuppressionRule`
+    type + repo.
+  - **Inline response.** Thanatos findings and host views now deep-link an
+    operator (with `incidents.respond`) straight into the existing Inquest
+    response toolkit for that host -- a "Respond" link to the host's response
+    console and a one-click "Isolate host" to its confirm page -- so detection
+    pivots to response in one click instead of manual cross-navigation, reusing
+    Inquest's existing RBAC, type-to-confirm and audit. (Windows process
+    termination already works via `SendSignal{KILL}` &rarr; `Stop-Process -Force`,
+    surfaced in Inquest's kill-process action; no new operation was needed.)
+- **Thanatos alerting channels + threat intel (phase 5).**
+  - **Chat / webhook notifications.** New Slack, Microsoft Teams, and generic
+    JSON webhook notification providers, alongside the existing SMTP and syslog.
+    Configured by environment variable (`SLACK_WEBHOOK_URL`, `TEAMS_WEBHOOK_URL`,
+    `WEBHOOK_URL`), each with an optional **minimum severity**
+    (`*_MIN_SEVERITY`, default `warning`) so the per-finding firehose doesn't
+    flood a channel -- set `critical` for alerts only. A finding at/above the
+    threshold is posted to the channel; below it is a silent no-op. (Notification
+    `Severity` gained a `rank()`/`parse()` for the gate.)
+  - **Threat-intel IOC matching** (Thanatos &rarr; Threat-intel IOCs,
+    `security.manage`). Import indicators -- IPs, domains, file hashes -- by
+    pasting a list; a stored finding whose text contains one (matched on whole
+    tokens: a domain also matches its subdomains, an IP/hash matches exactly)
+    raises a dedicated high-signal `ioc` finding at the indicator's configured
+    severity, which then alerts through the channels above. Matches run over
+    classified findings and FIM hashes at ingest. Migration 0036; new
+    `Ioc`/`IocType` core types + repo.
+- **Thanatos low-latency fast sweep (phase 6, Option A) + real-time push
+  scaffold.**
+  - **Fast "act-now" sweep.** An optional short-interval sweep
+    (`THANATOS_FAST_SWEEP_SECONDS`, Settings &rarr; Thanatos correlation & sweep
+    tuning; `0` = off by default, else 5-60s) polls every connected host for
+    only a small curated set of high-signal events -- ransomware/LOLBin command
+    lines, log clearing (1102), audit-policy change (4719), lateral logon
+    (4648), process injection/tampering (Sysmon 8/25), Defender off (5001), and
+    on Linux running-process command lines -- to cut detection latency between
+    the 60s full sweeps. It's best-effort and offset-free (never touches the
+    full sweep's high-water marks), flows through the same ingest/suppression/
+    IOC/correlation/alert path, and content-hash dedup collapses the overlap.
+    Adds `ScanSecurityEvents.fast_only` (protocol version 38).
+  - **Real-time push scaffold (Option B).** The protocol and control plane now
+    carry an agent-initiated `AgentMessage::Telemetry` frame that lands in the
+    same ingest path as a poll; the agent does not yet produce it, so enabling
+    true sub-second push later is purely agent-side work (a Windows
+    `EvtSubscribe`/ETW or Linux auditd/eBPF producer) with no control-plane
+    re-architecture.
 
 ### Fixed
 

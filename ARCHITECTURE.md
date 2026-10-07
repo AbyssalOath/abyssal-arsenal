@@ -44,7 +44,8 @@ crates/
   auth            password hashing, LocalAuthProvider, session issuance
   rbac            AuthContext, fail-closed permission checks
   audit           AuditAction catalog, append-only writer/reader
-  notifications   NotificationProvider trait, SmtpProvider, dispatcher
+  notifications   NotificationProvider trait + dispatcher; SMTP, syslog, and
+                  Slack/Teams/webhook providers
   execution       Operation trait, Executor (local + host dispatch)
   hosts           HostConnectionRegistry (live agent connections)
   agent-protocol  wire types shared between control plane and abyssal-agent
@@ -245,7 +246,7 @@ new column and one rule.
   only ever iterate the registry -- adding a new arsenal crate means adding
   one line to `crates/app/src/arsenals.rs` and the workspace manifest,
   nothing else.
-- All 23 arsenals have real capabilities wired up. See
+- All 25 arsenals have real capabilities wired up. See
   [CHANGELOG.md](CHANGELOG.md) for what each one actually does.
 
 **Control-plane arsenals vs. host-agent arsenals.** Most arsenals
@@ -499,10 +500,15 @@ and neither does any individual action form):
 ### Future work: push-based telemetry and additional platforms (Thanatos)
 
 Thanatos (security telemetry/EDR, see the Thanatos entry in
-[CHANGELOG.md](CHANGELOG.md)) is deliberately pull-based today: the control
+[CHANGELOG.md](CHANGELOG.md)) is pull-based today: the control
 plane asks a connected host to scan on demand (`AgentOperation::
 ScanSecurityEvents`) or on a periodic sweep (`abyssal_web::
-spawn_thanatos_sweep`), and the agent replies once with whatever it found.
+spawn_thanatos_sweep`, plus an optional short-interval fast sweep for a
+curated high-signal subset -- `spawn_thanatos_fast_sweep`,
+`ScanSecurityEvents.fast_only`), and the agent replies once with whatever it
+found. The fast sweep (M6 "Option A") already shrinks detection latency to a
+few seconds for the "act-now" events; what's below is the step beyond that --
+genuine continuous push.
 Linux detection reads auth/kernel/systemd log sources and hashes a small
 file-integrity watch-list; Windows detection (added once the Linux side was
 solid, matching the "deepen one platform, then port" approach below) reads
@@ -514,59 +520,38 @@ through a CLI tool and text parsing rather than native FFI (see
 the identical tab-separated wire format, so nothing above the agent's own
 gathering code differs by platform at all.
 
-This section documents two genuinely bigger pieces of work that were
-scoped out of that effort rather than attempted alongside it: a real
-push-based transport, and platform coverage beyond Linux/Windows. Neither
-is implemented -- this is a design starting point for whoever picks either
-up next, not a spec to build against unquestioned.
+**Real-time push telemetry (M6 "Option B" -- scaffolded, agent producer
+pending).** The transport and control-plane side are already in place: the
+agent-to-control-plane direction (`AgentMessage`) carries an unsolicited
+`Telemetry { stdout }` variant (sent not in response to any
+`ServerMessage::Command`), and `routes::agent` routes it into
+`thanatos_ops::ingest_pushed_telemetry`, which reuses the exact same
+`persist_scan_output`/`check_and_raise_alert`/IOC/suppression/alert pipeline
+as the pull path -- `stdout` is the same tab-separated format a scan produces.
+So the ingest side needs no further work. **What's left is purely agent-side:**
+a persistent host-side producer (distinct from the request/response loop
+`transport::connect_and_serve` runs today) that watches for new activity
+continuously and emits `Telemetry` frames, rather than waiting for the next
+sweep. Roughly:
 
-**Real-time push telemetry.** The protocol already has an agent-to-control-
-plane direction (`AgentMessage`, above) with exactly two variants today,
-`Response` (an operation's result) and `Pong` (heartbeat). A third,
-unprompted variant is the natural extension point:
+- The cheap version is already shipped as the **fast sweep** above -- "check
+  more often" for a curated set, no new transport needed.
+- Genuine real-time (not just more-frequent polling) needs a real kernel-level
+  telemetry source on the agent: the Linux audit subsystem or eBPF (process
+  exec, network connections, file opens the moment they happen) on Linux; ETW
+  (Event Tracing for Windows) on Windows, which is how a real EDR product
+  consumes the same Security/System content Thanatos reads today, but as a live
+  stream instead of a point-in-time query. That producer is the materially
+  larger piece -- a new toolchain per platform, kernel-level access
+  considerations beyond what `LocalSystem`/root already provide, and bounded
+  buffering/backpressure so an event storm can't flood the channel. The
+  design brief in the M6 CHANGELOG entry recommends keeping any such producer
+  scoped to the same curated "act-now" set the fast sweep uses, not a firehose.
 
-```rust
-// Illustrative, not a real type in the codebase today -- the shape
-// `persist_scan_output` (crates/web/src/thanatos_ops.rs) already parses
-// from a `Command` response's tab-separated stdout is the natural
-// payload to reuse here.
-AgentMessage::Event {
-    events: Vec<SecurityEventPayload>,
-}
-```
-
-sent whenever the agent's own background watcher has something to report,
-not in response to any `ServerMessage::Command`. This needs, roughly:
-
-- A persistent host-side background task (distinct from the request/
-  response loop `transport::connect_and_serve` runs today) that watches for
-  new activity continuously rather than being invoked once per scan.
-  Incremental log-tailing with a persisted file offset (instead of always
-  re-reading the last N lines, as every scan does today) is the cheapest
-  version of this and would already cut redundant work regardless of
-  whether push telemetry ever lands -- a reasonable first step on its own.
-- For anything beyond that -- genuine real-time detection, not just
-  "check more often" -- real kernel-level telemetry sources: the Linux
-  audit subsystem or eBPF (process exec, network connections, file opens
-  the moment they happen, not on the next scan) on Linux; ETW (Event
-  Tracing for Windows) on Windows, which is also how a real EDR product
-  would consume the same Security/System event log content Thanatos reads
-  today, but as a live stream instead of a point-in-time query. Both are a
-  materially larger scope than everything built so far combined -- a new
-  toolchain per platform, privileged kernel-level access considerations
-  beyond what `LocalSystem`/root already provide, and a persisted
-  correlation-rule engine that can reason about a continuous stream instead
-  of a bounded batch.
-- The control plane side is comparatively small: `HostConnectionRegistry`
-  already owns each host's live connection and could route an unprompted
-  `AgentMessage::Event` into the same `persist_scan_output`/
-  `check_and_raise_alert` pipeline the pull path uses today, no new ingest
-  logic needed there.
-
-Not scoped further than this on purpose -- worth revisiting once real usage
-of the pull-based version (Linux and Windows both) says whether the gap
-between "periodic sweep" and "continuous stream" actually matters in
-practice, rather than building the harder version speculatively.
+Deliberately not built speculatively -- the scaffold is in place so turning it
+on later is additive, but whether the gap between "every few seconds" (fast
+sweep) and "sub-second" (push) justifies a per-platform kernel producer is a
+real-usage question, not a foregone conclusion.
 
 **macOS.** Backburnered, not attempted, for a distribution reason rather
 than a technical one: shipping a `launchd`-installed background agent that
@@ -1042,6 +1027,19 @@ below for what that implies for toggling them).
   through `HostConnectionRegistry::dispatch` (bypassing
   `execute_on_host()`), then runs the same persist-and-correlate pipeline
   the on-demand scan route uses.
+- **Thanatos fast sweep** (`abyssal_web::spawn_thanatos_fast_sweep`, M6
+  Option A): an optional short-interval sweep (`thanatos.fast_sweep_seconds`,
+  `0` = off by default, else 5-60s) that dispatches
+  `ScanSecurityEvents { fast_only: true }` -- a small curated high-signal
+  event set only -- to cut detection latency between the 60s full sweeps.
+  Gated on `thanatos.monitoring_enabled` too; best-effort and offset-free, so
+  the full sweep stays the complete source of truth and content-hash dedup
+  collapses the overlap. Runs through the same ingest pipeline.
+- **Thanatos retention** (`abyssal_web::spawn_thanatos_retention`, every 6h):
+  prunes `thanatos_events` older than `thanatos.event_retention_days`
+  (default 90, `0` = keep everything) so the SIEM event store stays bounded.
+  Runs regardless of `thanatos.monitoring_enabled` -- it's a storage policy,
+  not part of detection.
 - **Panopticon sweep** (`abyssal_web::spawn_panopticon_sweep`, two
   independent loops): a passive refresh every 60s, unconditional --
   re-reads the control plane's own kernel neighbor table (`ip neigh`,
@@ -1617,18 +1615,23 @@ model, not oversights:
 - `LoginLimiter` and `HostConnectionRegistry` are both in-memory and
   process-local. A multi-instance control plane would need both backed by
   shared state instead.
-- SSO/OIDC and additional notification providers (Telegram, Slack, Teams,
-  Discord) are not implemented yet -- see [CHANGELOG.md](CHANGELOG.md) for
-  current status. All 23 arsenals have real capabilities.
-- Thanatos is deliberately a pull-based, on-demand/periodic-sweep
-  telemetry collector, not a continuous push-based EDR agent -- no eBPF/
-  ETW, no live event stream, no offset-tracked log tailing (re-scanning
-  the same window is expected and deduplicated, not prevented). Detection
-  covers Linux and Windows; macOS isn't supported at all (a distribution
-  blocker -- no Apple Developer Program membership to notarize a
-  Gatekeeper-cleared `launchd` agent, not a technical one). Both are a
-  documented later phase, not an oversight -- see "Future work:
-  push-based telemetry and additional platforms (Thanatos)" above.
+- SSO/OIDC is not implemented yet. Notification providers now cover email
+  (SMTP), syslog, and Slack/Teams/generic webhook; Telegram and Discord are
+  not implemented -- see [CHANGELOG.md](CHANGELOG.md) for current status. All
+  25 arsenals have real capabilities.
+- Thanatos is pull-based: an on-demand/periodic full sweep plus an optional
+  short-interval fast sweep for a curated high-signal set, not a continuous
+  push-based EDR agent. The agent has no live kernel telemetry producer yet
+  (no eBPF/ETW stream), though the control-plane push-ingest path is
+  scaffolded (`AgentMessage::Telemetry`). Windows reads are offset-tracked
+  (`channel_offsets`, so only genuinely new events are read); the Linux path
+  re-scans a bounded window and deduplicates by content hash rather than
+  tracking offsets. Detection covers Linux and Windows; macOS isn't supported
+  at all (a distribution blocker -- no Apple Developer Program membership to
+  notarize a Gatekeeper-cleared `launchd` agent, not a technical one). The
+  continuous-push producer and macOS are a documented later phase, not an
+  oversight -- see "Future work: push-based telemetry and additional platforms
+  (Thanatos)" above.
 - The agent does not sandbox or rate-limit operations beyond the fixed
   `AgentOperation` whitelist. Privilege escalation for an unprivileged
   agent deployment is handled by Apotheosis (see "Host enrollment and the

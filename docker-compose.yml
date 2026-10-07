@@ -92,6 +92,16 @@ services:
       SYSLOG_HOST: ${SYSLOG_HOST:-}
       SYSLOG_PORT: ${SYSLOG_PORT:-514}
       SYSLOG_APP_NAME: ${SYSLOG_APP_NAME:-abyssal-arsenal}
+      # Chat / webhook alerting. Set a Slack or Teams incoming-webhook URL (or a
+      # generic JSON webhook) to receive Thanatos findings in a channel. Each
+      # provider's *_MIN_SEVERITY (info|warning|critical, default warning) keeps
+      # the per-finding firehose off the channel -- set critical for alerts only.
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SLACK_MIN_SEVERITY: ${SLACK_MIN_SEVERITY:-}
+      TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL:-}
+      TEAMS_MIN_SEVERITY: ${TEAMS_MIN_SEVERITY:-}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_MIN_SEVERITY: ${WEBHOOK_MIN_SEVERITY:-}
       RUST_LOG: ${RUST_LOG:-info}
       STATIC_DIR: static
       # AES-256-GCM master key for Panopticon switches' stored SNMP

@@ -1,0 +1,137 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
+{% block title %}Thanatos Search — Abyssal Arsenal{% endblock %}
+{% block heading %}Thanatos — Investigation Console{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Search and pivot across every stored security event, fleet-wide. The free-text
+    box matches the finding detail and label &mdash; use it to pivot on a source IP,
+    username, process name, pipe name, or anything else that appears in an event.
+    <a href="/arsenals/thanatos">&larr; Back to the Thanatos dashboard</a>
+  </p>
+
+  <form method="get" action="/arsenals/thanatos/search" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+    <div style="flex:2 1 220px;">
+      <label for="q">Text (IP / user / process / detail)</label>
+      <input type="text" id="q" name="q" value="{{ f_text }}" placeholder="e.g. 203.0.113.5, lsass, powershell">
+    </div>
+    <div style="flex:1 1 150px;">
+      <label for="host">Host</label>
+      <select id="host" name="host" style="width:100%;">
+        <option value="">Any host</option>
+        {% for h in hosts %}
+        <option value="{{ h.id }}"{% if f_host == h.id.as_str() %} selected{% endif %}>{{ h.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="flex:1 1 120px;">
+      <label for="severity">Severity</label>
+      <select id="severity" name="severity" style="width:100%;">
+        <option value=""{% if f_severity.is_empty() %} selected{% endif %}>Any</option>
+        <option value="critical"{% if f_severity == "critical" %} selected{% endif %}>Critical</option>
+        <option value="high"{% if f_severity == "high" %} selected{% endif %}>High</option>
+        <option value="medium"{% if f_severity == "medium" %} selected{% endif %}>Medium</option>
+        <option value="low"{% if f_severity == "low" %} selected{% endif %}>Low</option>
+      </select>
+    </div>
+    <div style="flex:1 1 140px;">
+      <label for="source">Source</label>
+      <select id="source" name="source" style="width:100%;">
+        <option value="">Any source</option>
+        {% for s in sources %}
+        <option value="{{ s }}"{% if f_source == s.as_str() %} selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="flex:1 1 140px;">
+      <label for="technique">Technique</label>
+      <select id="technique" name="technique" style="width:100%;">
+        <option value="">Any technique</option>
+        {% for t in techniques %}
+        <option value="{{ t }}"{% if f_technique == t.as_str() %} selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="flex:1 1 130px;">
+      <label for="from">From (date)</label>
+      <input type="date" id="from" name="from" value="{{ f_from }}" style="width:100%;">
+    </div>
+    <div style="flex:1 1 130px;">
+      <label for="to">To (date)</label>
+      <input type="date" id="to" name="to" value="{{ f_to }}" style="width:100%;">
+    </div>
+    {% if show_resolved %}<input type="hidden" name="show_resolved" value="1">{% endif %}
+    <div style="display:flex; gap:8px;">
+      <button type="submit" class="btn-danger">{% call macros::icon("scan") %} Search</button>
+      <a class="btn btn-secondary" href="{{ clear_href }}">Clear</a>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
+    <h3 style="margin:0;">Results</h3>
+    <span style="color:var(--text-muted);">
+      {{ page.total }} match(es){% if !show_resolved %} (open/acknowledged only){% endif %}.
+      <a href="{{ toggle_resolved_href }}">{% if show_resolved %}Hide{% else %}Show{% endif %} resolved/suppressed</a>
+    </span>
+  </div>
+
+  {% if results.is_empty() %}
+  <p class="results-empty">No events match these filters.</p>
+  {% else %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Search results">
+    <table>
+      <thead>
+        <tr>
+          <th>Host</th><th>Severity</th><th>Finding</th><th>Source</th><th>Detail</th><th>Status</th><th>Occurred</th>
+          {% if can_manage || can_respond %}<th>Actions</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td><a href="/arsenals/thanatos/{{ r.host_id }}">{{ r.host_name }}</a></td>
+          <td><span class="badge {{ r.event.badge_class }}">{{ r.event.severity_label }}</span></td>
+          <td>{{ r.event.label }}{% if !r.event.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ r.event.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ r.event.technique }}</a>{% endif %}</td>
+          <td>{{ r.event.source }}</td>
+          <td style="overflow-wrap:anywhere;">{{ r.event.raw_line }}</td>
+          <td>
+            <span class="badge {{ r.event.status_badge_class }}">{{ r.event.status_label }}</span>
+            {% if let Some(note) = r.event.resolution_note %}<div style="color:var(--text-muted); font-size:0.8rem;">{{ note }}</div>{% endif %}
+          </td>
+          <td>{{ r.event.occurred_at }}</td>
+          {% if can_manage || can_respond %}
+          <td class="actions">
+            {% if can_manage && r.event.can_acknowledge %}
+            <form method="post" action="/arsenals/thanatos/events/{{ r.event.id }}/acknowledge" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn btn-secondary btn-sm">Acknowledge</button>
+            </form>
+            {% endif %}
+            {% if can_manage && r.event.can_resolve_or_suppress %}
+            <form method="post" action="/arsenals/thanatos/events/{{ r.event.id }}/resolve" style="display:inline-flex; gap:4px; align-items:center;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <input type="text" name="note" placeholder="note (optional)" style="width:100px; margin:0;">
+              <button type="submit" formaction="/arsenals/thanatos/events/{{ r.event.id }}/resolve" class="btn btn-secondary btn-sm">Resolve</button>
+              <button type="submit" formaction="/arsenals/thanatos/events/{{ r.event.id }}/suppress" class="btn btn-secondary btn-sm">Suppress</button>
+            </form>
+            {% endif %}
+            {% if can_respond %}
+            <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ r.host_id }}">{% call macros::icon("warning") %} Respond</a>
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% call pager::pagination_nav(page) %}
+  {% endif %}
+</div>
+
+{% endblock %}

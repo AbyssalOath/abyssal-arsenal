@@ -836,11 +836,14 @@ pub struct SettingsTemplate {
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
     pub thanatos_extra_fim_paths: String,
+    pub thanatos_c2_ports: String,
     pub thanatos_auto_quarantine_ssh_keys_enabled: bool,
     pub thanatos_auto_disable_account_enabled: bool,
     pub thanatos_correlation_threshold: u32,
     pub thanatos_correlation_window_minutes: u32,
     pub thanatos_sweep_interval_seconds: u32,
+    pub thanatos_fast_sweep_seconds: u32,
+    pub thanatos_event_retention_days: u32,
     pub panopticon_sweep_enabled: bool,
     pub panopticon_sweep_target: String,
     pub panopticon_mdns_enabled: bool,
@@ -2048,6 +2051,9 @@ pub struct SecurityEventRow {
     pub severity_label: &'static str,
     pub badge_class: &'static str,
     pub label: String,
+    /// MITRE ATT&CK technique ID (e.g. `T1003.001`), or empty when unmapped --
+    /// rendered as a small badge linking to the technique on attack.mitre.org.
+    pub technique: String,
     pub source: String,
     pub raw_line: String,
     pub occurred_at: String,
@@ -2069,6 +2075,7 @@ pub struct SecurityEventRow {
 pub struct AlertRow {
     pub host_name: String,
     pub label: String,
+    pub technique: String,
     pub raw_line: String,
     pub occurred_at: String,
 }
@@ -2081,6 +2088,9 @@ pub struct ThanatosTemplate {
     /// buttons on every event row, distinct from the `security.view`
     /// every read-facing Thanatos route already requires.
     pub can_manage: bool,
+    /// `incidents.respond` -- gates the inline "Respond"/"Isolate host" links
+    /// that deep-link a finding's host into the Inquest response toolkit.
+    pub can_respond: bool,
     pub severity_summary: Vec<SeverityCountRow>,
     pub recent_alerts: Vec<AlertRow>,
     pub total_event_count: i64,
@@ -2093,11 +2103,105 @@ pub struct ThanatosTemplate {
     pub toggle_resolved_href: String,
 }
 
+/// One host option in the investigation console's host filter.
+pub struct FacetHost {
+    pub id: String,
+    pub name: String,
+}
+
+/// One result row in the cross-host investigation console -- a security event
+/// plus its host's name/id (the console spans every host, unlike the per-host
+/// page), reusing `SecurityEventRow` for the badge/action-button rendering.
+pub struct SearchResultRow {
+    pub host_id: String,
+    pub host_name: String,
+    pub event: SecurityEventRow,
+}
+
+#[derive(Template)]
+#[template(path = "thanatos_search.html")]
+pub struct ThanatosSearchTemplate {
+    pub base: BaseCtx,
+    /// `security.manage` -- gates the acknowledge/resolve/suppress buttons.
+    pub can_manage: bool,
+    /// `incidents.respond` -- gates the per-row "Respond" link into Inquest.
+    pub can_respond: bool,
+    // Echoed filter state, to re-populate the form after a search.
+    pub f_host: String,
+    pub f_source: String,
+    pub f_severity: String,
+    pub f_technique: String,
+    pub f_text: String,
+    pub f_from: String,
+    pub f_to: String,
+    pub show_resolved: bool,
+    // Filter dropdown facets.
+    pub hosts: Vec<FacetHost>,
+    pub sources: Vec<String>,
+    pub techniques: Vec<String>,
+    // Results + pager.
+    pub results: Vec<SearchResultRow>,
+    pub page: NumberedPageInfo,
+    /// Link that flips the show-resolved toggle, preserving every other filter.
+    pub toggle_resolved_href: String,
+    /// Link that clears all filters.
+    pub clear_href: String,
+}
+
+/// One suppression/allowlist rule in the management page's list.
+pub struct SuppressionRuleView {
+    pub id: String,
+    /// "All hosts" or the host's name.
+    pub scope: String,
+    /// Each criterion as display text, "any" when unset.
+    pub source: String,
+    pub label: String,
+    pub technique: String,
+    pub text_contains: String,
+    pub reason: String,
+    pub created_at: String,
+    /// "Never" or the expiry timestamp.
+    pub expires: String,
+    /// False once past `expires_at` -- shown greyed with an "expired" note.
+    pub active: bool,
+}
+
+#[derive(Template)]
+#[template(path = "thanatos_rules.html")]
+pub struct ThanatosRulesTemplate {
+    pub base: BaseCtx,
+    pub rules: Vec<SuppressionRuleView>,
+    pub hosts: Vec<FacetHost>,
+    pub sources: Vec<String>,
+    pub techniques: Vec<String>,
+}
+
+/// One threat-intel IOC in the management page's list.
+pub struct IocView {
+    pub id: String,
+    pub ioc_type: String,
+    pub value: String,
+    pub severity: String,
+    pub label: String,
+    pub created_at: String,
+    pub expires: String,
+    pub active: bool,
+}
+
+#[derive(Template)]
+#[template(path = "thanatos_iocs.html")]
+pub struct ThanatosIocsTemplate {
+    pub base: BaseCtx,
+    pub iocs: Vec<IocView>,
+}
+
 #[derive(Template)]
 #[template(path = "thanatos_host.html")]
 pub struct ThanatosHostTemplate {
     pub base: BaseCtx,
     pub can_manage: bool,
+    /// `incidents.respond` -- gates the host-level Respond toolbar.
+    pub can_respond: bool,
     pub host_id: String,
     pub host_name: String,
     /// "Linux"/"Windows"/"macOS"/"Unknown OS", from `Host.os` -- see

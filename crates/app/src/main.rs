@@ -15,7 +15,10 @@ use abyssal_database::repo;
 use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
-use abyssal_notifications::{NotificationDispatcher, SmtpProvider, SyslogProvider};
+use abyssal_notifications::{
+    NotificationDispatcher, Severity as NotificationSeverity, SmtpProvider, SyslogProvider,
+    WebhookFlavor, WebhookProvider,
+};
 use abyssal_web::reliquary_backup::provider::NativeProvider;
 use abyssal_web::reliquary_backup::restore::MaintenanceMode;
 use abyssal_web::reliquary_backup::storage::LocalFs;
@@ -181,6 +184,8 @@ async fn main() -> anyhow::Result<()> {
         state.task_health.clone(),
     );
     abyssal_web::spawn_thanatos_sweep(state.clone());
+    abyssal_web::spawn_thanatos_fast_sweep(state.clone());
+    abyssal_web::spawn_thanatos_retention(state.clone());
     abyssal_web::spawn_health_sweep(state.clone());
     abyssal_web::spawn_mortiscope_metrics_sweep(state.clone());
     abyssal_web::spawn_self_metrics_sampler(
@@ -300,6 +305,43 @@ async fn build_notifications(config: &Config) -> NotificationDispatcher {
         match SyslogProvider::new(host, config.syslog_port, &config.syslog_app_name).await {
             Ok(provider) => dispatcher.register(Box::new(provider)),
             Err(e) => tracing::warn!(error = %e, "syslog notification provider not configured"),
+        }
+    }
+
+    // Chat / webhook providers (M5). Each registers only if its URL is set.
+    // `min_severity` defaults to `warning` so the per-finding firehose doesn't
+    // flood a chat channel -- raise it to `critical` for alerts only.
+    for (url, flavor, raw_min, what) in [
+        (
+            &config.slack_webhook_url,
+            WebhookFlavor::Slack,
+            &config.slack_min_severity,
+            "Slack",
+        ),
+        (
+            &config.teams_webhook_url,
+            WebhookFlavor::Teams,
+            &config.teams_min_severity,
+            "Teams",
+        ),
+        (
+            &config.webhook_url,
+            WebhookFlavor::Generic,
+            &config.webhook_min_severity,
+            "webhook",
+        ),
+    ] {
+        if let Some(url) = url {
+            let min_severity = raw_min
+                .as_deref()
+                .and_then(NotificationSeverity::parse)
+                .unwrap_or(NotificationSeverity::Warning);
+            match WebhookProvider::new(url, flavor, min_severity) {
+                Ok(provider) => dispatcher.register(Box::new(provider)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "{what} notification provider not configured")
+                }
+            }
         }
     }
 

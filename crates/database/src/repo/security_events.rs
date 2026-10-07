@@ -15,6 +15,7 @@ struct SecurityEventRow {
     source: String,
     severity: String,
     label: String,
+    technique: String,
     raw_line: String,
     occurred_at: NaiveDateTime,
     status: String,
@@ -40,6 +41,7 @@ impl From<SecurityEventRow> for SecurityEvent {
             // better than the entire event log becoming unreadable.
             severity: Severity::from_key(&row.severity).unwrap_or(Severity::Low),
             label: row.label,
+            technique: row.technique,
             raw_line: row.raw_line,
             occurred_at: utc(row.occurred_at),
             status: EventStatus::from_key(&row.status).unwrap_or_default(),
@@ -73,12 +75,13 @@ pub async fn insert_if_new(
     source: &str,
     severity: Severity,
     label: &str,
+    technique: &str,
     raw_line: &str,
 ) -> anyhow::Result<bool> {
     let hash = hash_event_line(host_id, source, raw_line);
     let result = sqlx::query(
-        "INSERT IGNORE INTO thanatos_events (id, host_id, line_hash, source, severity, label, raw_line) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT IGNORE INTO thanatos_events (id, host_id, line_hash, source, severity, label, technique, raw_line) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(host_id.to_string())
@@ -86,6 +89,7 @@ pub async fn insert_if_new(
     .bind(source)
     .bind(severity.as_key())
     .bind(label)
+    .bind(technique)
     .bind(raw_line)
     .execute(pool)
     .await?;
@@ -308,6 +312,128 @@ pub async fn has_recent_correlation_event(
     .fetch_one(pool)
     .await?;
     Ok(count > 0)
+}
+
+/// Filters for the cross-host investigation console (M3). Every field is
+/// optional/additive: an unset field doesn't constrain the query. `text` is a
+/// substring match over `raw_line` and `label` (so it serves as the pivot for a
+/// source IP, username, process name, pipe name, etc. -- whatever appears in
+/// the finding). `only_active` hides resolved/suppressed events unless `false`.
+#[derive(Default)]
+pub struct EventSearchFilter {
+    pub host_id: Option<Uuid>,
+    pub source: Option<String>,
+    pub severity: Option<Severity>,
+    pub technique: Option<String>,
+    pub text: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub only_active: bool,
+}
+
+/// Escapes a user-supplied `LIKE` operand so `%`/`_`/`\` in it match literally
+/// rather than acting as wildcards (default `\` escape char).
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn push_search_filters<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::MySql>, f: &'a EventSearchFilter) {
+    if let Some(host_id) = f.host_id {
+        qb.push(" AND host_id = ").push_bind(host_id.to_string());
+    }
+    if let Some(source) = &f.source {
+        qb.push(" AND source = ").push_bind(source.clone());
+    }
+    if let Some(severity) = f.severity {
+        qb.push(" AND severity = ").push_bind(severity.as_key());
+    }
+    if let Some(technique) = &f.technique {
+        qb.push(" AND technique = ").push_bind(technique.clone());
+    }
+    if let Some(text) = &f.text {
+        let like = format!("%{}%", escape_like(text));
+        qb.push(" AND (raw_line LIKE ")
+            .push_bind(like.clone())
+            .push(" OR label LIKE ")
+            .push_bind(like)
+            .push(")");
+    }
+    if let Some(from) = f.from {
+        qb.push(" AND occurred_at >= ").push_bind(from.naive_utc());
+    }
+    if let Some(to) = f.to {
+        qb.push(" AND occurred_at <= ").push_bind(to.naive_utc());
+    }
+    if f.only_active {
+        qb.push(" AND status IN ('open', 'acknowledged')");
+    }
+}
+
+/// One page of the investigation console's results -- every matching event
+/// across the fleet, newest first. `limit`/`offset` paginate; `count_events`
+/// gives the total for the pager.
+pub async fn search_events(
+    pool: &DbPool,
+    filter: &EventSearchFilter,
+    limit: i64,
+    offset: i64,
+) -> anyhow::Result<Vec<SecurityEvent>> {
+    let mut qb =
+        sqlx::QueryBuilder::<sqlx::MySql>::new("SELECT * FROM thanatos_events WHERE 1 = 1");
+    push_search_filters(&mut qb, filter);
+    qb.push(" ORDER BY occurred_at DESC LIMIT ")
+        .push_bind(limit)
+        .push(" OFFSET ")
+        .push_bind(offset);
+    let rows: Vec<SecurityEventRow> = qb.build_query_as().fetch_all(pool).await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+/// Total number of events matching a search filter -- the investigation
+/// console's result count and pager denominator.
+pub async fn count_events(pool: &DbPool, filter: &EventSearchFilter) -> anyhow::Result<i64> {
+    let mut qb =
+        sqlx::QueryBuilder::<sqlx::MySql>::new("SELECT COUNT(*) FROM thanatos_events WHERE 1 = 1");
+    push_search_filters(&mut qb, filter);
+    let count: i64 = qb.build_query_scalar().fetch_one(pool).await?;
+    Ok(count)
+}
+
+/// Distinct `source` values present in the event log -- populates the
+/// investigation console's source filter dropdown.
+pub async fn distinct_sources(pool: &DbPool) -> anyhow::Result<Vec<String>> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT DISTINCT source FROM thanatos_events ORDER BY source")
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(s,)| s).collect())
+}
+
+/// Distinct non-empty `technique` values present -- the console's technique
+/// filter dropdown.
+pub async fn distinct_techniques(pool: &DbPool) -> anyhow::Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT technique FROM thanatos_events WHERE technique <> '' ORDER BY technique",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(s,)| s).collect())
+}
+
+/// Deletes events older than `days` days -- the retention sweep
+/// (`thanatos_ops::spawn_thanatos_retention`). Returns how many rows were
+/// pruned. Age-based only, by design: retention is a data-lifecycle policy, so
+/// it prunes strictly by `occurred_at` regardless of an event's status or
+/// source (including correlation findings). Caller guards `days <= 0` (disabled).
+pub async fn prune_older_than(pool: &DbPool, days: i64) -> anyhow::Result<u64> {
+    let result =
+        sqlx::query("DELETE FROM thanatos_events WHERE occurred_at < (NOW() - INTERVAL ? DAY)")
+            .bind(days)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected())
 }
 
 /// Fleet-wide event counts by severity in the last `hours` -- the

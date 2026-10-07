@@ -22,6 +22,14 @@
   </form>
   {% endif %}
 
+  {% if can_respond %}
+  <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+    <span style="color:var(--text-muted);">Respond:</span>
+    <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ host_id }}">{% call macros::icon("warning") %} Response console</a>
+    <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ host_id }}/isolate/confirm">{% call macros::icon("danger") %} Isolate host</a>
+  </div>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
     {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
@@ -88,7 +96,7 @@
         {% for e in events %}
         <tr>
           <td><span class="badge {{ e.badge_class }}">{{ e.severity_label }}</span></td>
-          <td>{{ e.label }}</td>
+          <td>{{ e.label }}{% if !e.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ e.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ e.technique }}</a>{% endif %}</td>
           <td>{{ e.source }}</td>
           <td style="overflow-wrap:anywhere;">{{ e.raw_line }}</td>
           <td>

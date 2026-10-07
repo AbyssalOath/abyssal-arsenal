@@ -45,5 +45,5 @@ pub use router::build;
 pub use self_metrics::spawn_self_metrics_sampler;
 pub use self_monitor::spawn_self_monitor_sweep;
 pub use state::{AppState, WebConfig};
-pub use thanatos_ops::spawn_thanatos_sweep;
+pub use thanatos_ops::{spawn_thanatos_fast_sweep, spawn_thanatos_retention, spawn_thanatos_sweep};
 pub use update_check::spawn_update_check_sweep;

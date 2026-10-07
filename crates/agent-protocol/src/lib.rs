@@ -26,7 +26,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 36;
+pub const PROTOCOL_VERSION: u32 = 38;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1160,6 +1160,27 @@ pub enum AgentOperation {
         /// not record id).
         #[serde(default)]
         channel_offsets: Vec<(String, u64)>,
+        /// Remote TCP ports an outbound connection to which is flagged as a
+        /// likely reverse-shell/C2 beacon (source `network-outbound`). Matched
+        /// by exact numeric port, never a substring, so port 13370 never trips
+        /// a rule meant for 1337. Operator-configurable (`THANATOS_C2_PORTS`),
+        /// so the default high-confidence set can be extended with an
+        /// environment's own known-bad ports without rebuilding the agent;
+        /// empty falls back to no port-based flagging. The agent re-validates
+        /// nothing here (a `u16` is already its own domain). Both platforms.
+        #[serde(default)]
+        c2_ports: Vec<u16>,
+        /// Fast "act-now" sweep (M6 Option A). When true, the agent skips the
+        /// full scan (FIM, posture, ports, modules, ancestry, LSASS query,
+        /// outbound) and only reads a small curated set of high-signal, low-
+        /// volume events -- on Windows a handful of Event Log IDs over a short
+        /// recent window (no offset tracking: this is a best-effort low-latency
+        /// pass, the 60s full sweep remains the complete, offset-tracked source
+        /// of truth), on Unix just the process command lines (reverse-shell /
+        /// LOLBin detection). Deduped against the full sweep by content hash, so
+        /// an event seen by both is one row. Default false (a full scan).
+        #[serde(default)]
+        fast_only: bool,
     },
 
     // -------------------------------------------------------------
@@ -2544,6 +2565,21 @@ pub enum AgentMessage {
         outcome: CommandOutcome,
     },
     Pong,
+    /// Agent-initiated, unsolicited security telemetry pushed up the existing
+    /// WebSocket (M6 Option B, real-time "fast channel" -- **scaffold**).
+    ///
+    /// The control plane already routes this through the same ingest path as a
+    /// poll's output (`thanatos_ops::ingest_scan`), so the remaining work to
+    /// turn on real-time push is purely agent-side: a long-lived producer
+    /// (Windows `EvtSubscribe` / ETW; Linux auditd/eBPF) that classifies events
+    /// as they happen and sends them here instead of waiting for the next
+    /// sweep. The agent does **not** emit this yet -- today low latency is
+    /// delivered by the Option A fast sweep (`ScanSecurityEvents.fast_only`).
+    /// `stdout` carries the same tab-delimited line format a scan produces, so
+    /// one ingest path serves both transports.
+    Telemetry {
+        stdout: String,
+    },
 }
 
 /// Upper bound on an `UpdateTrustedCa` bundle -- a handful of CA

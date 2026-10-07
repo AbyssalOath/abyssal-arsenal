@@ -106,6 +106,11 @@ pub struct SecurityEvent {
     pub source: String,
     pub severity: Severity,
     pub label: String,
+    /// MITRE ATT&CK technique ID this finding maps to (e.g. `T1003.001`), or
+    /// empty when none is mapped. Annotated control-plane-side from the
+    /// finding's label (see `thanatos_ops::technique_for`), not sent by the
+    /// agent, so it can be refined without an agent rebuild.
+    pub technique: String,
     pub raw_line: String,
     pub occurred_at: DateTime<Utc>,
     pub status: EventStatus,
@@ -116,6 +121,90 @@ pub struct SecurityEvent {
     /// A free-text note attached at resolve/suppress time -- optional
     /// even then, and always `None` for a merely-acknowledged event.
     pub resolution_note: Option<String>,
+}
+
+/// A Thanatos suppression / allowlist rule (M4): matched against each incoming
+/// classified finding at ingest, and any finding it matches is dropped (never
+/// persisted, never alerted). One mechanism serves both "suppress this class of
+/// finding" (match by `label`/`source`/`technique`) and "allowlist this
+/// known-good indicator" (match by `text_contains`, e.g. a monitoring box's IP
+/// or a service account). Every set criterion must match (AND); an unset
+/// criterion doesn't constrain. A rule with no criteria set would match
+/// everything and is rejected at creation (`has_criteria`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuppressionRule {
+    pub id: Uuid,
+    /// Restrict to one host; `None` applies fleet-wide.
+    pub host_id: Option<Uuid>,
+    pub source: Option<String>,
+    pub label: Option<String>,
+    pub technique: Option<String>,
+    /// A substring that must appear in the finding's `raw_line` (the allowlist
+    /// pivot: an IP, username, hash, process name, ...).
+    pub text_contains: Option<String>,
+    pub reason: Option<String>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    /// Optional expiry -- a temporary suppression that stops applying after this
+    /// instant. `None` never expires.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl SuppressionRule {
+    /// Whether at least one matching criterion is set -- a rule with none would
+    /// match (and drop) every finding, so creation rejects it.
+    pub fn has_criteria(&self) -> bool {
+        self.host_id.is_some()
+            || self.source.is_some()
+            || self.label.is_some()
+            || self.technique.is_some()
+            || self.text_contains.is_some()
+    }
+
+    /// Whether this rule matches a finding. Every set criterion must match; an
+    /// unset (`None`) criterion is a wildcard. Expiry is handled by the caller
+    /// (active rules are loaded already-filtered), so this is pure criteria.
+    ///
+    /// `text_contains` is matched on **token boundaries**, not as a raw
+    /// substring: the value must equal a whole token of `raw_line` (tokens split
+    /// on anything that isn't alphanumeric/`.`/`-`/`_`). This is deliberate --
+    /// an allowlist indicator like the IP `10.0.0.5` must not be satisfied by an
+    /// attacker embedding it inside `210.0.0.59`, a different username, or
+    /// arbitrary attacker-controlled free text in the line, which a plain
+    /// substring match would allow (a detection-evasion bypass). Operators are
+    /// encouraged to pair a `text_contains` allowlist with a `source`/`label` so
+    /// a single token can't silence unrelated finding classes.
+    pub fn matches(
+        &self,
+        host_id: Uuid,
+        source: &str,
+        label: &str,
+        technique: &str,
+        raw_line: &str,
+    ) -> bool {
+        self.host_id.is_none_or(|h| h == host_id)
+            && self.source.as_deref().is_none_or(|s| s == source)
+            && self.label.as_deref().is_none_or(|l| l == label)
+            && self.technique.as_deref().is_none_or(|t| t == technique)
+            && self
+                .text_contains
+                .as_deref()
+                .is_none_or(|t| contains_token(raw_line, t))
+    }
+}
+
+/// Whether `needle` equals a whole token of `haystack`. Tokens are maximal runs
+/// of characters that make up an indicator -- alphanumerics plus `.`/`-`/`_`
+/// (so IPv4 addresses, hostnames, usernames and `name.exe` stay intact) --
+/// separated by anything else (spaces, `=`, `\`, tabs, `:`...). Used so an
+/// allowlist value matches an indicator exactly, never as an embedded substring.
+fn contains_token(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    haystack
+        .split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '-' || c == '_'))
+        .any(|token| token == needle)
 }
 
 /// The dedup key `thanatos_events` uniquely constrains on. Stable across
@@ -194,6 +283,106 @@ mod tests {
         assert!(Severity::Low < Severity::Medium);
         assert!(Severity::Medium < Severity::High);
         assert!(Severity::High < Severity::Critical);
+    }
+
+    fn rule(
+        host_id: Option<Uuid>,
+        source: Option<&str>,
+        label: Option<&str>,
+        technique: Option<&str>,
+        text_contains: Option<&str>,
+    ) -> SuppressionRule {
+        SuppressionRule {
+            id: Uuid::new_v4(),
+            host_id,
+            source: source.map(str::to_string),
+            label: label.map(str::to_string),
+            technique: technique.map(str::to_string),
+            text_contains: text_contains.map(str::to_string),
+            reason: None,
+            created_by: None,
+            created_at: Utc::now(),
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn suppression_rule_requires_at_least_one_criterion() {
+        assert!(!rule(None, None, None, None, None).has_criteria());
+        assert!(rule(None, Some("sysmon"), None, None, None).has_criteria());
+        assert!(rule(None, None, None, None, Some("10.0.0.5")).has_criteria());
+    }
+
+    #[test]
+    fn suppression_rule_matches_all_set_criteria_and_wildcards_the_rest() {
+        let host = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        // Allowlist a known-good IP anywhere in the raw line.
+        let r = rule(None, None, None, None, Some("10.0.0.5"));
+        assert!(r.matches(
+            host,
+            "security",
+            "Windows failed logon",
+            "T1110",
+            "... from 10.0.0.5 ..."
+        ));
+        assert!(!r.matches(
+            host,
+            "security",
+            "Windows failed logon",
+            "T1110",
+            "... from 10.0.0.9 ..."
+        ));
+        // Suppress a class on one host only.
+        let r = rule(Some(host), Some("posture"), None, None, None);
+        assert!(r.matches(
+            host,
+            "posture",
+            "SMBv1 protocol enabled",
+            "",
+            "EnableSMB1Protocol=true"
+        ));
+        assert!(!r.matches(
+            other,
+            "posture",
+            "SMBv1 protocol enabled",
+            "",
+            "EnableSMB1Protocol=true"
+        ));
+        assert!(!r.matches(host, "security", "SMBv1 protocol enabled", "", "x"));
+        // Match by technique.
+        let r = rule(None, None, None, Some("T1003.001"), None);
+        assert!(r.matches(
+            host,
+            "sysmon",
+            "Possible LSASS memory access (credential theft)",
+            "T1003.001",
+            "x"
+        ));
+        assert!(!r.matches(host, "sysmon", "x", "T1055", "x"));
+    }
+
+    #[test]
+    fn text_allowlist_matches_whole_tokens_not_embedded_substrings() {
+        let host = Uuid::new_v4();
+        let r = rule(None, None, None, None, Some("10.0.0.5"));
+        // Exact token in various delimiter contexts matches.
+        assert!(r.matches(host, "security", "x", "", "from 10.0.0.5 port 22"));
+        assert!(r.matches(host, "security", "x", "", "remote_addr=10.0.0.5\tproto=tcp"));
+        // Embedded in a larger number / different address must NOT match
+        // (the detection-evasion bypass a raw substring match would allow).
+        assert!(!r.matches(host, "security", "x", "", "from 210.0.0.59 port 22"));
+        assert!(!r.matches(host, "security", "x", "", "from 10.0.0.50 port 22"));
+        // Username token allowlist.
+        let r = rule(None, None, None, None, Some("svc_scanner"));
+        assert!(r.matches(host, "security", "x", "", "Account=svc_scanner logged on"));
+        assert!(!r.matches(
+            host,
+            "security",
+            "x",
+            "",
+            "Account=svc_scanner_admin logged on"
+        ));
     }
 
     #[test]

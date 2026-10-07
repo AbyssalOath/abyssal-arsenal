@@ -281,12 +281,17 @@ path) rather than failing if it's already registered.
   unprivileged-by-default mode to elevate *from* the way Linux's
   sudo-based `ElevationState` provides.
 - **Thanatos detection reads the Security/System event logs** (plus,
-  best-effort, PowerShell script block logging and Windows Defender's
-  operational log where enabled), via `Get-WinEvent`, shelled through
-  `powershell.exe` instead of tailing `/var/log/auth.log`/the kernel ring
-  buffer/systemd -- see the module doc comment in
+  best-effort, PowerShell script block logging, Windows Defender's
+  operational log, and Sysmon where deployed), via `Get-WinEvent`, shelled
+  through `powershell.exe` instead of tailing `/var/log/auth.log`/the kernel
+  ring buffer/systemd. It also covers LSASS-access detection, process
+  ancestry, host-posture and persistence (registry/service/task/WMI/ASEP)
+  file-integrity checks, and an optional short-interval fast sweep for a
+  curated high-signal set (`fast_only`) -- see the module doc comment in
   `crates/agent/src/thanatos.rs` for the exact signals watched and why
-  they're matched on event ID rather than message text.
+  they're matched on event ID rather than message text, and the Thanatos
+  entries in [CHANGELOG.md](../../CHANGELOG.md) for the full SIEM/EDR feature
+  set (search, retention, suppression/IOC rules, response, alerting).
 - **Inquest's response/containment actions go through Windows Defender
   Firewall** (`New-NetFirewallRule`/`Set-NetFirewallProfile`, shelled
   through `powershell.exe`) instead of nftables/iptables, and quarantine

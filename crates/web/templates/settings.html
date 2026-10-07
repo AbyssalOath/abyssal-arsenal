@@ -216,6 +216,33 @@
 
     <div class="settings-row">
       <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos outbound C2 / reverse-shell ports</div>
+        <p class="settings-row-desc">Remote TCP ports an outbound connection to which is flagged as a likely beacon.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Comma-separated TCP port numbers. When a host opens an <em>outbound</em> connection
+            to a non-private address on one of these ports, Thanatos raises a high-severity
+            finding. Matched by exact port number (so <code>13370</code> never trips a rule for
+            <code>1337</code>), on both Linux and Windows. Keep this list short and
+            high-confidence -- common ports like 80/443/8080 carry ordinary traffic and would
+            bury the signal. Leave it blank to disable outbound port flagging entirely (event-log
+            and command-line detections are unaffected).
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/thanatos-c2-ports" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="thanatos-c2-ports" class="sr-only">C2 ports</label>
+          <textarea id="thanatos-c2-ports" name="ports" rows="2" placeholder="1337,4444,6667,31337">{{ thanatos_c2_ports }}</textarea>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("danger") %} Auto-quarantine on SSH key tampering</div>
         <p class="settings-row-desc">Automatically quarantines a per-user <code>authorized_keys</code> file the instant it changes -- no human in the loop.</p>
         <details class="settings-row-more">
@@ -301,6 +328,33 @@
           <input type="number" id="thanatos-window" name="window_minutes" min="1" max="1440" value="{{ thanatos_correlation_window_minutes }}" style="max-width:90px;">
           <label for="thanatos-sweep-interval">Sweep interval (seconds)</label>
           <input type="number" id="thanatos-sweep-interval" name="sweep_interval_seconds" min="10" max="3600" value="{{ thanatos_sweep_interval_seconds }}" style="max-width:90px;">
+          <label for="thanatos-fast-sweep">Fast sweep (seconds, 0 = off)</label>
+          <input type="number" id="thanatos-fast-sweep" name="fast_sweep_seconds" min="0" max="60" value="{{ thanatos_fast_sweep_seconds }}" style="max-width:90px;">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos event retention</div>
+        <p class="settings-row-desc">How many days of security events to keep before they're pruned.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            A background job prunes stored security events older than this many days, so the
+            event store doesn't grow without bound. Pruning is strictly by age, regardless of an
+            event's status or source (resolved, open, and correlation findings alike). Set to
+            <code>0</code> to disable pruning and keep everything. The investigation console
+            (Thanatos &rarr; Search) only ever searches events still within this window.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/thanatos-retention" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="thanatos-retention-days">Retention (days, 0 = keep all)</label>
+          <input type="number" id="thanatos-retention-days" name="retention_days" min="0" max="3650" value="{{ thanatos_event_retention_days }}" style="max-width:90px;">
           <button type="submit" class="btn-warning">Save</button>
         </form>
       </div>

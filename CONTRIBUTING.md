@@ -67,7 +67,7 @@ fails any of them will not be merged as-is.
 
 ## Adding a new arsenal capability
 
-All 23 arsenals have real capabilities today (see
+All 25 arsenals have real capabilities today (see
 [CHANGELOG.md](CHANGELOG.md) for what each one does); adding a new
 operation to an existing one, or extending its scope, follows the same
 pattern every one of them was built with. For a host-affecting

@@ -23,6 +23,21 @@ pub struct Config {
     /// RFC 5424 APP-NAME field -- lets one syslog destination receiving
     /// from several Abyssal Arsenal deployments tell them apart.
     pub syslog_app_name: String,
+    /// Chat/webhook notification destinations (M5) -- Slack/Teams incoming
+    /// webhook URLs and a generic JSON webhook URL. Configured via environment
+    /// variables at startup like SMTP/syslog (a destination endpoint is
+    /// infrastructure wiring). Each has an optional minimum severity
+    /// (`info`/`warning`/`critical`, default `warning`) so the per-finding
+    /// firehose doesn't flood a chat channel -- only findings at or above it are
+    /// posted. Unset URL = that provider isn't registered.
+    pub slack_webhook_url: Option<String>,
+    pub teams_webhook_url: Option<String>,
+    pub webhook_url: Option<String>,
+    /// Raw min-severity strings (parsed in `build_notifications`); `None`
+    /// defaults to `warning`.
+    pub slack_min_severity: Option<String>,
+    pub teams_min_severity: Option<String>,
+    pub webhook_min_severity: Option<String>,
     /// Base URL this control plane is reachable at (e.g.
     /// `https://arsenal.example.com`), used only to build a clickable link
     /// in outgoing emails (currently just the password-reset email).
@@ -73,6 +88,12 @@ impl Config {
                 .unwrap_or(514),
             syslog_app_name: env_opt("SYSLOG_APP_NAME")
                 .unwrap_or_else(|| "abyssal-arsenal".to_string()),
+            slack_webhook_url: env_opt("SLACK_WEBHOOK_URL"),
+            teams_webhook_url: env_opt("TEAMS_WEBHOOK_URL"),
+            webhook_url: env_opt("WEBHOOK_URL"),
+            slack_min_severity: env_opt("SLACK_MIN_SEVERITY"),
+            teams_min_severity: env_opt("TEAMS_MIN_SEVERITY"),
+            webhook_min_severity: env_opt("WEBHOOK_MIN_SEVERITY"),
             public_url: env_opt("PUBLIC_URL").map(|v| v.trim_end_matches('/').to_string()),
             encryption_key: env_opt("ENCRYPTION_KEY")
                 .map(|v| abyssal_core::EncryptionKey::from_base64(&v))
