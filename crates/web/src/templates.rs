@@ -188,6 +188,16 @@ pub struct SystemHealthTemplate {
     pub alert_recipients: String,
     /// Internal TLS (private CA) summary card.
     pub tls: TlsSummary,
+    pub email_configured: bool,
+    /// Prefills the test email's "to" with the viewer's own address.
+    pub email_test_default_to: String,
+    /// The result of a "Send test email" just submitted.
+    pub email_test: Option<EmailTestResult>,
+}
+
+pub struct EmailTestResult {
+    pub ok: bool,
+    pub detail: String,
 }
 
 /// One certificate as `/admin/health` shows it.
@@ -446,6 +456,10 @@ pub struct UpdateNoticeCtx {
     pub latest_version: String,
     pub release_url: String,
     pub update_available: bool,
+    /// Hover text: when the last check ran, and why it failed if it did.
+    pub check_detail: String,
+    /// `settings.manage`: the "Check now" button.
+    pub can_check: bool,
 }
 
 /// One row of the dashboard fleet table: a host, its connection state, its

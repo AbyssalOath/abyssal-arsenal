@@ -13,6 +13,10 @@ pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/", get(routes::dashboard::show))
         .route("/dashboard/hosts", get(routes::dashboard::hosts))
+        .route(
+            "/dashboard/check-updates",
+            post(routes::dashboard::check_for_updates),
+        )
         .route("/dashboard/activity", get(routes::dashboard::activity))
         .route(
             "/dashboard/preferences",
@@ -150,6 +154,10 @@ pub fn build(state: AppState) -> Router {
         .route("/admin/workflows", get(routes::workflows::list))
         .route("/admin/settings", get(routes::settings::show))
         .route("/admin/health", get(routes::system_health::show))
+        .route(
+            "/admin/health/test-email",
+            post(routes::system_health::send_test_email),
+        )
         .route(
             "/admin/health/self-monitoring",
             post(routes::system_health::set_monitoring),

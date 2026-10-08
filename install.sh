@@ -257,6 +257,16 @@ if [ "$internal_tls_new" = "0" ] && grep -qs '/etc/caddy/certs/cert.pem' Caddyfi
         fi
 fi
 
+# A value for .env that Docker Compose reads back exactly: single-quoted
+# (no `$` interpolation, `#` isn't a comment), or double-quoted with `\`,
+# `"` and `$` escaped when the value itself contains a single quote.
+env_quote() {
+        case "$1" in
+        *"'"*) printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\$/$$/g')" ;;
+        *) printf "'%s'" "$1" ;;
+        esac
+}
+
 # --- SMTP (optional) ---
 if grep -q "^SMTP_HOST=" .env 2>/dev/null; then
         echo "SMTP settings already recorded in .env -- skipping prompt."
@@ -270,16 +280,20 @@ else
         if [ -n "$smtp_host" ]; then
                 read -rp "SMTP port [default: 587]: " smtp_port
                 smtp_port=${smtp_port:-587}
-                read -rp "SMTP username: " smtp_username
+                if [ "$smtp_port" = "465" ]; then default_tls=tls; else default_tls=starttls; fi
+                read -rp "Encryption: starttls (587, e.g. Office 365), tls (465), or none [default: ${default_tls}]: " smtp_tls
+                smtp_tls=${smtp_tls:-$default_tls}
+                read -rp "SMTP username (blank for an unauthenticated relay): " smtp_username
                 read -rsp "SMTP password (input hidden): " smtp_password
                 echo ""
-                read -rp "\"From\" address for outgoing mail: " smtp_from
+                read -rp "\"From\" address for outgoing mail (Office 365: the same mailbox as the username): " smtp_from
 
                 cat >> .env << EOF
 SMTP_HOST=${smtp_host}
 SMTP_PORT=${smtp_port}
+SMTP_TLS=${smtp_tls}
 SMTP_USERNAME=${smtp_username}
-SMTP_PASSWORD=${smtp_password}
+SMTP_PASSWORD=$(env_quote "$smtp_password")
 SMTP_FROM=${smtp_from}
 EOF
                 echo "SMTP settings saved to .env."
@@ -287,6 +301,7 @@ EOF
                 cat >> .env << EOF
 SMTP_HOST=
 SMTP_PORT=587
+SMTP_TLS=
 SMTP_USERNAME=
 SMTP_PASSWORD=
 SMTP_FROM=

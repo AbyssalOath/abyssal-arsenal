@@ -19,7 +19,10 @@ pub const CURRENT_VERSION: &str = include_str!("../../../VERSION");
 
 const GITHUB_RELEASES_API: &str =
     "https://api.github.com/repos/AbyssalOath/abyssal-arsenal/releases/latest";
-const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Hourly: a release shows up on the dashboard within the hour, well inside
+/// GitHub's 60-requests-an-hour limit for unauthenticated calls. "Check now"
+/// on the dashboard (`check_now`) covers the rest.
+const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the dashboard's update notice needs. `latest_version` and
@@ -31,6 +34,11 @@ pub struct UpdateStatus {
     pub current_version: String,
     pub latest_version: Option<String>,
     pub release_url: Option<String>,
+    /// When the last check finished, successfully or not.
+    pub checked_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Why the last check failed (no outbound access, rate limit, ...);
+    /// `None` after a success.
+    pub last_error: Option<String>,
 }
 
 impl UpdateStatus {
@@ -39,6 +47,8 @@ impl UpdateStatus {
             current_version: CURRENT_VERSION.trim().to_string(),
             latest_version: None,
             release_url: None,
+            checked_at: None,
+            last_error: None,
         }
     }
 
@@ -88,39 +98,51 @@ async fn fetch_latest_release() -> anyhow::Result<GithubRelease> {
     Ok(release)
 }
 
+/// Runs one check and records the result. A failure keeps the last-known
+/// release (and says why it failed) rather than clearing it.
+pub async fn check_now(state: &AppState) -> anyhow::Result<()> {
+    let result = fetch_latest_release().await;
+    let mut status = state.update_status.write().await;
+    status.checked_at = Some(chrono::Utc::now());
+    match result {
+        Ok(release) => {
+            status.latest_version = Some(release.tag_name);
+            status.release_url = Some(release.html_url);
+            status.last_error = None;
+            Ok(())
+        }
+        Err(e) => {
+            status.last_error = Some(format!("{e:#}"));
+            Err(e)
+        }
+    }
+}
+
 /// Spawns the periodic check -- same shape as `thanatos_ops::spawn_thanatos_sweep`
 /// and `health_ops::spawn_health_sweep`, except this one talks to GitHub
 /// instead of an enrolled host, and checks once immediately on startup
 /// rather than waiting a full interval first.
 pub fn spawn_update_check_sweep(state: AppState) {
     use crate::task_health::names;
-    const CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
+    let interval_secs = CHECK_INTERVAL.as_secs();
     tokio::spawn(async move {
         state
             .task_health
-            .register(names::UPDATE_CHECK_SWEEP, CHECK_INTERVAL_SECS)
+            .register(names::UPDATE_CHECK_SWEEP, interval_secs)
             .await;
         loop {
-            match fetch_latest_release().await {
-                Ok(release) => {
-                    let mut status = state.update_status.write().await;
-                    status.latest_version = Some(release.tag_name);
-                    status.release_url = Some(release.html_url);
-                    drop(status);
+            match check_now(&state).await {
+                Ok(()) => {
                     state
                         .task_health
-                        .ok(names::UPDATE_CHECK_SWEEP, CHECK_INTERVAL_SECS)
+                        .ok(names::UPDATE_CHECK_SWEEP, interval_secs)
                         .await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "update check failed, keeping last-known status");
                     state
                         .task_health
-                        .error(
-                            names::UPDATE_CHECK_SWEEP,
-                            CHECK_INTERVAL_SECS,
-                            e.to_string(),
-                        )
+                        .error(names::UPDATE_CHECK_SWEEP, interval_secs, e.to_string())
                         .await;
                 }
             }
@@ -152,6 +174,7 @@ mod tests {
             current_version: "0.1.0".to_string(),
             latest_version: Some("v0.1.0".to_string()),
             release_url: Some("https://example.com".to_string()),
+            ..Default::default()
         };
         assert!(!status.update_available());
     }
@@ -162,6 +185,7 @@ mod tests {
             current_version: "0.1.0".to_string(),
             latest_version: Some("v0.2.0".to_string()),
             release_url: Some("https://example.com".to_string()),
+            ..Default::default()
         };
         assert!(status.update_available());
     }
@@ -172,6 +196,7 @@ mod tests {
             current_version: "1.5.0".to_string(),
             latest_version: Some("v1.4.9".to_string()),
             release_url: Some("https://example.com".to_string()),
+            ..Default::default()
         };
         assert!(!status.update_available());
     }

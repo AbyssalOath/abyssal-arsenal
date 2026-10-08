@@ -12,8 +12,14 @@
     <span>Update available: v{{ update_notice.current_version }} &#8594; v{{ update_notice.latest_version }}</span>
   </a>
   {% else %}
-  <div class="update-notice">
+  <div class="update-notice" title="{{ update_notice.check_detail }}">
     <span>Abyssal Arsenal v{{ update_notice.current_version }}</span>
+    {% if update_notice.can_check %}
+    <form method="post" action="/dashboard/check-updates" style="display:inline; margin:0 0 0 8px;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary btn-sm">Check now</button>
+    </form>
+    {% endif %}
   </div>
   {% endif %}
   {% call macros::live_updates_control(refresh_seconds, htmx_pref, base.csrf_token, self_url) %}

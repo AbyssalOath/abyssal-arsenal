@@ -9,6 +9,8 @@ pub struct Config {
     pub smtp_username: Option<String>,
     pub smtp_password: Option<String>,
     pub smtp_from: Option<String>,
+    /// `SMTP_TLS`: `starttls`, `tls` or `none`; unset picks by port.
+    pub smtp_tls: Option<String>,
     /// Destination host for the syslog `NotificationProvider` (Phase 12
     /// of the Thanatos SIEM/EDR build-out) -- a real external SIEM/log
     /// aggregator's ingest address. Configured via environment variables
@@ -82,6 +84,7 @@ impl Config {
             smtp_username: env_opt("SMTP_USERNAME"),
             smtp_password: env_opt("SMTP_PASSWORD"),
             smtp_from: env_opt("SMTP_FROM"),
+            smtp_tls: env_opt("SMTP_TLS"),
             syslog_host: env_opt("SYSLOG_HOST"),
             syslog_port: env_opt("SYSLOG_PORT")
                 .and_then(|v| v.parse().ok())

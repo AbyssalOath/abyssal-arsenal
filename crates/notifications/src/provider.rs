@@ -17,5 +17,13 @@ pub enum NotificationError {
 #[async_trait::async_trait]
 pub trait NotificationProvider: Send + Sync {
     fn name(&self) -> &str;
+    /// True for a provider that delivers to each message's `recipients`
+    /// privately (email). Broadcast providers -- syslog, chat webhooks --
+    /// ignore recipients and publish to a shared channel, so they must never
+    /// see a personal message carrying a reset token or temporary password;
+    /// `NotificationDispatcher::dispatch_private` sends only to these.
+    fn delivers_to_recipients(&self) -> bool {
+        false
+    }
     async fn send(&self, message: &NotificationMessage) -> Result<(), NotificationError>;
 }

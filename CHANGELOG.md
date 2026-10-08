@@ -10,6 +10,40 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Fixed
+
+- **No email was ever delivered through a port-587 server such as Office
+  365.** The SMTP transport used implicit TLS (lettre's `relay()`, a TLS
+  handshake on connect -- port 465's convention), while 587, this app's
+  default, speaks STARTTLS; every send failed at the handshake with
+  `received corrupt message of type InvalidContentType`, so password resets,
+  new-account emails and email alerts silently never went out. The mode now
+  follows the port (STARTTLS, or implicit TLS on 465), and the new `SMTP_TLS`
+  setting (`starttls` / `tls` / `none`) overrides it. An empty
+  `SMTP_USERNAME` now means an unauthenticated relay, and sends time out after
+  20 s instead of stalling the request.
+- **Password-reset and new-account emails were also sent to syslog and chat
+  webhooks.** The dispatcher handed every message to every provider, so a
+  reset token or temporary password went out over syslog (plaintext UDP), and
+  to Slack/Teams when their threshold was `info`. Personal messages now go to
+  email only.
+- **Email failures were invisible.** Creating a user or resetting a password
+  now says whether the email went out -- and if not, why (no address, email
+  not configured, or the SMTP server's own error) -- so the admin knows to
+  hand the temporary password over themselves. `/admin/health` has a "Send
+  test email" form that shows the server's reply, with hints for the common
+  Microsoft 365 failures (SMTP AUTH disabled, Send As, MFA), and the startup
+  log says what SMTP was configured with or why it wasn't.
+- **`install.sh` mangled SMTP passwords containing `$`, `#` or quotes** by
+  writing them to `.env` unquoted (Docker Compose interpolates `$`). It now
+  quotes the value, and asks for the TLS mode.
+- **A new release took up to 6 hours to show on the dashboard.** The update
+  check now runs hourly, admins (`settings.manage`) get a "Check now"
+  button next to the version, and hovering the version shows when it last
+  checked (and why the check failed, if it did).
+
+## [0.2.1] - 2026-10-08
+
 ### Added
 
 - **Agent install token (AAT) and Windows exe/MSI installers, for

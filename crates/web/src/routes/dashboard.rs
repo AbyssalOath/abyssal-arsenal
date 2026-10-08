@@ -212,6 +212,18 @@ pub async fn show(
             String::new()
         },
         update_available,
+        check_detail: match (&update_status.checked_at, &update_status.last_error) {
+            (None, _) => "Not checked for updates yet".to_string(),
+            (Some(at), None) => format!(
+                "Checked for updates {}",
+                crate::common::format_in_tz(*at, &ctx.user.timezone)
+            ),
+            (Some(at), Some(e)) => format!(
+                "Update check failed {}: {e}",
+                crate::common::format_in_tz(*at, &ctx.user.timezone)
+            ),
+        },
+        can_check: ctx.has(Permission::SettingsManage),
     };
 
     let refresh_seconds = crate::dashboard_prefs::refresh_seconds(&jar);
@@ -1430,6 +1442,27 @@ fn fleet_href(
     } else {
         format!("{FLEET_BASE_PATH}?{query}")
     }
+}
+
+/// "Check now" next to the version: re-checks GitHub for a newer release
+/// immediately instead of waiting for the hourly sweep.
+pub async fn check_for_updates(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<CheckForUpdatesForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    if let Err(e) = crate::update_check::check_now(&state).await {
+        tracing::warn!(error = %e, "manual update check failed");
+    }
+    Ok(Redirect::to("/").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct CheckForUpdatesForm {
+    csrf_token: String,
 }
 
 #[cfg(test)]

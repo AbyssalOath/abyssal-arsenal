@@ -16,8 +16,8 @@ use abyssal_execution::Executor;
 use abyssal_hosts::{ElevationTracker, HostConnectionRegistry};
 use abyssal_modules::ModuleRegistry;
 use abyssal_notifications::{
-    NotificationDispatcher, Severity as NotificationSeverity, SmtpProvider, SyslogProvider,
-    WebhookFlavor, WebhookProvider,
+    NotificationDispatcher, Severity as NotificationSeverity, SmtpProvider, SmtpSecurity,
+    SyslogProvider, WebhookFlavor, WebhookProvider,
 };
 use abyssal_web::reliquary_backup::provider::NativeProvider;
 use abyssal_web::reliquary_backup::restore::MaintenanceMode;
@@ -328,13 +328,36 @@ async fn spawn_panopticon_listeners(
 async fn build_notifications(config: &Config) -> NotificationDispatcher {
     let mut dispatcher = NotificationDispatcher::new();
 
-    if let (Some(host), Some(from)) = (&config.smtp_host, &config.smtp_from) {
-        let username = config.smtp_username.as_deref().unwrap_or("");
-        let password = config.smtp_password.as_deref().unwrap_or("");
-        match SmtpProvider::new(host, config.smtp_port, username, password, from) {
-            Ok(provider) => dispatcher.register(Box::new(provider)),
-            Err(e) => tracing::warn!(error = %e, "SMTP notification provider not configured"),
+    match (&config.smtp_host, &config.smtp_from) {
+        (Some(host), Some(from)) => {
+            let username = config.smtp_username.as_deref().unwrap_or("");
+            let password = config.smtp_password.as_deref().unwrap_or("");
+            let provider = SmtpSecurity::from_setting(config.smtp_tls.as_deref(), config.smtp_port)
+                .and_then(|security| {
+                    SmtpProvider::new(host, config.smtp_port, security, username, password, from)
+                        .map(|p| (p, security))
+                });
+            match provider {
+                Ok((provider, security)) => {
+                    tracing::info!(
+                        host = %host,
+                        port = config.smtp_port,
+                        tls = security.as_str(),
+                        authenticated = !username.is_empty(),
+                        "SMTP email configured -- send a test from /admin/health"
+                    );
+                    dispatcher.register(Box::new(provider));
+                }
+                Err(e) => tracing::error!(error = %format!("{e:#}"), "SMTP email not configured"),
+            }
         }
+        (Some(_), None) => tracing::warn!(
+            "SMTP_HOST is set but SMTP_FROM isn't -- email is disabled until both are set"
+        ),
+        (None, Some(_)) => tracing::warn!(
+            "SMTP_FROM is set but SMTP_HOST isn't -- email is disabled until both are set"
+        ),
+        (None, None) => {}
     }
 
     if let Some(host) = &config.syslog_host {

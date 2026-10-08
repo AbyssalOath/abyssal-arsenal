@@ -186,7 +186,8 @@ pub async fn create(
     repo::roles::set_user_role(&state.pool, user.id, form.role_id).await?;
     let role = repo::roles::find_by_id(&state.pool, form.role_id).await?;
 
-    let welcome_email_sent = send_welcome_email(&state, &user, &form.password).await;
+    let welcome_email = send_welcome_email(&state, &user, &form.password).await;
+    let welcome_email_sent = welcome_email.sent;
 
     abyssal_audit::record(
         &state.pool,
@@ -214,7 +215,14 @@ pub async fn create(
     )
     .await?;
 
-    Ok(Redirect::to("/admin/users").into_response())
+    Ok(Redirect::to(&format!(
+        "/admin/users?message={}",
+        crate::common::urlencoding_encode(&format!(
+            "User {} created. {}",
+            user.username, welcome_email.note
+        ))
+    ))
+    .into_response())
 }
 
 fn build_welcome_email(
@@ -237,26 +245,62 @@ fn build_welcome_email(
     }
 }
 
-/// Emails a newly-created local account its username and temporary
-/// password, if it has an email address and at least one notification
-/// provider is configured -- a no-op either way, never a reason to fail
-/// user creation itself. Returns whether it actually went out, purely for
-/// the audit record; a missing provider and a real send failure both just
-/// result in `false` (the failure case is also logged via `tracing::warn`
-/// by the dispatcher itself), since the admin still has the password to
-/// hand over directly regardless of which one happened.
+/// Whether an account email went out, and a sentence saying so for the
+/// admin -- including why not, since they're the one who must then hand
+/// the temporary password over another way.
+pub(crate) struct EmailOutcome {
+    pub sent: bool,
+    pub note: String,
+}
+
+/// Sends a personal email (email providers only -- it carries a temporary
+/// password) and describes the result. Never a reason to fail the action
+/// that triggered it.
+async fn send_account_email(
+    state: &AppState,
+    user: &abyssal_core::User,
+    message: abyssal_notifications::NotificationMessage,
+    what: &str,
+) -> EmailOutcome {
+    let fallback = "give them the temporary password yourself.";
+    if user.email.trim().is_empty() {
+        return EmailOutcome {
+            sent: false,
+            note: format!("No {what} was emailed (the account has no email address) -- {fallback}"),
+        };
+    }
+    let results = state.notifications.dispatch_private(&message).await;
+    let failure = results.iter().find_map(|(_, r)| r.as_ref().err());
+    match (results.is_empty(), failure) {
+        (true, _) => EmailOutcome {
+            sent: false,
+            note: format!(
+                "No {what} was emailed: email (SMTP) isn't configured on this control plane -- \
+                 {fallback}"
+            ),
+        },
+        (false, Some(e)) => EmailOutcome {
+            sent: false,
+            note: format!(
+                "The {what} email to {} failed ({e}) -- {fallback} Test email delivery on \
+                 /admin/health.",
+                user.email
+            ),
+        },
+        (false, None) => EmailOutcome {
+            sent: true,
+            note: format!("The {what} email was sent to {}.", user.email),
+        },
+    }
+}
+
 async fn send_welcome_email(
     state: &AppState,
     user: &abyssal_core::User,
     temporary_password: &str,
-) -> bool {
-    if user.email.trim().is_empty() {
-        return false;
-    }
-
+) -> EmailOutcome {
     let message = build_welcome_email(user, temporary_password);
-    let results = state.notifications.dispatch(&message).await;
-    !results.is_empty() && results.iter().all(|(_, r)| r.is_ok())
+    send_account_email(state, user, message, "welcome").await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -538,13 +582,9 @@ async fn send_password_reset_email(
     state: &AppState,
     user: &abyssal_core::User,
     temporary_password: &str,
-) -> bool {
-    if user.email.trim().is_empty() {
-        return false;
-    }
+) -> EmailOutcome {
     let message = build_password_reset_email(user, temporary_password);
-    let results = state.notifications.dispatch(&message).await;
-    !results.is_empty() && results.iter().all(|(_, r)| r.is_ok())
+    send_account_email(state, user, message, "password reset").await
 }
 
 /// Admin-triggered password reset -- e.g. the user forgot theirs, or the
@@ -602,7 +642,8 @@ pub async fn reset_password(
     repo::users::update_password(&state.pool, id, &hash, true).await?;
     abyssal_auth::session::revoke_all_for_user(&state.pool, id).await?;
 
-    let email_sent = send_password_reset_email(&state, &target, &form.password).await;
+    let email = send_password_reset_email(&state, &target, &form.password).await;
+    let email_sent = email.sent;
 
     abyssal_audit::record(
         &state.pool,
@@ -618,7 +659,10 @@ pub async fn reset_password(
 
     Ok(Redirect::to(&format!(
         "/admin/users?message={}",
-        crate::common::urlencoding_encode(&format!("Password reset for {}.", target.username))
+        crate::common::urlencoding_encode(&format!(
+            "Password reset for {}. {}",
+            target.username, email.note
+        ))
     ))
     .into_response())
 }

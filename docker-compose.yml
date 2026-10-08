@@ -86,6 +86,9 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # starttls (587: Office 365, Gmail), tls (465), or none (internal
+      # relay only). Empty picks by port.
+      SMTP_TLS: ${SMTP_TLS:-}
       # Base URL the control plane is reachable at, used to build the clickable
       # link in outgoing emails (currently the password-reset email). Left
       # unset, the reset email still works, just with the raw token instead of

@@ -106,7 +106,7 @@ pub async fn submit_forgot_password(
             {
                 let message =
                     build_reset_email(&user.email, &raw_token, state.config.public_url.as_deref());
-                state.notifications.dispatch(&message).await;
+                state.notifications.dispatch_private(&message).await;
 
                 abyssal_audit::record(
                     &state.pool,
