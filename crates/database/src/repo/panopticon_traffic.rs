@@ -35,8 +35,10 @@ pub struct SwitchPort {
 struct SwitchPortRow {
     if_index: u32,
     if_descr: Option<String>,
-    admin_status: Option<i64>,
-    oper_status: Option<i64>,
+    // TINYINT UNSIGNED (migration 0037): sqlx won't decode an unsigned
+    // column into a signed type, so read as u8 and widen below.
+    admin_status: Option<u8>,
+    oper_status: Option<u8>,
     speed_mbps: Option<u32>,
     status_seen_at: Option<NaiveDateTime>,
     last_seen_at: NaiveDateTime,
@@ -47,8 +49,8 @@ impl From<SwitchPortRow> for SwitchPort {
         SwitchPort {
             if_index: row.if_index,
             if_descr: row.if_descr,
-            admin_status: row.admin_status,
-            oper_status: row.oper_status,
+            admin_status: row.admin_status.map(i64::from),
+            oper_status: row.oper_status.map(i64::from),
             speed_mbps: row.speed_mbps,
             status_seen_at: row.status_seen_at.map(utc),
             last_seen_at: utc(row.last_seen_at),

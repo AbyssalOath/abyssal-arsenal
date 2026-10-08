@@ -35,6 +35,12 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **A switch's Ports page failed with "Internal Server Error" once the
+  switch had been polled.** The port admin/oper status columns are
+  `TINYINT UNSIGNED` but were read as a signed integer, which the database
+  driver refuses to decode; it only surfaced once a poll had stored a status.
+  An audit of every other unsigned/signed column found no other instance.
+
 - **A control plane built from `main` after a version bump broke Windows agent
   installs and "Update agent".** It asked GitHub for its own version's
   release (e.g. v0.2.2) before that release existed. Agent downloads
