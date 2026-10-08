@@ -10,6 +10,13 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Added
+
+- **Something stirs after dark.** The old codes still work, some words are
+  better left unsaid, and the logo doesn't like being poked. When the dead
+  rise -- or are laid to rest -- you may not be alone. (`static/bats.js`, for
+  the impatient; it honors `prefers-reduced-motion`.)
+
 ### Changed
 
 - **`/admin/settings` is now per-role instead of Super Admin only.** Each

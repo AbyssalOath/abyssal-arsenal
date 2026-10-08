@@ -6,6 +6,7 @@
 
 {% if let Some(m) = message %}
 <div class="info-banner">{{ m }}</div>
+{% if m.starts_with("Backup completed") %}<span hidden data-bats="Entombed for eternity."></span>{% else if m.starts_with("Restore completed") %}<span hidden data-bats="The dead rise."></span>{% endif %}
 {% endif %}
 {% if let Some(e) = error %}
 <div class="error-banner">{{ e }}</div>

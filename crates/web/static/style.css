@@ -1220,3 +1220,65 @@ a.stat-tile:hover { border-color: var(--accent); }
 .live-updates .lu-htmx input { margin: 0; }
 /* Inside the flex topline the control needs no bottom margin. */
 .dashboard-topline .live-updates { margin: 0; }
+
+/* ---- Bats (easter egg, static/bats.js) ---- */
+.bat-colony {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10000;
+  overflow: hidden;
+}
+.bat {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  /* A faint rim so black bats still read against the dark themes. */
+  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.35));
+}
+.bat-body { fill: #050505; }
+.bat-eye {
+  fill: #ff1f1f;
+  animation: bat-eye-pulse 0.9s ease-in-out infinite alternate;
+}
+/* Two frames, alternated: wings up, then down. */
+.bat-up { animation: bat-flap-up var(--flap, 0.22s) steps(1, end) var(--flap-delay, 0s) infinite; }
+.bat-down { animation: bat-flap-down var(--flap, 0.22s) steps(1, end) var(--flap-delay, 0s) infinite; }
+@keyframes bat-flap-up {
+  0% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@keyframes bat-flap-down {
+  0% { opacity: 0; }
+  50% { opacity: 1; }
+}
+@keyframes bat-eye-pulse {
+  from { fill: #6e0000; }
+  to { fill: #ff3030; }
+}
+.bat-caption {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.4rem, 3.5vw, 2.6rem);
+  letter-spacing: 0.12em;
+  color: #ff2a2a;
+  text-shadow: 0 0 12px rgba(255, 0, 0, 0.7), 0 0 2px #000;
+  opacity: 0;
+  animation: bat-caption 4.5s ease-in-out forwards;
+}
+@keyframes bat-caption {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bat-up { animation: none; opacity: 1; }
+  .bat-down { animation: none; opacity: 0; }
+  .bat-eye { animation: none; }
+  .bat-caption { animation: none; opacity: 1; }
+}

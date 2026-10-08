@@ -45,6 +45,8 @@
     {% if let Some(output) = result_output %}
     <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
     {% endif %}
+    {# A failed unit brought back to life: bats (static/bats.js). #}
+    {% if result_output.is_some() && result_error.is_none() %}{% if let Some(label) = result_label %}{% if label.starts_with("Recover Unit") %}<span hidden data-bats="It lives."></span>{% endif %}{% endif %}{% endif %}
     {% if let Some(err) = result_error %}
     <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
     {% endif %}

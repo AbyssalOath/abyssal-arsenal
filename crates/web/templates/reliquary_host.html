@@ -46,6 +46,8 @@
     {% if let Some(output) = result_output %}
     <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
     {% endif %}
+    {# A backup preserved, or the dead raised from one: bats (static/bats.js). #}
+    {% if result_output.is_some() && result_error.is_none() %}{% if let Some(label) = result_label %}{% if label.starts_with("Restore Backup") %}<span hidden data-bats="The dead rise."></span>{% else if label.starts_with("Create Backup") %}<span hidden data-bats="Entombed for eternity."></span>{% endif %}{% endif %}{% endif %}
     {% if let Some(err) = result_error %}
     <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
     {% endif %}

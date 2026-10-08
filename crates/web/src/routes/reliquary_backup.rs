@@ -98,13 +98,22 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+#[derive(Deserialize)]
+pub struct PageQuery {
+    /// Set by `restore`'s redirect after a successful restore.
+    #[serde(default)]
+    restored: bool,
+}
+
 pub async fn page(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
+    axum::extract::Query(q): axum::extract::Query<PageQuery>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::BackupsView)?;
-    render_page(&state, &jar, &ctx, None, None).await
+    let message = q.restored.then(|| "Restore completed.".to_string());
+    render_page(&state, &jar, &ctx, message, None).await
 }
 
 async fn render_page(
@@ -964,7 +973,7 @@ pub async fn restore(
     .await?;
 
     match result {
-        Ok(()) => Ok(Redirect::to("/arsenals/reliquary/backups").into_response()),
+        Ok(()) => Ok(Redirect::to("/arsenals/reliquary/backups?restored=true").into_response()),
         Err(e) => Err(WebError(AppError::Validation(format!(
             "Restore failed: {e}"
         )))),
