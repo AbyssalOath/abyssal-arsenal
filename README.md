@@ -94,7 +94,10 @@ macro. Grimoire's scheduled-task ("cron job") form lets you save a job's
 name/schedule/user/command; Panopticon's "add managed switch" form lets
 you save an SNMP community string (also manageable directly from your
 own Account page). Either way it's "Save as Macro" next to the
-normal submit button, and "Load" on any saved macro to refill the form. A
+normal submit button. Grimoire's "Load" refills its form from a saved
+macro; Panopticon's add/edit switch forms have a "Saved macro" dropdown
+instead (the community string is looked up on the server and never sent
+to the browser). A
 macro is either **Personal** (visible only to you) or scoped to one of
 your **roles** (visible to, and usable by, every other member of that
 role too -- handy for a small team that shares the same templates or

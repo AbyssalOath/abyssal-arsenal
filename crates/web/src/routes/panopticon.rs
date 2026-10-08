@@ -1203,8 +1203,8 @@ fn validate_snmp_fields(
 }
 
 /// Every SNMP community-string macro visible to this user (their own
-/// personal ones plus their roles') -- Panopticon's add-switch "Load"
-/// list. `can_edit` is only true for the macro's owner or someone with
+/// personal ones plus their roles') -- the add/edit switch forms'
+/// "Saved macro" dropdown and the management list above them. `can_edit` is only true for the macro's owner or someone with
 /// `Permission::MacrosManageAll`.
 async fn visible_community_macro_rows(
     state: &AppState,
@@ -1247,6 +1247,45 @@ async fn visible_community_macro_rows(
         .collect())
 }
 
+/// The community string behind a "Saved macro" picked on the add/edit
+/// switch form -- resolved and decrypted here on the server, so the secret
+/// never reaches the browser. `Ok(None)` when no macro was picked. Only a
+/// macro this user can see (their own personal ones, or their roles') is
+/// accepted, whatever id the form posts.
+async fn resolve_community_macro(
+    state: &AppState,
+    ctx: &AuthContext,
+    macro_id: &str,
+) -> Result<Option<String>, WebError> {
+    let macro_id = macro_id.trim();
+    if macro_id.is_empty() {
+        return Ok(None);
+    }
+    let unavailable = || {
+        WebError(AppError::Validation(
+            "That saved macro isn't available.".into(),
+        ))
+    };
+    let id = Uuid::parse_str(macro_id).map_err(|_| unavailable())?;
+    let visible = visible_community_macro_rows(state, ctx).await?;
+    if !visible.iter().any(|m| m.id == macro_id) {
+        return Err(unavailable());
+    }
+    let key = state.encryption_key.as_ref().ok_or_else(|| {
+        WebError(AppError::Validation(
+            "ENCRYPTION_KEY isn't configured -- can't decrypt that macro.".into(),
+        ))
+    })?;
+    let stored = repo::macros::find_by_id(&state.pool, id)
+        .await?
+        .and_then(|m| m.secret_value_encrypted)
+        .ok_or_else(unavailable)?;
+    let value = key
+        .decrypt(&stored)
+        .map_err(|_| WebError(AppError::Validation("Could not decrypt that macro.".into())))?;
+    Ok(Some(value.to_string()))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn render_switches(
     state: &AppState,
@@ -1254,8 +1293,7 @@ async fn render_switches(
     ctx: &AuthContext,
     result_label: Option<String>,
     result_output: Option<String>,
-    mut result_error: Option<String>,
-    load_macro: Option<Uuid>,
+    result_error: Option<String>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -1270,32 +1308,6 @@ async fn render_switches(
     .await?;
 
     let macros = visible_community_macro_rows(state, ctx).await?;
-    let mut prefilled_community = String::new();
-    if let Some(macro_id) = load_macro {
-        let macro_id_str = macro_id.to_string();
-        if macros.iter().any(|m| m.id == macro_id_str) {
-            match (
-                &state.encryption_key,
-                repo::macros::find_by_id(&state.pool, macro_id).await?,
-            ) {
-                (Some(key), Some(m)) => match m.secret_value_encrypted.as_deref() {
-                    Some(encrypted) => match key.decrypt(encrypted) {
-                        Ok(value) => prefilled_community = value.to_string(),
-                        Err(_) => result_error = Some("Could not decrypt that macro.".to_string()),
-                    },
-                    None => result_error = Some("That macro has no stored value.".to_string()),
-                },
-                (None, _) => {
-                    result_error = Some(
-                        "ENCRYPTION_KEY isn't configured -- can't decrypt that macro.".to_string(),
-                    );
-                }
-                (_, None) => result_error = Some("That macro isn't available.".to_string()),
-            }
-        } else {
-            result_error = Some("That macro isn't available.".to_string());
-        }
-    }
 
     let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
     let macro_roles = user_roles
@@ -1354,7 +1366,6 @@ async fn render_switches(
         ),
         macros,
         macro_roles,
-        prefilled_community,
         result_label,
         result_output,
         result_error,
@@ -1367,20 +1378,13 @@ async fn render_switches(
     Ok((jar, tpl).into_response())
 }
 
-#[derive(Deserialize)]
-pub struct SwitchesShowQuery {
-    #[serde(default)]
-    load_macro: Option<Uuid>,
-}
-
 pub async fn switches_show(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
-    Query(q): Query<SwitchesShowQuery>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
-    render_switches(&state, &jar, &ctx, None, None, None, q.load_macro).await
+    render_switches(&state, &jar, &ctx, None, None, None).await
 }
 
 #[derive(Deserialize)]
@@ -1394,6 +1398,9 @@ pub struct SwitchAddForm {
     snmp_version: String,
     #[serde(default)]
     community: String,
+    /// A saved community-string macro to use instead of typing one.
+    #[serde(default)]
+    community_macro_id: String,
     #[serde(default)]
     snmp_v3_username: String,
     #[serde(default)]
@@ -1451,7 +1458,13 @@ pub async fn switch_add(
         ))
     })?;
 
-    let community = form.community.trim();
+    // A picked macro wins over the typed field.
+    let community_owned =
+        match resolve_community_macro(&state, &ctx, &form.community_macro_id).await? {
+            Some(value) => value,
+            None => form.community.trim().to_string(),
+        };
+    let community = community_owned.as_str();
     let v3_username = form.snmp_v3_username.trim();
     let v3_security_level =
         SnmpSecurityLevel::from_str(form.snmp_v3_security_level.trim()).unwrap_or_default();
@@ -1668,8 +1681,10 @@ async fn render_switch_edit(
     )
     .await?;
 
+    let community_macros = visible_community_macro_rows(state, ctx).await?;
     let tpl = crate::templates::PanopticonSwitchEditTemplate {
         base,
+        community_macros,
         switch_id: form_state.switch_id.to_string(),
         name: form_state.name,
         ip_address: form_state.ip_address,
@@ -1753,6 +1768,9 @@ pub struct SwitchEditForm {
     /// doc comment.
     #[serde(default)]
     community: String,
+    /// A saved community-string macro to use instead of typing one.
+    #[serde(default)]
+    community_macro_id: String,
     #[serde(default)]
     snmp_v3_username: String,
     #[serde(default)]
@@ -1845,7 +1863,14 @@ pub async fn switch_edit(
         .await;
     }
 
-    let community = form.community.trim();
+    // A picked macro wins over the typed field (and counts as supplying a
+    // new community string).
+    let community_owned =
+        match resolve_community_macro(&state, &ctx, &form.community_macro_id).await? {
+            Some(value) => value,
+            None => form.community.trim().to_string(),
+        };
+    let community = community_owned.as_str();
     let v3_auth_password = form.snmp_v3_auth_password.trim();
     let v3_priv_password = form.snmp_v3_priv_password.trim();
     let version_changed = snmp_version != existing.snmp_version;
@@ -2136,28 +2161,10 @@ pub async fn switch_poll_now(
 
     match result {
         Ok(output) => {
-            render_switches(
-                &state,
-                &jar,
-                &ctx,
-                result_label,
-                Some(output.stdout),
-                None,
-                None,
-            )
-            .await
+            render_switches(&state, &jar, &ctx, result_label, Some(output.stdout), None).await
         }
         Err(e) => {
-            render_switches(
-                &state,
-                &jar,
-                &ctx,
-                result_label,
-                None,
-                Some(e.to_string()),
-                None,
-            )
-            .await
+            render_switches(&state, &jar, &ctx, result_label, None, Some(e.to_string())).await
         }
     }
 }

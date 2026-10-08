@@ -1819,9 +1819,6 @@ pub struct PanopticonSwitchesTemplate {
     /// "My role: X" options on the add-switch form's Save as Macro scope
     /// picker.
     pub macro_roles: Vec<(String, String)>,
-    /// Prefills the add-switch form's community-string field -- blank
-    /// unless a `?load_macro=` picked one.
-    pub prefilled_community: String,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -1840,6 +1837,8 @@ pub struct PanopticonSwitchesTemplate {
 #[template(path = "panopticon_switch_edit.html")]
 pub struct PanopticonSwitchEditTemplate {
     pub base: BaseCtx,
+    /// Saved community-string macros this user can pick instead of typing.
+    pub community_macros: Vec<CommunityMacroRow>,
     pub switch_id: String,
     pub name: String,
     pub ip_address: String,

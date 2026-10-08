@@ -44,7 +44,6 @@
             <td>{{ m.name }}</td>
             <td>{{ m.scope_label }}</td>
             <td class="actions">
-              <a class="btn btn-secondary" href="/arsenals/panopticon/switches?load_macro={{ m.id }}">Load</a>
               {% if m.can_edit %}
               <a class="btn btn-secondary" href="/account/macros/{{ m.id }}/edit?return_to=%2Farsenals%2Fpanopticon%2Fswitches">Edit</a>
               <a class="btn btn-danger" href="/account/macros/{{ m.id }}/remove/confirm?return_to=%2Farsenals%2Fpanopticon%2Fswitches">Delete</a>
@@ -75,8 +74,20 @@
         {% endfor %}
 
         <div class="snmp-community-fields">
+          {% if !macros.is_empty() %}
+          <label for="switch-community-macro">Saved macro</label>
+          <select id="switch-community-macro" name="community_macro_id" style="max-width:360px;">
+            <option value="">-- none, type the community string below --</option>
+            {% for m in macros %}
+            <option value="{{ m.id }}">{{ m.name }} ({{ m.scope_label }})</option>
+            {% endfor %}
+          </select>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin:-8px 0 12px;">
+            A saved macro is used instead of anything typed below; its value stays on the server.
+          </p>
+          {% endif %}
           <label for="switch-community">Community string</label>
-          <input type="password" id="switch-community" name="community" value="{{ prefilled_community }}" autocomplete="new-password" style="max-width:360px;">
+          <input type="password" id="switch-community" name="community" autocomplete="new-password" style="max-width:360px;">
 
           <label for="switch-community-macro-name">Macro name (optional -- also save this community string as a reusable macro)</label>
           <input type="text" id="switch-community-macro-name" name="macro_name" placeholder="e.g. Standard read-only community">

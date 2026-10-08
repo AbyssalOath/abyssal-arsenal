@@ -35,6 +35,14 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **Saved SNMP community-string macros weren't offered when adding a
+  switch.** The add-switch and edit-switch forms now have a "Saved macro"
+  dropdown listing your personal and role macros together; picking one is
+  enough, no retyping. The server resolves and decrypts the macro itself,
+  only if it's one you can see, so the secret never reaches the browser.
+  This replaces the old "Load" button, which put the plaintext community
+  string into the page.
+
 - **A switch's Ports page failed with "Internal Server Error" once the
   switch had been polled.** The port admin/oper status columns are
   `TINYINT UNSIGNED` but were read as a signed integer, which the database
