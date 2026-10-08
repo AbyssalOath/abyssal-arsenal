@@ -1,0 +1,99 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}NAC Enforcement — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — NAC Enforcement{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Ports Panopticon has disabled or quarantined over SNMP. Enforcement is
+    {% if enforcement_enabled %}<span class="badge badge-success">globally enabled</span>{% else %}<span class="badge badge-muted">globally disabled</span>{% endif %}.
+    Quarantine VLAN: {% if quarantine_vlan > 0 %}<strong>{{ quarantine_vlan }}</strong>{% else %}<span class="badge badge-muted">unset</span>{% endif %}.
+    Default auto-revert: {% if revert_minutes > 0 %}<strong>{{ revert_minutes }}</strong> min{% else %}permanent{% endif %}.
+    <a href="/arsenals/panopticon/switches">{% call macros::icon("network") %} Switches</a>
+    &nbsp; <a href="/arsenals/panopticon/policy">{% call macros::icon("firewall") %} Auto-enforcement policy</a>
+    &nbsp; <a href="/admin/settings">{% call macros::icon("settings") %} Settings</a>
+  </p>
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("firewall") %} In effect</h3>
+  {% if in_effect.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No ports are currently enforced.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Switch</th><th>Port</th><th>Action</th><th>State</th><th>Auto-revert</th><th>Applied</th><th>By</th><th>Reason</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr>
+    </thead>
+    <tbody>
+      {% for a in in_effect %}
+      <tr>
+        <td>{{ a.switch_name }}</td>
+        <td>{{ a.port_label }}</td>
+        <td>{{ a.kind_label }}</td>
+        <td>
+          {% if a.state_key == "revert_failed" %}<span class="badge badge-danger">{{ a.state_label }}</span>
+          {% else %}<span class="badge badge-warning">{{ a.state_label }}</span>{% endif %}
+          {% if !a.last_error.is_empty() %}<div style="color:var(--text-muted); font-size:0.85em;">{{ a.last_error }}</div>{% endif %}
+        </td>
+        <td>{% if a.is_timed %}{{ a.expires_at }}{% else %}<span class="badge badge-muted">Permanent</span>{% endif %}</td>
+        <td>{{ a.created_at }}</td>
+        <td>{{ a.created_by }}</td>
+        <td>{% if a.reason.is_empty() %}&mdash;{% else %}{{ a.reason }}{% endif %}</td>
+        {% if can_manage %}
+        <td class="actions">
+          <form method="post" action="/arsenals/panopticon/enforcement/release" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="action_id" value="{{ a.id }}">
+            <input type="hidden" name="return_to" value="/arsenals/panopticon/enforcement">
+            <button type="submit" class="btn btn-secondary btn-sm">{% call macros::icon("check") %} Release</button>
+          </form>
+          {% if a.is_timed %}
+          <form method="post" action="/arsenals/panopticon/enforcement/make-permanent" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="action_id" value="{{ a.id }}">
+            <input type="hidden" name="return_to" value="/arsenals/panopticon/enforcement">
+            <button type="submit" class="btn btn-secondary btn-sm">Make permanent</button>
+          </form>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("audit") %} Recent history</h3>
+  {% if history.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No enforcement actions have been taken yet.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Switch</th><th>Port</th><th>Action</th><th>State</th><th>Applied</th><th>By</th><th>Reason</th></tr>
+    </thead>
+    <tbody>
+      {% for a in history %}
+      <tr>
+        <td>{{ a.switch_name }}</td>
+        <td>{{ a.port_label }}</td>
+        <td>{{ a.kind_label }}</td>
+        <td>
+          {% if a.state_key == "active" %}<span class="badge badge-warning">{{ a.state_label }}</span>
+          {% else if a.state_key == "reverted" %}<span class="badge badge-success">{{ a.state_label }}</span>
+          {% else %}<span class="badge badge-danger">{{ a.state_label }}</span>{% endif %}
+          {% if !a.last_error.is_empty() %}<div style="color:var(--text-muted); font-size:0.85em;">{{ a.last_error }}</div>{% endif %}
+        </td>
+        <td>{{ a.created_at }}</td>
+        <td>{{ a.created_by }}</td>
+        <td>{% if a.reason.is_empty() %}&mdash;{% else %}{{ a.reason }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

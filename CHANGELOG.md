@@ -132,6 +132,122 @@ for what that means for cloning and updating.
     true sub-second push later is purely agent-side work (a Windows
     `EvtSubscribe`/ETW or Linux auditd/eBPF producer) with no control-plane
     re-architecture.
+- **Panopticon NAC phase 1: rogue-device awareness.** Panopticon's discovery
+  already emitted audit-log events for a new device or a reappearing untrusted
+  one, but nothing acted on them. Now, when enabled (Settings &rarr; Panopticon
+  rogue-device alerts; off by default, with a recipient list), a sighting pushes
+  a notification through the same dispatcher Thanatos uses
+  (email/syslog/Slack/Teams/webhook): a **genuinely new device** (a MAC never
+  seen before -- a known device merely picking up a new DHCP IP does **not**
+  alert) at warning severity, or an **Untrusted device reappearing** after going
+  stale at critical. The alert carries the device's IP/MAC/vendor/hostname/subnet
+  and switch-port location when known. Fires from every discovery path (active
+  sweep, passive neighbor refresh, ARP, mDNS); the on-demand operator scan stays
+  quiet (the operator is already watching). Audit events are unchanged and fire
+  regardless of the toggle. No protocol/agent change -- entirely control-plane.
+  (New `panopticon.rogue_alert_enabled`/`_recipients` settings; `TrustState`
+  remains the manual review/approval label. Enforcement -- SNMP SET port disable
+  / VLAN quarantine -- is a later NAC phase, deliberately not part of this
+  awareness-only step.)
+- **Panopticon NAC phase 2: switch port-state visibility.** The SNMP poll now
+  also reads (read-only) each port's operational state (`ifOperStatus` -- is a
+  link live right now), administrative state (`ifAdminStatus` -- whether a human
+  has shut the port), and negotiated link speed (`ifHighSpeed`, falling back to
+  `ifSpeed`), all from the same session that already walks BRIDGE-MIB and the
+  octet counters -- no extra poll cadence. The per-switch page (renamed from
+  "Bandwidth" to "Ports") now shows each port's status/admin/speed alongside its
+  throughput, plus the devices the last poll mapped behind it (with their trust
+  badge), so an admin can see at a glance which ports are up, down, or
+  administratively disabled and what's plugged into each. Knowing a port's
+  current admin state is also the baseline a later enforcement phase needs before
+  it could safely toggle a port, which is why this lands first. All read-only --
+  no SNMP SET is ever issued; no protocol/agent change -- entirely control-plane.
+  (Status codes are stored raw and mapped to labels by new
+  `abyssal_core::IfAdminStatus`/`IfOperStatus`; a non-standard code is shown
+  verbatim rather than rejected. Migration `0037_panopticon_port_status.sql`.)
+- **Panopticon NAC phase 3: SNMP-SET enforcement (port disable / VLAN
+  quarantine).** The first Panopticon feature that *writes* to live network
+  gear: an operator can disable a switch port (SNMP SET `ifAdminStatus` = down)
+  or quarantine it onto an isolation VLAN (Q-BRIDGE `dot1qPvid` + static
+  egress/untagged port maps) straight from the per-switch Ports page. Every write
+  is gated three ways -- a global kill-switch (**off by default**), a per-switch
+  opt-in, and the operator's `network.manage` permission -- and funnels through a
+  single orchestration layer so none of those gates can be bypassed. Before
+  applying, a confirm page shows the **exact SNMP write** that will be issued (a
+  dry-run preview) and the devices currently behind the port (the blast radius).
+  Each action snapshots the port's prior state (admin status / PVID) so a revert
+  restores it exactly, and carries a configurable **auto-revert timeout** -- a
+  background sweep restores the port automatically when it expires unless the
+  operator made the action permanent, so a forgotten quarantine self-heals. A
+  revert that fails is marked and retried until the port is confirmed back in
+  service; turning the global switch off never strands a port (reverts ignore it).
+  Every apply/release is written to the audit log (`NETWORK_PORT_ENFORCED` /
+  `NETWORK_PORT_RELEASED`, operator- or auto-attributed), and a new enforcement
+  dashboard (`/arsenals/panopticon/enforcement`) lists in-effect actions and
+  history with release / make-permanent controls. The SNMP layer checks each
+  SET's response `error-status`, so a switch refusing a write (read-only
+  community, noAccess) surfaces as a clear error rather than a silent no-op.
+  VLAN-quarantine's Q-BRIDGE writes are vendor-dependent; a switch that refuses
+  any step records the action as failed with an explanatory message. No
+  protocol/agent change -- entirely control-plane. (New settings
+  `panopticon.enforcement_enabled` / `panopticon.quarantine_vlan` /
+  `panopticon.enforcement_revert_minutes`, per-switch `enforcement_enabled`, core
+  `EnforcementAction`/`EnforcementKind`/`EnforcementState`, migration
+  `0038_panopticon_enforcement.sql`, and a `panopticon_enforcement_revert`
+  background task.)
+- **Panopticon NAC phase 4: auto-enforcement policy engine.** Enforcement can
+  now fire *without a human in the loop*, driven by an ordered list of policy
+  rules (`/arsenals/panopticon/policy`). Each rule pairs a **trigger** -- a
+  device is `Untrusted`, or newly-appeared and still unclassified (`new/unknown`,
+  bounded to a configurable first-seen window) -- with an **action** (quarantine
+  or disable) and optional **scope** filters (subnet / switch / device type),
+  evaluated in priority order with first-match-wins; rules are reorderable and
+  individually enable/disable-able. A decoupled background sweep (every ~2 min)
+  looks at every device the SNMP poll has located behind a port and acts on
+  matches, rather than hooking the discovery hot path. Safety composes strictly
+  on top of phase 3: the engine has a three-way **mode** -- `off` (default),
+  `simulate` (logs would-be actions to the server log, writes nothing -- the
+  recommended way to watch a policy before arming it), and `active` (applies for
+  real) -- and even in `active` every write still passes the M3 gates (global
+  kill-switch, per-switch opt-in, a resolvable port). An already-enforced port is
+  never re-enforced, and a **cooldown** after any action on a port (including a
+  manual release) stops the engine instantly re-applying something an operator
+  just released. Policy actions auto-revert, are audited, and appear on the
+  enforcement dashboard exactly like manual ones, attributed to the rule that
+  fired. No protocol/agent change -- entirely control-plane. (New
+  `PolicyRule`/`PolicyTrigger`/`PolicyMode` in core, settings
+  `panopticon.auto_enforce_mode` / `_new_window_minutes` / `_cooldown_minutes`,
+  migration `0039_panopticon_policy_rules.sql`, and a `panopticon_policy_sweep`
+  background task.)
+- **Panopticon NAC phase 5: embedded RADIUS server (802.1X MAB + dynamic VLAN).**
+  Panopticon can now be the network's access-control *decision point*, not just
+  act after the fact. A built-in RADIUS server (UDP 1812 auth + 1813 accounting,
+  off by default) answers MAC Auth Bypass requests: a **Trusted** device gets
+  Access-Accept (optionally onto a trusted VLAN), an **Untrusted** device is
+  rejected or quarantined onto the isolation VLAN (RFC 3580 tunnel attributes),
+  and an unknown/unclassified device follows a configurable action -- default
+  **accept** (so turning RADIUS on gives identity/accounting visibility without
+  locking anyone out; tighten to guest-VLAN or reject once the fleet is
+  classified). Accounting packets populate a sessions view -- the "who
+  authenticated where" (MAC / identity / NAS / port / since) that gives the
+  inventory richer identity. NAS clients (switches/APs) are managed with
+  per-client shared secrets stored encrypted at rest; the server matches a NAS by
+  IP or CIDR. The RADIUS wire codec is a small, directly-tested implementation of
+  the needed subset (RFC 2865/2866, RFC 3579 Message-Authenticator, RFC 3580 VLAN
+  attributes): every response is signed with the Response Authenticator, and a
+  request's Message-Authenticator / accounting authenticator is verified against
+  the shared secret, so a wrong-secret NAS is rejected rather than trusted. Scope
+  is **MAB only**: there is no RADIUS credential store, so a request carrying a
+  password (User-Password/CHAP-Password) or `EAP-Message` is *rejected* rather
+  than authorized on its MAC alone (authorizing a credentialed request without
+  verifying the credential would be an auth bypass), and a request must present a
+  consistent, identifiable MAC (User-Name, if a MAC, must match Calling-Station-Id)
+  -- full user auth (PAP against a store, or EAP-TLS/PEAP) belongs with a
+  dedicated stack like FreeRADIUS. Admin UI at
+  `/arsenals/panopticon/radius`. No protocol/agent change -- entirely
+  control-plane. (New `RadiusClient`/`RadiusSession` in core, a batch of
+  `panopticon.radius_*` settings, migration `0040_panopticon_radius.sql`, and the
+  `md-5`/`hmac` dependencies for the two keyed hashes.)
 
 ### Fixed
 

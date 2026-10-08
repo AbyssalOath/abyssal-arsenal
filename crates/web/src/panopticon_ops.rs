@@ -17,13 +17,17 @@ use std::time::Duration as StdDuration;
 
 use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::TrustState;
-use abyssal_core::settings::{PANOPTICON_SWEEP_ENABLED, PANOPTICON_SWEEP_TARGET};
+use abyssal_core::settings::{
+    PANOPTICON_ROGUE_ALERT_ENABLED, PANOPTICON_ROGUE_ALERT_RECIPIENTS, PANOPTICON_SWEEP_ENABLED,
+    PANOPTICON_SWEEP_TARGET,
+};
 use abyssal_core::{NetworkDevice, NetworkDevicePort, Permission};
 use abyssal_database::{DbPool, repo};
 use abyssal_execution::{
     ExecutionError, Executor, Operation, OperationKind, OperationOutput, OperationParams,
     run_command,
 };
+use abyssal_notifications::{NotificationDispatcher, NotificationMessage};
 use abyssal_rbac::AuthContext;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
@@ -178,6 +182,7 @@ async fn reverse_dns_lookup(ip: &str) -> Option<String> {
 /// spam the audit log once per sweep interval forever.
 pub(crate) async fn audit_sighting(
     pool: &DbPool,
+    notifications: Option<&NotificationDispatcher>,
     ip: &str,
     prior: Option<NetworkDevice>,
 ) -> anyhow::Result<()> {
@@ -188,7 +193,10 @@ pub(crate) async fn audit_sighting(
                 AuditEvent::new(AuditAction::NetworkDeviceDiscovered, AuditOutcome::Success)
                     .resource(ip),
             )
-            .await
+            .await?;
+            // NAC M1: push a rogue-device alert for a genuinely new device.
+            maybe_alert_rogue_device(pool, notifications, ip, false).await;
+            Ok(())
         }
         Some(device) if device.trust_state == TrustState::Untrusted && device.is_stale() => {
             abyssal_audit::record(
@@ -199,10 +207,96 @@ pub(crate) async fn audit_sighting(
                 )
                 .resource(ip),
             )
-            .await
+            .await?;
+            maybe_alert_rogue_device(pool, notifications, ip, true).await;
+            Ok(())
         }
         _ => Ok(()),
     }
+}
+
+/// NAC M1 ("rogue-device awareness"): when enabled, pushes a notification
+/// (through the shared `NotificationDispatcher` -- email/syslog/Slack/Teams/
+/// webhook) for a new or untrusted-reappearing device. Best-effort and
+/// gated: no dispatcher (the on-demand operator scan, who is already watching),
+/// the setting off, or no device row -> a no-op. For the *new-device* case it
+/// also suppresses the churn of a known device picking up a new DHCP IP: a
+/// finding only fires when the MAC is genuinely new (seen on just the one row
+/// this sighting created) or unknown; a MAC already on another row is a known
+/// device on a new IP, not a rogue. The audit-log event fires regardless of
+/// this path -- this only controls the outbound push.
+async fn maybe_alert_rogue_device(
+    pool: &DbPool,
+    notifications: Option<&NotificationDispatcher>,
+    ip: &str,
+    untrusted_reappeared: bool,
+) {
+    let Some(notifications) = notifications else {
+        return;
+    };
+    match repo::settings::get_bool(pool, PANOPTICON_ROGUE_ALERT_ENABLED, false).await {
+        Ok(true) => {}
+        _ => return,
+    }
+    let Ok(Some(device)) = repo::network_devices::find_by_ip(pool, ip).await else {
+        return;
+    };
+
+    // New-device case: skip the DHCP-churn of a known MAC on a new IP.
+    if !untrusted_reappeared
+        && let Some(mac) = device.mac_address.as_deref()
+        && let Ok(count) = repo::network_devices::count_with_mac(pool, mac).await
+        && count > 1
+    {
+        return;
+    }
+
+    let recipients_raw = repo::settings::get_string(pool, PANOPTICON_ROGUE_ALERT_RECIPIENTS, "")
+        .await
+        .unwrap_or_default();
+    let recipients = parse_recipients(&recipients_raw);
+
+    let mac = device.mac_address.as_deref().unwrap_or("unknown");
+    let vendor = device.vendor().unwrap_or("unknown vendor");
+    let hostname = device.hostname.as_deref().unwrap_or("-");
+    let network = device.network.as_deref().unwrap_or("unknown subnet");
+    let location = match (&device.switch_id, &device.switch_port) {
+        (Some(_), Some(port)) => format!(" on switch port {port}"),
+        _ => String::new(),
+    };
+    let (subject, severity) = if untrusted_reappeared {
+        (
+            format!("[Panopticon] Untrusted device reappeared on the network: {ip}"),
+            abyssal_notifications::Severity::Critical,
+        )
+    } else {
+        (
+            format!("[Panopticon] New device on the network: {ip}"),
+            abyssal_notifications::Severity::Warning,
+        )
+    };
+    let body = format!(
+        "ip={ip} mac={mac} vendor=\"{vendor}\" hostname=\"{hostname}\" subnet={network}{location}. \
+         Review it in Panopticon's inventory and mark it Trusted/Untrusted."
+    );
+    notifications
+        .dispatch(&NotificationMessage {
+            subject,
+            body,
+            severity,
+            recipients,
+        })
+        .await;
+}
+
+/// Parses a comma/newline-separated recipient list (shared shape with
+/// Thanatos's own recipient settings).
+fn parse_recipients(raw: &str) -> Vec<String> {
+    raw.split([',', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// One device this scan found, already upserted into the inventory --
@@ -312,6 +406,7 @@ async fn run_nmap_streaming(
 /// is *how* this gets invoked, not what it does.
 async fn run_discovery_scan(
     pool: &DbPool,
+    notifications: Option<&NotificationDispatcher>,
     target: &str,
     ports: Option<&str>,
     hosts_scanned: &Arc<AtomicUsize>,
@@ -370,7 +465,7 @@ async fn run_discovery_scan(
                 {
                     tracing::warn!(error = %e, ip = %host.ip, "failed to record open ports for discovered device");
                 }
-                if let Err(e) = audit_sighting(pool, &host.ip, prior).await {
+                if let Err(e) = audit_sighting(pool, notifications, &host.ip, prior).await {
                     tracing::warn!(error = %e, ip = %host.ip, "failed to record audit event for discovered device");
                 }
                 upserted += 1;
@@ -438,8 +533,11 @@ impl Operation for DiscoveryScanOperation {
     }
 
     async fn run(&self, _params: &OperationParams) -> Result<OperationOutput, ExecutionError> {
+        // On-demand operator scan: no rogue-alert push (the operator is already
+        // watching the scan). The audit events still fire.
         let outcome = run_discovery_scan(
             &self.pool,
+            None,
             &self.target,
             self.ports.as_deref(),
             &self.hosts_scanned,
@@ -598,7 +696,7 @@ pub async fn run_scan_job(
 /// `PANOPTICON_SWEEP_ENABLED`, and is how a device that never responds to
 /// an active scan (firewalled, but still talking to something on this
 /// subnet) can still show up in the inventory.
-async fn run_passive_refresh(pool: &DbPool) {
+async fn run_passive_refresh(pool: &DbPool, notifications: Option<&NotificationDispatcher>) {
     let neighbors = neighbor_mac_table().await;
     for (ip, mac) in neighbors {
         let prior = match repo::network_devices::find_by_ip(pool, &ip).await {
@@ -612,7 +710,7 @@ async fn run_passive_refresh(pool: &DbPool) {
             tracing::warn!(error = %e, ip = %ip, "passive refresh failed to record sighting");
             continue;
         }
-        if let Err(e) = audit_sighting(pool, &ip, prior).await {
+        if let Err(e) = audit_sighting(pool, notifications, &ip, prior).await {
             tracing::warn!(error = %e, ip = %ip, "passive refresh failed to record audit event");
         }
     }
@@ -637,10 +735,15 @@ const ACTIVE_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(30 * 60);
 ///   `PANOPTICON_SWEEP_ENABLED` is on and `PANOPTICON_SWEEP_TARGET` is
 ///   set -- both re-checked fresh every tick, so toggling either in
 ///   Settings takes effect on the next tick, not after a restart.
-pub fn spawn_panopticon_sweep(pool: DbPool, heartbeats: crate::task_health::TaskHeartbeats) {
+pub fn spawn_panopticon_sweep(
+    pool: DbPool,
+    heartbeats: crate::task_health::TaskHeartbeats,
+    notifications: Arc<NotificationDispatcher>,
+) {
     use crate::task_health::names;
     const PASSIVE_INTERVAL_SECS: u64 = 60;
     let passive_pool = pool.clone();
+    let passive_notifications = notifications.clone();
     tokio::spawn(async move {
         heartbeats
             .register(names::PANOPTICON_SWEEP, PASSIVE_INTERVAL_SECS)
@@ -648,7 +751,7 @@ pub fn spawn_panopticon_sweep(pool: DbPool, heartbeats: crate::task_health::Task
         let mut interval = tokio::time::interval(PASSIVE_REFRESH_INTERVAL);
         loop {
             interval.tick().await;
-            run_passive_refresh(&passive_pool).await;
+            run_passive_refresh(&passive_pool, Some(&passive_notifications)).await;
             heartbeats
                 .ok(names::PANOPTICON_SWEEP, PASSIVE_INTERVAL_SECS)
                 .await;
@@ -688,7 +791,9 @@ pub fn spawn_panopticon_sweep(pool: DbPool, heartbeats: crate::task_health::Task
             // The background sweep has no admin watching a progress bar --
             // this counter is written to but never read.
             let hosts_scanned = Arc::new(AtomicUsize::new(0));
-            match run_discovery_scan(&pool, target, None, &hosts_scanned).await {
+            match run_discovery_scan(&pool, Some(&notifications), target, None, &hosts_scanned)
+                .await
+            {
                 Ok(outcome) => {
                     tracing::info!(
                         target = %target,
@@ -707,6 +812,20 @@ pub fn spawn_panopticon_sweep(pool: DbPool, heartbeats: crate::task_health::Task
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_recipients_splits_trims_and_drops_empty() {
+        assert_eq!(
+            parse_recipients("a@x.com, b@x.com\n\n c@x.com ,"),
+            vec![
+                "a@x.com".to_string(),
+                "b@x.com".to_string(),
+                "c@x.com".to_string()
+            ]
+        );
+        assert!(parse_recipients("   ").is_empty());
+        assert!(parse_recipients("").is_empty());
+    }
 
     // -------------------------------------------------------------
     // parse_nmap_output -- never had a unit test before this, despite

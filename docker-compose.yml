@@ -60,6 +60,12 @@ services:
       # mDNS listener (Panopticon, off by default) -- ordinary UDP, no
       # extra capability needed, just the published port.
       - "5353:5353/udp"
+      # Panopticon's embedded RADIUS server (NAC phase 5, off by default):
+      # auth (1812) + accounting (1813). Ordinary UDP, no extra capability.
+      # Published so NAS devices (switches/APs) can reach it; harmless when
+      # the server is disabled (nothing binds inside the container).
+      - "1812:1812/udp"
+      - "1813:1813/udp"
     # Panopticon's ARP listener (off by default, crates/web/src/panopticon_arp.rs)
     # needs CAP_NET_RAW to open a raw packet capture socket -- explicit
     # here even though it's already one of Docker's default capabilities,

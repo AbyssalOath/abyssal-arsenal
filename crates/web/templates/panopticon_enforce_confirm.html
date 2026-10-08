@@ -1,0 +1,64 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Confirm enforcement — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — Confirm {{ kind_label }}{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h3>{% call macros::icon("firewall") %} {{ kind_label }} — {{ port_label }}</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    On switch <strong>{{ switch_name }}</strong>, port <strong>{{ port_label }}</strong>.
+  </p>
+
+  <div class="warning-banner">
+    <strong>This writes to the live switch.</strong> {{ dry_run }}
+  </div>
+
+  {% if !devices.is_empty() %}
+  <p style="margin-bottom:4px;"><strong>Devices currently behind this port</strong> (the blast radius):</p>
+  <table>
+    <thead><tr><th>Trust</th><th>IP</th><th>Hostname</th><th>MAC</th></tr></thead>
+    <tbody>
+      {% for dev in devices %}
+      <tr>
+        <td>
+          {% if dev.trust_state == "trusted" %}<span class="badge badge-success">{{ dev.trust_label }}</span>
+          {% else if dev.trust_state == "untrusted" %}<span class="badge badge-danger">{{ dev.trust_label }}</span>
+          {% else %}<span class="badge badge-muted">{{ dev.trust_label }}</span>{% endif %}
+        </td>
+        <td>{{ dev.ip }}</td>
+        <td>{% if dev.hostname.is_empty() %}&mdash;{% else %}{{ dev.hostname }}{% endif %}</td>
+        <td>{% if dev.mac.is_empty() %}&mdash;{% else %}{{ dev.mac }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-muted);">No devices are currently mapped to this port (it may be empty, an uplink, or not yet polled).</p>
+  {% endif %}
+
+  <form method="post" action="/arsenals/panopticon/switches/{{ switch_id }}/enforce">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="if_index" value="{{ if_index }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+
+    <label for="reason">Reason (recorded in the audit log)</label>
+    <input type="text" id="reason" name="reason" maxlength="500"
+           placeholder="e.g. rogue device on reception port" style="max-width:420px;">
+
+    <label for="timeout_minutes">Auto-revert after (minutes)</label>
+    <input type="number" id="timeout_minutes" name="timeout_minutes" min="0" max="43200"
+           value="{{ default_timeout_minutes }}" style="max-width:160px;">
+    <p style="color:var(--text-muted); margin-top:4px;">
+      The port is automatically restored after this many minutes unless you make the action
+      permanent. <strong>0 = permanent</strong> (stays until manually released).
+    </p>
+
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn btn-danger">{% call macros::icon("firewall") %} Apply {{ kind_label }}</button>
+      <a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ switch_id }}/traffic">Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

@@ -1,4 +1,5 @@
 pub mod crypto;
+pub mod enforcement;
 pub mod error;
 pub mod host;
 pub mod ioc;
@@ -7,6 +8,8 @@ pub mod module;
 pub mod network_device;
 pub mod oui;
 pub mod permission;
+pub mod policy;
+pub mod radius;
 pub mod reliquary_backup;
 pub mod role;
 pub mod secret;
@@ -18,17 +21,20 @@ pub mod subnet;
 pub mod user;
 
 pub use crypto::{CryptoError, EncryptionKey};
+pub use enforcement::{EnforcementAction, EnforcementKind, EnforcementState};
 pub use error::AppError;
 pub use host::Host;
 pub use ioc::{Ioc, IocType};
 pub use macros::{Macro, MacroScope, MacroType};
 pub use module::ModuleCategory;
 pub use network_device::{
-    DeviceType, NetworkDevice, NetworkDevicePort, PanopticonSwitch, SnmpAuthProtocol,
-    SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
+    DeviceType, IfAdminStatus, IfOperStatus, NetworkDevice, NetworkDevicePort, PanopticonSwitch,
+    SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
 };
 pub use oui::lookup_vendor;
 pub use permission::Permission;
+pub use policy::{PolicyMode, PolicyRule, PolicyTrigger};
+pub use radius::{RadiusClient, RadiusSession};
 pub use reliquary_backup::{
     BackupComponent, BackupJob, BackupJobType, BackupManifest, BackupStatus, BackupTrigger,
     EncryptionMetadata, ManifestEntry, VerificationStatus,

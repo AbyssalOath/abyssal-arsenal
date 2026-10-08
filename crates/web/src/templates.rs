@@ -845,6 +845,11 @@ pub struct SettingsTemplate {
     pub thanatos_fast_sweep_seconds: u32,
     pub thanatos_event_retention_days: u32,
     pub panopticon_sweep_enabled: bool,
+    pub panopticon_rogue_alert_enabled: bool,
+    pub panopticon_rogue_alert_recipients: String,
+    pub panopticon_enforcement_enabled: bool,
+    pub panopticon_quarantine_vlan: u32,
+    pub panopticon_enforcement_revert_minutes: u32,
     pub panopticon_sweep_target: String,
     pub panopticon_mdns_enabled: bool,
     pub panopticon_arp_enabled: bool,
@@ -1738,6 +1743,8 @@ pub struct PanopticonSwitchRow {
     pub snmp_port: u16,
     pub snmp_version_label: &'static str,
     pub enabled: bool,
+    /// Per-switch NAC enforcement opt-in (phase 3).
+    pub enforcement_enabled: bool,
     pub last_polled_at: Option<String>,
     pub last_poll_error: Option<String>,
 }
@@ -1808,9 +1815,52 @@ pub struct PanopticonSwitchEditTemplate {
 pub struct PanopticonPortRow {
     pub if_index: u32,
     pub label: String,
+    /// Operational link state (`ifOperStatus`) -- M2. `oper_known` is false
+    /// when no poll has read status for this port yet (pre-M2 rows, or a
+    /// switch that doesn't expose IF-MIB status); the template then shows a
+    /// dash instead of a misleading "down" badge.
+    pub oper_label: String,
+    pub oper_up: bool,
+    pub oper_known: bool,
+    /// Administrative state (`ifAdminStatus`) -- `admin_shut` flags the
+    /// port as manually disabled (down), which the template highlights.
+    pub admin_label: String,
+    pub admin_shut: bool,
+    pub admin_known: bool,
+    /// Negotiated link speed, already formatted (e.g. "1 Gbps"), or "—".
+    pub speed: String,
+    /// Devices the last poll mapped to this port, if any.
+    pub devices: Vec<PanopticonPortDevice>,
     pub last_seen_at: String,
     pub current_in: String,
     pub current_out: String,
+    /// The in-effect enforcement action on this port (phase 3), if any.
+    pub enforcement: Option<PortEnforcement>,
+}
+
+/// The in-effect NAC enforcement action on a port, decorating the Ports page.
+pub struct PortEnforcement {
+    pub action_id: String,
+    pub kind_label: String,
+    pub state_label: String,
+    /// Formatted expiry, or empty for a permanent action.
+    pub expires_at: String,
+    /// Whether this action has an auto-revert timeout (vs. permanent).
+    pub is_timed: bool,
+    /// `true` when the action is in the `RevertFailed` state -- a revert that
+    /// didn't take, surfaced loudly so an operator can intervene.
+    pub failed: bool,
+    pub reason: String,
+}
+
+/// One device sitting behind a switch port, for the port-state table (M2).
+pub struct PanopticonPortDevice {
+    pub ip: String,
+    pub mac: String,
+    pub hostname: String,
+    pub trust_label: String,
+    /// Trust key (`unknown`/`trusted`/`untrusted`) for per-state styling.
+    pub trust_state: String,
 }
 
 /// One switch's port list + (optionally) a rendered chart for one
@@ -1832,6 +1882,160 @@ pub struct PanopticonSwitchTrafficTemplate {
     pub chart_port_label: Option<String>,
     pub chart_current_in: Option<String>,
     pub chart_current_out: Option<String>,
+    /// Whether the operator can act on enforcement controls here -- true only
+    /// when they hold `network.manage`, the global kill-switch is on, this
+    /// switch is opted in, and an `ENCRYPTION_KEY` is configured. When false,
+    /// `enforce_blocked_reason` explains which gate isn't met.
+    pub can_enforce: bool,
+    pub enforce_blocked_reason: Option<String>,
+    /// Whether a quarantine VLAN is configured -- gates the Quarantine button
+    /// independently of Disable.
+    pub quarantine_available: bool,
+    pub csrf_token: String,
+}
+
+/// Confirmation + options page before an enforcement action is applied to a
+/// port -- shows the exact SNMP write that will be issued (a dry-run preview),
+/// a reason field, and the auto-revert timeout. See
+/// `routes/panopticon.rs::enforce_confirm`.
+#[derive(Template)]
+#[template(path = "panopticon_enforce_confirm.html")]
+pub struct PanopticonEnforceConfirmTemplate {
+    pub base: BaseCtx,
+    pub switch_id: String,
+    pub switch_name: String,
+    pub if_index: u32,
+    pub port_label: String,
+    /// "disable" or "quarantine".
+    pub kind: String,
+    pub kind_label: String,
+    /// Human description of exactly what will be written to the switch.
+    pub dry_run: String,
+    /// Quarantine VLAN, shown for a quarantine action (0/none for disable).
+    pub quarantine_vlan: u32,
+    /// Default minutes prefilled into the timeout field (0 = permanent default).
+    pub default_timeout_minutes: u32,
+    /// Devices currently behind this port, so the operator sees the blast radius.
+    pub devices: Vec<PanopticonPortDevice>,
+    pub csrf_token: String,
+}
+
+/// NAC enforcement dashboard/history -- in-effect actions and recent history,
+/// with release / make-permanent controls. See
+/// `routes/panopticon.rs::enforcement_show`.
+#[derive(Template)]
+#[template(path = "panopticon_enforcement.html")]
+pub struct PanopticonEnforcementTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    pub enforcement_enabled: bool,
+    pub quarantine_vlan: u32,
+    pub revert_minutes: u32,
+    pub in_effect: Vec<EnforcementActionRow>,
+    pub history: Vec<EnforcementActionRow>,
+    pub csrf_token: String,
+}
+
+/// One enforcement action, for the dashboard/history tables.
+pub struct EnforcementActionRow {
+    pub id: String,
+    pub switch_name: String,
+    pub port_label: String,
+    pub kind_label: String,
+    pub state_label: String,
+    /// `active`/`reverted`/`apply_failed`/`revert_failed` for per-state styling.
+    pub state_key: String,
+    pub in_effect: bool,
+    pub is_timed: bool,
+    pub expires_at: String,
+    pub created_at: String,
+    pub created_by: String,
+    pub reason: String,
+    pub last_error: String,
+}
+
+/// NAC auto-enforcement policy management (phase 4) -- mode, timing, and the
+/// ordered rule list. See `routes/panopticon.rs::policy_show`.
+#[derive(Template)]
+#[template(path = "panopticon_policy.html")]
+pub struct PanopticonPolicyTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    pub csrf_token: String,
+    /// (`PolicyMode::as_str()`, label, is-current) for the mode selector.
+    pub modes: Vec<(String, String, bool)>,
+    pub current_mode: String,
+    pub new_window_minutes: u32,
+    pub cooldown_minutes: u32,
+    /// Warnings so the page explains why an armed policy still wouldn't act.
+    pub global_enforcement_on: bool,
+    pub quarantine_vlan_set: bool,
+    pub rules: Vec<PolicyRuleRow>,
+    /// Add-form option lists.
+    pub triggers: Vec<(String, String)>,
+    pub actions: Vec<(String, String)>,
+    pub device_types: Vec<(String, String)>,
+    pub switches: Vec<(String, String)>,
+}
+
+/// One policy rule for the management table.
+pub struct PolicyRuleRow {
+    pub id: String,
+    pub priority: i32,
+    pub name: String,
+    pub enabled: bool,
+    pub trigger_label: String,
+    pub action_label: String,
+    /// Human-readable scope ("any", or "subnet …; switch …; type …").
+    pub scope: String,
+    /// Auto-revert label ("30 min", "permanent", or "default").
+    pub timeout_label: String,
+    pub is_first: bool,
+    pub is_last: bool,
+}
+
+/// Embedded RADIUS server admin (phase 5): MAB policy settings, NAS clients, and
+/// recent accounted sessions. See `routes/panopticon.rs::radius_show`.
+#[derive(Template)]
+#[template(path = "panopticon_radius.html")]
+pub struct PanopticonRadiusTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    pub csrf_token: String,
+    /// False when no `ENCRYPTION_KEY` is set -- the NAS-client add form is hidden
+    /// (a shared secret couldn't be stored safely) and the server won't start.
+    pub encryption_configured: bool,
+    pub enabled: bool,
+    pub auth_port: u32,
+    pub acct_port: u32,
+    pub trusted_vlan: u32,
+    pub guest_vlan: u32,
+    /// For the "quarantine reuses this VLAN" note.
+    pub quarantine_vlan: u32,
+    /// (key, label, selected) for the untrusted / unknown action selectors.
+    pub untrusted_actions: Vec<(String, String, bool)>,
+    pub unknown_actions: Vec<(String, String, bool)>,
+    pub clients: Vec<RadiusClientRow>,
+    pub sessions: Vec<RadiusSessionRow>,
+}
+
+pub struct RadiusClientRow {
+    pub id: String,
+    pub name: String,
+    pub nas_address: String,
+    pub enabled: bool,
+}
+
+pub struct RadiusSessionRow {
+    pub mac: String,
+    pub username: String,
+    pub nas_ip: String,
+    pub nas_port: String,
+    pub framed_ip: String,
+    pub method: String,
+    pub started_at: String,
+    pub last_seen_at: String,
+    pub active: bool,
 }
 
 // -----------------------------------------------------------------------

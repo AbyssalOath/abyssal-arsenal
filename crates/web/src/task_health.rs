@@ -26,6 +26,8 @@ pub mod names {
     pub const PANOPTICON_SWEEP: &str = "panopticon_sweep";
     pub const PANOPTICON_SNMP_SWEEP: &str = "panopticon_snmp_sweep";
     pub const PANOPTICON_TRAFFIC_ROLLUP: &str = "panopticon_traffic_rollup";
+    pub const PANOPTICON_ENFORCEMENT_REVERT: &str = "panopticon_enforcement_revert";
+    pub const PANOPTICON_POLICY_SWEEP: &str = "panopticon_policy_sweep";
     pub const ELEVATION_EXPIRY_SWEEP: &str = "elevation_expiry_sweep";
     pub const SELF_MONITOR_SWEEP: &str = "self_monitor_sweep";
     pub const INTERNAL_TLS_SWEEP: &str = "internal_tls_sweep";

@@ -421,6 +421,93 @@ impl std::str::FromStr for SnmpPrivProtocol {
     }
 }
 
+/// IF-MIB `ifAdminStatus` -- the administratively-desired state of a
+/// switch port, i.e. what a human last configured it to (NOT whether a
+/// cable is actually plugged in, which is `IfOperStatus`). Read-only in
+/// this phase: Panopticon reports it so an operator can see at a glance
+/// which ports have been manually shut, and it's the baseline a later
+/// enforcement phase would need before it could safely toggle a port.
+/// Values are IF-MIB's own integer codes; `from_code` returns `None` for
+/// anything outside the standard set rather than guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IfAdminStatus {
+    Up,
+    Down,
+    Testing,
+}
+
+impl IfAdminStatus {
+    pub const fn from_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(IfAdminStatus::Up),
+            2 => Some(IfAdminStatus::Down),
+            3 => Some(IfAdminStatus::Testing),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            IfAdminStatus::Up => "Up",
+            IfAdminStatus::Down => "Down (shut)",
+            IfAdminStatus::Testing => "Testing",
+        }
+    }
+
+    /// Whether the port is administratively enabled -- only `Up` counts.
+    pub const fn is_up(self) -> bool {
+        matches!(self, IfAdminStatus::Up)
+    }
+}
+
+/// IF-MIB `ifOperStatus` -- the port's actual current operational state
+/// (is a link really up right now), as opposed to the configured intent
+/// in `IfAdminStatus`. A port can be admin-up but oper-down (nothing
+/// plugged in, or the far end is off) -- distinguishing the two is the
+/// whole point of surfacing both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IfOperStatus {
+    Up,
+    Down,
+    Testing,
+    Unknown,
+    Dormant,
+    NotPresent,
+    LowerLayerDown,
+}
+
+impl IfOperStatus {
+    pub const fn from_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(IfOperStatus::Up),
+            2 => Some(IfOperStatus::Down),
+            3 => Some(IfOperStatus::Testing),
+            4 => Some(IfOperStatus::Unknown),
+            5 => Some(IfOperStatus::Dormant),
+            6 => Some(IfOperStatus::NotPresent),
+            7 => Some(IfOperStatus::LowerLayerDown),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            IfOperStatus::Up => "Up",
+            IfOperStatus::Down => "Down",
+            IfOperStatus::Testing => "Testing",
+            IfOperStatus::Unknown => "Unknown",
+            IfOperStatus::Dormant => "Dormant",
+            IfOperStatus::NotPresent => "Not present",
+            IfOperStatus::LowerLayerDown => "Lower layer down",
+        }
+    }
+
+    /// Whether there's a live link on this port right now.
+    pub const fn is_up(self) -> bool {
+        matches!(self, IfOperStatus::Up)
+    }
+}
+
 /// A managed switch Panopticon polls over SNMP (v1, v2c, or v3 --
 /// `snmp_version`) for BRIDGE-MIB MAC-to-port data (`panopticon_snmp.rs`).
 /// `community_encrypted` (v1/v2c) and the `snmp_v3_*_password_encrypted`
@@ -444,6 +531,14 @@ pub struct PanopticonSwitch {
     pub snmp_v3_priv_protocol: Option<SnmpPrivProtocol>,
     pub snmp_v3_priv_password_encrypted: Option<String>,
     pub enabled: bool,
+    /// Per-switch opt-in for NAC enforcement (phase 3) -- whether Panopticon
+    /// is allowed to issue SNMP SETs (port disable / VLAN quarantine) against
+    /// this switch. Off by default; an admin flips it on only once the
+    /// switch's stored SNMP credentials actually have write access and (for
+    /// quarantine) a quarantine VLAN is provisioned. Gated further by the
+    /// global `PANOPTICON_ENFORCEMENT_ENABLED` kill-switch and the operator's
+    /// `network.manage` permission.
+    pub enforcement_enabled: bool,
     pub last_polled_at: Option<DateTime<Utc>>,
     /// Set by the most recent poll if it failed (unreachable, wrong
     /// community, timeout); cleared on the next poll that succeeds. Shown

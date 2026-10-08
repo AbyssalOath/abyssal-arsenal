@@ -3,14 +3,25 @@ use std::str::FromStr;
 
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
+    PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES, PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES_DEFAULT,
+    PANOPTICON_AUTO_ENFORCE_MODE, PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES,
+    PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES_DEFAULT, PANOPTICON_ENFORCEMENT_ENABLED,
+    PANOPTICON_ENFORCEMENT_REVERT_MINUTES, PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT,
     PANOPTICON_INVENTORY_RENDER_BUDGET, PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT,
-    PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS, PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS,
-    PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS,
-    PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
+    PANOPTICON_QUARANTINE_VLAN, PANOPTICON_QUARANTINE_VLAN_DEFAULT, PANOPTICON_RADIUS_ACCT_PORT,
+    PANOPTICON_RADIUS_ACCT_PORT_DEFAULT, PANOPTICON_RADIUS_AUTH_PORT,
+    PANOPTICON_RADIUS_AUTH_PORT_DEFAULT, PANOPTICON_RADIUS_ENABLED, PANOPTICON_RADIUS_GUEST_VLAN,
+    PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT, PANOPTICON_RADIUS_TRUSTED_VLAN,
+    PANOPTICON_RADIUS_TRUSTED_VLAN_DEFAULT, PANOPTICON_RADIUS_UNKNOWN_ACTION,
+    PANOPTICON_RADIUS_UNTRUSTED_ACTION, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
+    PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
+    PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
+    PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
 };
 use abyssal_core::{
-    AppError, DeviceType, MacroScope, NetworkDevice, Permission, SnmpAuthProtocol,
-    SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
+    AppError, DeviceType, EnforcementAction, EnforcementKind, EnforcementState, IfAdminStatus,
+    IfOperStatus, MacroScope, NetworkDevice, Permission, PolicyMode, PolicyTrigger,
+    SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
 };
 use abyssal_database::repo;
 use abyssal_database::repo::network_devices::GroupCount;
@@ -1302,6 +1313,7 @@ async fn render_switches(
             snmp_port: s.snmp_port,
             snmp_version_label: s.snmp_version.label(),
             enabled: s.enabled,
+            enforcement_enabled: s.enforcement_enabled,
             last_polled_at: s
                 .last_polled_at
                 .map(|t| crate::common::format_in_tz(t, &ctx.user.timezone)),
@@ -2159,6 +2171,24 @@ pub struct SwitchTrafficQuery {
     range: Option<String>,
 }
 
+/// Formats a port's negotiated link speed (Mbps from `ifHighSpeed`/`ifSpeed`)
+/// for display, promoting to Gbps at/above 1000 Mbps. `None` and a reported
+/// speed of 0 (an admin-down or unplugged port often reports 0) both render
+/// as a dash rather than "0 Mbps".
+fn format_port_speed(speed_mbps: Option<u32>) -> String {
+    match speed_mbps {
+        Some(mbps) if mbps >= 1000 => {
+            if mbps % 1000 == 0 {
+                format!("{} Gbps", mbps / 1000)
+            } else {
+                format!("{:.1} Gbps", f64::from(mbps) / 1000.0)
+            }
+        }
+        Some(mbps) if mbps > 0 => format!("{mbps} Mbps"),
+        _ => "—".to_string(),
+    }
+}
+
 pub async fn switch_traffic(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2192,6 +2222,31 @@ pub async fn switch_traffic(
     .await?;
 
     let ports = repo::panopticon_traffic::list_ports(&state.pool, id).await?;
+
+    // Group devices the last poll mapped to this switch by their port label,
+    // so each port row can show what's sitting behind it (M2).
+    let devices_on_switch = repo::network_devices::list_on_switch(&state.pool, id).await?;
+    let mut devices_by_port: HashMap<String, Vec<crate::templates::PanopticonPortDevice>> =
+        HashMap::new();
+    for d in devices_on_switch {
+        devices_by_port
+            .entry(d.switch_port.clone())
+            .or_default()
+            .push(crate::templates::PanopticonPortDevice {
+                ip: d.ip_address,
+                mac: d.mac_address.unwrap_or_default(),
+                hostname: d.hostname.unwrap_or_default(),
+                trust_label: d.trust_state.label().to_string(),
+                trust_state: d.trust_state.as_str().to_string(),
+            });
+    }
+
+    // In-effect enforcement actions on this switch, keyed by port (phase 3).
+    let mut enforcement_by_port: HashMap<u32, EnforcementAction> = HashMap::new();
+    for action in repo::panopticon_enforcement::list_in_effect_for_switch(&state.pool, id).await? {
+        enforcement_by_port.insert(action.if_index, action);
+    }
+
     let mut port_rows = Vec::with_capacity(ports.len());
     for port in &ports {
         let latest =
@@ -2204,12 +2259,48 @@ pub async fn switch_traffic(
             ),
             None => ("—".to_string(), "—".to_string()),
         };
+        let oper = port.oper_status.and_then(IfOperStatus::from_code);
+        let admin = port.admin_status.and_then(IfAdminStatus::from_code);
+        let label = port
+            .if_descr
+            .clone()
+            .unwrap_or_else(|| format!("if{}", port.if_index));
+        let devices = devices_by_port.remove(&label).unwrap_or_default();
+        let enforcement =
+            enforcement_by_port
+                .remove(&port.if_index)
+                .map(|a| crate::templates::PortEnforcement {
+                    action_id: a.id.to_string(),
+                    kind_label: a.kind.label().to_string(),
+                    state_label: a.state.label().to_string(),
+                    expires_at: a
+                        .expires_at
+                        .map(|t| crate::common::format_in_tz(t, &ctx.user.timezone))
+                        .unwrap_or_default(),
+                    is_timed: a.expires_at.is_some(),
+                    failed: a.state == EnforcementState::RevertFailed,
+                    reason: a.reason.unwrap_or_default(),
+                });
         port_rows.push(crate::templates::PanopticonPortRow {
             if_index: port.if_index,
-            label: port
-                .if_descr
-                .clone()
-                .unwrap_or_else(|| format!("if{}", port.if_index)),
+            enforcement,
+            oper_label: oper
+                .map(|s| s.label().to_string())
+                // A status code the switch returned that isn't in the IF-MIB
+                // standard set: show it raw rather than pretending it's down.
+                .or_else(|| port.oper_status.map(|c| format!("Code {c}")))
+                .unwrap_or_else(|| "—".to_string()),
+            oper_up: oper.is_some_and(IfOperStatus::is_up),
+            oper_known: port.oper_status.is_some(),
+            admin_label: admin
+                .map(|s| s.label().to_string())
+                .or_else(|| port.admin_status.map(|c| format!("Code {c}")))
+                .unwrap_or_else(|| "—".to_string()),
+            admin_shut: admin.is_some_and(|a| !a.is_up()),
+            admin_known: port.admin_status.is_some(),
+            speed: format_port_speed(port.speed_mbps),
+            devices,
+            label,
             last_seen_at: crate::common::format_in_tz(port.last_seen_at, &ctx.user.timezone),
             current_in,
             current_out,
@@ -2260,6 +2351,38 @@ pub async fn switch_traffic(
         }
     }
 
+    // Enforcement gating (phase 3): compute whether the operator can act on the
+    // enforcement controls here, and if not, exactly which gate is unmet -- so
+    // the Ports page explains itself rather than just hiding the buttons.
+    let global_enforcement =
+        repo::settings::get_bool(&state.pool, PANOPTICON_ENFORCEMENT_ENABLED, false).await?;
+    let quarantine_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_QUARANTINE_VLAN,
+        PANOPTICON_QUARANTINE_VLAN_DEFAULT,
+    )
+    .await?;
+    let can_manage = ctx.has(Permission::NetworkManage);
+    let has_key = state.encryption_key.is_some();
+    let can_enforce = can_manage && global_enforcement && switch.enforcement_enabled && has_key;
+    let enforce_blocked_reason = if !can_manage {
+        Some("You need the network.manage permission to enforce.".to_string())
+    } else if !global_enforcement {
+        Some(
+            "NAC enforcement is globally disabled -- an admin can enable it in Settings."
+                .to_string(),
+        )
+    } else if !switch.enforcement_enabled {
+        Some(
+            "This switch isn't opted into enforcement -- enable it on the switches page."
+                .to_string(),
+        )
+    } else if !has_key {
+        Some("ENCRYPTION_KEY isn't configured, so the switch can't be reached.".to_string())
+    } else {
+        None
+    };
+
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
         &ctx,
@@ -2284,6 +2407,10 @@ pub async fn switch_traffic(
         chart_port_label,
         chart_current_in,
         chart_current_out,
+        can_enforce,
+        enforce_blocked_reason,
+        quarantine_available: quarantine_vlan > 0,
+        csrf_token: csrf_token.clone(),
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -2292,14 +2419,1125 @@ pub async fn switch_traffic(
     Ok((jar, tpl).into_response())
 }
 
+// ---------------------------------------------------------------------
+// NAC enforcement (phase 3): per-switch opt-in, apply (disable/quarantine),
+// release, make-permanent, and the enforcement dashboard. Every write path
+// requires `network.manage` and funnels through `panopticon_enforcement`,
+// which re-checks the global kill-switch and per-switch opt-in before any
+// SNMP SET. These handlers never call the SNMP layer directly.
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SwitchEnforcementForm {
+    csrf_token: String,
+    #[serde(default)]
+    enforcement_enabled: bool,
+}
+
+/// Toggles a switch's enforcement opt-in. Separate from `switch_set_enabled`
+/// (polling) because permitting writes to a switch is a higher-trust decision.
+pub async fn switch_set_enforcement_enabled(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SwitchEnforcementForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::panopticon_switches::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    repo::panopticon_switches::set_enforcement_enabled(&state.pool, id, form.enforcement_enabled)
+        .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/switches").into_response())
+}
+
+/// Looks up a port's human label (`ifDescr`) for a switch, falling back to
+/// `if<index>` -- shared by the confirm and apply handlers so both label the
+/// action identically.
+async fn port_label_for(state: &AppState, switch_id: Uuid, if_index: u32) -> String {
+    repo::panopticon_traffic::list_ports(&state.pool, switch_id)
+        .await
+        .ok()
+        .and_then(|ports| {
+            ports
+                .into_iter()
+                .find(|p| p.if_index == if_index)
+                .and_then(|p| p.if_descr)
+        })
+        .unwrap_or_else(|| format!("if{if_index}"))
+}
+
+#[derive(Deserialize)]
+pub struct EnforceConfirmQuery {
+    port: u32,
+    kind: String,
+}
+
+/// The confirmation page for an enforcement action: shows the exact SNMP write
+/// that will be issued (a dry-run preview), the devices behind the port (blast
+/// radius), a reason field, and the auto-revert timeout.
+pub async fn enforce_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(q): Query<EnforceConfirmQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+
+    let kind: EnforcementKind = q
+        .kind
+        .parse()
+        .map_err(|_| AppError::Validation("Unknown enforcement action.".into()))?;
+    let switch = repo::panopticon_switches::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let port_label = port_label_for(&state, id, q.port).await;
+
+    let quarantine_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_QUARANTINE_VLAN,
+        PANOPTICON_QUARANTINE_VLAN_DEFAULT,
+    )
+    .await?;
+    if kind == EnforcementKind::Quarantine && quarantine_vlan == 0 {
+        return Err(WebError(AppError::Validation(
+            "No quarantine VLAN is configured -- set one in Settings before quarantining a port."
+                .into(),
+        )));
+    }
+    let default_timeout_minutes = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_ENFORCEMENT_REVERT_MINUTES,
+        PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT,
+    )
+    .await?;
+
+    let dry_run = match kind {
+        EnforcementKind::Disable => format!(
+            "SNMP SET ifAdminStatus.{} = down(2) on {} ({}). The port goes dark immediately -- \
+             anything plugged into it loses network link until the action is released.",
+            q.port, switch.name, switch.ip_address
+        ),
+        EnforcementKind::Quarantine => format!(
+            "SNMP SET dot1qPvid (plus the VLAN's static egress/untagged port maps) to move port \
+             \"{}\" onto VLAN {} on {} ({}). The device keeps link but is isolated on the \
+             quarantine VLAN until the action is released.",
+            port_label, quarantine_vlan, switch.name, switch.ip_address
+        ),
+    };
+
+    // Devices behind this port, so the operator sees the blast radius.
+    let devices: Vec<crate::templates::PanopticonPortDevice> =
+        repo::network_devices::list_on_switch(&state.pool, id)
+            .await?
+            .into_iter()
+            .filter(|d| d.switch_port == port_label)
+            .map(|d| crate::templates::PanopticonPortDevice {
+                ip: d.ip_address,
+                mac: d.mac_address.unwrap_or_default(),
+                hostname: d.hostname.unwrap_or_default(),
+                trust_label: d.trust_state.label().to_string(),
+                trust_state: d.trust_state.as_str().to_string(),
+            })
+            .collect();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::PanopticonEnforceConfirmTemplate {
+        base,
+        switch_id: switch.id.to_string(),
+        switch_name: switch.name,
+        if_index: q.port,
+        port_label,
+        kind: kind.as_str().to_string(),
+        kind_label: kind.label().to_string(),
+        dry_run,
+        quarantine_vlan,
+        default_timeout_minutes,
+        devices,
+        csrf_token: csrf_token.clone(),
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct EnforceApplyForm {
+    csrf_token: String,
+    if_index: u32,
+    kind: String,
+    #[serde(default)]
+    reason: String,
+    /// Minutes until auto-revert; 0 = permanent.
+    #[serde(default)]
+    timeout_minutes: u32,
+}
+
+/// Applies an enforcement action after the confirm page. Delegates all gating,
+/// the SNMP write, persistence, and audit to `panopticon_enforcement::apply`.
+pub async fn enforce_apply(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<EnforceApplyForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let kind: EnforcementKind = form
+        .kind
+        .parse()
+        .map_err(|_| AppError::Validation("Unknown enforcement action.".into()))?;
+    let switch = repo::panopticon_switches::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let port_label = port_label_for(&state, id, form.if_index).await;
+    let reason = form.reason.trim();
+
+    let req = crate::panopticon_enforcement::EnforceRequest {
+        switch,
+        if_index: form.if_index,
+        port_label,
+        kind,
+        reason: (!reason.is_empty()).then(|| reason.to_string()),
+        timeout_minutes: form.timeout_minutes,
+        origin: crate::panopticon_enforcement::EnforceOrigin::Operator {
+            id: ctx.user.id,
+            username: ctx.user.username.clone(),
+        },
+    };
+
+    let back = format!("/arsenals/panopticon/switches/{id}/traffic");
+    match crate::panopticon_enforcement::apply(&state.pool, state.encryption_key.as_deref(), &req)
+        .await
+    {
+        Ok(_) => Ok(Redirect::to(&back).into_response()),
+        Err(e) => Err(WebError(AppError::Validation(e.to_string()))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct EnforceActionForm {
+    csrf_token: String,
+    action_id: Uuid,
+    /// Where to send the operator back to after the action.
+    #[serde(default)]
+    return_to: String,
+}
+
+fn safe_return_to(return_to: &str, fallback: &str) -> String {
+    // Only allow same-origin relative paths back into the app, never an
+    // attacker-supplied absolute URL.
+    if return_to.starts_with('/') && !return_to.starts_with("//") {
+        return_to.to_string()
+    } else {
+        fallback.to_string()
+    }
+}
+
+/// Releases (reverts) an in-effect enforcement action at an operator's request.
+pub async fn enforce_release(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<EnforceActionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let action = repo::panopticon_enforcement::find_by_id(&state.pool, form.action_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let back = safe_return_to(&form.return_to, "/arsenals/panopticon/enforcement");
+
+    match crate::panopticon_enforcement::release(
+        &state.pool,
+        state.encryption_key.as_deref(),
+        &action,
+        crate::panopticon_enforcement::ReleaseBy::Operator {
+            id: ctx.user.id,
+            username: ctx.user.username.clone(),
+        },
+    )
+    .await
+    {
+        Ok(()) => Ok(Redirect::to(&back).into_response()),
+        Err(e) => Err(WebError(AppError::Validation(e.to_string()))),
+    }
+}
+
+/// Clears an action's auto-revert timeout, making it permanent.
+pub async fn enforce_make_permanent(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<EnforceActionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::panopticon_enforcement::find_by_id(&state.pool, form.action_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    repo::panopticon_enforcement::make_permanent(&state.pool, form.action_id).await?;
+
+    let back = safe_return_to(&form.return_to, "/arsenals/panopticon/enforcement");
+    Ok(Redirect::to(&back).into_response())
+}
+
+fn enforcement_row(a: EnforcementAction, tz: &str) -> crate::templates::EnforcementActionRow {
+    crate::templates::EnforcementActionRow {
+        id: a.id.to_string(),
+        switch_name: a.switch_name,
+        port_label: a.port_label,
+        kind_label: a.kind.label().to_string(),
+        state_label: a.state.label().to_string(),
+        state_key: a.state.as_str().to_string(),
+        in_effect: a.state.is_in_effect(),
+        is_timed: a.expires_at.is_some(),
+        expires_at: a
+            .expires_at
+            .map(|t| crate::common::format_in_tz(t, tz))
+            .unwrap_or_default(),
+        created_at: crate::common::format_in_tz(a.created_at, tz),
+        created_by: a
+            .created_by_username
+            .unwrap_or_else(|| "system".to_string()),
+        reason: a.reason.unwrap_or_default(),
+        last_error: a.last_error.unwrap_or_default(),
+    }
+}
+
+/// The NAC enforcement dashboard: currently in-effect actions (with release /
+/// make-permanent controls) and recent history.
+pub async fn enforcement_show(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+
+    let tz = ctx.user.timezone.clone();
+    let in_effect: Vec<_> = repo::panopticon_enforcement::list_in_effect(&state.pool)
+        .await?
+        .into_iter()
+        .map(|a| enforcement_row(a, &tz))
+        .collect();
+    let history: Vec<_> = repo::panopticon_enforcement::list_recent(&state.pool, 100)
+        .await?
+        .into_iter()
+        .map(|a| enforcement_row(a, &tz))
+        .collect();
+
+    let enforcement_enabled =
+        repo::settings::get_bool(&state.pool, PANOPTICON_ENFORCEMENT_ENABLED, false).await?;
+    let quarantine_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_QUARANTINE_VLAN,
+        PANOPTICON_QUARANTINE_VLAN_DEFAULT,
+    )
+    .await?;
+    let revert_minutes = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_ENFORCEMENT_REVERT_MINUTES,
+        PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT,
+    )
+    .await?;
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::PanopticonEnforcementTemplate {
+        base,
+        can_manage: ctx.has(Permission::NetworkManage),
+        enforcement_enabled,
+        quarantine_vlan,
+        revert_minutes,
+        in_effect,
+        history,
+        csrf_token: csrf_token.clone(),
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+// ---------------------------------------------------------------------
+// NAC auto-enforcement policy (phase 4): rule CRUD + engine mode. All write
+// paths require `network.manage`; the sweep that evaluates these rules lives
+// in `crate::panopticon_policy`.
+// ---------------------------------------------------------------------
+
+/// Formats a rule's auto-revert timeout for display.
+fn policy_timeout_label(timeout_minutes: Option<u32>) -> String {
+    match timeout_minutes {
+        None => "default".to_string(),
+        Some(0) => "permanent".to_string(),
+        Some(n) => format!("{n} min"),
+    }
+}
+
+pub async fn policy_show(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+
+    let current_mode: PolicyMode =
+        repo::settings::get_string(&state.pool, PANOPTICON_AUTO_ENFORCE_MODE, "off")
+            .await?
+            .parse()
+            .unwrap_or(PolicyMode::Off);
+    let new_window_minutes = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES,
+        PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES_DEFAULT,
+    )
+    .await?;
+    let cooldown_minutes = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES,
+        PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES_DEFAULT,
+    )
+    .await?;
+    let global_enforcement_on =
+        repo::settings::get_bool(&state.pool, PANOPTICON_ENFORCEMENT_ENABLED, false).await?;
+    let quarantine_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_QUARANTINE_VLAN,
+        PANOPTICON_QUARANTINE_VLAN_DEFAULT,
+    )
+    .await?;
+
+    let switches = repo::panopticon_switches::list(&state.pool).await?;
+    let switch_names: HashMap<Uuid, String> =
+        switches.iter().map(|s| (s.id, s.name.clone())).collect();
+
+    let rules_raw = repo::panopticon_policy::list(&state.pool).await?;
+    let last_idx = rules_raw.len().saturating_sub(1);
+    let rules = rules_raw
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let mut scope_parts = Vec::new();
+            if let Some(subnet) = &r.subnet {
+                scope_parts.push(format!("subnet {subnet}"));
+            }
+            if let Some(sid) = r.switch_id {
+                let name = switch_names
+                    .get(&sid)
+                    .cloned()
+                    .unwrap_or_else(|| "(removed switch)".to_string());
+                scope_parts.push(format!("switch {name}"));
+            }
+            if let Some(dt) = r.device_type {
+                scope_parts.push(format!("type {}", dt.label()));
+            }
+            let scope = if scope_parts.is_empty() {
+                "any".to_string()
+            } else {
+                scope_parts.join("; ")
+            };
+            crate::templates::PolicyRuleRow {
+                id: r.id.to_string(),
+                priority: r.priority,
+                name: r.name.clone(),
+                enabled: r.enabled,
+                trigger_label: r.trigger.label().to_string(),
+                action_label: r.action.label().to_string(),
+                scope,
+                timeout_label: policy_timeout_label(r.timeout_minutes),
+                is_first: i == 0,
+                is_last: i == last_idx,
+            }
+        })
+        .collect();
+
+    let modes = PolicyMode::ALL
+        .iter()
+        .map(|m| {
+            (
+                m.as_str().to_string(),
+                m.label().to_string(),
+                *m == current_mode,
+            )
+        })
+        .collect();
+    let triggers = PolicyTrigger::ALL
+        .iter()
+        .map(|t| (t.as_str().to_string(), t.label().to_string()))
+        .collect();
+    let actions = vec![
+        (
+            EnforcementKind::Quarantine.as_str().to_string(),
+            EnforcementKind::Quarantine.label().to_string(),
+        ),
+        (
+            EnforcementKind::Disable.as_str().to_string(),
+            EnforcementKind::Disable.label().to_string(),
+        ),
+    ];
+    let device_types = DeviceType::ALL
+        .iter()
+        .map(|d| (d.as_str().to_string(), d.label().to_string()))
+        .collect();
+    let switch_opts = switches
+        .iter()
+        .map(|s| (s.id.to_string(), s.name.clone()))
+        .collect();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::PanopticonPolicyTemplate {
+        base,
+        can_manage: ctx.has(Permission::NetworkManage),
+        csrf_token: csrf_token.clone(),
+        modes,
+        current_mode: current_mode.as_str().to_string(),
+        new_window_minutes,
+        cooldown_minutes,
+        global_enforcement_on,
+        quarantine_vlan_set: quarantine_vlan > 0,
+        rules,
+        triggers,
+        actions,
+        device_types,
+        switches: switch_opts,
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PolicyModeForm {
+    csrf_token: String,
+    mode: String,
+    #[serde(default)]
+    new_window_minutes: u32,
+    #[serde(default)]
+    cooldown_minutes: u32,
+}
+
+pub async fn policy_set_mode(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PolicyModeForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let mode: PolicyMode = form
+        .mode
+        .parse()
+        .map_err(|_| AppError::Validation("Unknown policy mode.".into()))?;
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_MODE,
+        serde_json::json!(mode.as_str()),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES,
+        serde_json::json!(form.new_window_minutes),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES,
+        serde_json::json!(form.cooldown_minutes),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_AUTO_ENFORCE_MODE)
+            .metadata(serde_json::json!({
+                "mode": mode.as_str(),
+                "new_window_minutes": form.new_window_minutes,
+                "cooldown_minutes": form.cooldown_minutes,
+            })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PolicyRuleForm {
+    csrf_token: String,
+    name: String,
+    trigger: String,
+    action: String,
+    #[serde(default)]
+    subnet: String,
+    #[serde(default)]
+    switch_id: String,
+    #[serde(default)]
+    device_type: String,
+    /// Empty = use global default; otherwise a number (0 = permanent).
+    #[serde(default)]
+    timeout_minutes: String,
+}
+
+pub async fn policy_create_rule(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PolicyRuleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let name = form.name.trim();
+    if name.is_empty() {
+        return Err(WebError(AppError::Validation(
+            "A rule name is required.".into(),
+        )));
+    }
+    let trigger: PolicyTrigger = form
+        .trigger
+        .parse()
+        .map_err(|_| AppError::Validation("Unknown trigger.".into()))?;
+    let action: EnforcementKind = form
+        .action
+        .parse()
+        .map_err(|_| AppError::Validation("Unknown action.".into()))?;
+
+    let subnet = form.subnet.trim();
+    let subnet = (!subnet.is_empty()).then_some(subnet);
+    let switch_id = {
+        let s = form.switch_id.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(Uuid::parse_str(s).map_err(|_| AppError::Validation("Invalid switch.".into()))?)
+        }
+    };
+    let device_type = {
+        let d = form.device_type.trim();
+        if d.is_empty() {
+            None
+        } else {
+            Some(
+                DeviceType::from_str(d)
+                    .map_err(|_| AppError::Validation("Invalid device type.".into()))?,
+            )
+        }
+    };
+    let timeout_minutes = {
+        let t = form.timeout_minutes.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(
+                t.parse::<u32>()
+                    .map_err(|_| AppError::Validation("Timeout must be a whole number.".into()))?,
+            )
+        }
+    };
+
+    repo::panopticon_policy::create(
+        &state.pool,
+        &repo::panopticon_policy::NewRule {
+            name,
+            trigger,
+            action,
+            subnet,
+            switch_id,
+            device_type,
+            timeout_minutes,
+            created_by: Some(ctx.user.id),
+        },
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PolicyRuleEnabledForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+}
+
+pub async fn policy_rule_set_enabled(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<PolicyRuleEnabledForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::panopticon_policy::set_enabled(&state.pool, id, form.enabled).await?;
+    Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PolicyRuleReorderForm {
+    csrf_token: String,
+    direction: String,
+}
+
+pub async fn policy_rule_reorder(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<PolicyRuleReorderForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let move_up = match form.direction.as_str() {
+        "up" => true,
+        "down" => false,
+        _ => return Err(WebError(AppError::Validation("Invalid direction.".into()))),
+    };
+    repo::panopticon_policy::reorder(&state.pool, id, move_up).await?;
+    Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PolicyRuleDeleteForm {
+    csrf_token: String,
+}
+
+pub async fn policy_rule_delete(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<PolicyRuleDeleteForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::panopticon_policy::delete(&state.pool, id).await?;
+    Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
+}
+
+// ---------------------------------------------------------------------
+// NAC phase 5: embedded RADIUS server admin -- MAB policy settings, NAS
+// client CRUD, and the accounted-sessions view. The server itself lives in
+// `crate::panopticon_radius`; these handlers only configure it and show its
+// results. All writes require `network.manage`.
+// ---------------------------------------------------------------------
+
+fn radius_action_options(selected: &str, variants: &[(&str, &str)]) -> Vec<(String, String, bool)> {
+    variants
+        .iter()
+        .map(|(k, l)| (k.to_string(), l.to_string(), *k == selected))
+        .collect()
+}
+
+pub async fn radius_show(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+
+    let enabled = repo::settings::get_bool(&state.pool, PANOPTICON_RADIUS_ENABLED, false).await?;
+    let auth_port = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_RADIUS_AUTH_PORT,
+        PANOPTICON_RADIUS_AUTH_PORT_DEFAULT,
+    )
+    .await?;
+    let acct_port = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_RADIUS_ACCT_PORT,
+        PANOPTICON_RADIUS_ACCT_PORT_DEFAULT,
+    )
+    .await?;
+    let trusted_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_RADIUS_TRUSTED_VLAN,
+        PANOPTICON_RADIUS_TRUSTED_VLAN_DEFAULT,
+    )
+    .await?;
+    let guest_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_RADIUS_GUEST_VLAN,
+        PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT,
+    )
+    .await?;
+    let quarantine_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_QUARANTINE_VLAN,
+        PANOPTICON_QUARANTINE_VLAN_DEFAULT,
+    )
+    .await?;
+    let untrusted_action = repo::settings::get_string(
+        &state.pool,
+        PANOPTICON_RADIUS_UNTRUSTED_ACTION,
+        "quarantine",
+    )
+    .await?;
+    let unknown_action =
+        repo::settings::get_string(&state.pool, PANOPTICON_RADIUS_UNKNOWN_ACTION, "accept").await?;
+
+    let clients = repo::panopticon_radius::list_clients(&state.pool)
+        .await?
+        .into_iter()
+        .map(|c| crate::templates::RadiusClientRow {
+            id: c.id.to_string(),
+            name: c.name,
+            nas_address: c.nas_address,
+            enabled: c.enabled,
+        })
+        .collect();
+    let sessions = repo::panopticon_radius::list_recent_sessions(&state.pool, 100)
+        .await?
+        .into_iter()
+        .map(|s| crate::templates::RadiusSessionRow {
+            mac: s.mac_address.unwrap_or_default(),
+            username: s.username.unwrap_or_default(),
+            nas_ip: s.nas_ip.unwrap_or_default(),
+            nas_port: s.nas_port.unwrap_or_default(),
+            framed_ip: s.framed_ip.unwrap_or_default(),
+            method: s.auth_method.unwrap_or_default(),
+            started_at: crate::common::format_in_tz(s.started_at, &ctx.user.timezone),
+            last_seen_at: crate::common::format_in_tz(s.last_seen_at, &ctx.user.timezone),
+            active: s.stopped_at.is_none(),
+        })
+        .collect();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::PanopticonRadiusTemplate {
+        base,
+        can_manage: ctx.has(Permission::NetworkManage),
+        csrf_token: csrf_token.clone(),
+        encryption_configured: state.encryption_key.is_some(),
+        enabled,
+        auth_port,
+        acct_port,
+        trusted_vlan,
+        guest_vlan,
+        quarantine_vlan,
+        untrusted_actions: radius_action_options(
+            &untrusted_action,
+            &[("quarantine", "Quarantine (VLAN)"), ("reject", "Reject")],
+        ),
+        unknown_actions: radius_action_options(
+            &unknown_action,
+            &[
+                ("accept", "Accept (no VLAN)"),
+                ("guest", "Guest VLAN"),
+                ("reject", "Reject"),
+            ],
+        ),
+        clients,
+        sessions,
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RadiusSettingsForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    auth_port: u32,
+    #[serde(default)]
+    acct_port: u32,
+    #[serde(default)]
+    trusted_vlan: u32,
+    #[serde(default)]
+    guest_vlan: u32,
+    untrusted_action: String,
+    unknown_action: String,
+}
+
+pub async fn radius_set_settings(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<RadiusSettingsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    for (field, vlan) in [("trusted", form.trusted_vlan), ("guest", form.guest_vlan)] {
+        if vlan > 4094 {
+            return Err(WebError(AppError::Validation(format!(
+                "{field} VLAN must be between 1 and 4094 (or 0 for none)."
+            ))));
+        }
+    }
+    if !matches!(form.untrusted_action.as_str(), "quarantine" | "reject") {
+        return Err(WebError(AppError::Validation(
+            "Invalid untrusted action.".into(),
+        )));
+    }
+    if !matches!(form.unknown_action.as_str(), "accept" | "guest" | "reject") {
+        return Err(WebError(AppError::Validation(
+            "Invalid unknown action.".into(),
+        )));
+    }
+    let auth_port = if form.auth_port == 0 {
+        PANOPTICON_RADIUS_AUTH_PORT_DEFAULT
+    } else {
+        form.auth_port
+    };
+    let acct_port = if form.acct_port == 0 {
+        PANOPTICON_RADIUS_ACCT_PORT_DEFAULT
+    } else {
+        form.acct_port
+    };
+
+    let uid = Some(ctx.user.id);
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_ENABLED,
+        serde_json::json!(form.enabled),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_AUTH_PORT,
+        serde_json::json!(auth_port),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_ACCT_PORT,
+        serde_json::json!(acct_port),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_TRUSTED_VLAN,
+        serde_json::json!(form.trusted_vlan),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_GUEST_VLAN,
+        serde_json::json!(form.guest_vlan),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_UNTRUSTED_ACTION,
+        serde_json::json!(form.untrusted_action),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_UNKNOWN_ACTION,
+        serde_json::json!(form.unknown_action),
+        uid,
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_RADIUS_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RadiusClientForm {
+    csrf_token: String,
+    name: String,
+    nas_address: String,
+    shared_secret: String,
+}
+
+pub async fn radius_create_client(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<RadiusClientForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let name = form.name.trim();
+    let nas_address = form.nas_address.trim();
+    let secret = form.shared_secret.trim();
+    if name.is_empty() || nas_address.is_empty() || secret.is_empty() {
+        return Err(WebError(AppError::Validation(
+            "Name, NAS address, and shared secret are all required.".into(),
+        )));
+    }
+    // Accept a bare IP or a CIDR -- validated the same way the server matches.
+    let valid_addr = nas_address.parse::<std::net::IpAddr>().is_ok()
+        || abyssal_core::parse_cidr(nas_address).is_some();
+    if !valid_addr {
+        return Err(WebError(AppError::Validation(
+            "NAS address must be an IP (10.0.0.2) or CIDR (10.0.0.0/24).".into(),
+        )));
+    }
+    let Some(encryption_key) = &state.encryption_key else {
+        return Err(WebError(AppError::Validation(
+            "ENCRYPTION_KEY isn't configured -- a RADIUS shared secret can't be stored safely."
+                .into(),
+        )));
+    };
+    let secret_encrypted = encryption_key
+        .encrypt(secret)
+        .map_err(|e| AppError::Validation(format!("Failed to encrypt shared secret: {e}")))?;
+
+    repo::panopticon_radius::create_client(&state.pool, name, nas_address, &secret_encrypted)
+        .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RadiusClientEnabledForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+}
+
+pub async fn radius_client_set_enabled(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RadiusClientEnabledForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::panopticon_radius::set_client_enabled(&state.pool, id, form.enabled).await?;
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RadiusClientDeleteForm {
+    csrf_token: String,
+}
+
+pub async fn radius_client_delete(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RadiusClientDeleteForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::panopticon_radius::delete_client(&state.pool, id).await?;
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn safe_return_to_rejects_offsite() {
+        assert_eq!(
+            safe_return_to("/arsenals/panopticon", "/fallback"),
+            "/arsenals/panopticon"
+        );
+        assert_eq!(
+            safe_return_to("https://evil.test", "/fallback"),
+            "/fallback"
+        );
+        assert_eq!(safe_return_to("//evil.test", "/fallback"), "/fallback");
+        assert_eq!(safe_return_to("", "/fallback"), "/fallback");
+    }
+
+    #[test]
     fn group_network_maps_the_sentinel_to_none() {
         assert_eq!(group_network(UNASSIGNED), None);
         assert_eq!(group_network("10.0.1.0/24"), Some("10.0.1.0/24"));
+    }
+
+    #[test]
+    fn format_port_speed_promotes_and_dashes() {
+        assert_eq!(format_port_speed(None), "—");
+        assert_eq!(format_port_speed(Some(0)), "—");
+        assert_eq!(format_port_speed(Some(100)), "100 Mbps");
+        assert_eq!(format_port_speed(Some(1000)), "1 Gbps");
+        assert_eq!(format_port_speed(Some(10000)), "10 Gbps");
+        assert_eq!(format_port_speed(Some(2500)), "2.5 Gbps");
     }
 
     #[test]

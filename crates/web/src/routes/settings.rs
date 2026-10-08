@@ -2,8 +2,11 @@ use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
     APOTHEOSIS_ELEVATION_WINDOW_DEFAULT_MINUTES, APOTHEOSIS_ELEVATION_WINDOW_MINUTES,
     AUDIT_SYSLOG_EXPORT_ENABLED, HIGH_RISK_STORAGE_OPS_ENABLED, HOST_ISOLATION_ENABLED,
-    PANOPTICON_ARP_ENABLED, PANOPTICON_ARP_INTERFACE, PANOPTICON_MDNS_ENABLED,
-    PANOPTICON_SWEEP_ENABLED, PANOPTICON_SWEEP_TARGET, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
+    PANOPTICON_ARP_ENABLED, PANOPTICON_ARP_INTERFACE, PANOPTICON_ENFORCEMENT_ENABLED,
+    PANOPTICON_ENFORCEMENT_REVERT_MINUTES, PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT,
+    PANOPTICON_MDNS_ENABLED, PANOPTICON_QUARANTINE_VLAN, PANOPTICON_QUARANTINE_VLAN_DEFAULT,
+    PANOPTICON_ROGUE_ALERT_ENABLED, PANOPTICON_ROGUE_ALERT_RECIPIENTS, PANOPTICON_SWEEP_ENABLED,
+    PANOPTICON_SWEEP_TARGET, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
@@ -111,6 +114,24 @@ pub async fn show(
     .await?;
     let panopticon_sweep_enabled =
         repo::settings::get_bool(&state.pool, PANOPTICON_SWEEP_ENABLED, false).await?;
+    let panopticon_rogue_alert_enabled =
+        repo::settings::get_bool(&state.pool, PANOPTICON_ROGUE_ALERT_ENABLED, false).await?;
+    let panopticon_rogue_alert_recipients =
+        repo::settings::get_string(&state.pool, PANOPTICON_ROGUE_ALERT_RECIPIENTS, "").await?;
+    let panopticon_enforcement_enabled =
+        repo::settings::get_bool(&state.pool, PANOPTICON_ENFORCEMENT_ENABLED, false).await?;
+    let panopticon_quarantine_vlan = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_QUARANTINE_VLAN,
+        PANOPTICON_QUARANTINE_VLAN_DEFAULT,
+    )
+    .await?;
+    let panopticon_enforcement_revert_minutes = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_ENFORCEMENT_REVERT_MINUTES,
+        PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT,
+    )
+    .await?;
     let panopticon_sweep_target =
         repo::settings::get_string(&state.pool, PANOPTICON_SWEEP_TARGET, "").await?;
     let panopticon_mdns_enabled =
@@ -158,6 +179,11 @@ pub async fn show(
         thanatos_fast_sweep_seconds,
         thanatos_event_retention_days,
         panopticon_sweep_enabled,
+        panopticon_rogue_alert_enabled,
+        panopticon_rogue_alert_recipients,
+        panopticon_enforcement_enabled,
+        panopticon_quarantine_vlan,
+        panopticon_enforcement_revert_minutes,
         panopticon_sweep_target,
         panopticon_mdns_enabled,
         panopticon_arp_enabled,
@@ -802,6 +828,126 @@ pub async fn set_panopticon_sweep_enabled(
             })
             .resource(PANOPTICON_SWEEP_ENABLED)
             .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PanopticonRogueAlertForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    recipients: String,
+}
+
+/// NAC M1: the rogue-device alert toggle + recipient list in one form.
+pub async fn set_panopticon_rogue_alerts(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonRogueAlertForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_ROGUE_ALERT_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_ROGUE_ALERT_RECIPIENTS,
+        serde_json::json!(form.recipients.trim()),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_ROGUE_ALERT_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PanopticonEnforcementForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    quarantine_vlan: u32,
+    #[serde(default)]
+    revert_minutes: u32,
+}
+
+/// NAC M3: the global enforcement kill-switch, quarantine VLAN, and default
+/// auto-revert timeout in one form. The VLAN is validated to a sane 802.1Q
+/// range; `0` is accepted as "unset" (quarantine stays disabled).
+pub async fn set_panopticon_enforcement(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonEnforcementForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    // 802.1Q VLAN ids run 1..=4094; 0 means "unset". 4095 is reserved.
+    if form.quarantine_vlan > 4094 {
+        return Err(WebError(AppError::Validation(
+            "Quarantine VLAN must be between 1 and 4094 (or 0 for unset).".into(),
+        )));
+    }
+
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_ENFORCEMENT_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_QUARANTINE_VLAN,
+        serde_json::json!(form.quarantine_vlan),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_ENFORCEMENT_REVERT_MINUTES,
+        serde_json::json!(form.revert_minutes),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_ENFORCEMENT_ENABLED)
+            .metadata(serde_json::json!({
+                "enabled": form.enabled,
+                "quarantine_vlan": form.quarantine_vlan,
+                "revert_minutes": form.revert_minutes,
+            })),
     )
     .await?;
 

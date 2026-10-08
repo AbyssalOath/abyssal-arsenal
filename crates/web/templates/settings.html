@@ -394,6 +394,70 @@
 
     <div class="settings-row">
       <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("warning") %} Panopticon rogue-device alerts</div>
+        <p class="settings-row-desc">Notify when a genuinely new device, or a reappearing untrusted one, is seen.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            When on, Panopticon pushes a notification through your configured channels
+            (email/syslog/Slack/Teams/webhook) the moment discovery sees a device with a MAC it
+            has never seen before, or an <em>Untrusted</em> device reappears after going stale. A
+            known device simply picking up a new DHCP IP does <strong>not</strong> alert. The
+            audit-log entry is recorded either way; this only controls the outbound push. New
+            devices alert at warning severity, untrusted reappearances at critical.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/panopticon-rogue-alerts" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label><input type="checkbox" name="enabled" value="true"{% if panopticon_rogue_alert_enabled %} checked{% endif %}> Enabled</label>
+          <label for="panopticon-rogue-recipients" class="sr-only">Alert recipients</label>
+          <input type="text" id="panopticon-rogue-recipients" name="recipients" value="{{ panopticon_rogue_alert_recipients }}" placeholder="alerts@example.com, soc@example.com">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("firewall") %} Panopticon NAC enforcement</div>
+        <p class="settings-row-desc">
+          Global kill-switch for <strong>writing</strong> to switches over SNMP (port disable /
+          VLAN quarantine). Off by default.
+        </p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Enforcement writes to live network gear, so it is gated three ways: this global
+            switch, a per-switch opt-in (on the switches page), and the operator's
+            <code>network.manage</code> permission &mdash; all three must hold before any SNMP SET
+            is issued. The <strong>quarantine VLAN</strong> is the VLAN a quarantine action moves a
+            port into; it must already exist on the switch (Panopticon only moves ports into it,
+            never creates it). <code>0</code> leaves quarantine disabled. The
+            <strong>default auto-revert</strong> is how many minutes a newly-enforced port stays
+            enforced before a background sweep restores it automatically, unless the operator made
+            the action permanent; <code>0</code> defaults new actions to permanent. Turning the
+            global switch off never strands a port &mdash; the auto-revert sweep still restores
+            expired actions.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/panopticon-enforcement" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label><input type="checkbox" name="enabled" value="true"{% if panopticon_enforcement_enabled %} checked{% endif %}> Enabled</label>
+          <label for="panopticon-quarantine-vlan">Quarantine VLAN</label>
+          <input type="number" id="panopticon-quarantine-vlan" name="quarantine_vlan" min="0" max="4094" value="{{ panopticon_quarantine_vlan }}" style="max-width:110px;">
+          <label for="panopticon-revert-minutes">Auto-revert (min)</label>
+          <input type="number" id="panopticon-revert-minutes" name="revert_minutes" min="0" max="43200" value="{{ panopticon_enforcement_revert_minutes }}" style="max-width:110px;">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("scan") %} Panopticon sweep target</div>
         <p class="settings-row-desc">IP, CIDR range, or hostname the active sweep scans on each run.</p>
         <details class="settings-row-more">

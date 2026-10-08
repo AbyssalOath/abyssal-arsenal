@@ -187,6 +187,114 @@ pub const THANATOS_FAST_SWEEP_SECONDS_DEFAULT: u32 = 0;
 /// also unaffected either way.
 pub const PANOPTICON_SWEEP_ENABLED: &str = "panopticon.sweep_enabled";
 
+/// Whether Panopticon dispatches a notification (through the same
+/// `NotificationDispatcher` -- email/syslog/Slack/Teams/webhook -- Thanatos
+/// uses) when discovery sees a genuinely new device (a new MAC, not just a new
+/// DHCP IP for a known one) or an `Untrusted` device reappears after going
+/// stale (NAC M1, "rogue-device awareness"). Off by default -- it needs
+/// recipients configured and is opt-in like every other outbound alert. The
+/// audit-log events fire regardless of this toggle; this only controls the
+/// active push. Read fresh on each sighting.
+pub const PANOPTICON_ROGUE_ALERT_ENABLED: &str = "panopticon.rogue_alert_enabled";
+
+/// Comma/newline-separated recipients for Panopticon rogue-device alerts, same
+/// format and routing as `THANATOS_ALERT_RECIPIENTS` (SMTP uses them; syslog and
+/// chat webhooks fire regardless of recipients, subject to their own severity
+/// gate).
+pub const PANOPTICON_ROGUE_ALERT_RECIPIENTS: &str = "panopticon.rogue_alert_recipients";
+
+/// Global kill-switch for Panopticon NAC enforcement (phase 3) -- the one
+/// setting that gates *writing* to a live switch over SNMP (disabling a port
+/// or moving it to a quarantine VLAN). Off by default: enforcement requires
+/// this **and** the per-switch `enforcement_enabled` flag **and** the
+/// operator's `network.manage` permission before any SNMP SET is issued.
+/// Flipping this off doesn't revert actions already applied -- it only
+/// refuses new ones (the auto-revert sweep still restores expired actions, so
+/// turning it off can never strand a port in quarantine). Read fresh on every
+/// enforce/revert attempt.
+pub const PANOPTICON_ENFORCEMENT_ENABLED: &str = "panopticon.enforcement_enabled";
+
+/// The VLAN id a "quarantine" action moves a port's untagged membership to
+/// (Q-BRIDGE `dot1qPvid` + static egress/untagged port maps). Must be a VLAN
+/// that already exists on the switch, pre-provisioned by the network admin
+/// with whatever isolation (no inter-VLAN routing, captive portal, etc.) they
+/// want quarantined devices to land in -- Panopticon never creates the VLAN,
+/// only moves ports into it. `0` (the default) means "unset": the quarantine
+/// action is refused until an admin configures a real VLAN id, since guessing
+/// one could strand a device on a VLAN that doesn't exist.
+pub const PANOPTICON_QUARANTINE_VLAN: &str = "panopticon.quarantine_vlan";
+pub const PANOPTICON_QUARANTINE_VLAN_DEFAULT: u32 = 0;
+
+/// Default auto-revert timeout (minutes) for a newly-applied enforcement
+/// action: the port is automatically restored to service this long after it
+/// was enforced, unless the operator explicitly made the action permanent.
+/// A safety net against locking out a port and forgetting. `0` means "no
+/// timeout by default" (actions are permanent until manually released), but
+/// an operator can still pick a timeout per-action regardless of this default.
+pub const PANOPTICON_ENFORCEMENT_REVERT_MINUTES: &str = "panopticon.enforcement_revert_minutes";
+pub const PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT: u32 = 30;
+
+/// NAC auto-enforcement policy engine (phase 4) mode: `off` (default),
+/// `simulate` (evaluate rules and record what would happen, no writes), or
+/// `active` (apply matched actions for real). Parsed by
+/// `abyssal_core::PolicyMode`; anything unrecognized is treated as `off`.
+/// Even in `active` mode, every write still passes the M3 gates (the global
+/// `PANOPTICON_ENFORCEMENT_ENABLED` kill-switch, the per-switch opt-in, and a
+/// resolvable port), so arming the policy never bypasses them.
+pub const PANOPTICON_AUTO_ENFORCE_MODE: &str = "panopticon.auto_enforce_mode";
+
+/// How recently a device's `first_seen_at` must be (minutes) for the
+/// `new_unknown` policy trigger to consider it "new". Bounds the trigger to
+/// genuinely-recent arrivals rather than every never-classified device that has
+/// ever been on the network.
+pub const PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES: &str =
+    "panopticon.auto_enforce_new_window_minutes";
+pub const PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES_DEFAULT: u32 = 60;
+
+/// After any enforcement action on a port (including an operator manually
+/// releasing one), the policy engine won't re-enforce that same port for this
+/// many minutes. Without it, a rule would immediately re-apply an action an
+/// operator just released -- the cooldown makes a manual release "stick".
+pub const PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES: &str =
+    "panopticon.auto_enforce_cooldown_minutes";
+pub const PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES_DEFAULT: u32 = 60;
+
+/// NAC phase 5: enables Panopticon's embedded RADIUS server (MAC Auth Bypass +
+/// dynamic VLAN + accounting). Off by default; binds the two UDP ports below
+/// only when on and an `ENCRYPTION_KEY` is configured (NAS shared secrets are
+/// stored encrypted). Read once at startup.
+pub const PANOPTICON_RADIUS_ENABLED: &str = "panopticon.radius_enabled";
+
+/// UDP ports the RADIUS auth / accounting listeners bind. Defaults are the IANA
+/// RADIUS ports; both are >1024 so no elevated privileges are needed.
+pub const PANOPTICON_RADIUS_AUTH_PORT: &str = "panopticon.radius_auth_port";
+pub const PANOPTICON_RADIUS_AUTH_PORT_DEFAULT: u32 = 1812;
+pub const PANOPTICON_RADIUS_ACCT_PORT: &str = "panopticon.radius_acct_port";
+pub const PANOPTICON_RADIUS_ACCT_PORT_DEFAULT: u32 = 1813;
+
+/// VLAN assigned (via RFC 3580 tunnel attributes) to a `Trusted` device on an
+/// Access-Accept. `0` (default) means "accept with no VLAN assignment" -- the
+/// switch keeps the port on its configured VLAN.
+pub const PANOPTICON_RADIUS_TRUSTED_VLAN: &str = "panopticon.radius_trusted_vlan";
+pub const PANOPTICON_RADIUS_TRUSTED_VLAN_DEFAULT: u32 = 0;
+
+/// What the RADIUS server does for an `Untrusted` device: `quarantine`
+/// (Access-Accept onto the quarantine VLAN -- reuses `PANOPTICON_QUARANTINE_VLAN`)
+/// or `reject` (Access-Reject). Default `quarantine`.
+pub const PANOPTICON_RADIUS_UNTRUSTED_ACTION: &str = "panopticon.radius_untrusted_action";
+
+/// What the RADIUS server does for a device it can't vouch for -- one not in the
+/// inventory, or in it but still `Unknown` trust: `accept` (admit with no VLAN;
+/// the safe default so enabling RADIUS gives identity/accounting visibility
+/// without locking anyone out), `guest` (Access-Accept onto the guest VLAN
+/// below), or `reject` (Access-Reject). Tighten from `accept` once you've
+/// watched the sessions and classified your fleet.
+pub const PANOPTICON_RADIUS_UNKNOWN_ACTION: &str = "panopticon.radius_unknown_action";
+
+/// Guest VLAN for `unknown_action = guest`. `0` falls back to a plain accept.
+pub const PANOPTICON_RADIUS_GUEST_VLAN: &str = "panopticon.radius_guest_vlan";
+pub const PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT: u32 = 0;
+
 /// Target (IP, CIDR range, or hostname) the active sweep scans on each
 /// tick when `PANOPTICON_SWEEP_ENABLED` is on -- validated with the same
 /// `abyssal_agent_protocol::is_valid_network_target` the manual scan form

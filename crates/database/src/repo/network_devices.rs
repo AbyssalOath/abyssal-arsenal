@@ -5,7 +5,7 @@ use abyssal_core::settings::{
     PANOPTICON_SUBNET_PREFIX_V6_DEFAULT,
 };
 use abyssal_core::{DeviceType, NetworkDevice, TrustState};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -250,6 +250,54 @@ pub async fn update_switch_location(
     Ok(result.rows_affected() > 0)
 }
 
+/// One device currently mapped (by the last SNMP poll's BRIDGE-MIB read) to
+/// a port on a given switch -- the inverse of `update_switch_location`, used
+/// by the switch port-state page (M2) to show what's sitting behind each
+/// port alongside that port's up/down state.
+#[derive(Debug, Clone)]
+pub struct DeviceOnPort {
+    pub switch_port: String,
+    pub ip_address: String,
+    pub mac_address: Option<String>,
+    pub hostname: Option<String>,
+    pub trust_state: TrustState,
+}
+
+#[derive(FromRow)]
+struct DeviceOnPortRow {
+    switch_port: String,
+    ip_address: String,
+    mac_address: Option<String>,
+    hostname: Option<String>,
+    trust_state: String,
+}
+
+/// Every device the last poll mapped to a port on `switch_id`, ordered by
+/// port label then IP. A device keeps its last-known `switch_port` until a
+/// later poll moves or clears it (see `clear_switch_location`), so this
+/// reflects the most recent poll's view.
+pub async fn list_on_switch(pool: &DbPool, switch_id: Uuid) -> anyhow::Result<Vec<DeviceOnPort>> {
+    let rows: Vec<DeviceOnPortRow> = sqlx::query_as(
+        "SELECT switch_port, ip_address, mac_address, hostname, trust_state \
+         FROM panopticon_devices \
+         WHERE switch_id = ? AND switch_port IS NOT NULL \
+         ORDER BY switch_port ASC, INET6_ATON(ip_address) ASC",
+    )
+    .bind(switch_id.to_string())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DeviceOnPort {
+            switch_port: r.switch_port,
+            ip_address: r.ip_address,
+            mac_address: r.mac_address,
+            hostname: r.hostname,
+            trust_state: TrustState::from_str(&r.trust_state).unwrap_or(TrustState::Unknown),
+        })
+        .collect())
+}
+
 /// Sets an admin's classification of a device -- purely advisory in this
 /// phase, nothing else in Panopticon reads these fields to make a decision.
 pub async fn classify(
@@ -295,6 +343,44 @@ pub async fn list(pool: &DbPool) -> anyhow::Result<Vec<NetworkDevice>> {
         .collect())
 }
 
+/// Devices the last SNMP poll has located behind a switch port (both
+/// `switch_id` and `switch_port` set) and that are still present (seen within
+/// the staleness window) -- the only devices the NAC policy engine can actually
+/// act on, since enforcement needs a resolvable port and shouldn't touch a
+/// device that has already left. Open ports are *not* attached (the policy
+/// engine doesn't need them), so this skips the per-device port join `list`
+/// does.
+pub async fn list_located(pool: &DbPool) -> anyhow::Result<Vec<NetworkDevice>> {
+    let cutoff = Utc::now() - Duration::hours(abyssal_core::network_device::STALE_THRESHOLD_HOURS);
+    let rows: Vec<NetworkDeviceRow> = sqlx::query_as(
+        "SELECT * FROM panopticon_devices \
+         WHERE switch_id IS NOT NULL AND switch_port IS NOT NULL AND last_seen_at >= ? \
+         ORDER BY INET6_ATON(ip_address) ASC",
+    )
+    .bind(cutoff.naive_utc())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.into_device(Vec::new()))
+        .collect())
+}
+
+/// Looks up a device by MAC (case-insensitive), most-recently-seen first if the
+/// same MAC somehow has multiple rows (DHCP churn across IPs). Used by the
+/// embedded RADIUS server to decide a MAB request from the device's trust state.
+/// Open ports aren't attached (the RADIUS path doesn't need them).
+pub async fn find_by_mac(pool: &DbPool, mac: &str) -> anyhow::Result<Option<NetworkDevice>> {
+    let row: Option<NetworkDeviceRow> = sqlx::query_as(
+        "SELECT * FROM panopticon_devices WHERE UPPER(mac_address) = UPPER(?) \
+         ORDER BY last_seen_at DESC LIMIT 1",
+    )
+    .bind(mac)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| row.into_device(Vec::new())))
+}
+
 pub async fn find_by_id(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<NetworkDevice>> {
     let row: Option<NetworkDeviceRow> =
         sqlx::query_as("SELECT * FROM panopticon_devices WHERE id = ?")
@@ -308,6 +394,22 @@ pub async fn find_by_id(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<Networ
         }
         None => Ok(None),
     }
+}
+
+/// How many device rows carry this MAC (case-insensitive). The NAC rogue-alert
+/// path (`panopticon_ops`) uses this to tell a genuinely new device (a MAC seen
+/// on exactly one row -- the one just created) from a known device that merely
+/// picked up a new DHCP IP (its MAC now on two+ rows), so DHCP churn doesn't
+/// look like a rogue device. Called after the sighting's upsert, so the new row
+/// is already counted.
+pub async fn count_with_mac(pool: &DbPool, mac: &str) -> anyhow::Result<i64> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM panopticon_devices WHERE LOWER(mac_address) = LOWER(?)",
+    )
+    .bind(mac)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
 }
 
 /// Looks up a device by its (unique) IP address rather than its id --

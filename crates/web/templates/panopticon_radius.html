@@ -1,0 +1,145 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}RADIUS / 802.1X — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — RADIUS / 802.1X (MAB){% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Panopticon's embedded RADIUS server makes it the access-control decision point for MAC Auth
+    Bypass: point a switch/AP's 802.1X RADIUS config here and each device's <strong>trust state</strong>
+    decides accept / reject / quarantine-VLAN. Accounting packets populate the sessions below
+    ("who authenticated where"). Scope is MAB (MAC-based) only &mdash; requests carrying a
+    password (PAP/CHAP) or EAP are rejected, since there's no credential store to verify them.
+    <a href="/arsenals/panopticon/switches">{% call macros::icon("network") %} Switches</a>
+    &nbsp; <a href="/arsenals/panopticon/policy">{% call macros::icon("firewall") %} Policy</a>
+  </p>
+  {% if !encryption_configured %}
+  <div class="warning-banner">
+    <code>ENCRYPTION_KEY</code> isn't configured, so RADIUS shared secrets can't be stored and the
+    server won't start. Set it, then add NAS clients.
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("settings") %} Server &amp; MAB policy</h3>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/radius/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><input type="checkbox" name="enabled" value="true"{% if enabled %} checked{% endif %}> Enable RADIUS server (applies on restart)</label>
+
+    <label for="radius-auth-port">Auth port</label>
+    <input type="number" id="radius-auth-port" name="auth_port" min="1" max="65535" value="{{ auth_port }}" style="max-width:120px;">
+    <label for="radius-acct-port">Accounting port</label>
+    <input type="number" id="radius-acct-port" name="acct_port" min="1" max="65535" value="{{ acct_port }}" style="max-width:120px;">
+
+    <label for="radius-trusted-vlan">Trusted device VLAN (0 = accept, no VLAN)</label>
+    <input type="number" id="radius-trusted-vlan" name="trusted_vlan" min="0" max="4094" value="{{ trusted_vlan }}" style="max-width:120px;">
+
+    <label for="radius-untrusted">Untrusted device action</label>
+    <select id="radius-untrusted" name="untrusted_action">
+      {% for (key, label, selected) in untrusted_actions %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <small style="color:var(--text-muted);">Quarantine reuses the enforcement quarantine VLAN
+      ({% if quarantine_vlan > 0 %}{{ quarantine_vlan }}{% else %}<strong>unset &mdash; untrusted will be rejected</strong>{% endif %}).</small>
+
+    <label for="radius-unknown">Unknown / unclassified device action</label>
+    <select id="radius-unknown" name="unknown_action">
+      {% for (key, label, selected) in unknown_actions %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <label for="radius-guest-vlan">Guest VLAN (for "Guest VLAN" action)</label>
+    <input type="number" id="radius-guest-vlan" name="guest_vlan" min="0" max="4094" value="{{ guest_vlan }}" style="max-width:120px;">
+
+    <p style="color:var(--text-muted); margin-top:8px;">
+      <strong>Unknown = Accept</strong> is the safe default: turning RADIUS on gives you identity
+      and accounting visibility without locking anyone out. Classify your fleet (Trusted /
+      Untrusted) and then tighten the unknown action to <em>Guest</em> or <em>Reject</em> to
+      actually enforce admission.
+    </p>
+
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn-warning">Save</button>
+    </div>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">Status: {% if enabled %}<span class="badge badge-success">enabled</span>{% else %}<span class="badge badge-muted">disabled</span>{% endif %} (you need network.manage to change settings).</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("host") %} NAS clients</h3>
+  <p style="color:var(--text-muted); margin-top:0;">The switches/APs allowed to talk to the RADIUS server, each with its shared secret.</p>
+  {% if clients.is_empty() %}
+  <p style="color:var(--text-muted);">No clients yet &mdash; add one below.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Name</th><th>NAS address</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr></thead>
+    <tbody>
+      {% for c in clients %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>{{ c.nas_address }}</td>
+        <td>{% if c.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-muted">Disabled</span>{% endif %}</td>
+        {% if can_manage %}
+        <td class="actions">
+          <form method="post" action="/arsenals/panopticon/radius/clients/{{ c.id }}/enabled" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="enabled" value="{% if c.enabled %}false{% else %}true{% endif %}">
+            <button type="submit" class="btn btn-secondary btn-sm">{% if c.enabled %}Disable{% else %}Enable{% endif %}</button>
+          </form>
+          <form method="post" action="/arsenals/panopticon/radius/clients/{{ c.id }}/delete" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-danger btn-sm">{% call macros::icon("danger") %} Delete</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if can_manage && encryption_configured %}
+  <form method="post" action="/arsenals/panopticon/radius/clients" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="client-name">Name</label>
+    <input type="text" id="client-name" name="name" required maxlength="255" style="max-width:280px;" placeholder="e.g. Core-SW-1">
+    <label for="client-addr">NAS address (IP or CIDR)</label>
+    <input type="text" id="client-addr" name="nas_address" required maxlength="64" style="max-width:220px;" placeholder="10.0.0.2 or 10.0.0.0/24">
+    <label for="client-secret">Shared secret</label>
+    <input type="password" id="client-secret" name="shared_secret" required autocomplete="new-password" style="max-width:280px;">
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn btn-warning">{% call macros::icon("generate") %} Add NAS client</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("audit") %} Recent sessions</h3>
+  {% if sessions.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No accounted sessions yet. Configure your NAS to send accounting here to see "who authenticated where".</p>
+  {% else %}
+  <table>
+    <thead><tr><th>MAC</th><th>Identity</th><th>NAS</th><th>Port</th><th>Framed IP</th><th>Method</th><th>Started</th><th>Last seen</th><th>State</th></tr></thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr>
+        <td>{% if s.mac.is_empty() %}&mdash;{% else %}{{ s.mac }}{% endif %}</td>
+        <td>{% if s.username.is_empty() %}&mdash;{% else %}{{ s.username }}{% endif %}</td>
+        <td>{% if s.nas_ip.is_empty() %}&mdash;{% else %}{{ s.nas_ip }}{% endif %}</td>
+        <td>{% if s.nas_port.is_empty() %}&mdash;{% else %}{{ s.nas_port }}{% endif %}</td>
+        <td>{% if s.framed_ip.is_empty() %}&mdash;{% else %}{{ s.framed_ip }}{% endif %}</td>
+        <td>{{ s.method }}</td>
+        <td>{{ s.started_at }}</td>
+        <td>{{ s.last_seen_at }}</td>
+        <td>{% if s.active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-muted">Closed</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

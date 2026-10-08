@@ -44,6 +44,17 @@ pub enum AuditAction {
     NetworkSwitchAdded,
     NetworkSwitchUpdated,
     NetworkSwitchRemoved,
+    /// Panopticon NAC enforcement (phase 3): an SNMP SET actually written to
+    /// a live switch to disable a port or move it to a quarantine VLAN.
+    /// `metadata` always carries `{"kind": "disable" | "quarantine",
+    /// "switch": ..., "port": ..., ...}`. `Failure` outcome means the SET was
+    /// attempted but the switch rejected it or was unreachable.
+    NetworkPortEnforced,
+    /// The inverse: an enforced port restored to service (re-enabled, or its
+    /// VLAN put back), whether by an operator clicking "Release" or by the
+    /// auto-revert sweep when a timed action expired (`metadata.by`:
+    /// `"operator"` | `"auto_revert"`).
+    NetworkPortReleased,
     UserProfileUpdated,
     HostDeployStarted,
     HostDeploySucceeded,
@@ -132,6 +143,8 @@ impl AuditAction {
             AuditAction::NetworkSwitchAdded => "NETWORK_SWITCH_ADDED",
             AuditAction::NetworkSwitchUpdated => "NETWORK_SWITCH_UPDATED",
             AuditAction::NetworkSwitchRemoved => "NETWORK_SWITCH_REMOVED",
+            AuditAction::NetworkPortEnforced => "NETWORK_PORT_ENFORCED",
+            AuditAction::NetworkPortReleased => "NETWORK_PORT_RELEASED",
             AuditAction::UserProfileUpdated => "USER_PROFILE_UPDATED",
             AuditAction::HostDeployStarted => "HOST_DEPLOY_STARTED",
             AuditAction::HostDeploySucceeded => "HOST_DEPLOY_SUCCEEDED",
@@ -206,6 +219,8 @@ impl AuditAction {
         AuditAction::NetworkSwitchAdded,
         AuditAction::NetworkSwitchUpdated,
         AuditAction::NetworkSwitchRemoved,
+        AuditAction::NetworkPortEnforced,
+        AuditAction::NetworkPortReleased,
         AuditAction::UserProfileUpdated,
         AuditAction::HostDeployStarted,
         AuditAction::HostDeploySucceeded,

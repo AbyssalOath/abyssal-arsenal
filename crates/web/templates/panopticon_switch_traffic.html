@@ -1,15 +1,15 @@
 {% extends "app_base.html" %}
 {% import "_macros.html" as macros %}
-{% block title %}{{ switch_name }} Bandwidth — Abyssal Arsenal{% endblock %}
-{% block heading %}Panopticon — {{ switch_name }} Bandwidth{% endblock %}
+{% block title %}{{ switch_name }} Ports — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — {{ switch_name }} Ports{% endblock %}
 {% block content %}
 
 <div class="card">
   <p style="color:var(--text-muted); margin-top:0;">
-    In/out throughput per port, computed from the raw SNMP octet counters the background
-    poll already collects every 5 minutes. A busy port's traffic isn't necessarily one
-    device's -- an uplink or trunk port carries everything behind it, not just whatever
-    Panopticon has mapped there.
+    Per-port operational/admin state, link speed, and in/out throughput, all read
+    (read-only) from the same SNMP poll that walks each switch every 5 minutes. A port's
+    traffic isn't necessarily one device's -- an uplink or trunk carries everything behind
+    it, not just whatever Panopticon has mapped there.
     <a href="/arsenals/panopticon/switches">{% call macros::icon("network") %} Back to switches</a>
   </p>
 </div>
@@ -40,20 +40,88 @@
 
 <div class="card">
   <h3>{% call macros::icon("network") %} Ports</h3>
+  {% if let Some(reason) = enforce_blocked_reason %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    {% call macros::icon("firewall") %} Enforcement controls are hidden: {{ reason }}
+    <a href="/arsenals/panopticon/enforcement">View enforcement dashboard</a>
+  </p>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    {% call macros::icon("firewall") %} Enforcement is enabled for this switch. Disabling or
+    quarantining a port writes to the live switch over SNMP.
+    <a href="/arsenals/panopticon/enforcement">Enforcement dashboard</a>
+  </p>
+  {% endif %}
   {% if ports.is_empty() %}
   <p style="color:var(--text-muted); margin-top:0;">No ports polled yet -- run "Poll now" from the switches page.</p>
   {% else %}
   <table>
     <thead>
-      <tr><th>Port</th><th>Current in</th><th>Current out</th><th>Last seen</th><th>Chart</th></tr>
+      <tr><th>Port</th><th>Status</th><th>Admin</th><th>Speed</th><th>Devices</th><th>Current in</th><th>Current out</th><th>Last seen</th><th>Enforcement</th><th>Chart</th></tr>
     </thead>
     <tbody>
       {% for p in ports %}
       <tr>
         <td>{{ p.label }}</td>
+        <td>
+          {% if !p.oper_known %}<span class="badge badge-muted">—</span>
+          {% else if p.oper_up %}<span class="badge badge-success">{{ p.oper_label }}</span>
+          {% else %}<span class="badge badge-danger">{{ p.oper_label }}</span>{% endif %}
+        </td>
+        <td>
+          {% if !p.admin_known %}<span class="badge badge-muted">—</span>
+          {% else if p.admin_shut %}<span class="badge badge-warning">{{ p.admin_label }}</span>
+          {% else %}<span class="badge badge-muted">{{ p.admin_label }}</span>{% endif %}
+        </td>
+        <td>{{ p.speed }}</td>
+        <td>
+          {% if p.devices.is_empty() %}<span style="color:var(--text-muted);">—</span>
+          {% else %}
+            {% for dev in p.devices %}
+            <div style="white-space:nowrap;">
+              {% if dev.trust_state == "trusted" %}<span class="badge badge-success">{{ dev.trust_label }}</span>
+              {% else if dev.trust_state == "untrusted" %}<span class="badge badge-danger">{{ dev.trust_label }}</span>
+              {% else %}<span class="badge badge-muted">{{ dev.trust_label }}</span>{% endif %}
+              {{ dev.ip }}{% if !dev.hostname.is_empty() %} <span style="color:var(--text-muted);">({{ dev.hostname }})</span>{% endif %}
+            </div>
+            {% endfor %}
+          {% endif %}
+        </td>
         <td>{{ p.current_in }}</td>
         <td>{{ p.current_out }}</td>
         <td>{{ p.last_seen_at }}</td>
+        <td class="actions">
+          {% if let Some(enf) = p.enforcement %}
+            {% if enf.failed %}<span class="badge badge-danger">{{ enf.state_label }}</span>
+            {% else %}<span class="badge badge-warning">{{ enf.kind_label }}</span>{% endif %}
+            <div style="font-size:0.85em; color:var(--text-muted);">
+              {% if enf.is_timed %}until {{ enf.expires_at }}{% else %}permanent{% endif %}
+            </div>
+            {% if can_enforce %}
+            <form method="post" action="/arsenals/panopticon/enforcement/release" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="action_id" value="{{ enf.action_id }}">
+              <input type="hidden" name="return_to" value="/arsenals/panopticon/switches/{{ switch_id }}/traffic">
+              <button type="submit" class="btn btn-secondary btn-sm">{% call macros::icon("check") %} Release</button>
+            </form>
+            {% if enf.is_timed %}
+            <form method="post" action="/arsenals/panopticon/enforcement/make-permanent" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="action_id" value="{{ enf.action_id }}">
+              <input type="hidden" name="return_to" value="/arsenals/panopticon/switches/{{ switch_id }}/traffic">
+              <button type="submit" class="btn btn-secondary btn-sm">Make permanent</button>
+            </form>
+            {% endif %}
+            {% endif %}
+          {% else if can_enforce %}
+            <a class="btn btn-warning btn-sm" href="/arsenals/panopticon/switches/{{ switch_id }}/enforce/confirm?port={{ p.if_index }}&amp;kind=disable">{% call macros::icon("firewall") %} Disable</a>
+            {% if quarantine_available %}
+            <a class="btn btn-warning btn-sm" href="/arsenals/panopticon/switches/{{ switch_id }}/enforce/confirm?port={{ p.if_index }}&amp;kind=quarantine">Quarantine</a>
+            {% endif %}
+          {% else %}
+            <span style="color:var(--text-muted);">—</span>
+          {% endif %}
+        </td>
         <td class="actions">
           <a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ switch_id }}/traffic?port={{ p.if_index }}&amp;range={{ selected_range }}">{% call macros::icon("route") %} View</a>
         </td>

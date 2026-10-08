@@ -234,6 +234,14 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_panopticon_sweep_enabled),
         )
         .route(
+            "/admin/settings/panopticon-rogue-alerts",
+            post(routes::settings::set_panopticon_rogue_alerts),
+        )
+        .route(
+            "/admin/settings/panopticon-enforcement",
+            post(routes::settings::set_panopticon_enforcement),
+        )
+        .route(
             "/admin/settings/panopticon-sweep-target",
             post(routes::settings::set_panopticon_sweep_target),
         )
@@ -1649,6 +1657,18 @@ pub fn build(state: AppState) -> Router {
             post(routes::panopticon::switch_set_enabled),
         )
         .route(
+            "/arsenals/panopticon/switches/:id/enforcement-enabled",
+            post(routes::panopticon::switch_set_enforcement_enabled),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/enforce/confirm",
+            get(routes::panopticon::enforce_confirm),
+        )
+        .route(
+            "/arsenals/panopticon/switches/:id/enforce",
+            post(routes::panopticon::enforce_apply),
+        )
+        .route(
             "/arsenals/panopticon/switches/:id/poll",
             post(routes::panopticon::switch_poll_now),
         )
@@ -1663,6 +1683,62 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/switches/:id/traffic",
             get(routes::panopticon::switch_traffic),
+        )
+        .route(
+            "/arsenals/panopticon/enforcement",
+            get(routes::panopticon::enforcement_show),
+        )
+        .route(
+            "/arsenals/panopticon/enforcement/release",
+            post(routes::panopticon::enforce_release),
+        )
+        .route(
+            "/arsenals/panopticon/enforcement/make-permanent",
+            post(routes::panopticon::enforce_make_permanent),
+        )
+        .route(
+            "/arsenals/panopticon/policy",
+            get(routes::panopticon::policy_show),
+        )
+        .route(
+            "/arsenals/panopticon/policy/mode",
+            post(routes::panopticon::policy_set_mode),
+        )
+        .route(
+            "/arsenals/panopticon/policy/rules",
+            post(routes::panopticon::policy_create_rule),
+        )
+        .route(
+            "/arsenals/panopticon/policy/rules/:id/enabled",
+            post(routes::panopticon::policy_rule_set_enabled),
+        )
+        .route(
+            "/arsenals/panopticon/policy/rules/:id/reorder",
+            post(routes::panopticon::policy_rule_reorder),
+        )
+        .route(
+            "/arsenals/panopticon/policy/rules/:id/delete",
+            post(routes::panopticon::policy_rule_delete),
+        )
+        .route(
+            "/arsenals/panopticon/radius",
+            get(routes::panopticon::radius_show),
+        )
+        .route(
+            "/arsenals/panopticon/radius/settings",
+            post(routes::panopticon::radius_set_settings),
+        )
+        .route(
+            "/arsenals/panopticon/radius/clients",
+            post(routes::panopticon::radius_create_client),
+        )
+        .route(
+            "/arsenals/panopticon/radius/clients/:id/enabled",
+            post(routes::panopticon::radius_client_set_enabled),
+        )
+        .route(
+            "/arsenals/panopticon/radius/clients/:id/delete",
+            post(routes::panopticon::radius_client_delete),
         )
         .route(
             "/arsenals/panopticon/deploy/picker/refresh",

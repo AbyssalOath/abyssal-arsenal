@@ -22,7 +22,10 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use abyssal_database::{DbPool, repo};
+use abyssal_notifications::NotificationDispatcher;
 use pnet_datalink::{Channel, Config, MacAddr};
 use tokio::sync::mpsc;
 
@@ -82,7 +85,7 @@ fn parse_arp_sender(frame: &[u8]) -> Option<ArpSighting> {
     })
 }
 
-async fn ingest(pool: &DbPool, sighting: ArpSighting) {
+async fn ingest(pool: &DbPool, notifications: &NotificationDispatcher, sighting: ArpSighting) {
     // 0.0.0.0 is ARP "probe" traffic (duplicate address detection) --
     // it's not the sender's real address, so there's nothing useful to
     // record.
@@ -103,7 +106,9 @@ async fn ingest(pool: &DbPool, sighting: ArpSighting) {
         tracing::warn!(error = %e, ip = %ip, "ARP ingest failed to record sighting");
         return;
     }
-    if let Err(e) = crate::panopticon_ops::audit_sighting(pool, &ip, prior).await {
+    if let Err(e) =
+        crate::panopticon_ops::audit_sighting(pool, Some(notifications), &ip, prior).await
+    {
         tracing::warn!(error = %e, ip = %ip, "ARP ingest failed to record audit event");
     }
 }
@@ -118,7 +123,11 @@ async fn ingest(pool: &DbPool, sighting: ArpSighting) {
 /// bind (`CAP_NET_RAW`-gated, not just settings-gated), so enabling this
 /// or changing the interface (`panopticon.arp_enabled`/
 /// `panopticon.arp_interface`) takes a server restart.
-pub fn spawn_panopticon_arp_listener(pool: DbPool, interface_name: String) {
+pub fn spawn_panopticon_arp_listener(
+    pool: DbPool,
+    interface_name: String,
+    notifications: Arc<NotificationDispatcher>,
+) {
     let (tx, mut rx) = mpsc::unbounded_channel::<ArpSighting>();
 
     tokio::task::spawn_blocking(move || {
@@ -165,7 +174,7 @@ pub fn spawn_panopticon_arp_listener(pool: DbPool, interface_name: String) {
 
     tokio::spawn(async move {
         while let Some(sighting) = rx.recv().await {
-            ingest(&pool, sighting).await;
+            ingest(&pool, &notifications, sighting).await;
         }
     });
 }

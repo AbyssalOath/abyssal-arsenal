@@ -14,6 +14,20 @@ fn utc(naive: NaiveDateTime) -> DateTime<Utc> {
 pub struct SwitchPort {
     pub if_index: u32,
     pub if_descr: Option<String>,
+    /// IF-MIB `ifAdminStatus`/`ifOperStatus` raw integer codes from the
+    /// last poll that read them (M2), or `None` for a port only ever seen
+    /// before port-status polling existed, or on a switch that doesn't
+    /// expose IF-MIB's status columns. `abyssal_core::IfAdminStatus` /
+    /// `IfOperStatus` map the standard codes to labels.
+    pub admin_status: Option<i64>,
+    pub oper_status: Option<i64>,
+    /// Negotiated link speed in Mbps (`ifHighSpeed`, or `ifSpeed`/1e6), or
+    /// `None` if the switch didn't report it.
+    pub speed_mbps: Option<u32>,
+    /// When `admin_status`/`oper_status`/`speed_mbps` were last read -- may
+    /// predate `last_seen_at` if a later poll saw the port (FDB/traffic)
+    /// but failed to read IF-MIB status that round.
+    pub status_seen_at: Option<DateTime<Utc>>,
     pub last_seen_at: DateTime<Utc>,
 }
 
@@ -21,6 +35,10 @@ pub struct SwitchPort {
 struct SwitchPortRow {
     if_index: u32,
     if_descr: Option<String>,
+    admin_status: Option<i64>,
+    oper_status: Option<i64>,
+    speed_mbps: Option<u32>,
+    status_seen_at: Option<NaiveDateTime>,
     last_seen_at: NaiveDateTime,
 }
 
@@ -29,6 +47,10 @@ impl From<SwitchPortRow> for SwitchPort {
         SwitchPort {
             if_index: row.if_index,
             if_descr: row.if_descr,
+            admin_status: row.admin_status,
+            oper_status: row.oper_status,
+            speed_mbps: row.speed_mbps,
+            status_seen_at: row.status_seen_at.map(utc),
             last_seen_at: utc(row.last_seen_at),
         }
     }
@@ -59,13 +81,84 @@ pub async fn upsert_port(
 /// `if_index` -- what the traffic page lists.
 pub async fn list_ports(pool: &DbPool, switch_id: Uuid) -> anyhow::Result<Vec<SwitchPort>> {
     let rows: Vec<SwitchPortRow> = sqlx::query_as(
-        "SELECT if_index, if_descr, last_seen_at FROM panopticon_switch_ports \
+        "SELECT if_index, if_descr, admin_status, oper_status, speed_mbps, status_seen_at, \
+                last_seen_at \
+         FROM panopticon_switch_ports \
          WHERE switch_id = ? ORDER BY if_index ASC",
     )
     .bind(switch_id.to_string())
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(Into::into).collect())
+}
+
+/// Resolves a port's IF-MIB `ifIndex` from the human label a device row stores
+/// in `switch_port` (the `ifDescr` the poll recorded). Used by the NAC policy
+/// engine, which knows a device's port only by that label but needs the ifIndex
+/// to enforce. Falls back to parsing an `if<n>` style label (the poll's own
+/// fallback when a switch didn't expose an ifDescr) so those ports resolve too.
+pub async fn find_if_index_by_label(
+    pool: &DbPool,
+    switch_id: Uuid,
+    label: &str,
+) -> anyhow::Result<Option<u32>> {
+    let found: Option<u32> = sqlx::query_scalar(
+        "SELECT if_index FROM panopticon_switch_ports \
+         WHERE switch_id = ? AND if_descr = ? LIMIT 1",
+    )
+    .bind(switch_id.to_string())
+    .bind(label)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(idx) = found {
+        return Ok(Some(idx));
+    }
+    // Fallback label shape `if<n>` from the poll when no ifDescr was available.
+    if let Some(rest) = label.strip_prefix("if")
+        && let Ok(idx) = rest.parse::<u32>()
+    {
+        return Ok(Some(idx));
+    }
+    Ok(None)
+}
+
+/// Records IF-MIB port state (M2) for one port, creating the port row if a
+/// prior poll never did. Mirrors `upsert_port`'s shape but writes the
+/// status columns; `COALESCE`s each field so a poll that reads admin/oper
+/// but not speed (or vice versa) never blanks out what an earlier poll
+/// already learned. `status_seen_at` is always advanced so the UI can show
+/// how fresh the state reading is independently of `last_seen_at`.
+pub async fn update_port_status(
+    pool: &DbPool,
+    switch_id: Uuid,
+    if_index: u32,
+    if_descr: Option<&str>,
+    admin_status: Option<i64>,
+    oper_status: Option<i64>,
+    speed_mbps: Option<u32>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO panopticon_switch_ports \
+             (switch_id, if_index, if_descr, admin_status, oper_status, speed_mbps, \
+              status_seen_at, last_seen_at) \
+         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6)) \
+         ON DUPLICATE KEY UPDATE \
+             if_descr = COALESCE(VALUES(if_descr), if_descr), \
+             admin_status = COALESCE(VALUES(admin_status), admin_status), \
+             oper_status = COALESCE(VALUES(oper_status), oper_status), \
+             speed_mbps = COALESCE(VALUES(speed_mbps), speed_mbps), \
+             status_seen_at = CURRENT_TIMESTAMP(6), \
+             last_seen_at = CURRENT_TIMESTAMP(6)",
+    )
+    .bind(switch_id.to_string())
+    .bind(if_index)
+    .bind(if_descr)
+    .bind(admin_status)
+    .bind(oper_status)
+    .bind(speed_mbps)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// One raw counter reading -- cumulative octets, not yet a rate.

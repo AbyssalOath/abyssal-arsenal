@@ -196,14 +196,29 @@ async fn main() -> anyhow::Result<()> {
     abyssal_web::spawn_update_check_sweep(state.clone());
     abyssal_web::spawn_self_monitor_sweep(state.clone());
     abyssal_web::spawn_internal_tls_sweep(state.clone());
-    abyssal_web::spawn_panopticon_sweep(state.pool.clone(), state.task_health.clone());
+    abyssal_web::spawn_panopticon_sweep(
+        state.pool.clone(),
+        state.task_health.clone(),
+        state.notifications.clone(),
+    );
     abyssal_web::spawn_panopticon_snmp_sweep(
         state.pool.clone(),
-        encryption_key,
+        encryption_key.clone(),
         state.task_health.clone(),
     );
+    abyssal_web::spawn_panopticon_enforcement_revert(
+        state.pool.clone(),
+        encryption_key.clone(),
+        state.task_health.clone(),
+    );
+    abyssal_web::spawn_panopticon_policy_sweep(
+        state.pool.clone(),
+        encryption_key.clone(),
+        state.task_health.clone(),
+    );
+    abyssal_web::spawn_panopticon_radius(state.pool.clone(), encryption_key).await;
     abyssal_web::spawn_panopticon_traffic_rollup(state.pool.clone(), state.task_health.clone());
-    spawn_panopticon_listeners(state.pool.clone()).await;
+    spawn_panopticon_listeners(state.pool.clone(), state.notifications.clone()).await;
     abyssal_web::spawn_audit_syslog_sweep(
         state.pool.clone(),
         state.notifications.clone(),
@@ -270,12 +285,15 @@ fn spawn_elevation_expiry_sweep(
 /// pattern this mirrors. A DB error reading either setting is treated as
 /// "off" -- these are both opt-in features, so failing safe means not
 /// starting them, not starting them unconditionally.
-async fn spawn_panopticon_listeners(pool: DbPool) {
+async fn spawn_panopticon_listeners(
+    pool: DbPool,
+    notifications: std::sync::Arc<NotificationDispatcher>,
+) {
     let mdns_enabled = repo::settings::get_bool(&pool, PANOPTICON_MDNS_ENABLED, false)
         .await
         .unwrap_or(false);
     if mdns_enabled {
-        abyssal_web::spawn_panopticon_mdns_listener(pool.clone());
+        abyssal_web::spawn_panopticon_mdns_listener(pool.clone(), notifications.clone());
     }
 
     let arp_enabled = repo::settings::get_bool(&pool, PANOPTICON_ARP_ENABLED, false)
@@ -285,7 +303,11 @@ async fn spawn_panopticon_listeners(pool: DbPool) {
         .await
         .unwrap_or_default();
     if arp_enabled && !arp_interface.trim().is_empty() {
-        abyssal_web::spawn_panopticon_arp_listener(pool, arp_interface.trim().to_string());
+        abyssal_web::spawn_panopticon_arp_listener(
+            pool,
+            arp_interface.trim().to_string(),
+            notifications,
+        );
     }
 }
 

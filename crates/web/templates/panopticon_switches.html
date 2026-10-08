@@ -13,6 +13,8 @@
     reports that Panopticon has never otherwise seen doesn't create a new
     inventory row by itself. An unattended sweep polls every enabled
     switch here every 5 minutes automatically.
+    <a href="/arsenals/panopticon/enforcement">{% call macros::icon("firewall") %} NAC enforcement</a>
+    &nbsp; <a href="/arsenals/panopticon/radius">{% call macros::icon("role") %} RADIUS / 802.1X</a>
   </p>
 
   {% if let Some(label) = result_label %}
@@ -156,7 +158,7 @@
     <thead>
       <tr>
         <th>Name</th><th>Address</th><th>SNMP port</th><th>SNMP version</th><th>Status</th>
-        <th>Last polled</th><th>Last error</th><th>Bandwidth</th>
+        <th>Enforcement</th><th>Last polled</th><th>Last error</th><th>Ports</th>
         {% if can_manage || can_scan %}<th>Actions</th>{% endif %}
       </tr>
     </thead>
@@ -171,9 +173,13 @@
           {% if s.enabled %}<span class="badge badge-success">Enabled</span>
           {% else %}<span class="badge badge-muted">Disabled</span>{% endif %}
         </td>
+        <td>
+          {% if s.enforcement_enabled %}<span class="badge badge-warning">Opted in</span>
+          {% else %}<span class="badge badge-muted">Off</span>{% endif %}
+        </td>
         <td>{% if let Some(t) = s.last_polled_at %}{{ t }}{% else %}&mdash;{% endif %}</td>
         <td>{% if let Some(e) = s.last_poll_error %}<span style="color:var(--danger);">{{ e }}</span>{% else %}&mdash;{% endif %}</td>
-        <td><a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ s.id }}/traffic">{% call macros::icon("route") %} Bandwidth</a></td>
+        <td><a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ s.id }}/traffic">{% call macros::icon("route") %} Ports</a></td>
         {% if can_manage || can_scan %}
         <td class="actions">
           {% if can_scan %}
@@ -188,6 +194,13 @@
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
             <input type="hidden" name="enabled" value="{% if s.enabled %}false{% else %}true{% endif %}">
             <button type="submit" class="btn btn-secondary">{% if s.enabled %}Disable{% else %}Enable{% endif %}</button>
+          </form>
+          <form method="post" action="/arsenals/panopticon/switches/{{ s.id }}/enforcement-enabled" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="enforcement_enabled" value="{% if s.enforcement_enabled %}false{% else %}true{% endif %}">
+            <button type="submit" class="btn {% if s.enforcement_enabled %}btn-secondary{% else %}btn-warning{% endif %}" title="Allow Panopticon to write SNMP SETs (port disable / VLAN quarantine) to this switch">
+              {% if s.enforcement_enabled %}Disable enforcement{% else %}Allow enforcement{% endif %}
+            </button>
           </form>
           <a class="btn btn-danger" href="/arsenals/panopticon/switches/{{ s.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
           {% endif %}

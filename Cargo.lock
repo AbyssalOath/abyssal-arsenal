@@ -265,6 +265,8 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "form_urlencoded",
+ "hmac 0.12.1",
+ "md-5",
  "pnet_datalink",
  "rand 0.8.8",
  "reqwest",

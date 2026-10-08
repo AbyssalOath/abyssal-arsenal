@@ -1092,7 +1092,48 @@ below for what that implies for toggling them).
   for, not just ports with a live FDB entry, and records one raw counter
   row per port into `panopticon_port_traffic_raw` -- the bandwidth
   history feature's only collection point, piggybacking on this sweep
-  rather than polling separately.
+  rather than polling separately. The same session also reads (read-only)
+  each port's `ifAdminStatus`/`ifOperStatus` and link speed
+  (`ifHighSpeed`/`ifSpeed`) into `panopticon_switch_ports` (NAC phase 2) --
+  surfaced on the per-switch Ports page so an operator can see which ports
+  are up, down, or administratively shut, and what device is behind each.
+  The poll itself stays strictly read-only -- SNMP SETs happen only via the
+  separate, explicitly-gated enforcement path below.
+- **Panopticon NAC enforcement** (`abyssal_web::panopticon_enforcement`, NAC
+  phase 3): the one path that issues SNMP SETs to a switch -- an operator
+  disabling a port (`ifAdminStatus` = down) or quarantining it onto an
+  isolation VLAN (Q-BRIDGE `dot1qPvid` + static egress/untagged `PortList`
+  read-modify-writes, keyed by the bridge port number resolved from ifIndex
+  via `dot1dBasePortIfIndex`). Gated three ways -- the global
+  `panopticon.enforcement_enabled` kill-switch (off by default), the
+  per-switch `enforcement_enabled` opt-in, and the operator's `network.manage`
+  permission -- all re-checked in `apply` before any write, so a route can't
+  bypass them. Each action snapshots the port's prior state into
+  `panopticon_enforcement_actions` so a revert restores it exactly; the SNMP
+  layer (`panopticon_snmp.rs`) checks every SET's response `error-status`, so a
+  switch refusing a write (read-only community, noAccess) is a hard error, not a
+  silent no-op. Apply and release are both audited (`NETWORK_PORT_ENFORCED` /
+  `NETWORK_PORT_RELEASED`). **Panopticon enforcement revert sweep**
+  (`spawn_panopticon_enforcement_revert`, every minute): restores every timed
+  action whose `expires_at` has passed, and retries any `revert_failed` action
+  until the port is confirmed back in service -- the safety net that makes a
+  "disable for 30 minutes" self-heal and ensures turning the global switch off
+  can never strand a port.
+- **Panopticon NAC policy sweep** (`abyssal_web::spawn_panopticon_policy_sweep`,
+  every ~2 min, NAC phase 4): the auto-enforcement engine -- lets enforcement
+  fire without a human. Evaluates the ordered `panopticon_policy_rules` (trigger:
+  `untrusted` / `new_unknown`; action: disable/quarantine; optional subnet /
+  switch / device-type scope; first match wins) against every device the poll has
+  located behind a port, and acts via the same `panopticon_enforcement::apply`
+  path as the manual UI. Deliberately a decoupled stateful sweep, not a hook on
+  the discovery hot path, so risky auto-writes never ride an ARP packet handler.
+  Gated by a three-way mode (`panopticon.auto_enforce_mode`: off / simulate /
+  active); `simulate` logs would-be actions without writing. Composes on top of
+  M3 -- `active` still passes every enforcement gate -- and never stacks on an
+  already-enforced port or re-acts within the post-action cooldown
+  (`panopticon.auto_enforce_cooldown_minutes`), which is what makes an operator's
+  manual release of a policy action stick. Policy actions auto-revert and are
+  audited exactly like manual ones, attributed to the firing rule.
 - **Panopticon traffic rollup** (`abyssal_web::spawn_panopticon_traffic_rollup`,
   every hour): turns those raw counter rows into actual bandwidth graphs.
   Consecutive raw samples become rate points (bits/sec) in
@@ -1148,6 +1189,24 @@ below for what that implies for toggling them).
   on socket reads. Same Docker-bridge-vs-physical-LAN caveat the manual
   discovery scan's own page already states, and the same
   restart-to-toggle posture as the mDNS listener.
+- **Panopticon RADIUS server** (`abyssal_web::spawn_panopticon_radius`, NAC
+  phase 5, off by default): two UDP listeners (1812 auth, 1813 accounting) that
+  make Panopticon the access-control decision point for 802.1X MAC Auth Bypass.
+  An Access-Request's MAC (Calling-Station-Id / User-Name) is looked up in the
+  inventory and its `TrustState` maps -- under a small settings policy -- to
+  Access-Accept (optionally with an RFC 3580 VLAN assignment), a quarantine-VLAN
+  accept, or Access-Reject; accounting packets populate `panopticon_radius_sessions`
+  (the "who authenticated where" identity). NAS clients are matched by IP/CIDR and
+  keyed to per-client shared secrets stored encrypted (so, like the SNMP sweep, it
+  no-ops without `ENCRYPTION_KEY`). The wire codec (`abyssal_web::radius`) is a
+  small, directly-tested subset -- it signs every response (Response
+  Authenticator) and verifies a request's Message-Authenticator / accounting
+  authenticator against the shared secret. Scope is MAB only: with no credential
+  store, a request carrying a password (User-Password/CHAP-Password) or
+  `EAP-Message` is rejected rather than authorized on its MAC alone, and the MAB
+  MAC must be consistent (a User-Name MAC must match Calling-Station-Id) -- full
+  user auth belongs with FreeRADIUS. Both ports are >1024, so no elevated
+  privileges, unlike the ARP listener.
 - **Dashboard health sweep** (`abyssal_web::spawn_health_sweep`, every 5
   minutes): dispatches `AgentOperation::FailedServices` (Mortiscope) to
   every connected host directly through `HostConnectionRegistry::dispatch`

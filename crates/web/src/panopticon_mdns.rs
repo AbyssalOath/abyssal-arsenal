@@ -18,7 +18,10 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use abyssal_database::{DbPool, repo};
+use abyssal_notifications::NotificationDispatcher;
 use tokio::net::UdpSocket;
 
 const MDNS_PORT: u16 = 5353;
@@ -128,7 +131,7 @@ fn parse_mdns_a_records(buf: &[u8]) -> Vec<AnnouncedHost> {
     out
 }
 
-async fn ingest(pool: &DbPool, host: AnnouncedHost) {
+async fn ingest(pool: &DbPool, notifications: &NotificationDispatcher, host: AnnouncedHost) {
     let ip = host.ip.to_string();
     let hostname = host.name.strip_suffix(".local").unwrap_or(&host.name);
 
@@ -143,7 +146,9 @@ async fn ingest(pool: &DbPool, host: AnnouncedHost) {
         tracing::warn!(error = %e, ip = %ip, "mDNS ingest failed to record sighting");
         return;
     }
-    if let Err(e) = crate::panopticon_ops::audit_sighting(pool, &ip, prior).await {
+    if let Err(e) =
+        crate::panopticon_ops::audit_sighting(pool, Some(notifications), &ip, prior).await
+    {
         tracing::warn!(error = %e, ip = %ip, "mDNS ingest failed to record audit event");
     }
 }
@@ -155,7 +160,7 @@ async fn ingest(pool: &DbPool, host: AnnouncedHost) {
 /// (port already in use, no multicast-capable interface) is logged and
 /// the task simply exits -- best-effort, same as every other background
 /// listener here, never fatal to the rest of the control plane.
-pub fn spawn_panopticon_mdns_listener(pool: DbPool) {
+pub fn spawn_panopticon_mdns_listener(pool: DbPool, notifications: Arc<NotificationDispatcher>) {
     tokio::spawn(async move {
         let socket = match UdpSocket::bind(("0.0.0.0", MDNS_PORT)).await {
             Ok(s) => s,
@@ -185,9 +190,10 @@ pub fn spawn_panopticon_mdns_listener(pool: DbPool) {
                 continue;
             }
             let pool = pool.clone();
+            let notifications = notifications.clone();
             tokio::spawn(async move {
                 for host in hosts {
-                    ingest(&pool, host).await;
+                    ingest(&pool, &notifications, host).await;
                 }
             });
         }

@@ -1,0 +1,150 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}NAC Policy — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — NAC Auto-Enforcement Policy{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Rules that let enforcement fire automatically when a device matches. Rules are evaluated
+    top-to-bottom; the first match decides the action. Stacks on top of manual enforcement:
+    an auto-action still needs the switch opted in and the global kill-switch on, and it
+    auto-reverts and is audited exactly like a manual one.
+    <a href="/arsenals/panopticon/enforcement">{% call macros::icon("firewall") %} Enforcement dashboard</a>
+  </p>
+  {% if current_mode == "active" && !global_enforcement_on %}
+  <div class="warning-banner">
+    The policy is <strong>Active</strong>, but NAC enforcement is <strong>globally disabled</strong>,
+    so no action will actually be applied. Enable it in <a href="/admin/settings">Settings</a>.
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("settings") %} Engine mode</h3>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/policy/mode" class="settings-inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="policy-mode">Mode</label>
+    <select id="policy-mode" name="mode">
+      {% for (key, label, selected) in modes %}
+      <option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <label for="policy-new-window">New-device window (min)</label>
+    <input type="number" id="policy-new-window" name="new_window_minutes" min="0" max="10080" value="{{ new_window_minutes }}" style="max-width:110px;">
+    <label for="policy-cooldown">Cooldown (min)</label>
+    <input type="number" id="policy-cooldown" name="cooldown_minutes" min="0" max="10080" value="{{ cooldown_minutes }}" style="max-width:110px;">
+    <button type="submit" class="btn-warning">Save</button>
+  </form>
+  <p style="color:var(--text-muted); margin-top:8px;">
+    <strong>Simulate</strong> logs would-be actions to the server log without writing to any switch
+    &mdash; the safe way to watch a new policy before switching to <strong>Active</strong>. The
+    <em>new-device window</em> bounds how recently a device must have first appeared to count as
+    "new / unclassified". The <em>cooldown</em> stops the engine re-enforcing a port that was acted
+    on (or manually released) within that many minutes.
+    {% if !quarantine_vlan_set %}<br><em>Note: no quarantine VLAN is configured, so quarantine rules
+    will be skipped until one is set in Settings.</em>{% endif %}
+  </p>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">Mode: <strong>{{ current_mode }}</strong> (you need network.manage to change policy).</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("firewall") %} Rules</h3>
+  {% if rules.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No rules yet. Add one below to start auto-enforcing.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>#</th><th>Name</th><th>Trigger</th><th>Scope</th><th>Action</th><th>Auto-revert</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr>
+    </thead>
+    <tbody>
+      {% for r in rules %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.trigger_label }}</td>
+        <td>{{ r.scope }}</td>
+        <td>{{ r.action_label }}</td>
+        <td>{{ r.timeout_label }}</td>
+        <td>{% if r.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-muted">Disabled</span>{% endif %}</td>
+        {% if can_manage %}
+        <td class="actions">
+          {% if !r.is_first %}
+          <form method="post" action="/arsenals/panopticon/policy/rules/{{ r.id }}/reorder" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="direction" value="up">
+            <button type="submit" class="btn btn-secondary btn-sm" title="Move up">&uarr;</button>
+          </form>
+          {% endif %}
+          {% if !r.is_last %}
+          <form method="post" action="/arsenals/panopticon/policy/rules/{{ r.id }}/reorder" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="direction" value="down">
+            <button type="submit" class="btn btn-secondary btn-sm" title="Move down">&darr;</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/arsenals/panopticon/policy/rules/{{ r.id }}/enabled" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="enabled" value="{% if r.enabled %}false{% else %}true{% endif %}">
+            <button type="submit" class="btn btn-secondary btn-sm">{% if r.enabled %}Disable{% else %}Enable{% endif %}</button>
+          </form>
+          <form method="post" action="/arsenals/panopticon/policy/rules/{{ r.id }}/delete" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-danger btn-sm">{% call macros::icon("danger") %} Delete</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% if can_manage %}
+<div class="card">
+  <h3>{% call macros::icon("generate") %} Add rule</h3>
+  <form method="post" action="/arsenals/panopticon/policy/rules">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="rule-name">Name</label>
+    <input type="text" id="rule-name" name="name" required maxlength="255" style="max-width:360px;" placeholder="e.g. Quarantine new guest-VLAN devices">
+
+    <label for="rule-trigger">Trigger (when to fire)</label>
+    <select id="rule-trigger" name="trigger">
+      {% for (key, label) in triggers %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+    </select>
+
+    <label for="rule-action">Action</label>
+    <select id="rule-action" name="action">
+      {% for (key, label) in actions %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+    </select>
+
+    <label for="rule-subnet">Scope &mdash; subnet (optional, exact match e.g. 10.0.9.0/24)</label>
+    <input type="text" id="rule-subnet" name="subnet" maxlength="64" style="max-width:220px;" placeholder="any">
+
+    <label for="rule-switch">Scope &mdash; switch (optional)</label>
+    <select id="rule-switch" name="switch_id">
+      <option value="">Any switch</option>
+      {% for (id, name) in switches %}<option value="{{ id }}">{{ name }}</option>{% endfor %}
+    </select>
+
+    <label for="rule-type">Scope &mdash; device type (optional)</label>
+    <select id="rule-type" name="device_type">
+      <option value="">Any type</option>
+      {% for (key, label) in device_types %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+    </select>
+
+    <label for="rule-timeout">Auto-revert (min) &mdash; blank = global default, 0 = permanent</label>
+    <input type="number" id="rule-timeout" name="timeout_minutes" min="0" max="43200" style="max-width:160px;" placeholder="default">
+
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn btn-warning">{% call macros::icon("generate") %} Add rule</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% endblock %}

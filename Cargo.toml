@@ -122,6 +122,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
 base64 = "0.22"
 zeroize = "1"
 libc = "0.2"

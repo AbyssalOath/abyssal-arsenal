@@ -22,6 +22,7 @@ struct SwitchRow {
     snmp_v3_priv_protocol: Option<String>,
     snmp_v3_priv_password_encrypted: Option<String>,
     enabled: bool,
+    enforcement_enabled: bool,
     last_polled_at: Option<NaiveDateTime>,
     last_poll_error: Option<String>,
     created_at: NaiveDateTime,
@@ -60,6 +61,7 @@ impl From<SwitchRow> for PanopticonSwitch {
                 .and_then(|s| s.parse::<SnmpPrivProtocol>().ok()),
             snmp_v3_priv_password_encrypted: row.snmp_v3_priv_password_encrypted,
             enabled: row.enabled,
+            enforcement_enabled: row.enforcement_enabled,
             last_polled_at: row.last_polled_at.map(utc),
             last_poll_error: row.last_poll_error,
             created_at: utc(row.created_at),
@@ -207,6 +209,22 @@ pub async fn update_credentials(
 pub async fn set_enabled(pool: &DbPool, id: Uuid, enabled: bool) -> anyhow::Result<()> {
     sqlx::query("UPDATE panopticon_switches SET enabled = ? WHERE id = ?")
         .bind(enabled)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Per-switch NAC enforcement opt-in (phase 3). Separate from `set_enabled`
+/// (which gates polling) because allowing *writes* to a switch is a distinct,
+/// higher-trust decision from allowing read-only polling of it.
+pub async fn set_enforcement_enabled(
+    pool: &DbPool,
+    id: Uuid,
+    enforcement_enabled: bool,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE panopticon_switches SET enforcement_enabled = ? WHERE id = ?")
+        .bind(enforcement_enabled)
         .bind(id.to_string())
         .execute(pool)
         .await?;
