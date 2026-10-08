@@ -251,6 +251,23 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **Every agent install path failed with `error: unexpected argument
+  '--ca-cert' found`.** `GET /agent/linux` and Panopticon's SSH deploy both
+  handed out the last *published* release agent, which predates
+  `--ca-cert`/`--ca-fingerprint`, while the install commands came from the
+  newer control plane. The Docker image now builds the Linux agent from the
+  same source and `/agent/linux` serves that build first (an operator-placed
+  `abyssal-agent-linux.tar.gz` in the dist dir still wins). The SSH deploy
+  now downloads from the control plane's `/agent/linux`, pinned to its CA,
+  instead of GitHub, so targets need no internet access either.
+- **A failed SSH-deploy install was reported as "succeeded, but the agent
+  never connected back".** The remote command's exit status was the trailing
+  cleanup's (`rm`, always 0); it's now the install's own.
+- **Running `abyssal-agent` interactively against an internal-CA control
+  plane failed with `invalid peer certificate: UnknownIssuer`.** Interactive
+  setup now asks for the CA fingerprint from `/admin/hosts` (blank skips it,
+  for a publicly trusted certificate), then fetches `/ca.crt` and pins it
+  only if the fingerprint matches.
 - **Agents couldn't enroll against an internal (self-signed) control plane:
   `invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`.** Root
   cause: `install.sh` generated its certificate with `openssl req -x509`,

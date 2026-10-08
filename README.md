@@ -103,7 +103,7 @@ role-scoped macro is shared with can use it.
 ```bash
 git clone https://github.com/AbyssalOath/abyssal-arsenal.git
 cd abyssal-arsenal
-git checkout v0.1.8   # pin to the latest stable release; omit to run main
+git checkout v0.2.0   # pin to the latest stable release; omit to run main
 ./install.sh
 ```
 
@@ -344,7 +344,7 @@ The control plane serves from a volume (`abyssal_agent_dist`, mounted at
   binaries attached, and a matching container image published to GHCR (see
   `.github/workflows/release.yml` and `docker-publish.yml`).
 - **For a production or otherwise long-lived deployment**, check out the
-  latest tag (`git checkout v0.1.8`) rather than tracking `main`. Pull `main`
+  latest tag (`git checkout v0.2.0`) rather than tracking `main`. Pull `main`
   only if you specifically want unreleased changes and accept the
   reduced stability that comes with it.
 - **`VERSION`** at the repository root is the single source of truth for

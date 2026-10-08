@@ -71,11 +71,28 @@ COPY migrations migrations
 # (include_str!("../../../VERSION")) -- without it, the real build below
 # fails outright, not just at runtime.
 COPY VERSION VERSION
+COPY LICENSE LICENSE
 # Force cargo to see the real source as newer than the dummy files it
 # already compiled above, so a rebuild after a code change only recompiles
 # what actually changed, not every dependency.
 RUN find crates -name '*.rs' -exec touch {} + \
-    && cargo build --release --bin abyssal-arsenal
+    && cargo build --release --bin abyssal-arsenal --bin abyssal-agent
+
+# The Linux agent built from this same source, packaged exactly like a
+# release archive (release.yml), for GET /agent/linux to serve. Without it
+# the control plane falls back to the last *published* agent, which predates
+# any install flag added since -- and the install commands this control
+# plane generates fail with "unexpected argument". Only bundled on x86_64,
+# the one Linux target the agent is published for.
+RUN mkdir -p /agent-bundle \
+    && if [ "$(uname -m)" = "x86_64" ]; then \
+        stage="abyssal-agent-v$(tr -d '[:space:]' < VERSION)-x86_64-unknown-linux-gnu" \
+        && mkdir -p "$stage" \
+        && cp target/release/abyssal-agent crates/agent/README.md LICENSE "$stage/" \
+        && chmod +x "$stage/abyssal-agent" \
+        && tar -czf /agent-bundle/abyssal-agent-linux.tar.gz "$stage" \
+        && rm -rf "$stage"; \
+    fi
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
@@ -88,6 +105,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /build/target/release/abyssal-arsenal /app/abyssal-arsenal
 COPY crates/web/static /app/static
+COPY --from=builder /agent-bundle /app/agent-bundle
 
 # Migrations are embedded into the binary at compile time by
 # sqlx::migrate!() (see crates/database/src/pool.rs) -- nothing to copy at

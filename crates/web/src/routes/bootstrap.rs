@@ -590,6 +590,15 @@ fn agent_dist_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/agent-dist"))
 }
 
+/// Where the Docker image puts the agent it builds alongside the control
+/// plane (see the Dockerfile) -- read-only, part of the image, so it's always
+/// the agent this exact control plane was built with.
+fn agent_bundle_dir() -> PathBuf {
+    std::env::var("AGENT_BUNDLE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/app/agent-bundle"))
+}
+
 struct AgentAsset {
     /// The release-style filename (also where a GitHub fetch is cached).
     versioned: String,
@@ -633,8 +642,15 @@ fn serve_agent_bytes(bytes: Vec<u8>, asset: &AgentAsset) -> Response {
 /// This is what makes an internal/air-gapped rollout self-contained, and what
 /// lets the control plane distribute an agent build newer than the latest
 /// public release. Resolution order: an operator-placed archive in the dist dir
-/// (version-agnostic name first, then the release name), else a best-effort
-/// fetch from GitHub (cached for next time). Unauthenticated, like the install
+/// (version-agnostic name), then the build bundled into the image, then a
+/// cached/operator-placed release archive in the dist dir, else a best-effort
+/// fetch from GitHub (cached for next time).
+///
+/// The bundled build comes before any release archive on purpose: the install
+/// commands this control plane generates use the flags *its* agent knows
+/// (`--ca-cert`, `--ca-fingerprint`), and a release archive is only as new as
+/// the last published tag -- serving that to a newer control plane fails the
+/// install with "unexpected argument". Unauthenticated, like the install
 /// scripts -- the binary is non-secret; the enrollment token is the secret.
 pub async fn serve_agent(Path(os): Path<String>) -> Response {
     let version = crate::update_check::CURRENT_VERSION.trim();
@@ -647,8 +663,13 @@ pub async fn serve_agent(Path(os): Path<String>) -> Response {
     };
 
     let dir = agent_dist_dir();
-    for name in [asset.generic.to_string(), asset.versioned.clone()] {
-        if let Ok(bytes) = tokio::fs::read(dir.join(&name)).await {
+    let candidates = [
+        dir.join(asset.generic),
+        agent_bundle_dir().join(asset.generic),
+        dir.join(&asset.versioned),
+    ];
+    for path in candidates {
+        if let Ok(bytes) = tokio::fs::read(&path).await {
             return serve_agent_bytes(bytes, &asset);
         }
     }

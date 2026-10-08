@@ -332,12 +332,6 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
 
     let enrollment_token =
         resolve_enrollment_token(enrollment_token, enrollment_token_file.as_deref())?;
-    let ca_cert = install_ca_cert(
-        ca_cert.as_deref(),
-        ca_fingerprint.as_deref(),
-        &credentials_file,
-    )?;
-    let trust = tls::Trust::load(ca_cert.as_deref())?;
 
     let already_enrolled = tokio::fs::metadata(&credentials_file).await.is_ok();
     if already_enrolled {
@@ -347,10 +341,37 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
         );
     }
 
-    let control_plane_url = match control_plane_url {
-        Some(url) => url,
-        None => prompt("Control plane URL (e.g. https://arsenal.example.com): ")?,
+    let (control_plane_url, url_prompted) = match control_plane_url {
+        Some(url) => (url, false),
+        None => (
+            prompt("Control plane URL (e.g. https://arsenal.example.com): ")?,
+            true,
+        ),
     };
+
+    // Fully interactive (the URL was just typed in) and no --ca-cert: offer
+    // to pin the control plane's internal CA the same way the generated
+    // install commands do, rather than failing enrollment with
+    // "UnknownIssuer". Never asked when the URL came as a flag -- a scripted
+    // run must not block on stdin.
+    let (ca_cert, ca_fingerprint) = match (ca_cert, url_prompted) {
+        (None, true) if control_plane_url.starts_with("https://") => {
+            match prompt_ca_fingerprint()? {
+                Some(fp) => (
+                    Some(fetch_ca_cert(&control_plane_url, &fp, &credentials_file).await?),
+                    Some(fp),
+                ),
+                None => (None, None),
+            }
+        }
+        (ca_cert, _) => (ca_cert, ca_fingerprint),
+    };
+    let ca_cert = install_ca_cert(
+        ca_cert.as_deref(),
+        ca_fingerprint.as_deref(),
+        &credentials_file,
+    )?;
+    let trust = tls::Trust::load(ca_cert.as_deref())?;
 
     let enrollment_token = if already_enrolled {
         None
@@ -479,6 +500,73 @@ fn install_ca_cert(
         dest.display()
     );
     Ok(Some(dest))
+}
+
+/// Asks for the CA fingerprint shown on /admin/hosts; blank means the
+/// control plane has a publicly trusted certificate and there's nothing to
+/// pin. Re-asks on anything that isn't a SHA-256 fingerprint rather than
+/// carrying a typo through to a confusing mismatch later.
+fn prompt_ca_fingerprint() -> anyhow::Result<Option<String>> {
+    use std::io::Write;
+    loop {
+        print!(
+            "Control plane CA fingerprint (SHA-256, from /admin/hosts -- leave blank if it \
+             uses a publicly trusted certificate): "
+        );
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).context(
+            "failed to read from stdin -- pass --ca-cert/--ca-fingerprint instead if running \
+             non-interactively",
+        )?;
+        let answer = line.trim();
+        if answer.is_empty() {
+            return Ok(None);
+        }
+        match tls::normalize_fingerprint(answer) {
+            Some(fp) => return Ok(Some(fp)),
+            None => println!("That isn't a SHA-256 fingerprint (64 hex characters) -- try again."),
+        }
+    }
+}
+
+/// Downloads `<url>/ca.crt` and keeps it only if it matches `fingerprint`.
+/// The download itself can't be verified (that's the certificate it's
+/// fetching), so the fingerprint the operator typed in from the control
+/// plane's UI is the whole trust decision -- the same model as the
+/// generated one-liners' `curl -k` + fingerprint check. Saved as `ca.pem`
+/// beside the credentials file, where `install_ca_cert` expects it.
+async fn fetch_ca_cert(
+    control_plane_url: &str,
+    fingerprint: &str,
+    credentials_file: &std::path::Path,
+) -> anyhow::Result<PathBuf> {
+    let url = format!("{}/ca.crt", control_plane_url.trim_end_matches('/'));
+    let bytes = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("could not download {url}"))?
+        .bytes()
+        .await
+        .with_context(|| format!("could not download {url}"))?;
+    let certs =
+        tls::parse_ca_pem(&bytes).with_context(|| format!("{url} isn't a CA certificate"))?;
+    tls::verify_fingerprint(&certs, fingerprint)?;
+    let dest = credentials_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("ca.pem");
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&dest, &bytes).with_context(|| format!("failed to write {}", dest.display()))?;
+    Ok(dest)
 }
 
 fn prompt(label: &str) -> anyhow::Result<String> {

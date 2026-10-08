@@ -133,29 +133,28 @@ pub fn shell_quote(value: &str) -> String {
 /// `nested_shell_quoting_survives_two_levels_of_shell_parsing` test
 /// actually runs through a real `/bin/sh`, not just eyeballs.
 ///
-/// `ca_pem` is the control plane's internal CA (`crate::public_ca`), if it
-/// has one: written next to the staged binary and passed as `--ca-cert`, so
-/// the agent trusts the control plane without any OS-store change. It comes
-/// from the control plane itself over the already-authenticated SSH session,
-/// so there's no fingerprint to check here.
+/// `has_ca` means [`build_download_command`] wrote the control plane's CA
+/// to `/tmp/abyssal-agent-deploy/ca.pem`: passed as `--ca-cert`, so the
+/// agent trusts the control plane without any OS-store change. It comes from
+/// the control plane itself over the already-authenticated SSH session, so
+/// there's no fingerprint to check here.
+///
+/// The cleanup runs whatever happened, but the command's exit status is the
+/// install's own -- not `rm`'s, which is always 0 and once made every failed
+/// install look like "succeeded, but never connected back."
 fn build_install_command(
     control_plane_url: &str,
     enrollment_token: &str,
     hostname: &str,
-    ca_pem: Option<&str>,
+    has_ca: bool,
 ) -> String {
-    let (write_ca, ca_arg) = match ca_pem {
-        Some(pem) => (
-            format!(
-                "printf '%s' {} > /tmp/abyssal-agent-deploy/ca.pem && ",
-                shell_quote(pem)
-            ),
-            " --ca-cert /tmp/abyssal-agent-deploy/ca.pem",
-        ),
-        None => (String::new(), ""),
+    let ca_arg = if has_ca {
+        " --ca-cert /tmp/abyssal-agent-deploy/ca.pem"
+    } else {
+        ""
     };
     let install_binary_cmd = format!(
-        "{write_ca}mkdir -p /opt/abyssal-agent && \
+        "mkdir -p /opt/abyssal-agent && \
          cp /tmp/abyssal-agent-deploy/abyssal-agent /opt/abyssal-agent/abyssal-agent && \
          chmod +x /opt/abyssal-agent/abyssal-agent && \
          /opt/abyssal-agent/abyssal-agent install --control-plane-url {} \
@@ -165,8 +164,42 @@ fn build_install_command(
         shell_quote(hostname)
     );
     format!(
-        "sudo -S sh -c {} ; rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz",
+        "sudo -S sh -c {} ; rc=$? ; \
+         rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz ; exit $rc",
         shell_quote(&install_binary_cmd)
+    )
+}
+
+/// Downloads the agent from the control plane's own `GET /agent/linux` --
+/// the exact build this control plane was built alongside (see
+/// `routes::bootstrap::serve_agent`), so the install flags
+/// [`build_install_command`] passes are always ones that binary knows. A
+/// GitHub release download, which this once was, serves whatever was last
+/// *published*: an agent older than this control plane rejects any newer
+/// flag (`--ca-cert`) outright. It also keeps an internal/air-gapped deploy
+/// from needing internet access on every target.
+///
+/// `ca_pem`, if the control plane has an internal CA, is written first and
+/// pins the download (`--cacert`); [`build_install_command`] then hands the
+/// same file to the agent.
+fn build_download_command(control_plane_url: &str, ca_pem: Option<&str>) -> String {
+    let (write_ca, cacert) = match ca_pem {
+        Some(pem) => (
+            format!(
+                "printf '%s' {} > /tmp/abyssal-agent-deploy/ca.pem && ",
+                shell_quote(pem)
+            ),
+            " --cacert /tmp/abyssal-agent-deploy/ca.pem",
+        ),
+        None => (String::new(), ""),
+    };
+    let url = format!("{}/agent/linux", control_plane_url.trim_end_matches('/'));
+    format!(
+        "mkdir -p /tmp/abyssal-agent-deploy && {write_ca}\
+         curl -fsSL{cacert} -o /tmp/abyssal-agent-deploy.tar.gz {} && \
+         tar -xzf /tmp/abyssal-agent-deploy.tar.gz -C /tmp/abyssal-agent-deploy --strip-components=1 && \
+         chmod +x /tmp/abyssal-agent-deploy/abyssal-agent",
+        shell_quote(&url)
     )
 }
 
@@ -246,7 +279,7 @@ impl DeployFailureReason {
                 format!("No published agent build for this host's architecture ({arch})")
             }
             Self::DownloadFailed(detail) => {
-                format!("Failed to download the agent release: {detail}")
+                format!("Failed to download the agent from the control plane: {detail}")
             }
             Self::InstallFailed(detail) => format!("Install command failed: {detail}"),
             Self::NeverCheckedIn => {
@@ -615,7 +648,6 @@ async fn deploy_one_host(
     expected_fingerprint: &str,
     control_plane_url: &str,
     enrollment_token: &str,
-    agent_version: &str,
 ) -> DeployOutcome {
     let mut output = String::new();
     // Best guess before the SSH session confirms anything -- whatever the
@@ -711,18 +743,14 @@ async fn deploy_one_host(
         }
     }
 
-    let asset = format!("abyssal-agent-v{agent_version}-x86_64-unknown-linux-gnu");
-    let download_url = format!(
-        "https://github.com/AbyssalOath/abyssal-arsenal/releases/download/v{agent_version}/{asset}.tar.gz"
-    );
-    let download_cmd = format!(
-        "curl -fsSL -o /tmp/abyssal-agent-deploy.tar.gz {} && \
-         mkdir -p /tmp/abyssal-agent-deploy && \
-         tar -xzf /tmp/abyssal-agent-deploy.tar.gz -C /tmp/abyssal-agent-deploy --strip-components=1 && \
-         chmod +x /tmp/abyssal-agent-deploy/abyssal-agent",
-        shell_quote(&download_url)
-    );
-    let download = run!(&download_cmd);
+    // The managed CA's full trust bundle (active + pending during a
+    // rotation), else an operator-supplied CA.
+    let ca_pem =
+        crate::internal_tls::trust_bundle().or_else(|| crate::public_ca::load().map(|ca| ca.pem));
+    let download = run!(&build_download_command(
+        control_plane_url,
+        ca_pem.as_deref()
+    ));
     output.push_str(&format!(
         "$ curl ... (download+extract)\n{}{}\n",
         download.stdout, download.stderr
@@ -737,15 +765,11 @@ async fn deploy_one_host(
         ));
     }
 
-    // The managed CA's full trust bundle (active + pending during a
-    // rotation), else an operator-supplied CA.
-    let ca_pem =
-        crate::internal_tls::trust_bundle().or_else(|| crate::public_ca::load().map(|ca| ca.pem));
     let install_cmd = build_install_command(
         control_plane_url,
         enrollment_token,
         &resolved_hostname,
-        ca_pem.as_deref(),
+        ca_pem.is_some(),
     );
     let mut sudo_stdin = Zeroizing::new(String::with_capacity(
         target.credentials.sudo_password.len() + 1,
@@ -845,7 +869,6 @@ pub async fn run_deploy_job(
     // across multiple hosts would only ever enroll the first one.
     targets: Vec<(DeployTarget, String, Zeroizing<String>)>,
     control_plane_url: String,
-    agent_version: String,
     concurrency: usize,
     actor_user_id: Uuid,
     actor_username: String,
@@ -871,7 +894,6 @@ pub async fn run_deploy_job(
         let hosts_registry = hosts_registry.clone();
         let job = job.clone();
         let control_plane_url = control_plane_url.clone();
-        let agent_version = agent_version.clone();
         let ip_address = target.ip_address.clone();
         let actor_username = actor_username.clone();
 
@@ -899,7 +921,6 @@ pub async fn run_deploy_job(
                 &expected_fingerprint,
                 &control_plane_url,
                 &enrollment_token,
-                &agent_version,
             )
             .await;
             drop(enrollment_token);
@@ -994,7 +1015,7 @@ mod tests {
 
     #[test]
     fn install_command_installs_from_a_permanent_location_not_the_temp_one() {
-        let cmd = build_install_command("https://cp.example.com", "tok", "myhost", None);
+        let cmd = build_install_command("https://cp.example.com", "tok", "myhost", false);
         assert!(cmd.starts_with("sudo -S sh -c "));
         assert!(!cmd.contains("--ca-cert"));
         assert!(cmd.contains("mkdir -p /opt/abyssal-agent"));
@@ -1005,16 +1026,54 @@ mod tests {
         // The cleanup at the end must only ever remove the temporary
         // staging directory/archive -- never the permanent copy the
         // service now depends on for every future restart and reboot.
-        assert!(cmd.ends_with("rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz"));
+        assert!(cmd.contains("rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz"));
         assert!(!cmd.contains("rm -rf /opt"));
     }
 
     #[test]
     fn install_command_hands_over_the_internal_ca() {
-        let pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
-        let cmd = build_install_command("https://10.0.0.5", "tok", "myhost", Some(pem));
-        assert!(cmd.contains("/tmp/abyssal-agent-deploy/ca.pem"));
+        let cmd = build_install_command("https://10.0.0.5", "tok", "myhost", true);
         assert!(cmd.contains("--ca-cert /tmp/abyssal-agent-deploy/ca.pem"));
+    }
+
+    #[test]
+    fn download_comes_from_the_control_plane_pinned_to_its_ca() {
+        let pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        let cmd = build_download_command("https://10.0.0.5/", Some(pem));
+        assert!(cmd.contains("'https://10.0.0.5/agent/linux'"));
+        assert!(!cmd.contains("github.com"));
+        assert!(cmd.contains("> /tmp/abyssal-agent-deploy/ca.pem"));
+        assert!(cmd.contains("--cacert /tmp/abyssal-agent-deploy/ca.pem"));
+        let plain = build_download_command("https://cp.example.com", None);
+        assert!(!plain.contains("--cacert"));
+        assert!(!plain.contains("ca.pem"));
+    }
+
+    #[tokio::test]
+    async fn install_command_exits_with_the_install_status_not_the_cleanup() {
+        // The real wrapper shape, with `sudo -S sh -c` swapped for a plain
+        // `sh -c` and the install for `exit 2`: before, the trailing
+        // cleanup's 0 was what SSH reported.
+        if tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("true")
+            .status()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: /bin/sh not available in this environment");
+            return;
+        }
+        let cmd = build_install_command("https://cp.example.com", "tok", "myhost", false)
+            .replacen("sudo -S sh -c ", "sh -c ", 1)
+            .replace("mkdir -p /opt/abyssal-agent", "exit 2");
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .status()
+            .await
+            .unwrap();
+        assert_eq!(status.code(), Some(2));
     }
 
     #[tokio::test]
@@ -1241,7 +1300,6 @@ mod tests {
             "SHA256:fake",
             "https://cp.example.com",
             "tok",
-            "0.1.2",
         )
         .await;
         assert_eq!(outcome.resolved_hostname, "real-host-name");
@@ -1275,7 +1333,6 @@ mod tests {
             "SHA256:fake",
             "https://cp.example.com",
             "tok",
-            "0.1.2",
         )
         .await;
         assert_eq!(outcome.resolved_hostname, "10.0.2.2");
@@ -1305,7 +1362,6 @@ mod tests {
             "SHA256:fake",
             "https://cp.example.com",
             "tok",
-            "0.1.2",
         )
         .await;
         assert_eq!(outcome.resolved_hostname, "host-10.0.2.3");
@@ -1437,7 +1493,6 @@ mod tests {
             "SHA256:fake",
             "https://cp.example.com",
             "tok",
-            "0.1.2",
         )
         .await;
         assert_eq!(
@@ -1460,7 +1515,6 @@ mod tests {
             "SHA256:fake",
             "https://cp.example.com",
             "tok",
-            "0.1.2",
         )
         .await;
         (outcome.state, outcome.output)
@@ -1567,7 +1621,6 @@ mod tests {
             job_clone,
             targets,
             "https://cp.example.com".to_string(),
-            "0.1.2".to_string(),
             DEFAULT_CONCURRENCY,
             Uuid::new_v4(),
             "test-admin".to_string(),

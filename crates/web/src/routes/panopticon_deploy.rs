@@ -944,7 +944,6 @@ async fn start_deploy_job(
         job,
         ssh_targets,
         base_url,
-        crate::update_check::CURRENT_VERSION.trim().to_string(),
         crate::ssh_deploy::DEFAULT_CONCURRENCY,
         ctx.user.id,
         ctx.user.username.clone(),
