@@ -35,12 +35,70 @@ use crate::state::AppState;
 use crate::templates::{BaseCtx, SettingsTemplate};
 use crate::theme;
 
+/// Which parts of `/admin/settings` a user may see and change -- each
+/// setting is owned by the role that runs what it controls, gated by that
+/// domain's permission (the same one its POST handler checks), so Network
+/// Admin manages Panopticon's, Security Admin Thanatos's, and so on. The page
+/// itself is open to anyone who can see at least one part.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SettingsAccess {
+    /// Public registration: who can get an account on this control plane.
+    pub registration: bool,
+    /// Apotheosis elevation window.
+    pub elevation: bool,
+    /// Ossuary's high-risk storage operations.
+    pub storage_ops: bool,
+    /// Inquest's host network isolation.
+    pub host_isolation: bool,
+    pub thanatos: bool,
+    /// Panopticon's sweep, alerts, passive discovery and bandwidth history.
+    pub panopticon: bool,
+    /// Panopticon's NAC enforcement kill-switch.
+    pub nac: bool,
+    /// Audit trail syslog export: `audit.export` only (Security Admin) --
+    /// whoever is audited mustn't be able to stop their actions reaching
+    /// the SIEM.
+    pub audit_export: bool,
+}
+
+impl SettingsAccess {
+    pub fn for_ctx(ctx: &abyssal_rbac::AuthContext) -> Self {
+        Self {
+            registration: ctx.has(Permission::SettingsManage),
+            elevation: ctx.has(Permission::HostsManage),
+            storage_ops: ctx.has(Permission::StorageManage),
+            host_isolation: ctx.has(Permission::IncidentsRespond),
+            thanatos: ctx.has(Permission::SecurityManage),
+            panopticon: ctx.has(Permission::NetworkManage),
+            nac: ctx.has(Permission::NetworkNac),
+            audit_export: ctx.has(Permission::AuditExport),
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        *self != Self::default()
+    }
+
+    /// The "Elevation & Risk Controls" section has something to show.
+    pub fn risk_controls(&self) -> bool {
+        self.elevation || self.storage_ops || self.host_isolation
+    }
+
+    /// The Panopticon section has something to show.
+    pub fn network(&self) -> bool {
+        self.panopticon || self.nac
+    }
+}
+
 pub async fn show(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    let access = SettingsAccess::for_ctx(&ctx);
+    if !access.any() {
+        return Err(WebError(AppError::Forbidden));
+    }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -163,6 +221,7 @@ pub async fn show(
 
     let tpl = SettingsTemplate {
         base,
+        access,
         public_registration_enabled,
         apotheosis_elevation_window_minutes,
         high_risk_storage_ops_enabled,
@@ -251,7 +310,7 @@ pub async fn set_high_risk_storage_ops(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<HighRiskStorageOpsForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::StorageManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -289,7 +348,7 @@ pub async fn set_host_isolation(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<HostIsolationForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::IncidentsRespond)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -327,7 +386,7 @@ pub async fn set_thanatos_monitoring(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosMonitoringForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -365,7 +424,7 @@ pub async fn set_thanatos_auto_quarantine_ssh_keys(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosAutoQuarantineSshKeysForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -403,7 +462,7 @@ pub async fn set_thanatos_auto_disable_account(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosAutoDisableAccountForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -441,7 +500,7 @@ pub async fn set_audit_syslog_export(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<AuditSyslogExportForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::AuditExport)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -499,7 +558,7 @@ pub async fn set_thanatos_alert_recipients(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosAlertRecipientsForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let recipients = validate_recipients(&form.recipients)?;
@@ -564,7 +623,7 @@ pub async fn set_thanatos_extra_fim_paths(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosExtraFimPathsForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let paths = validate_extra_fim_paths(&form.paths)?;
@@ -610,7 +669,7 @@ pub async fn set_thanatos_c2_ports(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosC2PortsForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let parsed = crate::thanatos_ops::parse_c2_ports(&form.ports);
@@ -668,7 +727,7 @@ pub async fn set_thanatos_retention(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosRetentionForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     if form.retention_days > 3650 {
@@ -721,7 +780,7 @@ pub async fn set_thanatos_correlation(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ThanatosCorrelationForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     if form.threshold == 0 || form.threshold > 1000 {
@@ -808,7 +867,7 @@ pub async fn set_panopticon_sweep_enabled(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonSweepEnabledForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -850,7 +909,7 @@ pub async fn set_panopticon_rogue_alerts(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonRogueAlertForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -903,7 +962,7 @@ pub async fn set_panopticon_enforcement(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonEnforcementForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     // 802.1Q VLAN ids run 1..=4094; 0 means "unset". 4095 is reserved.
@@ -967,7 +1026,7 @@ pub async fn set_panopticon_sweep_target(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonSweepTargetForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let target = form.target.trim();
@@ -1011,7 +1070,7 @@ pub async fn set_elevation_window(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ElevationWindowForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     if !(1..=1440).contains(&form.minutes) {
@@ -1055,7 +1114,7 @@ pub async fn set_panopticon_mdns_enabled(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonMdnsEnabledForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -1093,7 +1152,7 @@ pub async fn set_panopticon_arp_enabled(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonArpEnabledForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::settings::set(
@@ -1132,7 +1191,7 @@ pub async fn set_panopticon_arp_interface(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonArpInterfaceForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let interface = form.interface.trim();
@@ -1184,7 +1243,7 @@ pub async fn set_panopticon_traffic_retention(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PanopticonTrafficRetentionForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     if form.raw_days < crate::panopticon_traffic::MIN_RAW_RETENTION_DAYS || form.raw_days > 3650 {

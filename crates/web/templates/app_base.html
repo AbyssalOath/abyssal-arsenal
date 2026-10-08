@@ -32,7 +32,7 @@
         {% if base.can_modules_manage %}<a href="/admin/modules">{% call macros::icon("module") %} Modules</a>{% endif %}
         {% if base.can_modules_manage %}<a href="/admin/workflows">{% call macros::icon("route") %} Workflows</a>{% endif %}
         {% if base.can_settings_manage %}<a href="/admin/health">{% call macros::icon("shield-check") %} Health</a>{% endif %}
-        {% if base.can_settings_manage %}<a href="/admin/settings">{% call macros::icon("settings") %} Settings</a>{% endif %}
+        {% if base.can_settings_view %}<a href="/admin/settings">{% call macros::icon("settings") %} Settings</a>{% endif %}
         <a href="/style-guide">{% call macros::icon("module") %} Style Guide</a>
       </nav>
       {% if base.can_hosts_elevate %}

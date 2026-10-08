@@ -8,10 +8,12 @@
 <div class="info-banner">{{ m }}</div>
 {% endif %}
 
+{% if access.registration %}
 <div class="settings-section">
   <h2 class="settings-section-title">Access &amp; Registration</h2>
   <div class="card settings-list">
 
+    {% if access.registration %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("user") %} Public registration</div>
@@ -37,14 +39,18 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
   </div>
 </div>
+{% endif %}
 
+{% if access.risk_controls() %}
 <div class="settings-section">
   <h2 class="settings-section-title">Elevation &amp; Risk Controls</h2>
   <div class="card settings-list">
 
+    {% if access.elevation %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("elevate") %} Apotheosis elevation window</div>
@@ -67,7 +73,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.storage_ops %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("danger") %} High-risk storage operations</div>
@@ -96,7 +104,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.host_isolation %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("danger") %} Host network isolation</div>
@@ -127,14 +137,18 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
   </div>
 </div>
+{% endif %}
 
+{% if access.thanatos %}
 <div class="settings-section">
-  <h2 class="settings-section-title">Monitoring &amp; Alerts</h2>
+  <h2 class="settings-section-title">Security Monitoring (Thanatos)</h2>
   <div class="card settings-list">
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos background monitoring</div>
@@ -164,7 +178,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos alert recipients</div>
@@ -188,7 +204,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos extra file-integrity paths</div>
@@ -213,7 +231,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos outbound C2 / reverse-shell ports</div>
@@ -240,7 +260,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("danger") %} Auto-quarantine on SSH key tampering</div>
@@ -271,7 +293,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("danger") %} Auto-disable account on cross-host targeting</div>
@@ -302,7 +326,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos correlation &amp; sweep tuning</div>
@@ -334,7 +360,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.thanatos %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Thanatos event retention</div>
@@ -359,7 +387,18 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+  </div>
+</div>
+{% endif %}
+
+{% if access.network() %}
+<div class="settings-section">
+  <h2 class="settings-section-title">Network Monitoring &amp; Access Control (Panopticon)</h2>
+  <div class="card settings-list">
+
+    {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("scan") %} Panopticon active sweep</div>
@@ -391,7 +430,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("warning") %} Panopticon rogue-device alerts</div>
@@ -418,7 +459,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.nac %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("firewall") %} Panopticon NAC enforcement</div>
@@ -455,7 +498,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("scan") %} Panopticon sweep target</div>
@@ -478,7 +523,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("network") %} Panopticon mDNS listener</div>
@@ -507,7 +554,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("network") %} Panopticon ARP listener</div>
@@ -538,7 +587,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("network") %} Panopticon ARP interface</div>
@@ -560,7 +611,9 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
+    {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("network") %} Panopticon bandwidth history</div>
@@ -592,14 +645,18 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
   </div>
 </div>
+{% endif %}
 
+{% if access.audit_export %}
 <div class="settings-section">
   <h2 class="settings-section-title">External Export</h2>
   <div class="card settings-list">
 
+    {% if access.audit_export %}
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("audit") %} Audit trail syslog export</div>
@@ -634,8 +691,10 @@
         </form>
       </div>
     </div>
+    {% endif %}
 
   </div>
 </div>
+{% endif %}
 
 {% endblock %}

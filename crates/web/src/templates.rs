@@ -48,6 +48,8 @@ pub struct BaseCtx {
     pub can_audit_view: bool,
     pub can_modules_manage: bool,
     pub can_settings_manage: bool,
+    /// Any part of `/admin/settings` (each role sees its own settings).
+    pub can_settings_view: bool,
     pub can_hosts_view: bool,
     pub can_hosts_elevate: bool,
     /// True when at least one host is currently (believed) elevated --
@@ -123,6 +125,7 @@ impl BaseCtx {
             can_audit_view: ctx.has(Permission::AuditView),
             can_modules_manage: ctx.has(Permission::ModulesManage),
             can_settings_manage: ctx.has(Permission::SettingsManage),
+            can_settings_view: crate::routes::settings::SettingsAccess::for_ctx(ctx).any(),
             can_hosts_view: ctx.has(Permission::HostsView),
             can_hosts_elevate: ctx.has(Permission::HostsElevate),
             apotheosis_active: !elevated_hosts.is_empty(),
@@ -843,6 +846,8 @@ pub struct WorkflowsTemplate {
 #[template(path = "settings.html")]
 pub struct SettingsTemplate {
     pub base: BaseCtx,
+    /// Which settings this viewer may see/change.
+    pub access: crate::routes::settings::SettingsAccess,
     pub public_registration_enabled: bool,
     pub apotheosis_elevation_window_minutes: u32,
     pub high_risk_storage_ops_enabled: bool,

@@ -10,6 +10,22 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Changed
+
+- **`/admin/settings` is now per-role instead of Super Admin only.** Each
+  setting is owned by the role that runs what it controls, gated by the same
+  permission as the domain itself, and the page shows each admin only their
+  own: Network Admin gets Panopticon's sweep, alerts, passive discovery and
+  bandwidth history (`network.manage`) and the NAC enforcement switch
+  (`network.nac`); Security / OPSEC Admin gets every Thanatos setting
+  (`security.manage`) and Inquest host isolation (`incidents.respond`);
+  System Admin gets the Apotheosis elevation window (`hosts.manage`) and
+  Ossuary's high-risk storage operations (`storage.manage`). Public
+  registration stays Super Admin only (`settings.manage`). Audit trail syslog
+  export belongs to Security Admin (`audit.export`), so the people being
+  audited can't switch off their own audit stream. Roles without any setting don't see the page
+  or its nav link; `/admin/health` is unchanged (`settings.manage`).
+
 ### Fixed
 
 - **No email was ever delivered through a port-587 server such as Office
