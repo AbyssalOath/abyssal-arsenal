@@ -3,27 +3,31 @@
 [![CI](https://github.com/AbyssalOath/abyssal-arsenal/actions/workflows/ci.yml/badge.svg)](https://github.com/AbyssalOath/abyssal-arsenal/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/AbyssalOath/abyssal-arsenal)](https://github.com/AbyssalOath/abyssal-arsenal/releases/latest)
 
-A self-hosted IT/sysadmin operations platform for Linux environments, written
-in Rust. Individual administrative capabilities ("arsenals" -- networking,
-security hardening, storage, backups, incident response, and so on) are
-modular and sit on top of a shared core: local authentication, role-based
-access control, append-only audit logging, and notifications.
+A self-hosted IT operations platform for Linux and Windows hosts, written in
+Rust. Its capabilities -- 25 "arsenals" covering system administration,
+security monitoring and EDR, Active Directory health, network discovery and
+access control, storage, backups and disaster recovery, incident response,
+and more -- are modular and sit on top of a shared core: local
+authentication, role-based access control, append-only audit logging, and
+notifications.
 
-Abyssal Arsenal is a **control plane**, not the system it manages. Real
-sysadmin work happens on enrolled Linux hosts running the companion
-`abyssal-agent` binary, which connects out to the control plane over an
-authenticated WebSocket:
+Abyssal Arsenal is a **control plane**, not the system it manages. Real work
+happens on enrolled hosts running the companion `abyssal-agent`, which
+connects out to the control plane over an authenticated WebSocket. Hosts are
+enrolled one at a time with a single-use token, or rolled out en masse with
+the reusable install token (a Windows MSI/exe for PDQ, Intune or GPO, much
+like a CrowdStrike CID):
 
 ```
-        Abyssal Arsenal (control plane)
-     Auth . RBAC . Audit . Notifications . Web UI
-                       |
-            authenticated connection
-                       |
-        +--------------+--------------+
-        v              v              v
-   Linux Host A    Linux Host B    Linux Host C
-  abyssal-agent    abyssal-agent   abyssal-agent
+         Abyssal Arsenal (control plane)
+    Auth . RBAC . Audit . Notifications . Web UI
+                        |
+             authenticated connection
+                        |
+        +---------------+---------------+
+        v               v               v
+   Linux host      Windows host     Linux host
+  abyssal-agent   abyssal-agent    abyssal-agent
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
