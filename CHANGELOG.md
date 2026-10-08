@@ -10,6 +10,8 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-08 
+
 > **Action needed for internal (self-signed) installs.** Pull and re-run
 > `./install.sh` once: it moves the install onto the new web-managed private
 > CA (the app creates it on its next start) and updates the Caddyfile.
