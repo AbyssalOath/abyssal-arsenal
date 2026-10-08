@@ -668,9 +668,9 @@ fn serve_agent_bytes(bytes: Vec<u8>, asset: &AgentAsset) -> Response {
 /// the last published tag -- serving that to a newer control plane fails the
 /// install with "unexpected argument". Unauthenticated, like the install
 /// scripts -- the binary is non-secret; the enrollment token is the secret.
-pub async fn serve_agent(Path(os): Path<String>) -> Response {
-    let version = crate::update_check::CURRENT_VERSION.trim();
-    let Some(asset) = agent_asset(&os, version) else {
+pub async fn serve_agent(State(state): State<AppState>, Path(os): Path<String>) -> Response {
+    let current = crate::update_check::CURRENT_VERSION.trim().to_string();
+    let Some(asset) = agent_asset(&os, &current) else {
         return (
             StatusCode::NOT_FOUND,
             "unknown agent OS -- use /agent/linux, /agent/windows, /agent/windows-msi or \
@@ -680,47 +680,85 @@ pub async fn serve_agent(Path(os): Path<String>) -> Response {
     };
 
     let dir = agent_dist_dir();
-    let candidates = [
+    for path in [
         dir.join(asset.generic),
         agent_bundle_dir().join(asset.generic),
-        dir.join(&asset.versioned),
-    ];
-    for path in candidates {
+    ] {
         if let Ok(bytes) = tokio::fs::read(&path).await {
             return serve_agent_bytes(bytes, &asset);
         }
     }
 
-    // Not locally present: try GitHub once and cache it. Fails cleanly (not a
-    // panic) when the control plane itself can't reach GitHub.
-    let url = format!(
-        "https://github.com/AbyssalOath/abyssal-arsenal/releases/download/v{version}/{}",
-        asset.versioned
-    );
-    let fetched = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status);
-    if let Ok(resp) = fetched
-        && let Ok(bytes) = resp.bytes().await
-    {
-        let _ = tokio::fs::create_dir_all(&dir).await;
-        let _ = tokio::fs::write(dir.join(&asset.versioned), &bytes).await;
-        return serve_agent_bytes(bytes.to_vec(), &asset);
+    // A release archive: this build's own version first, then -- when this
+    // build is ahead of anything published (built from main after a version
+    // bump) -- the newest release, rather than failing every Windows
+    // install until the release exists.
+    let release = crate::update_check::agent_release_version(&state).await;
+    let mut versions = vec![current.clone()];
+    if release != current {
+        versions.push(release);
+    }
+    for version in &versions {
+        let Some(asset) = agent_asset(&os, version) else {
+            continue;
+        };
+        if let Ok(bytes) = tokio::fs::read(dir.join(&asset.versioned)).await {
+            note_fallback(&os, version, &current);
+            return serve_agent_bytes(bytes, &asset);
+        }
+        // Not cached: fetch from GitHub and cache it. Fails cleanly (not a
+        // panic) when the control plane itself can't reach GitHub.
+        let url = format!(
+            "https://github.com/AbyssalOath/abyssal-arsenal/releases/download/v{version}/{}",
+            asset.versioned
+        );
+        let fetched = reqwest::Client::new()
+            .get(&url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status);
+        if let Ok(resp) = fetched
+            && let Ok(bytes) = resp.bytes().await
+        {
+            let _ = tokio::fs::create_dir_all(&dir).await;
+            let _ = tokio::fs::write(dir.join(&asset.versioned), &bytes).await;
+            note_fallback(&os, version, &current);
+            return serve_agent_bytes(bytes.to_vec(), &asset);
+        }
     }
 
     (
         StatusCode::SERVICE_UNAVAILABLE,
         format!(
-            "agent binary unavailable. Place a build at {}/{} (or {}), or give this \
-             control plane outbound access to GitHub.",
+            "agent binary unavailable (tried release{} {}). Place a build at {}/{} (or {}), or \
+             give this control plane outbound access to GitHub.",
+            if versions.len() > 1 { "s" } else { "" },
+            versions
+                .iter()
+                .map(|v| format!("v{v}"))
+                .collect::<Vec<_>>()
+                .join(", "),
             dir.display(),
             asset.generic,
             asset.versioned
         ),
     )
         .into_response()
+}
+
+/// Logged when an agent older than this control plane is served, so a
+/// mismatch an admin later sees ("Agent out of date") has an explanation.
+fn note_fallback(os: &str, served: &str, current: &str) {
+    if served != current {
+        tracing::warn!(
+            os,
+            served = %served,
+            control_plane = %current,
+            "this control plane's version isn't published as a release yet -- serving the \
+             newest release's agent instead (put a matching build in AGENT_DIST_DIR to serve \
+             that)"
+        );
+    }
 }
 
 #[cfg(test)]

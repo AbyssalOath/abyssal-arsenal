@@ -143,6 +143,7 @@ async fn render_full(
         // PUBLIC_URL (install.sh sets it) -- this render has no request to
         // infer the address from, and the commands are for other machines.
         commands: crate::deploy_commands::aat_commands(
+            &crate::update_check::agent_release_version(state).await,
             state
                 .config
                 .public_url
@@ -535,7 +536,9 @@ pub async fn update_agent(
     // unknown operation is exactly the expected outcome for a mismatch.
     let was_mismatched = state.hosts.agent_protocol_mismatch(id);
 
-    let version = crate::update_check::CURRENT_VERSION.trim().to_string();
+    // The newest *published* release, never an unreleased version the agent
+    // couldn't download (a control plane built from main after a bump).
+    let version = crate::update_check::agent_release_version(&state).await;
     let elevated = state.elevation.is_elevated(id);
     let result = state
         .executor

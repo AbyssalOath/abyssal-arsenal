@@ -210,8 +210,10 @@ pub struct AatCommands {
     pub linux_github: String,
 }
 
-pub fn aat_commands(base_url: &str, aat: Option<&str>) -> AatCommands {
-    aat_commands_for_version(base_url, aat, crate::update_check::CURRENT_VERSION.trim())
+/// `release` is the GitHub release the Linux one-liner downloads --
+/// `update_check::agent_release_version`, so it's always one that exists.
+pub fn aat_commands(release: &str, base_url: &str, aat: Option<&str>) -> AatCommands {
+    aat_commands_for_version(base_url, aat, release)
 }
 
 fn aat_commands_for_version(base_url: &str, aat: Option<&str>, version: &str) -> AatCommands {

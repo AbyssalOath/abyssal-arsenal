@@ -98,6 +98,35 @@ async fn fetch_latest_release() -> anyhow::Result<GithubRelease> {
     Ok(release)
 }
 
+/// The release agents should get from GitHub: this build's own version
+/// when it's published, else the newest published release. A control plane
+/// built from `main` after a version bump (0.2.2, while 0.2.1 is the latest
+/// release) would otherwise send hosts to download, or self-update to, a
+/// release that doesn't exist yet. Uses the hourly check's result, running
+/// one first if none has completed since startup; with no answer from GitHub
+/// at all it assumes this build's version.
+pub async fn agent_release_version(state: &AppState) -> String {
+    let current = CURRENT_VERSION.trim().to_string();
+    if state.update_status.read().await.checked_at.is_none() {
+        let _ = check_now(state).await;
+    }
+    let latest = state.update_status.read().await.latest_version.clone();
+    resolve_release(&current, latest.as_deref())
+}
+
+/// `current` unless `latest` is a parseable, *older* release -- i.e. this
+/// build is ahead of anything published.
+fn resolve_release(current: &str, latest: Option<&str>) -> String {
+    match (parse_version(current), latest.and_then(parse_version)) {
+        (Some(cur), Some(lat)) if lat < cur => latest
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches('v')
+            .to_string(),
+        _ => current.to_string(),
+    }
+}
+
 /// Runs one check and records the result. A failure keeps the last-known
 /// release (and says why it failed) rather than clearing it.
 pub async fn check_now(state: &AppState) -> anyhow::Result<()> {
@@ -154,6 +183,19 @@ pub fn spawn_update_check_sweep(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreleased_build_resolves_to_the_latest_release() {
+        // Built from main after the bump, before the release exists.
+        assert_eq!(resolve_release("0.2.2", Some("v0.2.1")), "0.2.1");
+        // A published build gets its own version...
+        assert_eq!(resolve_release("0.2.1", Some("v0.2.1")), "0.2.1");
+        // ...as does an older control plane (a matching agent exists).
+        assert_eq!(resolve_release("0.2.0", Some("v0.2.1")), "0.2.0");
+        // No answer from GitHub: assume this build's version.
+        assert_eq!(resolve_release("0.2.2", None), "0.2.2");
+        assert_eq!(resolve_release("0.2.2", Some("garbage")), "0.2.2");
+    }
 
     #[test]
     fn parses_version_with_and_without_v_prefix() {

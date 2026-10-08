@@ -35,6 +35,14 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **A control plane built from `main` after a version bump broke Windows agent
+  installs and "Update agent".** It asked GitHub for its own version's
+  release (e.g. v0.2.2) before that release existed. Agent downloads
+  (`/agent/windows`, `-exe`, `-msi`, and the Linux GitHub one-liner) and
+  self-updates now use this build's version when it's published, else the
+  newest published release (logged when it falls back), so anyone running
+  `main` between releases can still enroll and update hosts.
+
 - **New-account and admin password-reset emails had no link to the control
   plane.** Both now say where to sign in (`<url>/login`): `PUBLIC_URL` when
   set, otherwise the address the admin was using -- the same address the
