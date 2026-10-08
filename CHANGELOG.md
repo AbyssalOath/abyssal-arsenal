@@ -35,6 +35,18 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **New-account and admin password-reset emails had no link to the control
+  plane.** Both now say where to sign in (`<url>/login`): `PUBLIC_URL` when
+  set, otherwise the address the admin was using -- the same address the
+  agent install commands use. The self-service "forgot password" email still
+  links only via `PUBLIC_URL`: that request is unauthenticated, so its Host
+  header can't be trusted (password-reset poisoning).
+- **"Generate strong password" only said "Please fill out this field".** The
+  browser enforced the form's required fields for every submit button,
+  generating included; it's now exempt (`formnovalidate`) on the create-user,
+  reset-password, register and setup forms, and the selected role survives
+  generating a password.
+
 - **No email was ever delivered through a port-587 server such as Office
   365.** The SMTP transport used implicit TLS (lettre's `relay()`, a TLS
   handshake on connect -- port 465's convention), while 587, this app's

@@ -619,6 +619,9 @@ pub struct RoleOption {
 #[derive(Template)]
 #[template(path = "users.html")]
 pub struct UsersTemplate {
+    /// Keeps the role picked before "Generate strong password" re-rendered
+    /// the form; empty = the first option.
+    pub selected_role_id: String,
     pub base: BaseCtx,
     pub users: Vec<UserRow>,
     /// Only roles the viewing admin may assign -- see

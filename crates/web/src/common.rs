@@ -548,6 +548,36 @@ pub async fn suggested_actions_for(
         .collect()
 }
 
+/// The control plane's base URL as the browser reached it (scheme from
+/// `COOKIE_SECURE`, host from the `Host` header) -- what the agent install
+/// commands embed, since the host they're pasted on must reach the same
+/// address the admin is using.
+pub fn request_base_url(state: &AppState, headers: &axum::http::HeaderMap) -> String {
+    let scheme = if state.config.cookie_secure {
+        "https"
+    } else {
+        "http"
+    };
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost:8080");
+    format!("{scheme}://{host}")
+}
+
+/// The base URL for links in emails an *authenticated* admin triggers:
+/// `PUBLIC_URL` (the canonical address install.sh sets) when configured, else
+/// the address the admin is using. Never for an unauthenticated request --
+/// its Host header is attacker-controlled (see `submit_forgot_password`).
+pub fn email_base_url(state: &AppState, headers: &axum::http::HeaderMap) -> String {
+    state
+        .config
+        .public_url
+        .as_deref()
+        .map(|url| url.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| request_base_url(state, headers))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

@@ -105,6 +105,11 @@ pub async fn submit_forgot_password(
                 .is_ok()
             {
                 let message =
+                    // PUBLIC_URL only, never the request's Host header: this
+                    // endpoint is unauthenticated, so anyone could send a
+                    // forged Host and have a real reset email point the
+                    // victim at their site (password-reset poisoning). No
+                    // PUBLIC_URL means a code to type in, not a link.
                     build_reset_email(&user.email, &raw_token, state.config.public_url.as_deref());
                 state.notifications.dispatch_private(&message).await;
 

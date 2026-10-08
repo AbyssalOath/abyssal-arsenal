@@ -36,11 +36,11 @@
     <select id="role_id" name="role_id" required>
       {% for role in roles %}
       {% if role.depth == 1 %}
-      <option value="{{ role.id }}">{{ role.name }}</option>
+      <option value="{{ role.id }}"{% if role.id == selected_role_id %} selected{% endif %}>{{ role.name }}</option>
       {% else if role.depth == 2 %}
-      <option value="{{ role.id }}">&nbsp;&nbsp;&#8627; {{ role.name }}</option>
+      <option value="{{ role.id }}"{% if role.id == selected_role_id %} selected{% endif %}>&nbsp;&nbsp;&#8627; {{ role.name }}</option>
       {% else %}
-      <option value="{{ role.id }}">&nbsp;&nbsp;&nbsp;&nbsp;&#8627; {{ role.name }}</option>
+      <option value="{{ role.id }}"{% if role.id == selected_role_id %} selected{% endif %}>&nbsp;&nbsp;&nbsp;&nbsp;&#8627; {{ role.name }}</option>
       {% endif %}
       {% endfor %}
     </select>
@@ -48,7 +48,7 @@
       Only roles within your own delegated authority are offered -- a nested (indented) role
       is a sub-role of the one above it.
     </p>
-    <button type="submit" name="intent" value="generate" class="btn-secondary" style="margin-right:10px;">
+    <button type="submit" name="intent" value="generate" formnovalidate class="btn-secondary" style="margin-right:10px;">
       Generate strong password
     </button>
     <button type="submit" name="intent" value="create" class="btn-warning">Create user</button>

@@ -28,6 +28,7 @@ async fn render_list(
     new_username: String,
     new_email: String,
     generated_password: Option<String>,
+    selected_role_id: Option<Uuid>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -81,6 +82,9 @@ async fn render_list(
         new_email,
         generated_password,
         password_prefill,
+        selected_role_id: selected_role_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -111,6 +115,7 @@ pub async fn list(
         String::new(),
         String::new(),
         None,
+        None,
     )
     .await
 }
@@ -129,6 +134,7 @@ pub async fn create(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
+    headers: axum::http::HeaderMap,
     Form(form): Form<CreateUserForm>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::UsersCreate)?;
@@ -145,6 +151,7 @@ pub async fn create(
             form.username,
             form.email,
             Some(generated),
+            Some(form.role_id),
         )
         .await;
     }
@@ -169,6 +176,7 @@ pub async fn create(
             form.username,
             form.email,
             None,
+            Some(form.role_id),
         )
         .await;
     }
@@ -186,7 +194,8 @@ pub async fn create(
     repo::roles::set_user_role(&state.pool, user.id, form.role_id).await?;
     let role = repo::roles::find_by_id(&state.pool, form.role_id).await?;
 
-    let welcome_email = send_welcome_email(&state, &user, &form.password).await;
+    let base_url = crate::common::email_base_url(&state, &headers);
+    let welcome_email = send_welcome_email(&state, &user, &form.password, &base_url).await;
     let welcome_email_sent = welcome_email.sent;
 
     abyssal_audit::record(
@@ -228,12 +237,14 @@ pub async fn create(
 fn build_welcome_email(
     user: &abyssal_core::User,
     temporary_password: &str,
+    base_url: &str,
 ) -> abyssal_notifications::NotificationMessage {
     abyssal_notifications::NotificationMessage {
         subject: "Your Abyssal Arsenal account has been created".to_string(),
         body: format!(
             "Hello {username},\n\n\
              An administrator has created an Abyssal Arsenal account for you.\n\n\
+             Sign in at: {base_url}/login\n\
              Username: {username}\n\
              Temporary password: {temporary_password}\n\n\
              You will be required to set a new password the first time you log in.\n\n\
@@ -298,8 +309,9 @@ async fn send_welcome_email(
     state: &AppState,
     user: &abyssal_core::User,
     temporary_password: &str,
+    base_url: &str,
 ) -> EmailOutcome {
-    let message = build_welcome_email(user, temporary_password);
+    let message = build_welcome_email(user, temporary_password, base_url);
     send_account_email(state, user, message, "welcome").await
 }
 
@@ -560,12 +572,14 @@ pub struct ResetPasswordForm {
 fn build_password_reset_email(
     user: &abyssal_core::User,
     temporary_password: &str,
+    base_url: &str,
 ) -> abyssal_notifications::NotificationMessage {
     abyssal_notifications::NotificationMessage {
         subject: "Your Abyssal Arsenal password has been reset".to_string(),
         body: format!(
             "Hello {username},\n\n\
              An administrator has reset the password on your Abyssal Arsenal account.\n\n\
+             Sign in at: {base_url}/login\n\
              Username: {username}\n\
              Temporary password: {temporary_password}\n\n\
              You will be required to set a new password the next time you log in. Every \
@@ -582,8 +596,9 @@ async fn send_password_reset_email(
     state: &AppState,
     user: &abyssal_core::User,
     temporary_password: &str,
+    base_url: &str,
 ) -> EmailOutcome {
-    let message = build_password_reset_email(user, temporary_password);
+    let message = build_password_reset_email(user, temporary_password, base_url);
     send_account_email(state, user, message, "password reset").await
 }
 
@@ -600,6 +615,7 @@ pub async fn reset_password(
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
     Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<ResetPasswordForm>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::UsersModify)?;
@@ -642,7 +658,8 @@ pub async fn reset_password(
     repo::users::update_password(&state.pool, id, &hash, true).await?;
     abyssal_auth::session::revoke_all_for_user(&state.pool, id).await?;
 
-    let email = send_password_reset_email(&state, &target, &form.password).await;
+    let base_url = crate::common::email_base_url(&state, &headers);
+    let email = send_password_reset_email(&state, &target, &form.password, &base_url).await;
     let email_sent = email.sent;
 
     abyssal_audit::record(
@@ -692,9 +709,10 @@ mod tests {
     #[test]
     fn welcome_email_contains_username_and_temp_password() {
         let user = test_user("newuser@example.com");
-        let message = build_welcome_email(&user, "Temp1234!@#$Pass");
+        let message = build_welcome_email(&user, "Temp1234!@#$Pass", "https://10.0.0.5");
 
         assert_eq!(message.recipients, vec!["newuser@example.com".to_string()]);
+        assert!(message.body.contains("Sign in at: https://10.0.0.5/login"));
         assert!(message.body.contains("newuser"));
         assert!(message.body.contains("Temp1234!@#$Pass"));
         assert!(message.body.contains("required to set a new password"));

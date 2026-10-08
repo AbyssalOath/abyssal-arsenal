@@ -32,16 +32,7 @@ use axum::response::{IntoResponse, Response};
 use crate::state::AppState;
 
 fn control_plane_base_url(state: &AppState, headers: &HeaderMap) -> String {
-    let scheme = if state.config.cookie_secure {
-        "https"
-    } else {
-        "http"
-    };
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost:8080");
-    format!("{scheme}://{host}")
+    crate::common::request_base_url(state, headers)
 }
 
 const INSTALL_SH_TEMPLATE: &str = r#"#!/bin/sh
