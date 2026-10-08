@@ -41,8 +41,12 @@ pub struct NotificationMessage {
 impl NotificationMessage {
     pub fn test(recipient: impl Into<String>) -> Self {
         Self {
-            subject: "Abyssal Arsenal test notification".to_string(),
-            body: "This is a test notification from Abyssal Arsenal.".to_string(),
+            subject: "Abyssal Arsenal test email".to_string(),
+            body: "\"If you stare into the abyss, the abyss stares back at you.\"\n    \
+                   -- Friedrich Nietzsche\n\n\
+                   This is a test email from your Abyssal Arsenal control plane. If you're \
+                   reading it, email delivery works."
+                .to_string(),
             severity: Severity::Info,
             recipients: vec![recipient.into()],
         }

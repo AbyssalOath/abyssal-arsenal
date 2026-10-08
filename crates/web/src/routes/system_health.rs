@@ -42,17 +42,6 @@ pub async fn show(
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
-    render(&state, jar, &ctx, None).await
-}
-
-async fn render(
-    state: &AppState,
-    jar: CookieJar,
-    ctx: &abyssal_rbac::AuthContext,
-    email_test: Option<crate::templates::EmailTestResult>,
-) -> Result<Response, WebError> {
-    let state = state.clone();
-    let ctx = ctx.clone();
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
         &ctx,
@@ -138,8 +127,6 @@ async fn render(
         )
         .await?,
         email_configured: state.notifications.has_email(),
-        email_test_default_to: ctx.user.email.clone(),
-        email_test,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -203,7 +190,7 @@ async fn build_preflight(state: &AppState) -> Vec<crate::templates::PreflightRow
         &format!(
             "{providers} configured; email (SMTP) {}",
             if state.notifications.has_email() {
-                "on -- send a test below"
+                "on -- send a test from Settings"
             } else {
                 "off -- password resets and new-account emails won't be sent"
             }
@@ -243,73 +230,6 @@ async fn probe_backup_writable(state: &AppState) -> (bool, String) {
         }
         Err(_) => (false, "not writable -- backups will fail".to_string()),
     }
-}
-
-#[derive(Deserialize)]
-pub struct EmailTestForm {
-    csrf_token: String,
-    to: String,
-}
-
-/// Sends a test email and shows the outcome -- with the SMTP server's own
-/// error when it fails, which is otherwise only in the server log.
-pub async fn send_test_email(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    CurrentUser(ctx): CurrentUser,
-    Form(form): Form<EmailTestForm>,
-) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
-    require_csrf(&jar, &form.csrf_token)?;
-    let to = form.to.trim().to_string();
-    let result = if to.is_empty() {
-        crate::templates::EmailTestResult {
-            ok: false,
-            detail: "Enter an address to send the test to.".to_string(),
-        }
-    } else {
-        match state.notifications.send_test("smtp", &to).await {
-            Ok(()) => crate::templates::EmailTestResult {
-                ok: true,
-                detail: format!(
-                    "Sent to {to}. If it doesn't arrive, check that mailbox's junk folder \
-                     and the sending mailbox's Sent Items."
-                ),
-            },
-            Err(abyssal_notifications::NotificationError::NotConfigured) => {
-                crate::templates::EmailTestResult {
-                    ok: false,
-                    detail: "Email isn't configured: set SMTP_HOST and SMTP_FROM (and \
-                             SMTP_USERNAME/SMTP_PASSWORD) in .env, then restart the app. The \
-                             app's startup log says why if they're set but rejected."
-                        .to_string(),
-                }
-            }
-            Err(e) => crate::templates::EmailTestResult {
-                ok: false,
-                detail: e.to_string(),
-            },
-        }
-    };
-    abyssal_audit::record(
-        &state.pool,
-        AuditEvent::new(
-            AuditAction::ConfigurationChanged,
-            if result.ok {
-                AuditOutcome::Success
-            } else {
-                AuditOutcome::Failure
-            },
-        )
-        .actor(Actor {
-            user_id: ctx.user.id,
-            username: &ctx.user.username,
-        })
-        .resource("notifications.smtp")
-        .metadata(serde_json::json!({ "action": "test_email", "to": to })),
-    )
-    .await?;
-    render(&state, jar, &ctx, Some(result)).await
 }
 
 #[derive(Deserialize)]

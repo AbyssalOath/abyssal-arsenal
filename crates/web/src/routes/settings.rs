@@ -44,6 +44,9 @@ use crate::theme;
 pub struct SettingsAccess {
     /// Public registration: who can get an account on this control plane.
     pub registration: bool,
+    /// Email (SMTP) test: sends real mail from the organization's mailbox
+    /// to any address, so `settings.manage` only.
+    pub email_test: bool,
     /// Apotheosis elevation window.
     pub elevation: bool,
     /// Ossuary's high-risk storage operations.
@@ -65,6 +68,7 @@ impl SettingsAccess {
     pub fn for_ctx(ctx: &abyssal_rbac::AuthContext) -> Self {
         Self {
             registration: ctx.has(Permission::SettingsManage),
+            email_test: ctx.has(Permission::SettingsManage),
             elevation: ctx.has(Permission::HostsManage),
             storage_ops: ctx.has(Permission::StorageManage),
             host_isolation: ctx.has(Permission::IncidentsRespond),
@@ -95,6 +99,16 @@ pub async fn show(
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
+    render(&state, jar, &ctx, None).await
+}
+
+async fn render(
+    state: &AppState,
+    jar: CookieJar,
+    ctx: &abyssal_rbac::AuthContext,
+    email_test: Option<crate::templates::EmailTestResult>,
+) -> Result<Response, WebError> {
+    let (state, ctx) = (state.clone(), ctx.clone());
     let access = SettingsAccess::for_ctx(&ctx);
     if !access.any() {
         return Err(WebError(AppError::Forbidden));
@@ -252,6 +266,9 @@ pub async fn show(
         panopticon_traffic_daily_retention_days,
         audit_syslog_export_enabled,
         message: None,
+        email_configured: state.notifications.has_email(),
+        email_test_default_to: ctx.user.email.clone(),
+        email_test,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -1298,4 +1315,74 @@ pub async fn set_panopticon_traffic_retention(
     .await?;
 
     Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct EmailTestForm {
+    csrf_token: String,
+    to: String,
+}
+
+/// Settings > Email: sends the test email (a Nietzsche quote, see
+/// `NotificationMessage::test`) and shows the outcome -- with the SMTP server's own
+/// error when it fails, which is otherwise only in the server log.
+pub async fn send_test_email(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<EmailTestForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let to = form.to.trim().to_string();
+    let result = if to.is_empty() {
+        crate::templates::EmailTestResult {
+            ok: false,
+            detail: "Enter an address to send the test to.".to_string(),
+        }
+    } else {
+        match state.notifications.send_test("smtp", &to).await {
+            Ok(()) => crate::templates::EmailTestResult {
+                ok: true,
+                detail: format!(
+                    "The test went to {to}. If it doesn't arrive, check that mailbox's junk \
+                     folder and the sending mailbox's Sent Items."
+                ),
+            },
+            Err(abyssal_notifications::NotificationError::NotConfigured) => {
+                crate::templates::EmailTestResult {
+                    ok: false,
+                    detail: "Email isn't configured: set SMTP_HOST and SMTP_FROM (and \
+                             SMTP_USERNAME/SMTP_PASSWORD) in .env, then restart the app. The \
+                             app's startup log says why if they're set but rejected."
+                        .to_string(),
+                }
+            }
+            Err(abyssal_notifications::NotificationError::SendFailed(reason)) => {
+                crate::templates::EmailTestResult {
+                    ok: false,
+                    detail: reason,
+                }
+            }
+        }
+    };
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(
+            AuditAction::ConfigurationChanged,
+            if result.ok {
+                AuditOutcome::Success
+            } else {
+                AuditOutcome::Failure
+            },
+        )
+        .actor(Actor {
+            user_id: ctx.user.id,
+            username: &ctx.user.username,
+        })
+        .resource("notifications.smtp")
+        .metadata(serde_json::json!({ "action": "test_email", "to": to })),
+    )
+    .await?;
+    render(&state, jar, &ctx, Some(result)).await
 }

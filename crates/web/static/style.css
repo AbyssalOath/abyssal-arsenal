@@ -657,7 +657,8 @@ th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transf
   margin-bottom: 0;
 }
 .settings-inline-form input[type="number"] { width: 80px; }
-.settings-inline-form input[type="text"] { width: 260px; }
+.settings-inline-form input[type="text"],
+.settings-inline-form input[type="email"] { width: 260px; }
 .settings-row-unit { color: var(--text-muted); font-size: 0.85rem; }
 
 /* The on/off state indicator for a setting. Deliberately not a live,

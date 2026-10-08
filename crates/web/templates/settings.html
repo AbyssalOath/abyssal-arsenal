@@ -45,6 +45,49 @@
 </div>
 {% endif %}
 
+{% if access.email_test %}
+<div class="settings-section" id="email">
+  <h2 class="settings-section-title">Email (SMTP)</h2>
+  <div class="card settings-list">
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("generate") %} Send a test email</div>
+        <p class="settings-row-desc">Checks that password resets, new-account emails and alerts can actually go out.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Sends a short test message (a word from Nietzsche) through the SMTP server
+            configured in <code>.env</code> (<code>SMTP_HOST</code>, <code>SMTP_PORT</code>,
+            <code>SMTP_TLS</code>, <code>SMTP_USERNAME</code>, <code>SMTP_PASSWORD</code>,
+            <code>SMTP_FROM</code>; changes apply on restart) and shows the server's reply. For
+            Microsoft 365: port 587 with <code>SMTP_TLS=starttls</code>, "Authenticated SMTP"
+            enabled for the sending mailbox, and <code>SMTP_FROM</code> set to that same mailbox.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if email_configured %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if email_configured %}Configured{% else %}Not configured{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/test-email" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="test-email-to" class="sr-only">Send the test to</label>
+          <input type="email" id="test-email-to" name="to" value="{{ email_test_default_to }}" placeholder="you@example.com" required>
+          <button type="submit" class="btn-warning">Send test</button>
+        </form>
+      </div>
+    </div>
+    {% if let Some(t) = email_test %}
+    <div class="{% if t.ok %}info-banner{% else %}error-banner{% endif %}" style="margin:0 16px 16px; overflow-wrap:anywhere;">
+      {% if t.ok %}<strong>Sent.</strong>{% else %}<strong>Not sent.</strong>{% endif %} {{ t.detail }}
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endif %}
+
 {% if access.risk_controls() %}
 <div class="settings-section">
   <h2 class="settings-section-title">Elevation &amp; Risk Controls</h2>

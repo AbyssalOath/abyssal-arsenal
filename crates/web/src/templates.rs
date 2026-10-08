@@ -192,10 +192,6 @@ pub struct SystemHealthTemplate {
     /// Internal TLS (private CA) summary card.
     pub tls: TlsSummary,
     pub email_configured: bool,
-    /// Prefills the test email's "to" with the viewer's own address.
-    pub email_test_default_to: String,
-    /// The result of a "Send test email" just submitted.
-    pub email_test: Option<EmailTestResult>,
 }
 
 pub struct EmailTestResult {
@@ -846,6 +842,12 @@ pub struct WorkflowsTemplate {
 #[template(path = "settings.html")]
 pub struct SettingsTemplate {
     pub base: BaseCtx,
+    /// Settings > Email (SMTP).
+    pub email_configured: bool,
+    /// Prefills the test email's "to" with the viewer's own address.
+    pub email_test_default_to: String,
+    /// The result of a "Send test email" just submitted.
+    pub email_test: Option<EmailTestResult>,
     /// Which settings this viewer may see/change.
     pub access: crate::routes::settings::SettingsAccess,
     pub public_registration_enabled: bool,

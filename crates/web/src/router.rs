@@ -155,8 +155,8 @@ pub fn build(state: AppState) -> Router {
         .route("/admin/settings", get(routes::settings::show))
         .route("/admin/health", get(routes::system_health::show))
         .route(
-            "/admin/health/test-email",
-            post(routes::system_health::send_test_email),
+            "/admin/settings/test-email",
+            post(routes::settings::send_test_email),
         )
         .route(
             "/admin/health/self-monitoring",

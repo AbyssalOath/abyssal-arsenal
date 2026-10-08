@@ -143,19 +143,7 @@
     restart. Status:
     {% if email_configured %}<span class="badge badge-success">configured</span>{% else %}<span class="badge badge-warning">not configured</span>{% endif %}
   </p>
-  <form method="post" action="/admin/health/test-email" class="action-grid">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <div>
-      <label for="test-email-to">Send a test email to</label>
-      <input type="email" id="test-email-to" name="to" value="{{ email_test_default_to }}" required>
-    </div>
-    <div style="align-self:end;">
-      <button type="submit" class="btn-secondary">Send test email</button>
-    </div>
-  </form>
-  {% if let Some(t) = email_test %}
-  <div class="{% if t.ok %}info-banner{% else %}error-banner{% endif %}" style="margin-top:12px; overflow-wrap:anywhere;">{{ t.detail }}</div>
-  {% endif %}
+  <p style="margin:0;"><a href="/admin/settings#email">Send a test email from Settings &rarr;</a></p>
 </div>
 
 <div class="card">

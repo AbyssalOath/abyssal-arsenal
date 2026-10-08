@@ -53,10 +53,13 @@ for what that means for cloning and updating.
 - **Email failures were invisible.** Creating a user or resetting a password
   now says whether the email went out -- and if not, why (no address, email
   not configured, or the SMTP server's own error) -- so the admin knows to
-  hand the temporary password over themselves. `/admin/health` has a "Send
-  test email" form that shows the server's reply, with hints for the common
-  Microsoft 365 failures (SMTP AUTH disabled, Send As, MFA), and the startup
-  log says what SMTP was configured with or why it wasn't.
+  hand the temporary password over themselves. Settings has a new "Email
+  (SMTP)" section (`settings.manage`) to send a test email -- a word from
+  Nietzsche -- to any address and see whether it went out, or the server's
+  reply when it didn't, with hints for the common Microsoft 365 failures (SMTP
+  AUTH disabled, Send As, MFA); `/admin/health` shows whether email is
+  configured. The startup log says what SMTP was configured with or why it
+  wasn't.
 - **`install.sh` mangled SMTP passwords containing `$`, `#` or quotes** by
   writing them to `.env` unquoted (Docker Compose interpolates `$`). It now
   quotes the value, and asks for the TLS mode.
