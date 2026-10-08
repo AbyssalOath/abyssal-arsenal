@@ -431,7 +431,7 @@
           <p>
             Enforcement writes to live network gear, so it is gated three ways: this global
             switch, a per-switch opt-in (on the switches page), and the operator's
-            <code>network.manage</code> permission &mdash; all three must hold before any SNMP SET
+            <code>network.nac</code> permission &mdash; all three must hold before any SNMP SET
             is issued. The <strong>quarantine VLAN</strong> is the VLAN a quarantine action moves a
             port into; it must already exist on the switch (Panopticon only moves ports into it,
             never creates it). <code>0</code> leaves quarantine disabled. The

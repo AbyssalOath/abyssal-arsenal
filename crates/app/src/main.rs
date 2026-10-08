@@ -52,6 +52,12 @@ enum Command {
         #[command(subcommand)]
         action: cli::TlsCommand,
     },
+    /// The agent install token (AAT) -- what install.sh prints at the end:
+    /// `docker compose exec app /app/abyssal-arsenal aat show`.
+    Aat {
+        #[command(subcommand)]
+        action: cli::AatCommand,
+    },
 }
 
 #[tokio::main]
@@ -64,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Some(Command::Reliquary { action }) => return cli::run(action).await,
         Some(Command::Tls { action }) => return cli::run_tls(action).await,
+        Some(Command::Aat { action }) => return cli::run_aat(action).await,
         None => {}
     }
 
@@ -72,6 +79,13 @@ async fn main() -> anyhow::Result<()> {
     let pool = abyssal_database::connect(&config.database_url).await?;
     abyssal_database::run_migrations(&pool).await?;
     abyssal_database::seed::seed_core_defaults(&pool).await?;
+    // The agent install token (AAT) exists from the first start, so
+    // install.sh can print it and /admin/hosts always has one to show.
+    // Not fatal: one that can't be decrypted (ENCRYPTION_KEY changed) only
+    // stops AAT enrollment until it's rotated on /admin/hosts.
+    if let Err(e) = abyssal_web::aat::ensure(&pool, config.encryption_key.as_ref()).await {
+        tracing::error!(error = %format!("{e:#}"), "agent install token (AAT) unavailable");
+    }
 
     // GitHub issue #10: backfills `network` for any device row that
     // predates the column, or was somehow left `NULL` -- idempotent,

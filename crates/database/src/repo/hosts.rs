@@ -15,6 +15,7 @@ struct HostRow {
     last_seen_ip: Option<String>,
     os: Option<String>,
     agent_version: Option<String>,
+    pending_approval: bool,
     revoked_at: Option<NaiveDateTime>,
 }
 
@@ -33,19 +34,34 @@ impl From<HostRow> for Host {
             last_seen_ip: row.last_seen_ip,
             os: row.os,
             agent_version: row.agent_version,
+            pending_approval: row.pending_approval,
             revoked_at: row.revoked_at.map(utc),
         }
     }
 }
 
 pub async fn create(pool: &DbPool, name: &str, credential_hash: &str) -> anyhow::Result<Host> {
+    create_with_approval(pool, name, credential_hash, false).await
+}
+
+/// [`create`], but `pending_approval` hosts are refused on the agent
+/// connection until [`approve`]d.
+pub async fn create_with_approval(
+    pool: &DbPool,
+    name: &str,
+    credential_hash: &str,
+    pending_approval: bool,
+) -> anyhow::Result<Host> {
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO hosts (id, name, credential_hash) VALUES (?, ?, ?)")
-        .bind(id.to_string())
-        .bind(name)
-        .bind(credential_hash)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO hosts (id, name, credential_hash, pending_approval) VALUES (?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(name)
+    .bind(credential_hash)
+    .bind(pending_approval)
+    .execute(pool)
+    .await?;
     find_by_id(pool, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("host vanished immediately after insert"))
@@ -124,6 +140,17 @@ pub async fn touch_last_seen_with_ip(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Lets a pending host's agent connect. Returns false if no pending host has
+/// this id.
+pub async fn approve(pool: &DbPool, id: Uuid) -> anyhow::Result<bool> {
+    let result =
+        sqlx::query("UPDATE hosts SET pending_approval = 0 WHERE id = ? AND pending_approval = 1")
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn revoke(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {

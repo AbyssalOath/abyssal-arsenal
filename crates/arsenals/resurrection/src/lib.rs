@@ -21,7 +21,10 @@ impl Arsenal for ResurrectionArsenal {
         ModuleCategory::PreserveRecover
     }
 
+    // systems.view, matching its routes (systems.view / systems.manage):
+    // it restores failed services and units, which is systems work. Gating
+    // it on backups.view showed it to roles its every page then refused.
     fn view_permissions(&self) -> &'static [Permission] {
-        &[Permission::BackupsView]
+        &[Permission::SystemsView]
     }
 }

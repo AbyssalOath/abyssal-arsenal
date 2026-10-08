@@ -117,6 +117,11 @@ jobs:
       - name: Build release binary
         run: cargo build --release -p abyssal-agent
 
+      # Three Windows assets from the one build: the zip (what self-update
+      # and install.ps1 use), the bare exe (CrowdStrike-style
+      # `/install /quiet /norestart SERVER=... AAT=...`), and the MSI
+      # (`msiexec /i ... /qn SERVER=... AAT=...`). The control plane serves
+      # all three at /agent/windows, /agent/windows-exe, /agent/windows-msi.
       - name: Package binary
         shell: bash
         run: |
@@ -128,11 +133,27 @@ jobs:
           cp target/release/abyssal-agent.exe "$agent_stage/"
           cp crates/agent/README.md LICENSE "$agent_stage/"
           7z a "${agent_stage}.zip" "$agent_stage" > /dev/null
+          cp target/release/abyssal-agent.exe "${agent_stage}.exe"
 
-          echo "AGENT_ASSET_PATH=${agent_stage}.zip" >> "$GITHUB_ENV"
+          # MSI ProductVersion is numeric only: v0.2.1 -> 0.2.1. Pinned to
+          # WiX v5 (v6+ adds a license-acceptance step).
+          dotnet tool install --global wix --version 5.0.2
+          wix build crates/agent/wix/abyssal-agent.wxs -arch x64 \
+            -d Version="${version#v}" \
+            -d AgentExe=target/release/abyssal-agent.exe \
+            -o "${agent_stage}.msi"
 
-      - name: Upload Windows agent asset
+          {
+            echo "AGENT_ZIP_PATH=${agent_stage}.zip"
+            echo "AGENT_EXE_PATH=${agent_stage}.exe"
+            echo "AGENT_MSI_PATH=${agent_stage}.msi"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload Windows agent assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          files: ${{ env.AGENT_ASSET_PATH }}
+          files: |
+            ${{ env.AGENT_ZIP_PATH }}
+            ${{ env.AGENT_EXE_PATH }}
+            ${{ env.AGENT_MSI_PATH }}

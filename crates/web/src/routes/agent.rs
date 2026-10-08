@@ -32,21 +32,51 @@ pub struct EnrollResponse {
 /// The agent's own enrollment call — authenticated purely by the one-time
 /// token (an admin-generated secret, not a browser session), so this is
 /// intentionally outside `CurrentUser`/CSRF.
+///
+/// The token may also be the AAT (`abyssal_agent_protocol::aat`), the
+/// reusable install token: never consumed, and the host starts out pending
+/// when approval is required.
 pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -> Response {
-    let token_hash = hash_token(&req.token);
-
-    match repo::host_enrollment_tokens::consume(&state.pool, &token_hash).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "invalid, expired, or already-used enrollment token",
-            )
-                .into_response();
+    let via_aat = abyssal_agent_protocol::aat::is_aat(&req.token);
+    let mut pending_approval = false;
+    if via_aat {
+        match crate::aat::matches(&state.pool, state.encryption_key.as_deref(), &req.token).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    "invalid agent install token (AAT) -- it may have been rotated; copy the \
+                     current one from /admin/hosts",
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %format!("{e:#}"), "failed to check the agent install token");
+                return aat_unavailable();
+            }
         }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to consume enrollment token");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        pending_approval = match crate::aat::require_approval(&state.pool).await {
+            Ok(required) => required,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to read the AAT approval setting");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+    } else {
+        let token_hash = hash_token(&req.token);
+        match repo::host_enrollment_tokens::consume(&state.pool, &token_hash).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    "invalid, expired, or already-used enrollment token",
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to consume enrollment token");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
         }
     }
 
@@ -63,6 +93,22 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
                     "a host named \"{}\" is already connected -- remove it from \
                      /admin/hosts first if you want to re-enroll a different machine \
                      under this name",
+                    existing.name
+                ),
+            )
+                .into_response();
+        }
+        // The AAT is shared by every machine it's deployed to, so it never
+        // authorizes replacing an existing host -- that would let anything
+        // holding it take over a host's name (and its place in the UI) while
+        // the real one is offline. A single-use token was minted by an admin
+        // for exactly this enrollment; the AAT wasn't.
+        Ok(Some(existing)) if via_aat => {
+            return (
+                StatusCode::CONFLICT,
+                format!(
+                    "a host named \"{}\" is already enrolled -- remove it from /admin/hosts \
+                     first to re-enroll this machine with the install token",
                     existing.name
                 ),
             )
@@ -111,7 +157,14 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
     let credential = generate_token();
     let credential_hash = hash_token(&credential);
 
-    let host = match repo::hosts::create(&state.pool, &req.name, &credential_hash).await {
+    let host = match repo::hosts::create_with_approval(
+        &state.pool,
+        &req.name,
+        &credential_hash,
+        pending_approval,
+    )
+    .await
+    {
         Ok(host) => host,
         Err(e) => {
             tracing::error!(error = %e, "failed to create host record");
@@ -121,7 +174,12 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
 
     if let Err(e) = abyssal_audit::record(
         &state.pool,
-        AuditEvent::new(AuditAction::HostEnrolled, AuditOutcome::Success).resource(&host.name),
+        AuditEvent::new(AuditAction::HostEnrolled, AuditOutcome::Success)
+            .resource(&host.name)
+            .metadata(serde_json::json!({
+                "via": if via_aat { "aat" } else { "enrollment_token" },
+                "pending_approval": pending_approval,
+            })),
     )
     .await
     {
@@ -133,6 +191,58 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
         credential,
     })
     .into_response()
+}
+
+/// The AAT exists but can't be read (most likely `ENCRYPTION_KEY` changed):
+/// not the agent's fault, and only an admin can fix it.
+fn aat_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "this control plane can't read its agent install token (AAT) -- an admin must rotate \
+         it on /admin/hosts",
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CaProofQuery {
+    nonce: String,
+}
+
+/// `GET /api/agent/ca?nonce=...` -- the control plane's CA bundle plus an
+/// AAT-keyed proof over it and the agent's nonce, so a host installing with
+/// only the AAT can authenticate the CA before trusting it (see
+/// `abyssal_agent_protocol::aat`). Unauthenticated by design: the caller
+/// doesn't trust this server yet, and the response proves knowledge of the
+/// AAT without revealing it. `ca_pem` is `None` (proof still included) when
+/// the certificate is publicly trusted.
+pub async fn ca_proof(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<CaProofQuery>,
+) -> Response {
+    // The agent sends 32 random bytes as hex; anything far off that is not
+    // an agent, and an unbounded nonce is just extra HMAC work.
+    if !(16..=128).contains(&query.nonce.len()) {
+        return (StatusCode::BAD_REQUEST, "nonce must be 16-128 characters").into_response();
+    }
+    let aat = match crate::aat::current(&state.pool, state.encryption_key.as_deref()).await {
+        Ok(Some(aat)) => aat,
+        Ok(None) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "this control plane has no agent install token yet",
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), "failed to read the agent install token");
+            return aat_unavailable();
+        }
+    };
+    let ca_pem =
+        crate::internal_tls::trust_bundle().or_else(|| crate::public_ca::load().map(|ca| ca.pem));
+    let proof = abyssal_agent_protocol::aat::ca_proof(&aat, &query.nonce, ca_pem.as_deref());
+    Json(abyssal_agent_protocol::aat::CaProofResponse { ca_pem, proof }).into_response()
 }
 
 pub async fn ws_upgrade(

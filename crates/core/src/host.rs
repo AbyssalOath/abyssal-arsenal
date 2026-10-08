@@ -31,6 +31,9 @@ pub struct Host {
     /// The agent binary's own version at its most recent connect, or
     /// `None` for the same reason as `os`.
     pub agent_version: Option<String>,
+    /// Enrolled with the AAT while approval was required, and not yet
+    /// approved: holds a credential, but the agent connection is refused.
+    pub pending_approval: bool,
     pub revoked_at: Option<DateTime<Utc>>,
 }
 

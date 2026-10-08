@@ -274,6 +274,13 @@ pub fn build(state: AppState) -> Router {
             "/admin/hosts/deployment-token/:id/revoke",
             post(routes::hosts::revoke_deployment_token),
         )
+        .route("/admin/hosts/aat/reveal", post(routes::hosts::reveal_aat))
+        .route("/admin/hosts/aat/rotate", post(routes::hosts::rotate_aat))
+        .route(
+            "/admin/hosts/aat/approval",
+            post(routes::hosts::set_aat_approval),
+        )
+        .route("/admin/hosts/:id/approve", post(routes::hosts::approve))
         .route(
             "/admin/hosts/:id/system-info",
             post(routes::hosts::run_system_info),
@@ -1824,6 +1831,9 @@ pub fn build(state: AppState) -> Router {
         .route("/readyz", get(routes::api::readyz))
         .route("/api/me", get(routes::api::me))
         .route("/api/hosts/enroll", post(routes::agent::enroll))
+        // AAT-keyed proof of the CA bundle, for a host installing with only
+        // the install token (abyssal_agent_protocol::aat).
+        .route("/api/agent/ca", get(routes::agent::ca_proof))
         .route("/ws/agent", get(routes::agent::ws_upgrade))
         // Public, unauthenticated bootstrap installers (no secrets in the
         // served text -- see routes::bootstrap): the target of the copy-

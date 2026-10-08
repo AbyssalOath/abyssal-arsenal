@@ -383,14 +383,17 @@ function Get-Sha256Hex([byte[]]$Bytes) {
 # Fetches the CA without validating the connection -- it isn't trusted yet;
 # that's the problem being solved. Safe because the caller compares the bytes
 # with the pinned fingerprint before using them, and nothing else is fetched
-# while validation is relaxed.
+# while validation is relaxed. The leading comma returns the byte[] as one
+# object: PowerShell otherwise unrolls an array returned from a function, and
+# the caller gets an object[] that X509Certificate2's constructor binds as a
+# *file path* ("The system cannot find the path specified").
 function Get-UntrustedContent([string]$Url) {
   if ($PSVersionTable.PSVersion.Major -ge 6) {
-    return (Invoke-WebRequest -Uri $Url -UseBasicParsing -SkipCertificateCheck).RawContentStream.ToArray()
+    return , (Invoke-WebRequest -Uri $Url -UseBasicParsing -SkipCertificateCheck).RawContentStream.ToArray()
   }
   $previous = [Net.ServicePointManager]::ServerCertificateValidationCallback
   [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-  try { return (New-Object Net.WebClient).DownloadData($Url) }
+  try { return , (New-Object Net.WebClient).DownloadData($Url) }
   finally { [Net.ServicePointManager]::ServerCertificateValidationCallback = $previous }
 }
 
@@ -456,9 +459,9 @@ function Install-Agent {
     if ($CaFingerprint) {
       $want = ($CaFingerprint -replace '[:\s-]', '').ToUpperInvariant()
       if ($want -notmatch '^[0-9A-F]{64}$') { Exit-Install 2 '-CaFingerprint must be a SHA-256 fingerprint (64 hex digits).' }
-      try { $bytes = Get-UntrustedContent "$ControlPlaneUrl/ca.crt" }
+      try { [byte[]]$bytes = Get-UntrustedContent "$ControlPlaneUrl/ca.crt" }
       catch { Exit-Install 30 "Could not download $ControlPlaneUrl/ca.crt: $($_.Exception.Message)" }
-      $ca = New-Object Security.Cryptography.X509Certificates.X509Certificate2(, $bytes)
+      $ca = [Security.Cryptography.X509Certificates.X509Certificate2]::new($bytes)
       $got = Get-Sha256Hex $ca.RawData
       if ($got -ne $want) { Exit-Install 14 "CA fingerprint mismatch: expected $want, got $got." }
       Write-Output "CA certificate verified (SHA-256 $got)."
@@ -605,6 +608,10 @@ struct AgentAsset {
     /// A version-agnostic name an operator can drop a local build under.
     generic: &'static str,
     content_type: &'static str,
+    /// The filename the browser saves it as. The archives keep the release
+    /// name; the Windows installers get the short names the AAT commands
+    /// on /admin/hosts use.
+    download_name: Option<&'static str>,
 }
 
 fn agent_asset(os: &str, version: &str) -> Option<AgentAsset> {
@@ -613,11 +620,25 @@ fn agent_asset(os: &str, version: &str) -> Option<AgentAsset> {
             versioned: format!("abyssal-agent-v{version}-x86_64-unknown-linux-gnu.tar.gz"),
             generic: "abyssal-agent-linux.tar.gz",
             content_type: "application/gzip",
+            download_name: None,
         }),
         "windows" => Some(AgentAsset {
             versioned: format!("abyssal-agent-v{version}-x86_64-pc-windows-msvc.zip"),
             generic: "abyssal-agent-windows.zip",
             content_type: "application/zip",
+            download_name: None,
+        }),
+        "windows-msi" => Some(AgentAsset {
+            versioned: format!("abyssal-agent-v{version}-x86_64-pc-windows-msvc.msi"),
+            generic: "abyssal-agent-windows.msi",
+            content_type: "application/x-msi",
+            download_name: Some("AbyssalAgent.msi"),
+        }),
+        "windows-exe" => Some(AgentAsset {
+            versioned: format!("abyssal-agent-v{version}-x86_64-pc-windows-msvc.exe"),
+            generic: "abyssal-agent-windows.exe",
+            content_type: "application/vnd.microsoft.portable-executable",
+            download_name: Some("abyssal-agent.exe"),
         }),
         _ => None,
     }
@@ -629,7 +650,10 @@ fn serve_agent_bytes(bytes: Vec<u8>, asset: &AgentAsset) -> Response {
             (CONTENT_TYPE, asset.content_type.to_string()),
             (
                 CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", asset.versioned),
+                format!(
+                    "attachment; filename=\"{}\"",
+                    asset.download_name.unwrap_or(&asset.versioned)
+                ),
             ),
         ],
         bytes,
@@ -637,7 +661,8 @@ fn serve_agent_bytes(bytes: Vec<u8>, asset: &AgentAsset) -> Response {
         .into_response()
 }
 
-/// `GET /agent/{os}` (os = `linux` | `windows`) -- serves the agent archive so a
+/// `GET /agent/{os}` (os = `linux` | `windows` | `windows-msi` |
+/// `windows-exe`) -- serves the agent archive or installer so a
 /// host being enrolled downloads it from this control plane instead of GitHub.
 /// This is what makes an internal/air-gapped rollout self-contained, and what
 /// lets the control plane distribute an agent build newer than the latest
@@ -657,7 +682,8 @@ pub async fn serve_agent(Path(os): Path<String>) -> Response {
     let Some(asset) = agent_asset(&os, version) else {
         return (
             StatusCode::NOT_FOUND,
-            "unknown agent OS -- use /agent/linux or /agent/windows",
+            "unknown agent OS -- use /agent/linux, /agent/windows, /agent/windows-msi or \
+             /agent/windows-exe",
         )
             .into_response();
     };

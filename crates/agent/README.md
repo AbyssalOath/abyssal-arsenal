@@ -67,6 +67,8 @@ when you'd rather do it by hand.
 | `--ca-cert <ca.pem>` | Trust this CA (PEM) for the control plane, in addition to the OS store. `install` copies it next to the credentials file and puts it into the service definition, so enrollment, the WebSocket, and its reconnects use it (self-update downloads come from GitHub and use only the OS store). The control plane keeps this file current when it rotates its CA (`UpdateTrustedCa`, pushed on every connect). Never picked up implicitly. |
 | `--ca-fingerprint <sha256>` | With `--ca-cert`: refuse to install unless the CA matches (hex, colons optional). |
 | `--enrollment-token-file <file>` / `ABYSSAL_ENROLLMENT_TOKEN` | Supply the token without putting it on a command line (visible in `ps` and in RMM job logs). |
+| `--aat <token>` / `ABYSSAL_AAT` | Enroll with the control plane's reusable install token (AAT) instead of a single-use one. It also verifies the control plane's CA (no `--ca-cert` needed). See [Mass deployment with the install token](#mass-deployment-with-the-install-token-aat). |
+| `--non-interactive` | Never prompt; fail with an exit code if something is missing or the process isn't elevated. |
 
 ### Exit codes
 
@@ -77,18 +79,79 @@ recognises the cause, `HINT:` on **stdout**, and exits with:
 |---|---|
 | 0 | Success |
 | 1 | Other error |
+| 2 | Bad arguments (unknown installer switch, or `--non-interactive` with `SERVER`/`AAT` missing) |
+| 3 | Not root/elevated (with `--non-interactive`) |
 | 10 | Control plane's certificate isn't trusted (`UnknownIssuer`) |
 | 11 | Control plane serves a CA certificate as its server cert (`CaUsedAsEndEntity`) |
 | 12 | Certificate doesn't cover the `--control-plane-url` address |
 | 13 | Other certificate problem (expired, not yet valid, ...) |
-| 14 | `--ca-cert` doesn't match `--ca-fingerprint` |
-| 20 | Enrollment token rejected (invalid, expired, used, revoked) |
-| 21 | Host name already in use by a connected host |
+| 14 | `--ca-cert` doesn't match `--ca-fingerprint`, or the control plane couldn't prove its CA with the AAT |
+| 20 | Enrollment token rejected (invalid, expired, used, revoked), or the AAT was rotated |
+| 21 | Host name already in use (by a connected host; with the AAT, by any enrolled host) |
 | 30 | Control plane unreachable |
 | 40 | Enrolled, but service registration/start failed |
 
-The served `install.sh` / `install.ps1` pass these through unchanged (and use
-2 for bad arguments, 3 for "not root/elevated").
+The served `install.sh` / `install.ps1` pass these through unchanged.
+
+## Mass deployment with the install token (AAT)
+
+Every control plane has one **agent install token (AAT)**, a reusable secret
+like a CrowdStrike CID. `install.sh` prints it at the end of a server install,
+and `/admin/hosts` shows it (audit-logged) with **Rotate** and a **Require
+approval** switch. Put it in a deployment package once; every machine that
+runs the installer enrolls under its own hostname.
+
+Windows release assets: `abyssal-agent-vX.Y.Z-x86_64-pc-windows-msvc.exe` and
+`.msi` (also served by the control plane at `/agent/windows-exe` and
+`/agent/windows-msi`). Both run unattended as SYSTEM:
+
+```text
+abyssal-agent.exe /install /quiet /norestart SERVER=https://arsenal.corp AAT=AAT1-...
+msiexec /i AbyssalAgent.msi /qn /norestart SERVER=https://arsenal.corp AAT=AAT1-...
+```
+
+In PDQ Deploy, add the exe as an Install step and put
+`/install /quiet /norestart SERVER=... AAT=...` in **Parameters** (or add the
+MSI and the same `SERVER=... AAT=...` as its parameters). Optional `NAME=`
+overrides the host name. The exe adds an **Apps & features** entry
+("Abyssal Arsenal Agent", uninstalling with `/uninstall`); the MSI is listed
+as itself.
+
+On Linux, `/admin/hosts` shows a one-liner that downloads the control plane's
+version of the agent from the GitHub release (publicly trusted HTTPS, so no
+CA setup) and installs it; for hosts without internet access, copy the agent
+from `/agent/linux` with your own tooling and run `sudo ./abyssal-agent
+install --control-plane-url https://arsenal.corp --aat AAT1-...`.
+
+- **No CA fingerprint needed.** Before trusting the control plane, the agent
+  sends a random nonce to `/api/agent/ca`; the control plane answers with its
+  CA and an HMAC (keyed by the AAT) over both. Only a server that knows the
+  AAT can produce it, so it survives CA rotation. The AAT itself is sent
+  only after that CA is verified.
+- **Upgrades** need no parameters: install the newer exe/MSI and it reuses
+  the existing enrollment and remembered control plane.
+- **Uninstall**: `abyssal-agent.exe /uninstall /quiet`, or remove it from
+  Apps & features (or `msiexec /x` for the MSI). An MSI install can only be
+  removed as the MSI -- `/uninstall` refuses, rather than leave Windows
+  Installer listing a product whose files are gone. It keeps this host's enrollment, so a
+  reinstall reconnects as the same host; add `PURGE=1` to delete it too.
+  Remove the host on `/admin/hosts` to decommission it there.
+- **Approval**: with *Require approval* on, AAT-enrolled hosts show as
+  *Pending approval* and can't connect until approved (they keep retrying,
+  so they come online within a minute of approval).
+- **Security**: anyone holding the AAT can enroll a machine. Treat it as a
+  secret, rotate it if it leaks (enrolled hosts are unaffected), and turn on
+  approval if that matters more than zero-touch. The control plane stores it
+  encrypted with `ENCRYPTION_KEY` (which `install.sh` generates), so database
+  dumps and backups don't carry a usable token; without that key it's stored
+  unencrypted, with a warning at every start. If the key changes, the old
+  token can't be read: rotate it on `/admin/hosts`. An AAT enrollment can never
+  replace an existing host of the same name -- remove the old one first.
+- **Troubleshooting**: a failed unattended install leaves its reason in
+  `C:\ProgramData\abyssal-agent\agent.log` and exits with one of the codes
+  above (the MSI reports 1603; see the log). The binaries aren't
+  Authenticode-signed yet, so running one by hand shows a SmartScreen prompt;
+  deploying as SYSTEM doesn't.
 
 ## Keeping an agent up to date
 
@@ -272,6 +335,12 @@ Once installed, `sc query abyssal-agent` shows its state, or use the
 Services console (`services.msc`). Re-running `install` reconfigures the
 existing service in place (same "safe to re-run" behavior as the systemd
 path) rather than failing if it's already registered.
+
+The service logs to `C:\ProgramData\abyssal-agent\agent.log` (rotated to
+`agent.log.1` at 10 MB) -- the place to look when it stops or never shows up
+as connected. A setup failure (unreadable CA, missing credentials) stops the
+service with a service-specific exit code (`sc query` shows it as
+`SERVICE_EXIT_CODE`), the same codes the install scripts document.
 
 **Model divergences from Linux**, both deliberate:
 

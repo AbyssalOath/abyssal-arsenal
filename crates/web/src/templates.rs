@@ -935,6 +935,8 @@ pub struct HostRow {
     pub online: bool,
     pub revoked: bool,
     pub elevation_remaining: Option<String>,
+    /// Enrolled with the AAT and waiting for an admin's approval.
+    pub pending_approval: bool,
     /// True when this host is currently connected but its agent's reported
     /// (or missing) protocol version doesn't match this control plane's --
     /// see `abyssal_hosts::HostConnectionRegistry::agent_protocol_mismatch`.
@@ -1003,10 +1005,25 @@ pub struct DeploymentTokenView {
     pub use_count: i64,
 }
 
+/// The agent install token (AAT) card on `/admin/hosts`.
+pub struct AatView {
+    /// The AAT in clear -- only right after an audited reveal or a rotate.
+    pub revealed: Option<String>,
+    /// Install lines, with the AAT filled in only when `revealed`.
+    pub commands: crate::deploy_commands::AatCommands,
+    pub require_approval: bool,
+    pub pending_count: usize,
+}
+
 #[derive(Template)]
 #[template(path = "hosts.html")]
 pub struct HostsTemplate {
     pub base: BaseCtx,
+    /// `hosts.enroll`: the single-use enrollment token card.
+    pub can_enroll: bool,
+    /// `hosts.manage`: deployment tokens, the AAT, and per-host actions.
+    pub can_manage: bool,
+    pub aat: AatView,
     pub hosts: Vec<HostRow>,
     pub enrollment: Option<EnrollmentInstructions>,
     /// A deployment token + command that was just generated (shown once).
@@ -1756,6 +1773,8 @@ pub struct PanopticonSwitchesTemplate {
     pub base: BaseCtx,
     pub can_manage: bool,
     pub can_scan: bool,
+    /// `network.nac`: the per-switch "allow enforcement" toggle.
+    pub can_nac: bool,
     pub switches: Vec<PanopticonSwitchRow>,
     /// `false` when no `ENCRYPTION_KEY` is configured -- the add-switch
     /// form is hidden (with an explanatory note) rather than accepting a

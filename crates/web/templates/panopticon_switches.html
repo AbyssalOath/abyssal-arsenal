@@ -195,6 +195,8 @@
             <input type="hidden" name="enabled" value="{% if s.enabled %}false{% else %}true{% endif %}">
             <button type="submit" class="btn btn-secondary">{% if s.enabled %}Disable{% else %}Enable{% endif %}</button>
           </form>
+          {% endif %}
+          {% if can_nac %}
           <form method="post" action="/arsenals/panopticon/switches/{{ s.id }}/enforcement-enabled" style="display:inline;">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
             <input type="hidden" name="enforcement_enabled" value="{% if s.enforcement_enabled %}false{% else %}true{% endif %}">
@@ -202,6 +204,8 @@
               {% if s.enforcement_enabled %}Disable enforcement{% else %}Allow enforcement{% endif %}
             </button>
           </form>
+          {% endif %}
+          {% if can_manage %}
           <a class="btn btn-danger" href="/arsenals/panopticon/switches/{{ s.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
           {% endif %}
         </td>

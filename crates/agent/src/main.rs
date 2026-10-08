@@ -11,6 +11,7 @@ mod haruspex;
 mod incarnation;
 mod init_system;
 mod inquest;
+mod installer_args;
 mod mortiscope;
 mod necropolis;
 mod necropsy;
@@ -139,11 +140,56 @@ pub enum Command {
         /// as shown on /admin/hosts. Install refuses a CA that doesn't match.
         #[arg(long, requires = "ca_cert")]
         ca_fingerprint: Option<String>,
+        /// The control plane's agent install token (AAT) from /admin/hosts --
+        /// reusable across every host, like a CrowdStrike CID. It also
+        /// verifies the control plane's CA, so no --ca-cert is needed. Also
+        /// read from the ABYSSAL_AAT environment variable.
+        #[arg(long, allow_hyphen_values = true)]
+        aat: Option<String>,
+        /// Never prompt: fail with an exit code when something is missing.
+        /// What the installer-style `/quiet` switch turns on.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Set by the MSI's install action: the MSI owns this install (and
+        /// its Apps & features entry), so don't write the exe's own.
+        #[arg(long, hide = true)]
+        msi: bool,
+    },
+    /// Stops and removes the agent's service and its installed binary. Keeps
+    /// this host's enrollment (credentials and CA) unless --purge, so a
+    /// reinstall reconnects as the same host. Remove the host on
+    /// /admin/hosts to decommission it there too. Installer-style:
+    /// `/uninstall /quiet [PURGE=1]`.
+    Uninstall {
+        /// Also delete the credentials, the trusted CA and (Windows) the log.
+        #[arg(long)]
+        purge: bool,
+        /// Leave the installed binary in place -- for the MSI, which removes
+        /// its own files.
+        #[arg(long)]
+        keep_binary: bool,
+        #[arg(long, default_value = DEFAULT_CREDENTIALS_FILE)]
+        credentials_file: PathBuf,
+        #[arg(long)]
+        non_interactive: bool,
     },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // On Windows the writer switches to the service log file once the SCM
+    // starts the service (see `winservice::log_writer`); a service has no
+    // stderr. Info by default there, so the log shows connection attempts.
+    #[cfg(windows)]
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_ansi(false)
+        .with_writer(winservice::log_writer)
+        .init();
+    #[cfg(not(windows))]
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -161,7 +207,16 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cli = Cli::parse();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let args = match installer_args::translate(&args) {
+        None => args,
+        Some(Ok(translated)) => translated,
+        Some(Err(e)) => {
+            let err = anyhow::Error::new(tls::InstallError::BadArguments(e.to_string()));
+            std::process::exit(report_failure(&err));
+        }
+    };
+    let cli = Cli::parse_from(args);
     let result = match cli.command {
         Some(Command::Run {
             control_plane_url,
@@ -187,6 +242,9 @@ async fn main() -> anyhow::Result<()> {
             credentials_file,
             ca_cert,
             ca_fingerprint,
+            aat,
+            non_interactive,
+            msi,
         }) => {
             install(InstallArgs {
                 control_plane_url,
@@ -196,9 +254,18 @@ async fn main() -> anyhow::Result<()> {
                 credentials_file,
                 ca_cert,
                 ca_fingerprint,
+                aat,
+                non_interactive,
+                msi,
             })
             .await
         }
+        Some(Command::Uninstall {
+            purge,
+            keep_binary,
+            credentials_file,
+            non_interactive,
+        }) => uninstall(&credentials_file, purge, keep_binary, non_interactive).await,
         None => {
             install(InstallArgs {
                 credentials_file: PathBuf::from(DEFAULT_CREDENTIALS_FILE),
@@ -226,6 +293,18 @@ fn report_failure(err: &anyhow::Error) -> i32 {
         println!("HINT: {hint}");
     }
     eprintln!("abyssal-agent: {err:#}");
+    // An unattended install (PDQ, Intune, the MSI) has no console anyone
+    // sees -- leave the reason where an admin on the host can find it.
+    #[cfg(windows)]
+    winservice::append_log(&format!(
+        "install/uninstall failed (exit code {}): {err:#}{}",
+        failure.exit_code(),
+        if hint.is_empty() {
+            String::new()
+        } else {
+            format!(" -- {hint}")
+        }
+    ));
     failure.exit_code()
 }
 
@@ -291,6 +370,13 @@ async fn run(
             .await
         {
             Ok(()) => tracing::warn!("connection to control plane closed; reconnecting"),
+            // The control plane refuses a host that's pending approval or
+            // revoked with 403 -- say so, rather than only "403 Forbidden".
+            Err(e) if format!("{e:#}").contains("403") => tracing::warn!(
+                error = %e,
+                "control plane refused this host -- it's pending approval or was revoked on \
+                 /admin/hosts; retrying"
+            ),
             Err(e) => tracing::error!(error = %e, "connection error; retrying"),
         }
         tracing::info!(delay = ?backoff, "reconnecting after backoff");
@@ -314,6 +400,16 @@ struct InstallArgs {
     credentials_file: PathBuf,
     ca_cert: Option<PathBuf>,
     ca_fingerprint: Option<String>,
+    aat: Option<String>,
+    non_interactive: bool,
+    msi: bool,
+}
+
+/// `Some` non-blank values only -- an MSI passes an unset property as "".
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 async fn install(args: InstallArgs) -> anyhow::Result<()> {
@@ -325,13 +421,24 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
         credentials_file,
         ca_cert,
         ca_fingerprint,
+        aat,
+        non_interactive,
+        msi,
     } = args;
     println!("Abyssal Arsenal agent setup\n");
 
-    ensure_root_or_reexec()?;
+    ensure_root_or_reexec(non_interactive)?;
 
-    let enrollment_token =
-        resolve_enrollment_token(enrollment_token, enrollment_token_file.as_deref())?;
+    let missing = |what: &str| -> anyhow::Error {
+        tls::InstallError::BadArguments(format!("{what} is required for an unattended install"))
+            .into()
+    };
+
+    let enrollment_token = non_empty(resolve_enrollment_token(
+        non_empty(enrollment_token),
+        enrollment_token_file.as_deref(),
+    )?);
+    let mut aat = non_empty(aat).or_else(|| non_empty(std::env::var("ABYSSAL_AAT").ok()));
 
     let already_enrolled = tokio::fs::metadata(&credentials_file).await.is_ok();
     if already_enrolled {
@@ -341,51 +448,74 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
         );
     }
 
-    let (control_plane_url, url_prompted) = match control_plane_url {
+    // An enrolled host remembers its control plane, so an upgrade (MSI or
+    // exe) re-run without SERVER= still works.
+    let stored_url = if already_enrolled {
+        enroll::stored_control_plane_url(&credentials_file).await
+    } else {
+        None
+    };
+    let (control_plane_url, url_prompted) = match non_empty(control_plane_url).or(stored_url) {
         Some(url) => (url, false),
+        None if non_interactive => return Err(missing("SERVER= (--control-plane-url)")),
         None => (
             prompt("Control plane URL (e.g. https://arsenal.example.com): ")?,
             true,
         ),
     };
+    let control_plane_url = control_plane_url.trim_end_matches('/').to_string();
 
-    // Fully interactive (the URL was just typed in) and no --ca-cert: offer
-    // to pin the control plane's internal CA the same way the generated
-    // install commands do, rather than failing enrollment with
-    // "UnknownIssuer". Never asked when the URL came as a flag -- a scripted
-    // run must not block on stdin.
-    let (ca_cert, ca_fingerprint) = match (ca_cert, url_prompted) {
-        (None, true) if control_plane_url.starts_with("https://") => {
-            match prompt_ca_fingerprint()? {
-                Some(fp) => (
-                    Some(fetch_ca_cert(&control_plane_url, &fp, &credentials_file).await?),
-                    Some(fp),
-                ),
-                None => (None, None),
-            }
+    let enrollment_token = if already_enrolled {
+        None
+    } else {
+        match enrollment_token.or_else(|| aat.clone()) {
+            Some(token) => Some(token),
+            None if non_interactive => return Err(missing("AAT= (--aat)")),
+            None => Some(prompt(
+                "Install token (AAT) or enrollment token (from /admin/hosts): ",
+            )?),
         }
-        (ca_cert, _) => (ca_cert, ca_fingerprint),
+    };
+    // A pasted AAT counts as one for the CA check below too.
+    if aat.is_none() {
+        aat = enrollment_token
+            .clone()
+            .filter(|t| abyssal_agent_protocol::aat::is_aat(t));
+    }
+
+    // Where the control plane's CA comes from, most explicit first: --ca-cert
+    // (checked against --ca-fingerprint if given); else proven with the AAT,
+    // which needs nothing else from the operator; else, fully interactive,
+    // a fingerprint typed in from /admin/hosts. Never a prompt when the URL
+    // came as a flag -- a scripted run must not block on stdin.
+    let https = control_plane_url.starts_with("https://");
+    let (ca_cert, ca_fingerprint) = match (ca_cert, &aat) {
+        (Some(ca_cert), _) => (Some(ca_cert), ca_fingerprint),
+        (None, Some(aat)) if https => (
+            fetch_ca_with_aat(&control_plane_url, aat, &credentials_file).await?,
+            None,
+        ),
+        (None, _) if https && url_prompted => match prompt_ca_fingerprint()? {
+            Some(fp) => (
+                Some(fetch_ca_cert(&control_plane_url, &fp, &credentials_file).await?),
+                Some(fp),
+            ),
+            None => (None, None),
+        },
+        (None, _) => (None, None),
     };
     let ca_cert = install_ca_cert(
         ca_cert.as_deref(),
         ca_fingerprint.as_deref(),
         &credentials_file,
+        already_enrolled,
     )?;
     let trust = tls::Trust::load(ca_cert.as_deref())?;
-
-    let enrollment_token = if already_enrolled {
-        None
-    } else {
-        match enrollment_token {
-            Some(token) => Some(token),
-            None => Some(prompt("Enrollment token (from /admin/hosts): ")?),
-        }
-    };
 
     let credentials = enroll::load_or_enroll(
         &control_plane_url,
         enrollment_token,
-        name,
+        non_empty(name),
         &credentials_file,
         &trust,
     )
@@ -396,11 +526,27 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
     {
         winservice::install_service(&control_plane_url, &credentials_file, ca_cert.as_deref())
             .context(tls::ServiceSetupFailed)?;
+        // One Apps & features entry, whichever way it was installed: the
+        // MSI's own, or this one for an exe install.
+        if msi {
+            winservice::set_msi_managed(true)?;
+            winservice::remove_uninstall_entry();
+        } else if winservice::is_msi_managed() {
+            println!(
+                "Note: this agent was installed by the MSI -- it stays listed (and is uninstalled) \
+                 under Apps & features as the MSI. Upgrade it with a newer MSI."
+            );
+        } else {
+            winservice::register_uninstall_entry()?;
+        }
         println!(
             "\nDone. abyssal-agent is enrolled and running as a Windows service.\n\
              Check on it any time with: sc query abyssal-agent (or the Services console)"
         );
     }
+
+    #[cfg(not(windows))]
+    let _ = msi;
 
     #[cfg(unix)]
     {
@@ -438,13 +584,15 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
 /// returning that path for the service definition. The downloaded original
 /// usually lives in a temp directory that's about to be deleted.
 ///
-/// Without `--ca-cert`, nothing is trusted beyond the OS store, even if a
-/// `ca.pem` from an earlier install is sitting there: a file in that
-/// directory only becomes trusted when an administrator names it.
+/// Without `--ca-cert`, a first install trusts nothing beyond the OS store,
+/// even if a `ca.pem` from an earlier install is sitting there: a file in
+/// that directory only becomes trusted when an administrator names it (or
+/// the AAT proves it). An already-enrolled host keeps the one it has.
 fn install_ca_cert(
     source: Option<&std::path::Path>,
     expected_fingerprint: Option<&str>,
     credentials_file: &std::path::Path,
+    already_enrolled: bool,
 ) -> anyhow::Result<Option<PathBuf>> {
     let dest = credentials_file
         .parent()
@@ -452,6 +600,18 @@ fn install_ca_cert(
         .join("ca.pem");
 
     let Some(source) = source else {
+        // Already enrolled: this is a re-run (an upgrade, a repair) of a host
+        // whose service already trusts this file -- keep trusting it, or the
+        // re-registered service could no longer reach the control plane. A
+        // first install never picks it up implicitly.
+        if already_enrolled && dest.exists() {
+            tls::read_ca_file(&dest)?;
+            println!(
+                "Keeping the trusted control-plane CA from the existing install ({}).",
+                dest.display()
+            );
+            return Ok(Some(dest));
+        }
         if dest.exists() {
             println!(
                 "Note: {} exists from an earlier install but --ca-cert wasn't given, so the \
@@ -569,6 +729,166 @@ async fn fetch_ca_cert(
     Ok(dest)
 }
 
+/// Removes the service and (unless `keep_binary`) the installed binary;
+/// with `purge`, this host's credentials, trusted CA and logs too. Each step
+/// tolerates "already gone", so it's safe to re-run and to run on a host
+/// that was only partly installed. Never contacts the control plane: the
+/// host stays listed there until an admin removes it (an agent being
+/// uninstalled is worth an admin noticing, not something it erases itself).
+async fn uninstall(
+    credentials_file: &std::path::Path,
+    purge: bool,
+    keep_binary: bool,
+    non_interactive: bool,
+) -> anyhow::Result<()> {
+    ensure_root_or_reexec(non_interactive)?;
+
+    #[cfg(windows)]
+    {
+        // Removing the files out from under the MSI would leave Windows
+        // Installer listing a broken product; it has to uninstall itself.
+        if !keep_binary && winservice::is_msi_managed() {
+            return Err(tls::InstallError::BadArguments(
+                "this agent was installed with the MSI -- uninstall it from Apps & features (or \
+                 msiexec /x AbyssalAgent.msi /qn)"
+                    .into(),
+            )
+            .into());
+        }
+        winservice::uninstall_service()?;
+        if !keep_binary {
+            winservice::remove_installed_binary()?;
+        }
+        winservice::remove_uninstall_entry();
+        if keep_binary {
+            winservice::set_msi_managed(false)?;
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if tokio::fs::metadata(SYSTEMD_UNIT_PATH).await.is_ok() {
+            let _ = run_systemctl(&["disable", "--now", "abyssal-agent"]).await;
+            tokio::fs::remove_file(SYSTEMD_UNIT_PATH)
+                .await
+                .with_context(|| format!("failed to remove {SYSTEMD_UNIT_PATH}"))?;
+            let _ = run_systemctl(&["daemon-reload"]).await;
+            println!("Removed the abyssal-agent systemd service.");
+        }
+        if !keep_binary {
+            match tokio::fs::remove_file(INSTALLED_BINARY_PATH).await {
+                Ok(()) => println!("Removed {INSTALLED_BINARY_PATH}."),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("failed to remove {INSTALLED_BINARY_PATH}"));
+                }
+            }
+        }
+    }
+
+    let dir = credentials_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    if purge {
+        // Only the files this agent writes, never the whole directory: it
+        // may be a custom --credentials-file location shared with other
+        // things.
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut files = vec![credentials_file.to_path_buf(), dir.join("ca.pem")];
+        #[cfg(windows)]
+        files.extend([
+            PathBuf::from(winservice::LOG_FILE),
+            PathBuf::from(format!("{}.1", winservice::LOG_FILE)),
+        ]);
+        for file in files {
+            match std::fs::remove_file(&file) {
+                Ok(()) => println!("Removed {}.", file.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| format!("failed to remove {}", file.display()));
+                }
+            }
+        }
+        // Succeeds only if nothing else is left in it.
+        let _ = std::fs::remove_dir(&dir);
+        println!("\nabyssal-agent uninstalled and its enrollment removed from this host.");
+    } else {
+        println!(
+            "\nabyssal-agent uninstalled. This host's enrollment is kept in {} so a reinstall \
+             reconnects as the same host (uninstall with --purge / PURGE=1 to delete it).",
+            dir.display()
+        );
+    }
+    println!("To decommission the host, also remove it on the control plane's /admin/hosts.");
+    Ok(())
+}
+
+/// Gets the control plane's CA bundle authenticated by the AAT (see
+/// `abyssal_agent_protocol::aat`): a fresh random nonce out, the bundle and
+/// an HMAC over both back, accepted only if this side computes the same
+/// HMAC. The request can't be TLS-verified yet -- that's the certificate
+/// being fetched -- so it carries only the nonce, never the AAT. Saves the
+/// bundle as `ca.pem` beside the credentials file and returns that path, or
+/// `None` when the control plane's certificate is publicly trusted.
+async fn fetch_ca_with_aat(
+    control_plane_url: &str,
+    aat: &str,
+    credentials_file: &std::path::Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    use rand::RngCore;
+    let mut nonce = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+
+    let url = format!("{control_plane_url}/api/agent/ca?nonce={nonce}");
+    let response: abyssal_agent_protocol::aat::CaProofResponse = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("could not fetch the CA from {control_plane_url}/api/agent/ca"))?
+        .json()
+        .await
+        .with_context(|| {
+            format!(
+                "{control_plane_url}/api/agent/ca didn't answer like an Abyssal Arsenal control \
+                 plane (too old for install tokens? update it)"
+            )
+        })?;
+
+    if !abyssal_agent_protocol::aat::verify_ca_proof(
+        aat,
+        &nonce,
+        response.ca_pem.as_deref(),
+        &response.proof,
+    ) {
+        return Err(tls::InstallError::CaProofInvalid.into());
+    }
+    let Some(pem) = response.ca_pem else {
+        println!("Control plane uses a publicly trusted certificate (verified with the AAT).");
+        return Ok(None);
+    };
+    // Same sanity checks as --ca-cert (PEM, certificates only).
+    tls::parse_ca_pem(pem.as_bytes()).context("the control plane's CA bundle is unusable")?;
+    let dest = credentials_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("ca.pem");
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&dest, pem.as_bytes())
+        .with_context(|| format!("failed to write {}", dest.display()))?;
+    println!("Control plane CA verified with the install token (AAT).");
+    Ok(Some(dest))
+}
+
 fn prompt(label: &str) -> anyhow::Result<String> {
     use std::io::Write;
     print!("{label}");
@@ -651,9 +971,17 @@ fn running_as_root() -> bool {
 /// next call, no risk of looping. Windows has no universal sudo
 /// equivalent available on every supported version, so there's no
 /// automatic re-exec there -- just clear guidance to re-run elevated.
-fn ensure_root_or_reexec() -> anyhow::Result<()> {
+fn ensure_root_or_reexec(non_interactive: bool) -> anyhow::Result<()> {
     if running_as_root() {
         return Ok(());
+    }
+    if non_interactive {
+        return Err(tls::InstallError::NotElevated(
+            "administrator/root privileges are required -- run it elevated (PDQ, Intune and \
+             GPO startup scripts run as SYSTEM already)"
+                .into(),
+        )
+        .into());
     }
 
     #[cfg(unix)]
@@ -682,10 +1010,12 @@ fn ensure_root_or_reexec() -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     {
-        anyhow::bail!(
+        Err(tls::InstallError::NotElevated(
             "administrator privileges are required -- right-click a terminal (Command Prompt \
              or PowerShell) and choose \"Run as administrator\", then re-run this command"
+                .into(),
         )
+        .into())
     }
     #[cfg(not(any(unix, windows)))]
     {

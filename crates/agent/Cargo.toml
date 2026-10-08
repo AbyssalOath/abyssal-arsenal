@@ -25,6 +25,8 @@ anyhow.workspace = true
 zeroize.workspace = true
 libc.workspace = true
 sha2.workspace = true
+rand.workspace = true
+chrono.workspace = true
 # Direct handles on the TLS stack reqwest and tokio-tungstenite already use
 # (same versions, same ring provider), so both share one ClientConfig that
 # can carry an operator-supplied CA -- see src/tls.rs.
@@ -38,3 +40,4 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.1"
+winreg = "0.55"

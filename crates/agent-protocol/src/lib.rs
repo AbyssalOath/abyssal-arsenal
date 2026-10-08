@@ -8,6 +8,8 @@
 //! adding a variant here (and implementing it in the agent) — the protocol
 //! itself can't be used to smuggle in anything else.
 
+pub mod aat;
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

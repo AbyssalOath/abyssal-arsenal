@@ -82,12 +82,14 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Scan Sensitive File Permissions</button>
     </form>
+    {% if can_manage %}
     <form method="post" action="/arsenals/cryptkeeper/{{ host_id }}/view-file">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="view-path">File path</label>
       <input type="text" id="view-path" name="path" placeholder="e.g. /etc/myapp/.env" required>
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} View File&hellip; (shows plaintext)</button>
     </form>
+    {% endif %}
   </div>
 </div>
 

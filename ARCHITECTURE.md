@@ -90,7 +90,13 @@ across the control-plane / agent boundary except through
   Admin, System Admin, Network Admin, Security/OPSEC Admin, Regular User)
   are seeded on startup with a sensible default permission set, but the
   seeding only sets permissions the first time a role is created -- an
-  admin's later customization is never clobbered on restart.
+  admin's later customization is never clobbered on restart. A change to
+  the defaults reaches existing installs as a versioned delta
+  (`upgrade_role_defaults` in `crates/database/src/seed.rs`, tracked by the
+  `rbac.role_defaults_version` setting): applied once, touching only the
+  permissions it names. Splitting a permission (e.g. `hosts.enroll` out of
+  `hosts.manage`, `network.nac` out of `network.manage`) grants the new one
+  to every role, custom ones included, that held the old one.
 - Enforcement is explicit and per-handler: every protected route calls
   `abyssal_rbac::ensure(&ctx, Permission::X)` itself. There is no blanket
   authorization middleware that could silently no-op or be bypassed by a
@@ -328,7 +334,7 @@ named backends worth their own enum and file the way firewalld/ufw/nftables
 ## Host enrollment and the agent protocol
 
 1. An admin generates a short-lived (15 minute), single-use enrollment
-   token from `/admin/hosts` (requires `hosts.manage`).
+   token from `/admin/hosts` (requires `hosts.enroll`).
 2. The operator runs `abyssal-agent` on the target host (with no arguments,
    it interactively prompts for the control plane URL and the token, then
    installs and enables a systemd service; `abyssal-agent run
@@ -873,7 +879,7 @@ The shape is the same on both pages, and deliberately so:
   browser just because that output ended up on a progress page.
 - Every request the polling script makes goes through the exact same
   `abyssal_rbac::ensure` permission check as the page itself
-  (`network.scan` for the scan job, `hosts.manage` for the deploy job) --
+  (`network.scan` for the scan job, `hosts.enroll` for the deploy job) --
   the JSON endpoint is a new URL, not a new permission boundary.
 
 The scan progress bar's own percentage comes from reading nmap's stdout
@@ -1106,7 +1112,7 @@ below for what that implies for toggling them).
   read-modify-writes, keyed by the bridge port number resolved from ifIndex
   via `dot1dBasePortIfIndex`). Gated three ways -- the global
   `panopticon.enforcement_enabled` kill-switch (off by default), the
-  per-switch `enforcement_enabled` opt-in, and the operator's `network.manage`
+  per-switch `enforcement_enabled` opt-in, and the operator's `network.nac`
   permission -- all re-checked in `apply` before any write, so a route can't
   bypass them. Each action snapshots the port's prior state into
   `panopticon_enforcement_actions` so a revert restores it exactly; the SNMP

@@ -91,3 +91,26 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  windows-agent:
+    name: windows agent + MSI
+    runs-on: windows-latest
+    # The only place the Windows agent and its MSI are built before a
+    # release -- without this, a broken build or .wxs would first fail the
+    # release job, after the tag is already pushed.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p abyssal-agent -- -D warnings
+      - run: cargo test -p abyssal-agent
+      - run: cargo build --release -p abyssal-agent
+      - name: Build MSI
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet tool install --global wix --version 5.0.2
+          wix build crates/agent/wix/abyssal-agent.wxs -arch x64 \
+            -d Version="$(tr -d '[:space:]' < VERSION)" \
+            -d AgentExe=target/release/abyssal-agent.exe \
+            -o abyssal-agent-ci.msi

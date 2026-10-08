@@ -123,7 +123,10 @@ impl FromRequestParts<AppState> for AgentAuth {
             })?
             .ok_or(AgentAuthError(StatusCode::UNAUTHORIZED))?;
 
-        if !host.is_active() {
+        // A pending host (enrolled with the AAT while approval is required)
+        // keeps retrying with backoff, so it connects shortly after an admin
+        // approves it -- nothing to re-run on the host.
+        if !host.is_active() || host.pending_approval {
             return Err(AgentAuthError(StatusCode::FORBIDDEN));
         }
 

@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Abyssal Arsenal agent MSI (WiX v5, built by .github/workflows/release.yml).
+
+  Unattended install, the way a CrowdStrike Falcon MSI is deployed:
+
+    msiexec /i AbyssalAgent.msi /qn /norestart SERVER=https://arsenal.corp AAT=AAT1-...
+
+  The MSI only places abyssal-agent.exe in C:\Program Files\AbyssalAgent; the
+  agent's own `install` does the rest (verifies the control plane's CA with the
+  AAT, enrolls, registers and starts the LocalSystem service), exactly as the
+  exe's `/install` does, so the two can't drift apart. Uninstall runs the
+  agent's `uninstall`, which removes the service and keeps the enrollment
+  unless PURGE=1. An upgrade (a newer MSI over an older one) needs neither
+  SERVER nor AAT: the agent remembers its control plane and is already
+  enrolled.
+
+  Properties: SERVER (control plane URL), AAT (install token; hidden from the
+  MSI log), NAME (optional host name override), PURGE=1 (on uninstall, also
+  delete this host's credentials, CA and log).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Abyssal Arsenal Agent"
+           Manufacturer="Abyssal Arsenal"
+           Version="$(var.Version)"
+           UpgradeCode="{C467D86B-578E-4C4B-A59C-767A4BFEE03C}"
+           Scope="perMachine"
+           Compressed="yes">
+    <SummaryInformation Description="Abyssal Arsenal managed-host agent" />
+
+    <!-- Remove the old version first (its uninstall stops the service, so
+         the exe isn't locked), then install the new one. -->
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="SERVER" Secure="yes" />
+    <Property Id="AAT" Secure="yes" Hidden="yes" />
+    <Property Id="NAME" Secure="yes" />
+    <Property Id="PURGE" Secure="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPCOMMENTS" Value="Connects this host to its Abyssal Arsenal control plane." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="AbyssalAgent">
+        <Component Id="AgentExe" Bitness="always64">
+          <File Id="AgentExeFile" Source="$(var.AgentExe)" Name="abyssal-agent.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Abyssal Arsenal Agent">
+      <ComponentRef Id="AgentExe" />
+    </Feature>
+
+    <!-- Deferred + Impersonate="no": runs as LocalSystem, after the exe is in
+         place. Empty properties reach the agent as "", which it treats as not
+         given. A non-zero exit fails (and rolls back) the install; the reason
+         is in C:\ProgramData\abyssal-agent\agent.log. -->
+    <CustomAction Id="InstallAgent"
+                  FileRef="AgentExeFile"
+                  ExeCommand="install --non-interactive --msi --control-plane-url &quot;[SERVER]&quot; --aat &quot;[AAT]&quot; --name &quot;[NAME]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="UninstallAgent"
+                  FileRef="AgentExeFile"
+                  ExeCommand="uninstall --non-interactive --keep-binary"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <CustomAction Id="UninstallAgentPurge"
+                  FileRef="AgentExeFile"
+                  ExeCommand="uninstall --non-interactive --keep-binary --purge"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="UninstallAgent" Before="RemoveFiles"
+              Condition='REMOVE="ALL" AND NOT (PURGE="1" AND NOT UPGRADINGPRODUCTCODE)' />
+      <Custom Action="UninstallAgentPurge" Before="RemoveFiles"
+              Condition='REMOVE="ALL" AND PURGE="1" AND NOT UPGRADINGPRODUCTCODE' />
+      <Custom Action="InstallAgent" After="InstallFiles"
+              Condition='NOT REMOVE="ALL"' />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

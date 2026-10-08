@@ -8,3 +8,5 @@ authors.workspace = true
 [dependencies]
 serde.workspace = true
 uuid.workspace = true
+hmac.workspace = true
+sha2.workspace = true

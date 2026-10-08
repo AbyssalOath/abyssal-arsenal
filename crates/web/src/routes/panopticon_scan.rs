@@ -128,7 +128,7 @@ pub async fn scan_status_json(
 /// Renders a completed (or failed) job's results -- reproduces exactly
 /// what `routes/panopticon.rs::scan` used to render inline before scans
 /// ran as background jobs: the "Quick Add Host" picker when there's a
-/// `hosts.manage`-permitted admin and at least one discovered device,
+/// `hosts.enroll`-permitted admin and at least one discovered device,
 /// otherwise the plain Panopticon dashboard with the scan's output or
 /// error. Redirects back to the progress page for a job that's still
 /// running, so this URL is safe to hit directly (e.g. a bookmark) at any
@@ -160,7 +160,7 @@ pub async fn scan_view(
             let result_output = snapshot.result_output.clone();
             let rescan_notice = snapshot.rescan_notice.clone();
             drop(snapshot);
-            if ctx.has(Permission::HostsManage) && !discovered.is_empty() {
+            if ctx.has(Permission::HostsEnroll) && !discovered.is_empty() {
                 return super::panopticon_deploy::render_scan_picker_from_discovered(
                     &state,
                     &jar,

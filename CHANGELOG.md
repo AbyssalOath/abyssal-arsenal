@@ -10,6 +10,91 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Added
+
+- **Agent install token (AAT) and Windows exe/MSI installers, for
+  CrowdStrike-style mass deployment.** Each control plane has one reusable
+  install token, like a CrowdStrike CID: `install.sh` prints it, and
+  `/admin/hosts` shows it (each view audit-logged) with Rotate and a "Require
+  approval" switch (off by default). The release now ships the Windows agent
+  as a bare exe and an MSI as well as the zip, also served at
+  `/agent/windows-exe` and `/agent/windows-msi`:
+  `abyssal-agent.exe /install /quiet /norestart SERVER=<url> AAT=<token>` or
+  `msiexec /i AbyssalAgent.msi /qn SERVER=<url> AAT=<token>`, ready for a PDQ
+  Deploy package. No CA fingerprint is needed: the agent has the control plane
+  prove its CA with an HMAC keyed by the AAT (`GET /api/agent/ca`) before
+  trusting it, which keeps working across CA rotations. Hosts enrolled with
+  the AAT while approval is required wait as "Pending approval" (migration
+  0041) and are refused on the agent connection until approved. An AAT
+  enrollment never replaces an existing host of the same name. New agent
+  options: `--aat`, `--non-interactive`, and an `uninstall` command
+  (`/uninstall /quiet [PURGE=1]`), which keeps the enrollment unless purged so
+  a reinstall reconnects as the same host. An enrolled agent remembers its
+  control plane, so an upgrade needs no parameters. CI now builds the Windows
+  agent and MSI on every push.
+  - The AAT is encrypted at rest with `ENCRYPTION_KEY` (AES-256-GCM, like SNMP
+    and Sepulchre secrets), so database dumps and Reliquary backups don't
+    carry a usable token. A plaintext one is encrypted on the first start with
+    a key; without a key it stays plaintext with a startup warning. A token
+    that can't be decrypted (key changed) doesn't stop the server -- rotate it.
+  - The exe install adds an Apps & features entry (uninstall string
+    `abyssal-agent.exe /uninstall`), removed on uninstall; MSI installs are
+    listed as the MSI only, and `/uninstall` refuses to remove an MSI install
+    out from under Windows Installer.
+  - Linux: the AAT card offers a one-liner that downloads the control plane's
+    version of the agent from the GitHub release (publicly trusted HTTPS) and
+    installs it, alongside the offline "agent already on the host" command.
+
+### Changed
+
+- **Built-in roles re-examined for least privilege.** Two new permissions:
+  `hosts.enroll` (single-use enrollment tokens and Panopticon's "Add hosts",
+  split from `hosts.manage`, which keeps removal/revocation, reusable
+  deployment tokens, the install token and approvals) and `network.nac`
+  (NAC enforcement, policy rules and RADIUS, split from `network.manage`,
+  since it can take any device off the network). Existing installs are
+  updated once at startup: every role, custom ones included, that held
+  `hosts.manage` / `network.manage` also gets the new permission, and the
+  built-in roles get these changes, leaving any other customization alone:
+  - **Network Admin**: + `network.scan` (discovery scans and switch polls,
+    previously impossible for it), `hosts.view`, `hosts.enroll` (add hosts
+    through Panopticon), `hosts.elevate`; keeps `network.nac`.
+  - **System Admin**: + Sepulchre (`storage_connections.view/.manage`, the
+    storage connectivity Reliquary backs up to) and `hosts.elevate`; loses
+    `users.view` (the control plane's own login accounts aren't systems
+    work). Managing Sepulchre key material still also needs
+    `security.manage`.
+  - **Security / OPSEC Admin**: + read-only `systems.view`, `network.view`
+    and `host_users.view` for investigations, `hosts.view`, `hosts.elevate`.
+  - **Regular User**: + `hosts.view` (the read-only host list).
+  - `hosts.elevate` still requires the host's sudo password, and is only
+    needed for agents running unprivileged.
+  - `/admin/hosts` now shows each action only to roles that can use it.
+
+### Fixed
+
+- **A read-only role could read any file on a managed host.** Cryptkeeper's
+  "View File" (full contents of an arbitrary path, read by an agent that
+  usually runs as root -- `/etc/shadow`, private keys) required only
+  `security.view`, which Regular User holds. It now requires
+  `security.manage`, and the form is hidden without it.
+- **Resurrection was shown to the wrong roles.** It was gated on
+  `backups.view` while every page in it requires `systems.view` (it restores
+  failed services, which is systems work); it now uses `systems.view`.
+- **The Windows install script failed with `Exception calling ".ctor" with
+  "1" argument(s): "The system cannot find the path specified."`** PowerShell
+  unrolled the downloaded CA's `byte[]` when the helper returned it, and
+  `X509Certificate2` then read the resulting `object[]` as a file path.
+  `install.ps1` now returns it intact and casts it explicitly.
+- **The Windows service stopped immediately after install (`sc query`:
+  `STOPPED`, `WIN32_EXIT_CODE 1067`).** The service parsed the SCM's *start
+  parameters* (just the service name) as its command line instead of the
+  registered `run --control-plane-url ...` one; clap rejected
+  `abyssal-agent abyssal-agent` by exiting the process before it ever
+  reported to the SCM. It now parses its real command line, never lets clap
+  exit, reports a setup failure as a service-specific exit code, and logs to
+  `C:\ProgramData\abyssal-agent\agent.log` (a service has no console).
+
 ## [0.2.0] - 2026-10-08 
 
 > **Action needed for internal (self-signed) installs.** Pull and re-run

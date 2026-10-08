@@ -235,7 +235,7 @@ pub async fn scan_picker_refresh(
     CurrentUser(ctx): CurrentUser,
     body: Bytes,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsEnroll)?;
     let fields = FormFields::parse(&body);
     require_csrf(&jar, &fields.one("csrf_token"))?;
     let all_ips = fields.many("all_ips");
@@ -274,7 +274,7 @@ pub async fn credentials_form(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsEnroll)?;
     let fields = FormFields::parse(&body);
     require_csrf(&jar, &fields.one("csrf_token"))?;
     let selected_ips = fields.many("selected_ips");
@@ -602,7 +602,7 @@ pub async fn deploy_hostkeys(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsEnroll)?;
     let form = DeployCredentialsSubmitForm::from_fields(&FormFields::parse(&body));
     require_csrf(&jar, &form.csrf_token)?;
     validate_ips(&form.ip)?;
@@ -823,7 +823,7 @@ pub async fn deploy_confirm(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsEnroll)?;
     let form = DeployConfirmForm::from_fields(&FormFields::parse(&body));
     require_csrf(&jar, &form.csrf_token)?;
     if !form.confirm {
@@ -963,7 +963,7 @@ pub async fn deploy_status(
     CurrentUser(ctx): CurrentUser,
     Path(job_id): Path<Uuid>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsEnroll)?;
 
     let job = state
         .deploy_jobs
@@ -1034,7 +1034,7 @@ pub async fn deploy_status_json(
     CurrentUser(ctx): CurrentUser,
     Path(job_id): Path<Uuid>,
 ) -> Result<axum::Json<serde_json::Value>, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsEnroll)?;
 
     let job = state
         .deploy_jobs

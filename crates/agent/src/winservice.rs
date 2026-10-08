@@ -22,7 +22,9 @@
 //! from the Linux path.
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -51,6 +53,52 @@ pub(crate) const INSTALLED_BINARY_DIR: &str = r"C:\Program Files\AbyssalAgent";
 pub(crate) const INSTALLED_BINARY_PATH: &str = r"C:\Program Files\AbyssalAgent\abyssal-agent.exe";
 
 define_windows_service!(ffi_service_main, service_main);
+
+/// Set once the SCM has started this process as the service: from then on
+/// log output goes to [`LOG_FILE`] instead of stderr, which a service
+/// doesn't have.
+static SERVICE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// The service's log, beside `credentials.json` -- the only place to see why
+/// it stopped or can't reach the control plane. Rotated once at
+/// [`LOG_MAX_BYTES`] to `agent.log.1`, so it can't grow without bound.
+pub(crate) const LOG_FILE: &str = r"C:\ProgramData\abyssal-agent\agent.log";
+const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Appends one line to [`LOG_FILE`], best-effort -- for failures outside the
+/// service (an unattended install), which have no tracing writer pointed
+/// there.
+pub(crate) fn append_log(line: &str) {
+    if let Some(dir) = Path::new(LOG_FILE).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(LOG_FILE)
+    {
+        let _ = writeln!(file, "{} {line}", chrono::Utc::now().to_rfc3339());
+    }
+}
+
+/// `tracing_subscriber`'s writer for every event: stderr normally, the
+/// service log file once in service mode. Falls back to stderr (i.e.
+/// nowhere) rather than failing the event if the file can't be opened.
+pub(crate) fn log_writer() -> Box<dyn Write> {
+    if SERVICE_MODE.load(Ordering::Relaxed) {
+        if std::fs::metadata(LOG_FILE).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+            let _ = std::fs::rename(LOG_FILE, format!("{LOG_FILE}.1"));
+        }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(LOG_FILE)
+        {
+            return Box::new(file);
+        }
+    }
+    Box::new(std::io::stderr())
+}
 
 /// Registers (or, on a re-run, reconfigures) `abyssal-agent run <args>`
 /// as an auto-start `LocalSystem` service and starts it immediately --
@@ -113,6 +161,130 @@ pub fn install_service(
     Ok(())
 }
 
+/// The Apps & features ("Add/Remove Programs") entry for an exe install --
+/// what a CrowdStrike-style `/install` leaves so a tech finds the agent where
+/// they'd look. An MSI install has Windows Installer's own entry instead.
+const ARP_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AbyssalArsenalAgent";
+/// Holds `ManagedByMsi = 1` while the MSI owns this install.
+const AGENT_KEY: &str = r"SOFTWARE\AbyssalArsenal\Agent";
+
+fn hklm() -> winreg::RegKey {
+    winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+}
+
+/// Written/updated by every exe `/install`, so the version shown stays
+/// current across upgrades.
+pub fn register_uninstall_entry() -> anyhow::Result<()> {
+    let (key, _) = hklm()
+        .create_subkey(ARP_KEY)
+        .context("failed to create the Apps & features entry")?;
+    let exe = INSTALLED_BINARY_PATH;
+    let size_kb = std::fs::metadata(exe).map(|m| m.len() / 1024).unwrap_or(0) as u32;
+    key.set_value("DisplayName", &"Abyssal Arsenal Agent")?;
+    key.set_value("DisplayVersion", &env!("CARGO_PKG_VERSION"))?;
+    key.set_value("Publisher", &"Abyssal Arsenal")?;
+    key.set_value("DisplayIcon", &exe)?;
+    key.set_value("InstallLocation", &INSTALLED_BINARY_DIR)?;
+    key.set_value(
+        "InstallDate",
+        &chrono::Local::now().format("%Y%m%d").to_string(),
+    )?;
+    key.set_value("UninstallString", &format!("\"{exe}\" /uninstall"))?;
+    key.set_value(
+        "QuietUninstallString",
+        &format!("\"{exe}\" /uninstall /quiet"),
+    )?;
+    key.set_value("EstimatedSize", &size_kb)?;
+    key.set_value("NoModify", &1u32)?;
+    key.set_value("NoRepair", &1u32)?;
+    Ok(())
+}
+
+/// Best-effort: nothing to do if it isn't there.
+pub fn remove_uninstall_entry() {
+    let _ = hklm().delete_subkey_all(ARP_KEY);
+}
+
+/// Recorded by the MSI's install action (`install --msi`), cleared by its
+/// uninstall action.
+pub fn set_msi_managed(managed: bool) -> anyhow::Result<()> {
+    if managed {
+        let (key, _) = hklm().create_subkey(AGENT_KEY)?;
+        key.set_value("ManagedByMsi", &1u32)?;
+    } else if let Ok(key) = hklm().open_subkey_with_flags(AGENT_KEY, winreg::enums::KEY_SET_VALUE) {
+        let _ = key.delete_value("ManagedByMsi");
+    }
+    Ok(())
+}
+
+pub fn is_msi_managed() -> bool {
+    hklm()
+        .open_subkey(AGENT_KEY)
+        .and_then(|key| key.get_value::<u32, _>("ManagedByMsi"))
+        .is_ok_and(|v| v == 1)
+}
+
+/// Stops the service (waiting up to 30s for it to exit) and deletes it.
+/// Nothing to do if it isn't registered.
+pub fn uninstall_service() -> anyhow::Result<()> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let Ok(service) = manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+    ) else {
+        return Ok(());
+    };
+    if service.query_status()?.current_state != ServiceState::Stopped {
+        let _ = service.stop();
+        for _ in 0..60 {
+            if service.query_status()?.current_state == ServiceState::Stopped {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    service
+        .delete()
+        .context("failed to delete the abyssal-agent service")?;
+    println!("Removed the abyssal-agent service.");
+    Ok(())
+}
+
+/// Removes `INSTALLED_BINARY_DIR`. A running .exe can't delete itself, so
+/// when this *is* the installed copy (the usual `/uninstall` case), the
+/// removal is handed to a detached `cmd` that waits for this process to exit.
+pub fn remove_installed_binary() -> anyhow::Result<()> {
+    let dir = Path::new(INSTALLED_BINARY_DIR);
+    if !dir.exists() {
+        return Ok(());
+    }
+    if is_installed_binary(&std::env::current_exe()?) {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("cmd.exe")
+            .raw_arg(format!(
+                "/d /c ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{INSTALLED_BINARY_DIR}\""
+            ))
+            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+            .spawn()
+            .context("failed to schedule removal of the agent binary")?;
+        println!("{INSTALLED_BINARY_DIR} will be removed once this process exits.");
+    } else {
+        std::fs::remove_dir_all(dir)
+            .with_context(|| format!("failed to remove {INSTALLED_BINARY_DIR}"))?;
+        println!("Removed {INSTALLED_BINARY_DIR}.");
+    }
+    Ok(())
+}
+
+/// Windows paths are case-insensitive; `current_exe()` may not match the
+/// constant's casing (and under the MSI, it *is* the installed copy).
+fn is_installed_binary(path: &Path) -> bool {
+    path.to_string_lossy()
+        .eq_ignore_ascii_case(INSTALLED_BINARY_PATH)
+}
+
 /// Copies the currently-running binary to a fixed, hardened system
 /// location (`INSTALLED_BINARY_PATH`) if it isn't already running from
 /// there, then re-asserts its ACLs, and returns that canonical path for
@@ -134,7 +306,7 @@ fn install_agent_binary() -> anyhow::Result<PathBuf> {
         std::env::current_exe().context("could not determine this binary's own path")?;
     let target = PathBuf::from(INSTALLED_BINARY_PATH);
 
-    if current_exe != target {
+    if !is_installed_binary(&current_exe) {
         std::fs::create_dir_all(INSTALLED_BINARY_DIR)
             .with_context(|| format!("failed to create {INSTALLED_BINARY_DIR}"))?;
         std::fs::copy(&current_exe, &target).with_context(|| {
@@ -189,13 +361,20 @@ pub fn run_as_service() -> windows_service::Result<()> {
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
 }
 
-fn service_main(arguments: Vec<OsString>) {
-    if let Err(e) = run_service(arguments) {
-        tracing::error!(error = %e, "Windows service run failed");
+/// `_arguments` are the service *start* parameters (`sc start abyssal-agent
+/// <params>`, normally just the service name), not the command line
+/// `install_service` registered -- that one is this process's own
+/// `std::env::args_os()`, and is what's parsed below. Parsing the start
+/// parameters instead once handed clap `abyssal-agent abyssal-agent`, which
+/// it rejected by exiting the process outright: the SCM's error 1067.
+fn service_main(_arguments: Vec<OsString>) {
+    SERVICE_MODE.store(true, Ordering::Relaxed);
+    if let Err(e) = run_service() {
+        tracing::error!(error = %format!("{e:#}"), "Windows service run failed");
     }
 }
 
-fn run_service(arguments: Vec<OsString>) -> anyhow::Result<()> {
+fn run_service() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
@@ -209,73 +388,88 @@ fn run_service(arguments: Vec<OsString>) -> anyhow::Result<()> {
         }
     };
     let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
+    let set_state = |state: ServiceState, exit_code: ServiceExitCode| {
+        status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: state,
+            controls_accepted: if state == ServiceState::Running {
+                ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN
+            } else {
+                ServiceControlAccept::empty()
+            },
+            exit_code,
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })
+    };
 
-    status_handle.set_service_status(ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
-        process_id: None,
-    })?;
+    // try_parse, never parse: clap's own error path calls `exit()`, which
+    // would kill the process without ever reporting Stopped to the SCM.
+    let cli = match <crate::Cli as clap::Parser>::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(e) => {
+            tracing::error!(error = %e, "invalid service command line -- re-run install");
+            set_state(ServiceState::Stopped, ServiceExitCode::ServiceSpecific(2))?;
+            return Ok(());
+        }
+    };
+    let Some(crate::Command::Run {
+        control_plane_url,
+        enrollment_token,
+        name,
+        credentials_file,
+        ca_cert,
+    }) = cli.command
+    else {
+        tracing::error!("service command line isn't `run ...` -- re-run install");
+        set_state(ServiceState::Stopped, ServiceExitCode::ServiceSpecific(2))?;
+        return Ok(());
+    };
 
-    // The SCM invokes this executable with exactly the `launch_arguments`
-    // `install_service` registered, the same shape clap's own `Cli` parses
-    // from a normal interactive launch -- reuse that parsing rather than
-    // duplicating it, so the two never drift out of sync.
-    let mut full_args = vec![OsString::from(SERVICE_NAME)];
-    full_args.extend(arguments);
-    let cli = <crate::Cli as clap::Parser>::parse_from(full_args);
+    set_state(ServiceState::Running, ServiceExitCode::Win32(0))?;
+    tracing::info!(%control_plane_url, "abyssal-agent service started");
 
     // Runs on this dedicated OS thread the SCM handed the service,
     // reusing the same async `run()` reconnect loop the interactive path
     // uses -- identical backoff/reconnect behavior on both platforms.
     let runtime = tokio::runtime::Runtime::new()?;
-    let handle = runtime.spawn(async move {
-        if let Some(crate::Command::Run {
-            control_plane_url,
-            enrollment_token,
-            name,
-            credentials_file,
-            ca_cert,
-        }) = cli.command
-        {
-            let _ = crate::run(
-                control_plane_url,
-                enrollment_token,
-                name,
-                credentials_file,
-                ca_cert,
-            )
-            .await;
-        }
-    });
+    let handle = runtime.spawn(crate::run(
+        control_plane_url,
+        enrollment_token,
+        name,
+        credentials_file,
+        ca_cert,
+    ));
 
-    // `run()` never returns on its own (infinite reconnect loop) -- the
-    // only way out of this thread is the stop signal below, matching
-    // systemd's own SIGTERM-only shutdown for this agent today.
+    // `run()` only returns on a setup failure (unreadable CA, no
+    // credentials, ...) -- its reconnect loop is otherwise infinite, so the
+    // usual way out is the stop signal below.
     loop {
         match shutdown_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(()) => break,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if handle.is_finished() {
-                    break;
-                }
-            }
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) if handle.is_finished() => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
 
-    status_handle.set_service_status(ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::Stopped,
-        controls_accepted: ServiceControlAccept::empty(),
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
-        process_id: None,
-    })?;
-
+    let exit_code = if handle.is_finished() {
+        match runtime.block_on(handle) {
+            Ok(Err(e)) => {
+                tracing::error!(error = %format!("{e:#}"), "agent stopped");
+                let code = crate::tls::classify(&e).exit_code();
+                ServiceExitCode::ServiceSpecific(code.max(1) as u32)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "agent task panicked");
+                ServiceExitCode::ServiceSpecific(1)
+            }
+            Ok(Ok(())) => ServiceExitCode::Win32(0),
+        }
+    } else {
+        ServiceExitCode::Win32(0)
+    };
+    runtime.shutdown_timeout(Duration::from_secs(2));
+    set_state(ServiceState::Stopped, exit_code)?;
     Ok(())
 }

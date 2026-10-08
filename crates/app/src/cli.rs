@@ -61,6 +61,36 @@ pub enum TlsCommand {
     Reload,
 }
 
+#[derive(Subcommand)]
+pub enum AatCommand {
+    /// Prints the current AAT (creating it if there is none yet).
+    Show,
+    /// Replaces it: the old one stops enrolling hosts immediately.
+    Rotate,
+}
+
+/// Like the TLS commands, not in the audit trail (no user session); viewing
+/// and rotating from /admin/hosts is.
+pub async fn run_aat(command: AatCommand) -> anyhow::Result<()> {
+    let database_url =
+        std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
+    let pool = abyssal_database::connect(&database_url).await?;
+    // Same key as the server (the container's environment), so the token is
+    // read and written encrypted exactly as the server does.
+    let key = std::env::var("ENCRYPTION_KEY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| abyssal_core::EncryptionKey::from_base64(&v))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("ENCRYPTION_KEY is invalid: {e}"))?;
+    let aat = match command {
+        AatCommand::Show => abyssal_web::aat::ensure(&pool, key.as_ref()).await?,
+        AatCommand::Rotate => abyssal_web::aat::rotate(&pool, key.as_ref(), None).await?,
+    };
+    println!("{aat}");
+    Ok(())
+}
+
 /// Break-glass internal TLS management. Changes made here are not in the
 /// audit trail (there's no user session); the web UI is the normal path.
 pub async fn run_tls(command: TlsCommand) -> anyhow::Result<()> {

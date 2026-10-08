@@ -441,7 +441,10 @@ pub async fn view_sensitive_file(
     Path(host_id): Path<Uuid>,
     Form(form): Form<PathForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SecurityView)?;
+    // security.manage, not .view: this returns a file's full contents --
+    // /etc/shadow, a private key -- read by an agent that's usually root.
+    // A read-only role must never be able to dump host secrets.
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
     require_csrf(&jar, &form.csrf_token)?;
     let path = validate_path(&form.path, "file path")?;
     run_read_op(

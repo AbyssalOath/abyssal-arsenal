@@ -22,13 +22,14 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
         role::SYSTEM_ADMIN,
         "General system administration: systems, storage, containers, backups.",
         vec![
-            Permission::UsersView,
             Permission::SystemsView,
             Permission::SystemsManage,
             Permission::HostUsersView,
             Permission::HostUsersManage,
             Permission::StorageView,
             Permission::StorageManage,
+            Permission::StorageConnectionsView,
+            Permission::StorageConnectionsManage,
             Permission::ContainersView,
             Permission::ContainersManage,
             Permission::BackupsView,
@@ -36,7 +37,9 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::BackupsRestore,
             Permission::AuditView,
             Permission::HostsView,
+            Permission::HostsEnroll,
             Permission::HostsManage,
+            Permission::HostsElevate,
         ],
     )
     .await?;
@@ -49,7 +52,12 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::SystemsView,
             Permission::NetworkView,
             Permission::NetworkManage,
+            Permission::NetworkScan,
+            Permission::NetworkNac,
             Permission::AuditView,
+            Permission::HostsView,
+            Permission::HostsEnroll,
+            Permission::HostsElevate,
         ],
     )
     .await?;
@@ -60,12 +68,17 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
         "Security hardening, incident response, and audit oversight.",
         vec![
             Permission::UsersView,
+            Permission::SystemsView,
+            Permission::NetworkView,
+            Permission::HostUsersView,
             Permission::SecurityView,
             Permission::SecurityManage,
             Permission::IncidentsView,
             Permission::IncidentsRespond,
             Permission::AuditView,
             Permission::AuditExport,
+            Permission::HostsView,
+            Permission::HostsElevate,
         ],
     )
     .await?;
@@ -82,11 +95,162 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::StorageView,
             Permission::BackupsView,
             Permission::IncidentsView,
+            Permission::HostsView,
         ],
     )
     .await?;
 
+    upgrade_role_defaults(pool).await?;
+
     Ok(())
+}
+
+/// The version of the built-in roles' default permissions an install has
+/// been brought up to. `seed_role` only sets a role's permissions when it's
+/// first created (so an admin's customizations survive restarts), which means
+/// a change to the defaults never reaches an existing install on its own --
+/// each version below is that change, applied exactly once.
+const ROLE_DEFAULTS_VERSION_KEY: &str = "rbac.role_defaults_version";
+/// Installs from before this tracking existed are at version 1.
+const ROLE_DEFAULTS_VERSION: u32 = 2;
+
+/// One built-in role's change in a defaults version.
+struct RoleDelta {
+    role: &'static str,
+    grant: &'static [Permission],
+    revoke: &'static [Permission],
+}
+
+/// v2 (0.2.1): roles re-examined for least privilege.
+/// - `hosts.enroll` and `network.nac` are new, split out of `hosts.manage`
+///   and `network.manage`; see `upgrade_role_defaults` for how existing
+///   holders keep them.
+/// - Network Admin can now run discovery and switch polls (`network.scan`),
+///   see managed hosts, add hosts through Panopticon (`hosts.enroll`, not the
+///   much broader `hosts.manage`), and elevate a host it configures.
+/// - System Admin gains Sepulchre (storage connectivity, used by Reliquary)
+///   and elevation, and loses `users.view`: listing the control plane's own
+///   login accounts isn't systems work.
+/// - Security Admin gains read-only systems, network and host-account
+///   visibility for investigations, the host list, and elevation for
+///   hardening.
+/// - Regular User gains the read-only host list.
+const V2_DELTAS: &[RoleDelta] = &[
+    RoleDelta {
+        role: role::SYSTEM_ADMIN,
+        grant: &[
+            Permission::StorageConnectionsView,
+            Permission::StorageConnectionsManage,
+            Permission::HostsElevate,
+        ],
+        revoke: &[Permission::UsersView],
+    },
+    RoleDelta {
+        role: role::NETWORK_ADMIN,
+        grant: &[
+            Permission::NetworkScan,
+            Permission::HostsView,
+            Permission::HostsEnroll,
+            Permission::HostsElevate,
+        ],
+        revoke: &[],
+    },
+    RoleDelta {
+        role: role::SECURITY_ADMIN,
+        grant: &[
+            Permission::SystemsView,
+            Permission::NetworkView,
+            Permission::HostUsersView,
+            Permission::HostsView,
+            Permission::HostsElevate,
+        ],
+        revoke: &[],
+    },
+    RoleDelta {
+        role: role::REGULAR_USER,
+        grant: &[Permission::HostsView],
+        revoke: &[],
+    },
+];
+
+/// Brings an existing install's roles up to the current defaults, once per
+/// version. Touches only the permissions a version names, so anything else an
+/// admin customized stays as it was. On a fresh install every step is a
+/// no-op (the roles were just created with the current defaults).
+async fn upgrade_role_defaults(pool: &DbPool) -> anyhow::Result<()> {
+    let from = repo::settings::get_u32(pool, ROLE_DEFAULTS_VERSION_KEY, 1).await?;
+    if from >= ROLE_DEFAULTS_VERSION {
+        return Ok(());
+    }
+
+    if from < 2 {
+        // Splitting a permission must not take anything away from a role --
+        // custom roles and sub-roles included -- that could do it before.
+        for role in repo::roles::list(pool).await? {
+            let current = repo::roles::permissions_for_role(pool, role.id).await?;
+            let mut grant = Vec::new();
+            if current.contains(&Permission::HostsManage) {
+                grant.push(Permission::HostsEnroll);
+            }
+            if current.contains(&Permission::NetworkManage) {
+                grant.push(Permission::NetworkNac);
+            }
+            apply_delta(pool, role.id, &current, &grant, &[]).await?;
+        }
+        for delta in V2_DELTAS {
+            if let Some(role) = repo::roles::find_by_name(pool, delta.role).await? {
+                let current = repo::roles::permissions_for_role(pool, role.id).await?;
+                apply_delta(pool, role.id, &current, delta.grant, delta.revoke).await?;
+            }
+        }
+    }
+
+    repo::settings::set(
+        pool,
+        ROLE_DEFAULTS_VERSION_KEY,
+        serde_json::json!(ROLE_DEFAULTS_VERSION),
+        None,
+    )
+    .await?;
+    tracing::info!(
+        from,
+        to = ROLE_DEFAULTS_VERSION,
+        "updated the built-in roles' default permissions"
+    );
+    Ok(())
+}
+
+async fn apply_delta(
+    pool: &DbPool,
+    role_id: uuid::Uuid,
+    current: &[Permission],
+    grant: &[Permission],
+    revoke: &[Permission],
+) -> anyhow::Result<()> {
+    let updated = delta_result(current, grant, revoke);
+    if updated.len() != current.len() || !updated.iter().all(|p| current.contains(p)) {
+        repo::roles::set_permissions(pool, role_id, &updated).await?;
+    }
+    Ok(())
+}
+
+/// `current` plus `grant`, minus `revoke`, keeping `current`'s order.
+fn delta_result(
+    current: &[Permission],
+    grant: &[Permission],
+    revoke: &[Permission],
+) -> Vec<Permission> {
+    let mut updated: Vec<Permission> = current
+        .iter()
+        .copied()
+        .filter(|p| !revoke.contains(p))
+        .collect();
+    for p in grant {
+        if !updated.contains(p) {
+            updated.push(*p);
+        }
+    }
+    updated
 }
 
 async fn seed_role(
@@ -163,4 +327,30 @@ async fn seed_super_admin(pool: &DbPool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delta_adds_and_removes_only_what_it_names() {
+        let current = [Permission::UsersView, Permission::SystemsView];
+        let out = delta_result(
+            &current,
+            &[Permission::HostsView, Permission::SystemsView],
+            &[Permission::UsersView],
+        );
+        assert_eq!(out, [Permission::SystemsView, Permission::HostsView]);
+        assert_eq!(delta_result(&current, &[], &[]), current);
+    }
+
+    #[test]
+    fn v2_deltas_name_only_built_in_roles_and_never_grant_and_revoke_the_same_thing() {
+        for delta in V2_DELTAS {
+            assert!(role::BUILT_IN_ROLES.contains(&delta.role), "{}", delta.role);
+            assert_ne!(delta.role, role::SUPER_ADMIN);
+            assert!(delta.grant.iter().all(|p| !delta.revoke.contains(p)));
+        }
+    }
 }

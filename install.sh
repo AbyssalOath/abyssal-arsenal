@@ -373,6 +373,26 @@ else
         echo "  ${public_base_url:-http://localhost:${http_port:-8080}}"
 fi
 
+# The agent install token (AAT) -- created by the app on its first start.
+aat=""
+for _ in $(seq 1 30); do
+        aat="$(docker compose exec -T app /app/abyssal-arsenal aat show 2>/dev/null | tail -n 1 || true)"
+        case "$aat" in AAT1-*) break ;; esac
+        aat=""
+        sleep 2
+done
+echo ""
+if [ -n "$aat" ]; then
+        echo "Agent install token (AAT) -- like a CrowdStrike CID, for PDQ/Intune/GPO rollouts:"
+        echo "  $aat"
+        echo "Windows (exe):  abyssal-agent.exe /install /quiet /norestart SERVER=${public_base_url:-<this server's URL>} AAT=$aat"
+        echo "Windows (MSI):  msiexec /i AbyssalAgent.msi /qn /norestart SERVER=${public_base_url:-<this server's URL>} AAT=$aat"
+        echo "Treat it as a secret. View, rotate, or require approval for new hosts at"
+        echo "/admin/hosts; re-print it with: docker compose exec app /app/abyssal-arsenal aat show"
+else
+        echo "(The agent install token (AAT) will be on /admin/hosts once the app is up.)"
+fi
+
 echo ""
 echo "Visit /setup to create the first administrator account -- there is no"
 echo "default password to change, the account simply doesn't exist until you"

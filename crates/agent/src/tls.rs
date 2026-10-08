@@ -267,6 +267,9 @@ impl std::error::Error for FingerprintMismatch {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
     Other,
+    BadArguments,
+    NotElevated,
+    CaProofInvalid,
     TlsUntrusted,
     TlsCaUsedAsEndEntity,
     TlsNameMismatch,
@@ -282,6 +285,9 @@ impl Failure {
     pub fn exit_code(self) -> i32 {
         match self {
             Failure::Other => 1,
+            Failure::BadArguments => 2,
+            Failure::NotElevated => 3,
+            Failure::CaProofInvalid => 14,
             Failure::TlsUntrusted => 10,
             Failure::TlsCaUsedAsEndEntity => 11,
             Failure::TlsNameMismatch => 12,
@@ -297,6 +303,20 @@ impl Failure {
     pub fn hint(self) -> &'static str {
         match self {
             Failure::Other => "",
+            Failure::BadArguments => {
+                "Check the command line: an unattended install needs SERVER= (or \
+                 --control-plane-url) and AAT= (or --aat / --enrollment-token)."
+            }
+            Failure::NotElevated => {
+                "Run it elevated: as Administrator or SYSTEM on Windows (PDQ, Intune and GPO \
+                 startup scripts already are), with sudo or as root on Linux."
+            }
+            Failure::CaProofInvalid => {
+                "The control plane couldn't prove its certificate with this install token \
+                 (AAT). Either the AAT is wrong or was rotated -- copy the current one from \
+                 /admin/hosts -- or something between this host and SERVER is intercepting \
+                 traffic."
+            }
             Failure::TlsUntrusted => {
                 "The control plane's certificate isn't trusted on this host. For an internal \
                  (self-signed) control plane, use the one-liner from /admin/hosts -- it fetches \
@@ -324,11 +344,13 @@ impl Failure {
             }
             Failure::TokenRejected => {
                 "The enrollment token is invalid, expired (single-use tokens last 15 minutes), \
-                 already used, or revoked. Generate a new one at /admin/hosts."
+                 already used, or revoked -- or the install token (AAT) was rotated. Get a \
+                 current one from /admin/hosts."
             }
             Failure::NameConflict => {
-                "A connected host already uses this name. Remove it from /admin/hosts or pass \
-                 --name with a different one."
+                "A host with this name is already enrolled (with the install token, even an \
+                 offline one counts). Remove it from /admin/hosts, or pass --name (NAME=) with \
+                 a different one."
             }
             Failure::Unreachable => {
                 "Could not reach the control plane. Check the URL, DNS, and that port 443 \
@@ -353,11 +375,43 @@ impl std::fmt::Display for ServiceSetupFailed {
     }
 }
 
+/// Marker errors for the failures `install`/`uninstall` detect themselves,
+/// rather than from a TLS or HTTP error.
+#[derive(Debug)]
+pub enum InstallError {
+    /// A required value is missing and prompting isn't allowed.
+    BadArguments(String),
+    NotElevated(String),
+    /// The AAT proof over the control plane's CA didn't verify.
+    CaProofInvalid,
+}
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstallError::BadArguments(msg) | InstallError::NotElevated(msg) => f.write_str(msg),
+            InstallError::CaProofInvalid => f.write_str(
+                "the control plane's CA certificate couldn't be verified with the install \
+                 token (AAT) -- refusing to trust it",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InstallError {}
+
 pub fn classify(err: &anyhow::Error) -> Failure {
     if err.downcast_ref::<ServiceSetupFailed>().is_some() {
         return Failure::ServiceSetup;
     }
     for cause in err.chain() {
+        if let Some(e) = cause.downcast_ref::<InstallError>() {
+            return match e {
+                InstallError::BadArguments(_) => Failure::BadArguments,
+                InstallError::NotElevated(_) => Failure::NotElevated,
+                InstallError::CaProofInvalid => Failure::CaProofInvalid,
+            };
+        }
         if cause.downcast_ref::<FingerprintMismatch>().is_some() {
             return Failure::CaFingerprintMismatch;
         }

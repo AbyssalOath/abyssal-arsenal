@@ -103,7 +103,7 @@ role-scoped macro is shared with can use it.
 ```bash
 git clone https://github.com/AbyssalOath/abyssal-arsenal.git
 cd abyssal-arsenal
-git checkout v0.2.0   # pin to the latest stable release; omit to run main
+git checkout v0.2.1   # pin to the latest stable release; omit to run main
 ./install.sh
 ```
 
@@ -129,6 +129,10 @@ Docker Compose. Once it's running:
    it in an elevated PowerShell on the host, or push it with PDQ Deploy / a GPO
    startup script / Intune; it downloads the agent from the control plane,
    trusts its CA, enrolls, and installs itself as a service in one step.
+   For CrowdStrike-style rollouts, deploy the agent's exe or MSI with the
+   **agent install token (AAT)** that `install.sh` prints:
+   `abyssal-agent.exe /install /quiet /norestart SERVER=<url> AAT=<token>` (see
+   [crates/agent/README.md](crates/agent/README.md#mass-deployment-with-the-install-token-aat)).
 5. Already have Panopticon's network discovery finding hosts you want to
    manage? Run a discovery scan from `/arsenals/panopticon`, then use "Add
    Hosts" (or per-device "Quick add") on the results and pick the target OS:
@@ -344,7 +348,7 @@ The control plane serves from a volume (`abyssal_agent_dist`, mounted at
   binaries attached, and a matching container image published to GHCR (see
   `.github/workflows/release.yml` and `docker-publish.yml`).
 - **For a production or otherwise long-lived deployment**, check out the
-  latest tag (`git checkout v0.2.0`) rather than tracking `main`. Pull `main`
+  latest tag (`git checkout v0.2.1`) rather than tracking `main`. Pull `main`
   only if you specifically want unreleased changes and accept the
   reduced stability that comes with it.
 - **`VERSION`** at the repository root is the single source of truth for

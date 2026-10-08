@@ -6,6 +6,20 @@ use serde::{Deserialize, Serialize};
 pub struct Credentials {
     pub host_id: String,
     pub credential: String,
+    /// The control plane this host enrolled with, so a later `install`
+    /// (an MSI upgrade, a re-run) needn't be told again. Absent from
+    /// credentials written by older agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_plane_url: Option<String>,
+}
+
+/// The control plane URL saved at enrollment, if the credentials file has one.
+pub async fn stored_control_plane_url(credentials_file: &Path) -> Option<String> {
+    let contents = tokio::fs::read_to_string(credentials_file).await.ok()?;
+    serde_json::from_str::<Credentials>(&contents)
+        .ok()?
+        .control_plane_url
+        .filter(|url| !url.is_empty())
 }
 
 #[derive(Serialize)]
@@ -60,7 +74,8 @@ pub async fn load_or_enroll(
 
     let token = enrollment_token.ok_or_else(|| {
         anyhow::anyhow!(
-            "no credentials found at {} and no --enrollment-token given; generate one from /admin/hosts",
+            "no credentials found at {} and no --enrollment-token or --aat given; get one from \
+             /admin/hosts",
             credentials_file.display()
         )
     })?;
@@ -110,6 +125,7 @@ pub async fn load_or_enroll(
     let credentials = Credentials {
         host_id: response.host_id,
         credential: response.credential,
+        control_plane_url: Some(control_plane_url.trim_end_matches('/').to_string()),
     };
     persist(credentials_file, &credentials).await?;
 

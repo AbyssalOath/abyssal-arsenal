@@ -34,6 +34,13 @@ pub enum Permission {
     NetworkView,
     NetworkManage,
     NetworkScan,
+    /// Network access control (Panopticon NAC): switch-port enforcement
+    /// (shutting down / quarantining a port), policy rules and mode, and the
+    /// RADIUS server's clients and settings. Split from `NetworkManage`
+    /// (inventory, switches, subnets) because it can take any device -- a
+    /// server included -- off the network. Viewing NAC state stays under
+    /// `NetworkView`.
+    NetworkNac,
 
     SecurityView,
     SecurityManage,
@@ -67,6 +74,12 @@ pub enum Permission {
     NotificationsManage,
 
     HostsView,
+    /// Enroll new hosts: a single-use enrollment token, or Panopticon's
+    /// "Add hosts" deploy. Split from `HostsManage` (remove/revoke hosts,
+    /// reusable deployment tokens, the install token, approvals, agent
+    /// updates) so a role can add hosts without being able to remove them
+    /// or mint a token that enrolls anything.
+    HostsEnroll,
     HostsManage,
     HostsElevate,
 
@@ -106,6 +119,7 @@ impl Permission {
             Permission::NetworkView => "network.view",
             Permission::NetworkManage => "network.manage",
             Permission::NetworkScan => "network.scan",
+            Permission::NetworkNac => "network.nac",
 
             Permission::SecurityView => "security.view",
             Permission::SecurityManage => "security.manage",
@@ -133,6 +147,7 @@ impl Permission {
             Permission::NotificationsManage => "notifications.manage",
 
             Permission::HostsView => "hosts.view",
+            Permission::HostsEnroll => "hosts.enroll",
             Permission::HostsManage => "hosts.manage",
             Permission::HostsElevate => "hosts.elevate",
 
@@ -160,6 +175,7 @@ impl Permission {
         Permission::NetworkView,
         Permission::NetworkManage,
         Permission::NetworkScan,
+        Permission::NetworkNac,
         Permission::SecurityView,
         Permission::SecurityManage,
         Permission::ContainersView,
@@ -179,6 +195,7 @@ impl Permission {
         Permission::SettingsManage,
         Permission::NotificationsManage,
         Permission::HostsView,
+        Permission::HostsEnroll,
         Permission::HostsManage,
         Permission::HostsElevate,
         Permission::MacrosManageAll,

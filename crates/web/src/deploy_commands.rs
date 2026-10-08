@@ -188,8 +188,97 @@ pub fn windows_rmm(base_url: &str, token: &str, ca: Option<&PublicCa>) -> String
     out
 }
 
+/// What the AAT card on `/admin/hosts` shows: the CrowdStrike-style
+/// unattended install lines for the Windows exe and MSI, plus Linux. The AAT
+/// is a placeholder unless it's being revealed. No CA fingerprint anywhere:
+/// the agent authenticates the CA with the AAT itself
+/// (`abyssal_agent_protocol::aat`).
+pub struct AatCommands {
+    /// Download links served by this control plane (`GET /agent/{os}`).
+    pub exe_url: String,
+    pub msi_url: String,
+    pub linux_url: String,
+    /// What goes in PDQ Deploy's "Parameters" box for the exe.
+    pub exe_parameters: String,
+    pub exe: String,
+    pub msi: String,
+    /// Agent already on the host (pushed by your tooling, or no internet).
+    pub linux: String,
+    /// Downloads this control plane's release from GitHub first -- safe
+    /// without any CA setup because GitHub's certificate is publicly
+    /// trusted, unlike a fetch from an internal-CA control plane.
+    pub linux_github: String,
+}
+
+pub fn aat_commands(base_url: &str, aat: Option<&str>) -> AatCommands {
+    aat_commands_for_version(base_url, aat, crate::update_check::CURRENT_VERSION.trim())
+}
+
+fn aat_commands_for_version(base_url: &str, aat: Option<&str>, version: &str) -> AatCommands {
+    let aat = aat.unwrap_or("<AAT>");
+    let install =
+        format!("sudo ./abyssal-agent install --control-plane-url '{base_url}' --aat '{aat}'");
+    let exe_parameters = format!("/install /quiet /norestart SERVER={base_url} AAT={aat}");
+    AatCommands {
+        exe_url: format!("{base_url}/agent/windows-exe"),
+        msi_url: format!("{base_url}/agent/windows-msi"),
+        exe: format!("abyssal-agent.exe {exe_parameters}"),
+        msi: format!("msiexec /i AbyssalAgent.msi /qn /norestart SERVER={base_url} AAT={aat}"),
+        // Like the exe/MSI, the binary is assumed to be on the host already
+        // (pushed by your tooling, or from the download link): fetching it
+        // here would need an unverified connection, and the AAT only
+        // authenticates the CA, not a binary.
+        linux: install.clone(),
+        linux_url: format!("{base_url}/agent/linux"),
+        linux_github: format!(
+            "cd \"$(mktemp -d)\" && curl -fsSL \
+             'https://github.com/AbyssalOath/abyssal-arsenal/releases/download/v{version}/\
+             abyssal-agent-v{version}-x86_64-unknown-linux-gnu.tar.gz' | \
+             tar -xz --strip-components=1 && \\\n  {install}"
+        ),
+        exe_parameters,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn aat_commands_fill_in_server_and_token() {
+        let c = aat_commands_for_version("https://10.0.0.5", Some("AAT1-abc"), "9.9.9");
+        assert_eq!(
+            c.exe_parameters,
+            "/install /quiet /norestart SERVER=https://10.0.0.5 AAT=AAT1-abc"
+        );
+        assert!(c.msi.contains("SERVER=https://10.0.0.5 AAT=AAT1-abc"));
+        assert!(c.linux_github.contains(
+            "https://github.com/AbyssalOath/abyssal-arsenal/releases/download/v9.9.9/\
+             abyssal-agent-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
+        ));
+        // Never an unverified download.
+        assert!(!c.linux_github.contains("curl -fsSLk") && !c.linux_github.contains(" -k "));
+        assert!(c.linux_github.ends_with("--aat 'AAT1-abc'"));
+        let hidden = aat_commands_for_version("https://x", None, "1.0.0");
+        assert!(hidden.exe.contains("AAT=<AAT>"));
+    }
+
+    #[test]
+    fn linux_aat_commands_are_valid_sh() {
+        let c = aat_commands_for_version("https://10.0.0.5", Some("AAT1--dash"), "1.2.3");
+        for body in [&c.linux, &c.linux_github] {
+            let out = std::process::Command::new("sh")
+                .arg("-n")
+                .arg("-c")
+                .arg(body)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{body}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
     use super::*;
 
     fn ca() -> PublicCa {

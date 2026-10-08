@@ -69,6 +69,34 @@ async fn render(
     action_result: Option<String>,
     action_error: Option<String>,
 ) -> Result<Response, WebError> {
+    render_full(
+        state,
+        jar,
+        ctx,
+        enrollment,
+        deployment,
+        uninstall_command,
+        action_result,
+        action_error,
+        None,
+    )
+    .await
+}
+
+/// [`render`], plus the AAT in clear -- only ever passed by the audited
+/// reveal/rotate handlers; every other render shows it masked.
+#[allow(clippy::too_many_arguments)]
+async fn render_full(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &abyssal_rbac::AuthContext,
+    enrollment: Option<EnrollmentInstructions>,
+    deployment: Option<crate::templates::DeploymentInstructions>,
+    uninstall_command: Option<String>,
+    action_result: Option<String>,
+    action_error: Option<String>,
+    revealed_aat: Option<String>,
+) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
         ctx,
@@ -99,6 +127,7 @@ async fn render(
             revoked: host.revoked_at.is_some(),
             elevation_remaining,
             protocol_mismatch: state.hosts.agent_protocol_mismatch(host.id),
+            pending_approval: host.pending_approval,
             os: host.os.clone().unwrap_or_else(|| "unknown".to_string()),
             agent_version: host
                 .agent_version
@@ -119,8 +148,28 @@ async fn render(
         })
         .collect();
 
+    let aat = crate::templates::AatView {
+        // PUBLIC_URL (install.sh sets it) -- this render has no request to
+        // infer the address from, and the commands are for other machines.
+        commands: crate::deploy_commands::aat_commands(
+            state
+                .config
+                .public_url
+                .as_deref()
+                .unwrap_or("https://<control-plane-address>")
+                .trim_end_matches('/'),
+            revealed_aat.as_deref(),
+        ),
+        revealed: revealed_aat,
+        require_approval: crate::aat::require_approval(&state.pool).await?,
+        pending_count: hosts.iter().filter(|h| h.pending_approval).count(),
+    };
+
     let tpl = HostsTemplate {
         base,
+        can_enroll: ctx.has(Permission::HostsEnroll),
+        can_manage: ctx.has(Permission::HostsManage),
+        aat,
         hosts,
         enrollment,
         deployment,
@@ -158,7 +207,7 @@ pub async fn generate_enrollment_token(
     headers: HeaderMap,
     Form(form): Form<SimpleForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::HostsEnroll)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let token = generate_token();
@@ -315,6 +364,157 @@ pub async fn revoke_deployment_token(
     )
     .await?;
 
+    Ok(Redirect::to("/admin/hosts").into_response())
+}
+
+/// Shows the AAT in clear. A POST, not part of the page, so every view of the
+/// secret is a deliberate, audit-logged action.
+pub async fn reveal_aat(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let aat = match crate::aat::ensure(&state.pool, state.encryption_key.as_deref()).await {
+        Ok(aat) => aat,
+        Err(e) => {
+            return render(
+                &state,
+                &jar,
+                &ctx,
+                None,
+                None,
+                None,
+                None,
+                Some(format!("{e:#}")),
+            )
+            .await;
+        }
+    };
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::SecretAccessed, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("host.aat"),
+    )
+    .await?;
+    render_full(&state, &jar, &ctx, None, None, None, None, None, Some(aat)).await
+}
+
+/// Replaces the AAT. The old one stops enrolling new hosts immediately;
+/// enrolled hosts are unaffected. Shows the new one, since every deploy
+/// package needs updating with it.
+pub async fn rotate_aat(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let aat = crate::aat::rotate(
+        &state.pool,
+        state.encryption_key.as_deref(),
+        Some(ctx.user.id),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("host.aat")
+            .metadata(serde_json::json!({ "action": "rotate" })),
+    )
+    .await?;
+    render_full(
+        &state,
+        &jar,
+        &ctx,
+        None,
+        None,
+        None,
+        Some(
+            "Install token rotated. The old one no longer enrolls hosts -- update your \
+             PDQ/Intune/GPO packages with the new one below."
+                .to_string(),
+        ),
+        None,
+        Some(aat),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct AatApprovalForm {
+    csrf_token: String,
+    /// A checkbox: present ("on") when checked, absent otherwise.
+    #[serde(default)]
+    require_approval: Option<String>,
+}
+
+pub async fn set_aat_approval(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<AatApprovalForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let required = form.require_approval.is_some();
+    crate::aat::set_require_approval(&state.pool, required, Some(ctx.user.id)).await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("host.aat")
+            .metadata(serde_json::json!({ "require_approval": required })),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/hosts").into_response())
+}
+
+/// Lets a host enrolled with the AAT (while approval was required) connect.
+/// Its agent is already retrying, so it shows up online within a minute.
+/// Rejecting one is just Remove.
+pub async fn approve(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let host = repo::hosts::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if repo::hosts::approve(&state.pool, id).await? {
+        abyssal_audit::record(
+            &state.pool,
+            AuditEvent::new(AuditAction::HostApproved, AuditOutcome::Success)
+                .actor(Actor {
+                    user_id: ctx.user.id,
+                    username: &ctx.user.username,
+                })
+                .resource(&host.name),
+        )
+        .await?;
+    }
     Ok(Redirect::to("/admin/hosts").into_response())
 }
 

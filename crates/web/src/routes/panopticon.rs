@@ -306,7 +306,7 @@ pub(crate) async fn render(
 
     let can_scan = ctx.has(Permission::NetworkScan);
     let can_manage = ctx.has(Permission::NetworkManage);
-    let can_deploy = ctx.has(Permission::HostsManage);
+    let can_deploy = ctx.has(Permission::HostsEnroll);
     let render_budget = repo::settings::get_u32(
         &state.pool,
         PANOPTICON_INVENTORY_RENDER_BUDGET,
@@ -1324,6 +1324,7 @@ async fn render_switches(
     let tpl = crate::templates::PanopticonSwitchesTemplate {
         can_manage: ctx.has(Permission::NetworkManage),
         can_scan: ctx.has(Permission::NetworkScan),
+        can_nac: ctx.has(Permission::NetworkNac),
         base,
         switches: switch_rows,
         encryption_configured: state.encryption_key.is_some(),
@@ -2362,11 +2363,11 @@ pub async fn switch_traffic(
         PANOPTICON_QUARANTINE_VLAN_DEFAULT,
     )
     .await?;
-    let can_manage = ctx.has(Permission::NetworkManage);
+    let can_manage = ctx.has(Permission::NetworkNac);
     let has_key = state.encryption_key.is_some();
     let can_enforce = can_manage && global_enforcement && switch.enforcement_enabled && has_key;
     let enforce_blocked_reason = if !can_manage {
-        Some("You need the network.manage permission to enforce.".to_string())
+        Some("You need the network.nac permission to enforce.".to_string())
     } else if !global_enforcement {
         Some(
             "NAC enforcement is globally disabled -- an admin can enable it in Settings."
@@ -2422,7 +2423,7 @@ pub async fn switch_traffic(
 // ---------------------------------------------------------------------
 // NAC enforcement (phase 3): per-switch opt-in, apply (disable/quarantine),
 // release, make-permanent, and the enforcement dashboard. Every write path
-// requires `network.manage` and funnels through `panopticon_enforcement`,
+// requires `network.nac` and funnels through `panopticon_enforcement`,
 // which re-checks the global kill-switch and per-switch opt-in before any
 // SNMP SET. These handlers never call the SNMP layer directly.
 // ---------------------------------------------------------------------
@@ -2443,7 +2444,7 @@ pub async fn switch_set_enforcement_enabled(
     Path(id): Path<Uuid>,
     Form(form): Form<SwitchEnforcementForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::panopticon_switches::find_by_id(&state.pool, id)
@@ -2487,7 +2488,7 @@ pub async fn enforce_confirm(
     Path(id): Path<Uuid>,
     Query(q): Query<EnforceConfirmQuery>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
 
     let kind: EnforcementKind = q
         .kind
@@ -2599,7 +2600,7 @@ pub async fn enforce_apply(
     Path(id): Path<Uuid>,
     Form(form): Form<EnforceApplyForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let kind: EnforcementKind = form
@@ -2660,7 +2661,7 @@ pub async fn enforce_release(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<EnforceActionForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let action = repo::panopticon_enforcement::find_by_id(&state.pool, form.action_id)
@@ -2691,7 +2692,7 @@ pub async fn enforce_make_permanent(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<EnforceActionForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     repo::panopticon_enforcement::find_by_id(&state.pool, form.action_id)
@@ -2775,7 +2776,7 @@ pub async fn enforcement_show(
     .await?;
     let tpl = crate::templates::PanopticonEnforcementTemplate {
         base,
-        can_manage: ctx.has(Permission::NetworkManage),
+        can_manage: ctx.has(Permission::NetworkNac),
         enforcement_enabled,
         quarantine_vlan,
         revert_minutes,
@@ -2792,7 +2793,7 @@ pub async fn enforcement_show(
 
 // ---------------------------------------------------------------------
 // NAC auto-enforcement policy (phase 4): rule CRUD + engine mode. All write
-// paths require `network.manage`; the sweep that evaluates these rules lives
+// paths require `network.nac`; the sweep that evaluates these rules lives
 // in `crate::panopticon_policy`.
 // ---------------------------------------------------------------------
 
@@ -2928,7 +2929,7 @@ pub async fn policy_show(
     .await?;
     let tpl = crate::templates::PanopticonPolicyTemplate {
         base,
-        can_manage: ctx.has(Permission::NetworkManage),
+        can_manage: ctx.has(Permission::NetworkNac),
         csrf_token: csrf_token.clone(),
         modes,
         current_mode: current_mode.as_str().to_string(),
@@ -2965,7 +2966,7 @@ pub async fn policy_set_mode(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PolicyModeForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let mode: PolicyMode = form
@@ -3037,7 +3038,7 @@ pub async fn policy_create_rule(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<PolicyRuleForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let name = form.name.trim();
@@ -3120,7 +3121,7 @@ pub async fn policy_rule_set_enabled(
     Path(id): Path<Uuid>,
     Form(form): Form<PolicyRuleEnabledForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
     repo::panopticon_policy::set_enabled(&state.pool, id, form.enabled).await?;
     Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
@@ -3139,7 +3140,7 @@ pub async fn policy_rule_reorder(
     Path(id): Path<Uuid>,
     Form(form): Form<PolicyRuleReorderForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
     let move_up = match form.direction.as_str() {
         "up" => true,
@@ -3162,7 +3163,7 @@ pub async fn policy_rule_delete(
     Path(id): Path<Uuid>,
     Form(form): Form<PolicyRuleDeleteForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
     repo::panopticon_policy::delete(&state.pool, id).await?;
     Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
@@ -3172,7 +3173,7 @@ pub async fn policy_rule_delete(
 // NAC phase 5: embedded RADIUS server admin -- MAB policy settings, NAS
 // client CRUD, and the accounted-sessions view. The server itself lives in
 // `crate::panopticon_radius`; these handlers only configure it and show its
-// results. All writes require `network.manage`.
+// results. All writes require `network.nac`.
 // ---------------------------------------------------------------------
 
 fn radius_action_options(selected: &str, variants: &[(&str, &str)]) -> Vec<(String, String, bool)> {
@@ -3268,7 +3269,7 @@ pub async fn radius_show(
     .await?;
     let tpl = crate::templates::PanopticonRadiusTemplate {
         base,
-        can_manage: ctx.has(Permission::NetworkManage),
+        can_manage: ctx.has(Permission::NetworkNac),
         csrf_token: csrf_token.clone(),
         encryption_configured: state.encryption_key.is_some(),
         enabled,
@@ -3322,7 +3323,7 @@ pub async fn radius_set_settings(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<RadiusSettingsForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     for (field, vlan) in [("trusted", form.trusted_vlan), ("guest", form.guest_vlan)] {
@@ -3433,7 +3434,7 @@ pub async fn radius_create_client(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<RadiusClientForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let name = form.name.trim();
@@ -3482,7 +3483,7 @@ pub async fn radius_client_set_enabled(
     Path(id): Path<Uuid>,
     Form(form): Form<RadiusClientEnabledForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
     repo::panopticon_radius::set_client_enabled(&state.pool, id, form.enabled).await?;
     Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
@@ -3500,7 +3501,7 @@ pub async fn radius_client_delete(
     Path(id): Path<Uuid>,
     Form(form): Form<RadiusClientDeleteForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
     require_csrf(&jar, &form.csrf_token)?;
     repo::panopticon_radius::delete_client(&state.pool, id).await?;
     Ok(Redirect::to("/arsenals/panopticon/radius").into_response())

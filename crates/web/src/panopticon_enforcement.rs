@@ -5,7 +5,7 @@
 //! per-switch opt-in, operator permission) and the audit record can never be
 //! bypassed by a route calling the SNMP layer directly.
 //!
-//! The permission check (`network.manage`) is the caller's responsibility (the
+//! The permission check (`network.nac`) is the caller's responsibility (the
 //! route does it before building a request); this module enforces the other two
 //! gates and owns the snapshot -> persist -> SET -> schedule-revert flow and the
 //! background auto-revert sweep.
