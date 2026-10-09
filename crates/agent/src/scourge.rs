@@ -1484,16 +1484,36 @@ mod linux {
             }
         }
 
-        // 2. Netfilter lockout bypass + NFQUEUE hook (IPv4). cp/SSH/established
-        //    ACCEPT come BEFORE the queue jump; --queue-bypass fails open if the
-        //    sensor isn't listening, so a dead sensor never black-holes the host.
-        if matches!(cp_ip, IpAddr::V4(_)) {
-            install_nfqueue(cp_ip, elevation).await;
-        } else {
-            tracing::warn!(
-                "Scourge IPS: control plane is IPv6; the netfilter NFQUEUE bypass is IPv4-only, relying on Suricata pass rules for lockout"
+        // 2. Netfilter lockout bypass + NFQUEUE hook, IPv4 and IPv6, in the
+        //    mangle table (see `nfqueue_rules`). cp/SSH/established ACCEPT come
+        //    BEFORE the queue jump; --queue-bypass fails open if the sensor
+        //    isn't listening, so a dead sensor never black-holes the host.
+        let coverage = install_nfqueue(cp_ip, elevation).await;
+        if !coverage.v4 && !coverage.v6 {
+            revert_to_passive(elevation).await;
+            let _ = write_managed(SURICATA_YAML, &prev_main, elevation).await;
+            let _ = reload_or_restart(elevation).await;
+            return CommandOutcome::Err(
+                "couldn't install the netfilter (iptables/ip6tables) hook for inline mode -- \
+                 inline IPS would inspect nothing; stayed in passive IDS"
+                    .to_string(),
             );
         }
+        // In NFQUEUE mode the sensor only sees queued packets: a family that
+        // isn't hooked goes uninspected, so say so instead of implying full
+        // coverage.
+        let coverage_note = match (coverage.v4, coverage.v6) {
+            (true, true) => String::new(),
+            (true, false) => "\nNote: IPv6 isn't hooked (ip6tables unavailable or failed) -- IPv6 \
+                              traffic is NOT inspected, not even alerted on, while inline IPS is \
+                              on."
+            .to_string(),
+            (false, true) => "\nNote: IPv4 isn't hooked (iptables unavailable or failed) -- IPv4 \
+                              traffic is NOT inspected, not even alerted on, while inline IPS is \
+                              on."
+            .to_string(),
+            (false, false) => unreachable!("handled above"),
+        };
 
         // 3. Run the sensor in NFQUEUE mode via a systemd drop-in.
         if let Err(e) = write_ips_dropin(elevation).await {
@@ -1508,9 +1528,9 @@ mod linux {
         match validate_config(elevation).await {
             Ok(_) => match restart(elevation).await {
                 Ok(_) => ok(format!(
-                    "Inline IPS enabled. Lockout rules allow the control plane ({cp_ip}) and SSH. \
-                     Promote individual SIDs to drop/reject after review; revert to passive IDS at \
-                     any time."
+                    "Inline IPS enabled. Lockout rules allow the control plane ({cp_ip}) and SSH; \
+                     the host's own firewall rules still apply. Promote individual SIDs to \
+                     drop/reject after review; revert to passive IDS at any time.{coverage_note}"
                 )),
                 Err(e) => {
                     revert_to_passive(elevation).await;
@@ -1545,93 +1565,145 @@ mod linux {
         let _ = write_managed(MODE_FILE, "ids\n", elevation).await;
     }
 
-    async fn install_nfqueue(cp_ip: IpAddr, elevation: &ElevationState) {
-        // Clean rebuild: drop any prior chain first.
-        remove_nfqueue(elevation).await;
-        let cp = cp_ip.to_string();
-        let _ = elevation
-            .run_allow_failure("iptables", &["-N", IPS_CHAIN])
-            .await;
-        // Lockout ACCEPTs come BEFORE the queue jump, so management traffic never
-        // reaches the inline engine at all.
-        let _ = elevation
-            .run_allow_failure("iptables", &["-A", IPS_CHAIN, "-i", "lo", "-j", "ACCEPT"])
-            .await;
-        let _ = elevation
-            .run_allow_failure(
-                "iptables",
-                &[
-                    "-A",
-                    IPS_CHAIN,
-                    "-m",
-                    "conntrack",
-                    "--ctstate",
-                    "ESTABLISHED,RELATED",
-                    "-j",
-                    "ACCEPT",
-                ],
-            )
-            .await;
-        let _ = elevation
-            .run_allow_failure("iptables", &["-A", IPS_CHAIN, "-s", &cp, "-j", "ACCEPT"])
-            .await;
-        let _ = elevation
-            .run_allow_failure("iptables", &["-A", IPS_CHAIN, "-d", &cp, "-j", "ACCEPT"])
-            .await;
+    /// Which address families inline IPS actually hooked -- reported to the
+    /// operator, so "enabled" never overstates what's being inspected.
+    struct NfqueueCoverage {
+        v4: bool,
+        v6: bool,
+    }
+
+    /// The netfilter rules for one family (`iptables` or `ip6tables`), each as
+    /// that tool's argument list (pure, so it can be unit-tested).
+    ///
+    /// Everything lives in the **mangle** table. An ACCEPT there -- the
+    /// lockout bypasses below, and Suricata's own accept verdict on a queued
+    /// packet -- only ends the mangle table's traversal; the packet still goes
+    /// on through the host's `filter` rules (ufw/firewalld, Cadavault's
+    /// firewall, Inquest's isolation). In `filter`, an ACCEPT at the top of
+    /// INPUT would be final and bypass all of them: enabling IPS would open
+    /// SSH past the host firewall and keep established sessions alive through
+    /// an Inquest isolation. A Suricata drop still drops.
+    fn nfqueue_rules(tool: &str, cp_ip: IpAddr) -> Vec<Vec<String>> {
+        let v6 = tool == "ip6tables";
+        let rule = |args: &[&str]| -> Vec<String> {
+            ["-t", "mangle"]
+                .iter()
+                .chain(args)
+                .map(|a| a.to_string())
+                .collect()
+        };
+        let mut rules = vec![
+            rule(&["-N", IPS_CHAIN]),
+            // Management traffic never reaches the inline engine at all.
+            rule(&["-A", IPS_CHAIN, "-i", "lo", "-j", "ACCEPT"]),
+            rule(&[
+                "-A",
+                IPS_CHAIN,
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "ESTABLISHED,RELATED",
+                "-j",
+                "ACCEPT",
+            ]),
+        ];
+        // The control plane, in whichever family its address is.
+        if cp_ip.is_ipv6() == v6 {
+            let cp = cp_ip.to_string();
+            rules.push(rule(&["-A", IPS_CHAIN, "-s", &cp, "-j", "ACCEPT"]));
+            rules.push(rule(&["-A", IPS_CHAIN, "-d", &cp, "-j", "ACCEPT"]));
+        }
         // Inbound new SSH only (--dport 22). SSH reply traffic (packets *from*
         // port 22) is already covered by the ESTABLISHED,RELATED accept above,
         // so there is deliberately no `--sport 22` rule: a blanket
         // source-port-22 accept would let an attacker evade the entire inline
         // engine just by setting their source port to 22.
-        let _ = elevation
-            .run_allow_failure(
-                "iptables",
-                &[
-                    "-A", IPS_CHAIN, "-p", "tcp", "--dport", "22", "-j", "ACCEPT",
-                ],
-            )
-            .await;
+        rules.push(rule(&[
+            "-A", IPS_CHAIN, "-p", "tcp", "--dport", "22", "-j", "ACCEPT",
+        ]));
         // `--queue-bypass`: if the sensor isn't listening on the queue, traffic
         // passes instead of being black-holed (fail-open, never strand the host).
-        let _ = elevation
-            .run_allow_failure(
-                "iptables",
-                &[
-                    "-A",
-                    IPS_CHAIN,
-                    "-j",
-                    "NFQUEUE",
-                    "--queue-num",
-                    NFQUEUE_NUM,
-                    "--queue-bypass",
-                ],
-            )
-            .await;
+        rules.push(rule(&[
+            "-A",
+            IPS_CHAIN,
+            "-j",
+            "NFQUEUE",
+            "--queue-num",
+            NFQUEUE_NUM,
+            "--queue-bypass",
+        ]));
         for hook in ["INPUT", "FORWARD", "OUTPUT"] {
-            let _ = elevation
-                .run_allow_failure("iptables", &["-I", hook, "-j", IPS_CHAIN])
-                .await;
+            rules.push(rule(&["-I", hook, "-j", IPS_CHAIN]));
+        }
+        rules
+    }
+
+    /// Installs the inline hook for IPv4 and IPv6. A family counts as covered
+    /// only if all its rules applied; a family that failed partway is removed
+    /// again rather than left half-hooked.
+    async fn install_nfqueue(cp_ip: IpAddr, elevation: &ElevationState) -> NfqueueCoverage {
+        // Clean rebuild: drop any prior chain first (either table -- older
+        // builds put it in `filter`).
+        remove_nfqueue(elevation).await;
+        let mut covered = [false, false];
+        for (slot, tool) in ["iptables", "ip6tables"].into_iter().enumerate() {
+            if !command_exists(tool).await {
+                continue;
+            }
+            let mut all_ok = true;
+            for args in nfqueue_rules(tool, cp_ip) {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                let ok = elevation
+                    .run_allow_failure(tool, &args)
+                    .await
+                    .is_ok_and(|o| o.exit_code == Some(0));
+                if !ok {
+                    all_ok = false;
+                    break;
+                }
+            }
+            if all_ok {
+                covered[slot] = true;
+            } else {
+                remove_family(tool, elevation).await;
+            }
+        }
+        NfqueueCoverage {
+            v4: covered[0],
+            v6: covered[1],
         }
     }
 
     async fn remove_nfqueue(elevation: &ElevationState) {
-        for hook in ["INPUT", "FORWARD", "OUTPUT"] {
+        for tool in ["iptables", "ip6tables"] {
+            if command_exists(tool).await {
+                remove_family(tool, elevation).await;
+            }
+        }
+    }
+
+    /// Unhooks and deletes the chain for one family, from `mangle` and from
+    /// `filter` (where builds before this fix installed it). Best-effort.
+    async fn remove_family(tool: &str, elevation: &ElevationState) {
+        for table in ["mangle", "filter"] {
+            for hook in ["INPUT", "FORWARD", "OUTPUT"] {
+                let _ = elevation
+                    .run_allow_failure(tool, &["-t", table, "-D", hook, "-j", IPS_CHAIN])
+                    .await;
+            }
             let _ = elevation
-                .run_allow_failure("iptables", &["-D", hook, "-j", IPS_CHAIN])
+                .run_allow_failure(tool, &["-t", table, "-F", IPS_CHAIN])
+                .await;
+            let _ = elevation
+                .run_allow_failure(tool, &["-t", table, "-X", IPS_CHAIN])
                 .await;
         }
-        let _ = elevation
-            .run_allow_failure("iptables", &["-F", IPS_CHAIN])
-            .await;
-        let _ = elevation
-            .run_allow_failure("iptables", &["-X", IPS_CHAIN])
-            .await;
     }
 
     async fn write_ips_dropin(elevation: &ElevationState) -> Result<(), String> {
         // Discover the installed binary; fall back to the common path.
         let bin = elevation
-            .run_allow_failure("sh", &["-c", "command -v suricata"])
+            .run_allow_failure("which", &["suricata"])
             .await
             .ok()
             .map(|o| o.stdout.trim().to_string())
@@ -1769,6 +1841,45 @@ mod linux {
             // inline engine simply by originating from port 22. SSH replies are
             // covered by the netfilter ESTABLISHED,RELATED accept instead.
             assert!(!r.contains("any 22 -> any any"));
+        }
+
+        #[test]
+        fn nfqueue_rules_stay_in_mangle_and_never_bypass_the_host_firewall() {
+            for (tool, cp) in [
+                ("iptables", "10.0.0.5"),
+                ("ip6tables", "10.0.0.5"),
+                ("iptables", "fd00::5"),
+                ("ip6tables", "fd00::5"),
+            ] {
+                let cp_ip: IpAddr = cp.parse().unwrap();
+                let rules = nfqueue_rules(tool, cp_ip);
+                // Every rule in mangle -- an ACCEPT in `filter` would skip the
+                // host's own firewall.
+                assert!(
+                    rules.iter().all(|r| r[..2] == ["-t", "mangle"]),
+                    "{tool}: {rules:?}"
+                );
+                // The control-plane bypass only in the family its address is.
+                let has_cp = rules.iter().any(|r| r.contains(&cp.to_string()));
+                assert_eq!(
+                    has_cp,
+                    cp_ip.is_ipv6() == (tool == "ip6tables"),
+                    "{tool} {cp}"
+                );
+                // Never a source-port-22 bypass (evasion by source port).
+                assert!(!rules.iter().any(|r| r.contains(&"--sport".to_string())));
+                // The queue jump is fail-open and comes before the hooks.
+                let queue = rules
+                    .iter()
+                    .position(|r| r.contains(&"NFQUEUE".to_string()))
+                    .unwrap();
+                assert!(rules[queue].contains(&"--queue-bypass".to_string()));
+                let first_hook = rules
+                    .iter()
+                    .position(|r| r.get(2).is_some_and(|a| a == "-I"))
+                    .unwrap();
+                assert!(queue < first_hook);
+            }
         }
 
         #[test]

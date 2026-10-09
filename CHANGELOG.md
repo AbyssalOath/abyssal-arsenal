@@ -115,6 +115,24 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **Scourge inline IPS bypassed the host's own firewall.** Its netfilter
+  chain sat at the top of the `filter` table with ACCEPT bypasses, and in
+  `filter` an ACCEPT is final -- so enabling IPS opened SSH past firewall
+  rules restricting it, kept established sessions alive through an Inquest
+  isolation, and let everything Suricata allowed skip the host firewall. The
+  chain now lives in the `mangle` table, where an ACCEPT only ends that table
+  and every `filter` rule still applies (verified with network namespaces:
+  a firewall-blocked SSH client stays blocked with IPS on). Re-enabling also
+  removes a chain left in `filter` by the earlier build.
+- **Scourge inline IPS silently stopped seeing IPv6.** Only `iptables` was
+  hooked, and in NFQUEUE mode Suricata sees only queued packets, so IPv6 was
+  neither blocked nor alerted on -- and with an IPv6 control plane nothing
+  was queued at all while the UI reported IPS enabled. `ip6tables` is now
+  hooked the same way; a family that can't be hooked is reported in the
+  result, and if neither can be, inline mode isn't enabled.
+- **Scourge "IPS Status" is a read** and now needs only `scourge.view`, in
+  the host page's Read card, like the other Scourge reads.
+
 - **Confirmation dialogs and the AAT approval toggle silently did nothing.**
   The Content-Security-Policy (`script-src 'self'`) blocks inline `onsubmit=`/
   `onchange=` handlers, so "Delete this backup permanently?" never appeared

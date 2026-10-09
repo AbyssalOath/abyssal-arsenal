@@ -229,10 +229,12 @@ state-changing step.
 - **Mode switch (`ScourgeSetMode`, Destructive).** Enabling inline mode
   writes the always-allow lockout rules and an IPS include, ensures the
   include is referenced from `suricata.yaml` (with a backup), installs the
-  NFQUEUE netfilter hookup (an `iptables` `SCOURGE_IPS` chain that ACCEPTs
-  loopback, established flows, the control-plane src/dst, and SSH
-  dport/sport *before* a `NFQUEUE --queue-num 0 --queue-bypass` target
-  hooked into INPUT/FORWARD/OUTPUT), writes a systemd drop-in
+  NFQUEUE netfilter hookup (a `SCOURGE_IPS` chain in the **mangle** table,
+  for both `iptables` and `ip6tables`, that ACCEPTs loopback, established
+  flows, the control-plane src/dst, and inbound SSH (`--dport 22`) *before*
+  a `NFQUEUE --queue-num 0 --queue-bypass` target hooked into
+  INPUT/FORWARD/OUTPUT -- see "Why the mangle table" below), writes a
+  systemd drop-in
   (`ExecStart ... -q 0`), writes the mode file, then validates and restarts
   -- rolling the whole thing back to passive on any failure. Disabling
   reverses it (remove the nfqueue chain + drop-in, daemon-reload, mode file
@@ -242,9 +244,10 @@ state-changing step.
   rollback. `alert` is a `Write`; `drop`/`reject` are `Destructive`
   (type-to-confirm). The action is allowlisted to exactly
   `alert`/`drop`/`reject`.
-- **Status (`ScourgeIpsStatus`, Read).** Reports the nfqueue hookup, the
-  drop-in, and the mode file so an operator can see what inline mode is
-  actually doing before changing it.
+- **Status (`ScourgeIpsStatus`, Read, `scourge.view`).** Reports the
+  nfqueue hookup, the drop-in, and the mode file so an operator can see what
+  inline mode is actually doing before changing it. It's in the host page's
+  Read card, available to anyone who can view Scourge.
 
 ### Mandatory lockout protection
 
@@ -253,12 +256,36 @@ Suricata rule layer always permit the agent's control-plane connection and
 SSH:
 
 - The `SCOURGE_IPS` chain ACCEPTs loopback, established/related, the
-  control-plane IP (both directions), and SSH (dport and sport) *before* any
-  packet reaches `NFQUEUE`, and the queue target uses `--queue-bypass` so a
-  dead Suricata fails **open**, not closed.
+  control-plane IP (both directions), and inbound SSH (`--dport 22`)
+  *before* any packet reaches `NFQUEUE`, and the queue target uses
+  `--queue-bypass` so a dead Suricata fails **open**, not closed. There is
+  deliberately no `--sport 22` bypass: SSH replies are already covered by
+  established/related, and a source-port bypass would let an attacker skip
+  inspection just by sending from port 22.
 - The IPS ruleset is prepended with `pass` rules covering the same traffic
-  (control-plane both directions, SSH both directions), so even a `drop`
+  (the control plane in both directions, inbound SSH), so even a `drop`
   ruleset cannot override them.
+
+### Why the mangle table
+
+The chain lives in `mangle`, not `filter`. In `filter`, an ACCEPT is final
+for that chain: a `SCOURGE_IPS` jump at the top of INPUT would let its
+bypasses -- and every packet Suricata's verdict allows -- skip the host's
+own firewall rules after it. Enabling IPS would then open SSH past a
+firewall that restricts it, and keep established sessions alive through an
+Inquest isolation. In `mangle`, an ACCEPT only ends the mangle table; the
+packet still goes through every `filter` rule, so the host firewall and
+isolation keep working. A Suricata drop still drops. Disabling (and
+re-enabling) also removes any chain an earlier build left in `filter`.
+
+### IPv4 and IPv6
+
+In NFQUEUE mode Suricata sees only queued packets, so an unhooked address
+family would be neither blocked nor even alerted on. Inline mode therefore
+hooks `iptables` and `ip6tables` alike. If one can't be hooked (the tool is
+missing or the kernel lacks it), enabling still succeeds for the other but
+the result says plainly which family is not inspected; if neither can be
+hooked, it stays in passive IDS.
 
 The control-plane address is **derived**, the same way `inquest.rs`
 isolation derives it (`resolve_control_plane_ip`), and is **not

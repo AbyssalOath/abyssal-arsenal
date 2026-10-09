@@ -51,6 +51,10 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("sensor") %} Sensor Status</button>
     </form>
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/ips/status">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} IPS Status</button>
+    </form>
     <form method="post" action="/arsenals/scourge/{{ host_id }}/rules">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="rule-query">Rule search (SID / message / keyword)</label>
@@ -178,14 +182,12 @@
   {% if ips_enabled %}
   <p style="color:var(--text-muted); margin-top:0;">
     Inline mode actively blocks traffic. Enabling it installs mandatory always-allow rules
-    (control plane + SSH) so a drop can never cut management. Monitor-first: promote individual
+    (control plane + SSH) so a drop can never cut management; the host's own firewall rules
+    still apply on top. IPv4 and IPv6 are both inspected where the host has iptables and
+    ip6tables -- the result says if either couldn't be hooked. Monitor-first: promote individual
     SIDs to drop/reject after review; revert to passive IDS any time.
   </p>
   <div class="action-grid">
-    <form method="post" action="/arsenals/scourge/{{ host_id }}/ips/status">
-      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} IPS Status</button>
-    </form>
     <form method="get" action="/arsenals/scourge/{{ host_id }}/ips/mode/confirm">
       <input type="hidden" name="ips" value="true">
       <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Switch to inline IPS&hellip;</button>

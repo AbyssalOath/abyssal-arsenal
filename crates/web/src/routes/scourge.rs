@@ -2020,19 +2020,17 @@ pub async fn ips_status(
     Path(host_id): Path<Uuid>,
     Form(form): Form<SimpleForm>,
 ) -> Result<Response, WebError> {
-    // Read-only; manage-level feature. No second gate (seeing "passive" is fine).
-    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    // Read-only, like every other Scourge read: anyone who can see Scourge can
+    // see whether a host is in inline mode. No second gate either.
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeView)?;
     require_csrf(&jar, &form.csrf_token)?;
-    run_managed(
+    run_read_op(
         &state,
         &jar,
         &ctx,
         host_id,
         AgentOperation::ScourgeIpsStatus,
         "IPS Status",
-        OperationKind::Read,
-        None,
-        None,
     )
     .await
 }
