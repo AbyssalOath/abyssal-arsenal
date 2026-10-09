@@ -75,20 +75,29 @@ mod stubs {
     pub async fn pcap_delete(_name: String, _passes: u8, _e: &ElevationState) -> CommandOutcome {
         crate::process::platform_unsupported()
     }
+    pub async fn ips_status(_e: &ElevationState) -> CommandOutcome {
+        crate::process::platform_unsupported()
+    }
+    pub async fn set_mode(_ips: bool, _cp: &str, _e: &ElevationState) -> CommandOutcome {
+        crate::process::platform_unsupported()
+    }
+    pub async fn set_sid_action(_sid: u32, _action: String, _e: &ElevationState) -> CommandOutcome {
+        crate::process::platform_unsupported()
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
 pub use stubs::{
     apply_config, capture_cancel, capture_start, capture_status, collect_events, install,
-    list_rules, pcap_delete, pcap_list, rule_test, sensor_status, service_action, set_sid_enabled,
-    suppress_sid, update_rules,
+    ips_status, list_rules, pcap_delete, pcap_list, rule_test, sensor_status, service_action,
+    set_mode, set_sid_action, set_sid_enabled, suppress_sid, update_rules,
 };
 
 #[cfg(target_os = "linux")]
 pub use linux::{
     apply_config, capture_cancel, capture_start, capture_status, collect_events, install,
-    list_rules, pcap_delete, pcap_list, rule_test, sensor_status, service_action, set_sid_enabled,
-    suppress_sid, update_rules,
+    ips_status, list_rules, pcap_delete, pcap_list, rule_test, sensor_status, service_action,
+    set_mode, set_sid_action, set_sid_enabled, suppress_sid, update_rules,
 };
 
 #[cfg(target_os = "linux")]
@@ -1305,6 +1314,352 @@ mod linux {
         }
     }
 
+    // ---- IPS: inline mode + per-SID drop/reject (phase 6) --------------
+    //
+    // The highest-risk capability, so it is the most conservative. Enabling
+    // inline mode FIRST installs mandatory always-allow lockout rules (loopback,
+    // established, the control plane, and SSH) at BOTH the netfilter layer (an
+    // iptables ACCEPT bypass before the NFQUEUE jump) and the rule layer
+    // (Suricata `pass` rules), derived from the agent's own control-plane address
+    // -- never the wire -- so an inline drop can never sever the management
+    // channel. Everything validates before reload and rolls back to passive IDS
+    // on any failure. Inline hookup is vendor/kernel-dependent (NFQUEUE); the
+    // rollback is what keeps a bad enable safe.
+
+    use std::net::IpAddr;
+
+    const IPS_RULES_FILE: &str = "/etc/suricata/scourge.d/scourge-ips.rules";
+    const IPS_INCLUDE_FILE: &str = "/etc/suricata/scourge.d/scourge-ips.yaml";
+    const IPS_INCLUDE_REF: &str = "scourge.d/scourge-ips.yaml";
+    const MODE_FILE: &str = "/etc/suricata/scourge.d/mode";
+    const MODIFY_FILE: &str = "/etc/suricata/modify.conf";
+    const DROPIN_DIR: &str = "/etc/systemd/system/suricata.service.d";
+    const DROPIN_FILE: &str = "/etc/systemd/system/suricata.service.d/50-scourge-ips.conf";
+    const IPS_CHAIN: &str = "SCOURGE_IPS";
+    const NFQUEUE_NUM: &str = "0";
+
+    fn valid_sid_action(a: &str) -> bool {
+        matches!(a, "alert" | "drop" | "reject")
+    }
+
+    /// The mandatory always-allow rules (pure, so they can be unit-tested). These
+    /// `pass` rules are evaluated ahead of any `drop`, so inline enforcement can
+    /// never block the control plane or SSH. SIDs are in a high reserved range.
+    fn always_allow_rules(cp_ip: IpAddr) -> String {
+        format!(
+            "{MANAGED_HEADER}\n\
+             # Always-allow lockout rules -- inline drops can never match these.\n\
+             pass ip {cp} any -> any any (msg:\"Scourge allow control-plane (to)\"; sid:3200001; rev:1;)\n\
+             pass ip any any -> {cp} any (msg:\"Scourge allow control-plane (from)\"; sid:3200002; rev:1;)\n\
+             pass tcp any any -> any 22 (msg:\"Scourge allow SSH (in)\"; sid:3200003; rev:1;)\n",
+            cp = cp_ip,
+        )
+    }
+
+    pub async fn ips_status(elevation: &ElevationState) -> CommandOutcome {
+        let mode = read_managed(MODE_FILE, elevation).await;
+        let mode = if mode.trim() == "ips" {
+            "IPS (inline)"
+        } else {
+            "IDS (passive)"
+        };
+        let modify = read_managed(MODIFY_FILE, elevation).await;
+        let promoted: Vec<&str> = modify
+            .lines()
+            .filter(|l| l.contains("\"drop\"") || l.contains("\"reject\""))
+            .collect();
+        let allow = read_managed(IPS_RULES_FILE, elevation).await;
+        let lockout = if allow.contains("Scourge allow control-plane") {
+            "present"
+        } else {
+            "NOT installed (passive mode, or never enabled)"
+        };
+        let mut out = format!("Mode: {mode}\nAlways-allow lockout rules: {lockout}\n");
+        out.push_str(&format!(
+            "Promoted SIDs (drop/reject): {}\n",
+            promoted.len()
+        ));
+        for l in promoted.iter().take(100) {
+            out.push_str(l);
+            out.push('\n');
+        }
+        ok(out)
+    }
+
+    pub async fn set_sid_action(
+        sid: u32,
+        action: String,
+        elevation: &ElevationState,
+    ) -> CommandOutcome {
+        if detect().await.is_none() {
+            return CommandOutcome::Err(NO_ENGINE.to_string());
+        }
+        if !valid_sid_action(&action) {
+            return CommandOutcome::Err("action must be alert, drop, or reject".to_string());
+        }
+        // modify.conf rewrites a rule's action during `suricata-update`. Keep any
+        // non-Scourge lines; replace our line for this SID. Promoting to alert =
+        // remove the override (the rule reverts to its shipped action).
+        let prev = read_managed(MODIFY_FILE, elevation).await;
+        let sid_prefix = format!("{sid} ");
+        let mut lines: Vec<&str> = prev
+            .lines()
+            .filter(|l| !l.trim_start().starts_with(&sid_prefix))
+            .collect();
+        let new_line;
+        if action != "alert" {
+            new_line = format!("{sid} \"^(alert|drop|reject)\" \"{action}\"");
+            lines.push(&new_line);
+        }
+        let header_present = prev.lines().any(|l| l.trim() == MANAGED_HEADER);
+        let mut body = String::new();
+        if !header_present {
+            body.push_str(MANAGED_HEADER);
+            body.push('\n');
+        }
+        body.push_str(&lines.join("\n"));
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        if let Err(e) = write_managed(MODIFY_FILE, &body, elevation).await {
+            return CommandOutcome::Err(format!("failed to write modify list: {e}"));
+        }
+        let _ = elevation.run_allow_failure("suricata-update", &[]).await;
+        match validate_config(elevation).await {
+            Ok(_) => match reload(elevation).await {
+                Ok(_) => ok(format!("SID {sid} action set to {action}.")),
+                Err(e) => CommandOutcome::Err(format!("applied, but reload failed: {e}")),
+            },
+            Err(e) => {
+                let _ = write_managed(MODIFY_FILE, &prev, elevation).await;
+                let _ = elevation.run_allow_failure("suricata-update", &[]).await;
+                CommandOutcome::Err(format!("{e}\nRestored the previous rule-action overrides."))
+            }
+        }
+    }
+
+    pub async fn set_mode(
+        ips: bool,
+        control_plane_host: &str,
+        elevation: &ElevationState,
+    ) -> CommandOutcome {
+        if detect().await.is_none() {
+            return CommandOutcome::Err(NO_ENGINE.to_string());
+        }
+        if !ips {
+            revert_to_passive(elevation).await;
+            return match reload_or_restart(elevation).await {
+                Ok(_) => ok("Reverted to passive IDS.".to_string()),
+                Err(e) => CommandOutcome::Err(format!(
+                    "reverted the IPS config, but the service didn't come back cleanly: {e}"
+                )),
+            };
+        }
+
+        // --- Enable inline IPS ---
+        let cp_ip = match crate::inquest::resolve_control_plane_ip(control_plane_host).await {
+            Ok(ip) => ip,
+            Err(e) => return CommandOutcome::Err(e),
+        };
+        let prev_main = read_managed(SURICATA_YAML, elevation).await;
+        if prev_main.is_empty() {
+            return CommandOutcome::Err(format!("cannot read {SURICATA_YAML}"));
+        }
+
+        // 1. Always-allow pass rules (rule layer) + an include that loads them.
+        let _ = elevation.run("mkdir", &["-p", OVERRIDE_DIR]).await;
+        if let Err(e) = write_managed(IPS_RULES_FILE, &always_allow_rules(cp_ip), elevation).await {
+            return CommandOutcome::Err(format!("failed to write lockout rules: {e}"));
+        }
+        let include_yaml = format!(
+            "%YAML 1.1\n---\n{MANAGED_HEADER}\nrule-files:\n  - suricata.rules\n  - scourge.d/scourge-ips.rules\n"
+        );
+        if let Err(e) = write_managed(IPS_INCLUDE_FILE, &include_yaml, elevation).await {
+            return CommandOutcome::Err(format!("failed to write IPS include: {e}"));
+        }
+        if !prev_main.contains(IPS_INCLUDE_REF) {
+            let new_main = format!("{prev_main}\ninclude: {IPS_INCLUDE_REF}\n");
+            if let Err(e) = write_managed(SURICATA_YAML, &new_main, elevation).await {
+                return CommandOutcome::Err(format!("failed to add IPS include to config: {e}"));
+            }
+        }
+
+        // 2. Netfilter lockout bypass + NFQUEUE hook (IPv4). cp/SSH/established
+        //    ACCEPT come BEFORE the queue jump; --queue-bypass fails open if the
+        //    sensor isn't listening, so a dead sensor never black-holes the host.
+        if matches!(cp_ip, IpAddr::V4(_)) {
+            install_nfqueue(cp_ip, elevation).await;
+        } else {
+            tracing::warn!(
+                "Scourge IPS: control plane is IPv6; the netfilter NFQUEUE bypass is IPv4-only, relying on Suricata pass rules for lockout"
+            );
+        }
+
+        // 3. Run the sensor in NFQUEUE mode via a systemd drop-in.
+        if let Err(e) = write_ips_dropin(elevation).await {
+            revert_to_passive(elevation).await;
+            let _ = write_managed(SURICATA_YAML, &prev_main, elevation).await;
+            let _ = reload_or_restart(elevation).await;
+            return CommandOutcome::Err(format!("failed to configure inline mode; reverted: {e}"));
+        }
+        let _ = write_managed(MODE_FILE, "ips\n", elevation).await;
+
+        // 4. Validate, then (re)start. Roll back fully on any failure.
+        match validate_config(elevation).await {
+            Ok(_) => match restart(elevation).await {
+                Ok(_) => ok(format!(
+                    "Inline IPS enabled. Lockout rules allow the control plane ({cp_ip}) and SSH. \
+                     Promote individual SIDs to drop/reject after review; revert to passive IDS at \
+                     any time."
+                )),
+                Err(e) => {
+                    revert_to_passive(elevation).await;
+                    let _ = write_managed(SURICATA_YAML, &prev_main, elevation).await;
+                    let _ = restart(elevation).await;
+                    CommandOutcome::Err(format!(
+                        "service failed to start inline; reverted to passive IDS: {e}"
+                    ))
+                }
+            },
+            Err(e) => {
+                revert_to_passive(elevation).await;
+                let _ = write_managed(SURICATA_YAML, &prev_main, elevation).await;
+                let _ = reload_or_restart(elevation).await;
+                CommandOutcome::Err(format!("{e}\nReverted to passive IDS (not applied)."))
+            }
+        }
+    }
+
+    /// Removes everything inline mode installs -- the netfilter hook, the systemd
+    /// drop-in -- and marks the mode passive. Best-effort (used on both an
+    /// operator revert and an enable-failure rollback). The lockout rules file +
+    /// include are left in place (harmless `pass` rules in passive mode).
+    async fn revert_to_passive(elevation: &ElevationState) {
+        remove_nfqueue(elevation).await;
+        let _ = elevation
+            .run_allow_failure("rm", &["-f", DROPIN_FILE])
+            .await;
+        let _ = elevation
+            .run_allow_failure("systemctl", &["daemon-reload"])
+            .await;
+        let _ = write_managed(MODE_FILE, "ids\n", elevation).await;
+    }
+
+    async fn install_nfqueue(cp_ip: IpAddr, elevation: &ElevationState) {
+        // Clean rebuild: drop any prior chain first.
+        remove_nfqueue(elevation).await;
+        let cp = cp_ip.to_string();
+        let _ = elevation
+            .run_allow_failure("iptables", &["-N", IPS_CHAIN])
+            .await;
+        // Lockout ACCEPTs come BEFORE the queue jump, so management traffic never
+        // reaches the inline engine at all.
+        let _ = elevation
+            .run_allow_failure("iptables", &["-A", IPS_CHAIN, "-i", "lo", "-j", "ACCEPT"])
+            .await;
+        let _ = elevation
+            .run_allow_failure(
+                "iptables",
+                &[
+                    "-A",
+                    IPS_CHAIN,
+                    "-m",
+                    "conntrack",
+                    "--ctstate",
+                    "ESTABLISHED,RELATED",
+                    "-j",
+                    "ACCEPT",
+                ],
+            )
+            .await;
+        let _ = elevation
+            .run_allow_failure("iptables", &["-A", IPS_CHAIN, "-s", &cp, "-j", "ACCEPT"])
+            .await;
+        let _ = elevation
+            .run_allow_failure("iptables", &["-A", IPS_CHAIN, "-d", &cp, "-j", "ACCEPT"])
+            .await;
+        // Inbound new SSH only (--dport 22). SSH reply traffic (packets *from*
+        // port 22) is already covered by the ESTABLISHED,RELATED accept above,
+        // so there is deliberately no `--sport 22` rule: a blanket
+        // source-port-22 accept would let an attacker evade the entire inline
+        // engine just by setting their source port to 22.
+        let _ = elevation
+            .run_allow_failure(
+                "iptables",
+                &[
+                    "-A", IPS_CHAIN, "-p", "tcp", "--dport", "22", "-j", "ACCEPT",
+                ],
+            )
+            .await;
+        // `--queue-bypass`: if the sensor isn't listening on the queue, traffic
+        // passes instead of being black-holed (fail-open, never strand the host).
+        let _ = elevation
+            .run_allow_failure(
+                "iptables",
+                &[
+                    "-A",
+                    IPS_CHAIN,
+                    "-j",
+                    "NFQUEUE",
+                    "--queue-num",
+                    NFQUEUE_NUM,
+                    "--queue-bypass",
+                ],
+            )
+            .await;
+        for hook in ["INPUT", "FORWARD", "OUTPUT"] {
+            let _ = elevation
+                .run_allow_failure("iptables", &["-I", hook, "-j", IPS_CHAIN])
+                .await;
+        }
+    }
+
+    async fn remove_nfqueue(elevation: &ElevationState) {
+        for hook in ["INPUT", "FORWARD", "OUTPUT"] {
+            let _ = elevation
+                .run_allow_failure("iptables", &["-D", hook, "-j", IPS_CHAIN])
+                .await;
+        }
+        let _ = elevation
+            .run_allow_failure("iptables", &["-F", IPS_CHAIN])
+            .await;
+        let _ = elevation
+            .run_allow_failure("iptables", &["-X", IPS_CHAIN])
+            .await;
+    }
+
+    async fn write_ips_dropin(elevation: &ElevationState) -> Result<(), String> {
+        // Discover the installed binary; fall back to the common path.
+        let bin = elevation
+            .run_allow_failure("sh", &["-c", "command -v suricata"])
+            .await
+            .ok()
+            .map(|o| o.stdout.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "/usr/bin/suricata".to_string());
+        let _ = elevation.run("mkdir", &["-p", DROPIN_DIR]).await;
+        let body = format!(
+            "{MANAGED_HEADER}\n[Service]\nExecStart=\nExecStart={bin} -c {SURICATA_YAML} -q {NFQUEUE_NUM}\n"
+        );
+        write_managed(DROPIN_FILE, &body, elevation).await?;
+        elevation
+            .run("systemctl", &["daemon-reload"])
+            .await
+            .map(|_| ())
+    }
+
+    async fn restart(elevation: &ElevationState) -> Result<OperationOutput, String> {
+        if init_system::detect().await != InitSystem::Systemd {
+            return Err("service control requires systemd on this host".to_string());
+        }
+        elevation.run("systemctl", &["restart", "suricata"]).await
+    }
+
+    async fn reload_or_restart(elevation: &ElevationState) -> Result<OperationOutput, String> {
+        // After removing a drop-in, a restart is needed to drop `-q`; prefer it.
+        restart(elevation).await
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -1399,6 +1754,31 @@ mod linux {
             assert!(!valid_pcap_name("foo.txt"));
             assert!(!valid_pcap_name("a/b.pcap"));
             assert!(!valid_pcap_name("x/../y.pcap"));
+        }
+
+        #[test]
+        fn always_allow_rules_cover_control_plane_and_ssh() {
+            let r = always_allow_rules("203.0.113.9".parse().unwrap());
+            // Every line that enforces is a `pass` (never a drop), and the
+            // control-plane IP + SSH are both covered.
+            assert!(r.contains("pass ip 203.0.113.9 any -> any any"));
+            assert!(r.contains("pass ip any any -> 203.0.113.9 any"));
+            assert!(r.contains("pass tcp any any -> any 22"));
+            assert!(!r.contains("drop "));
+            // No blanket source-port-22 pass: it would let traffic evade the
+            // inline engine simply by originating from port 22. SSH replies are
+            // covered by the netfilter ESTABLISHED,RELATED accept instead.
+            assert!(!r.contains("any 22 -> any any"));
+        }
+
+        #[test]
+        fn valid_sid_action_allowlist() {
+            assert!(valid_sid_action("alert"));
+            assert!(valid_sid_action("drop"));
+            assert!(valid_sid_action("reject"));
+            assert!(!valid_sid_action("pass"));
+            assert!(!valid_sid_action("drop; rm"));
+            assert!(!valid_sid_action(""));
         }
 
         #[test]

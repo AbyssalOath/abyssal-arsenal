@@ -892,6 +892,7 @@ pub struct SettingsTemplate {
     pub scourge_min_forward_severity: String,
     pub scourge_config_changes_enabled: bool,
     pub scourge_capture_enabled: bool,
+    pub scourge_ips_enabled: bool,
     pub scourge_pcap_retention_days: u32,
     pub scourge_pcap_max_total_mb: u32,
     pub message: Option<String>,
@@ -1716,6 +1717,8 @@ pub struct ScourgeHostTemplate {
     pub config_changes_enabled: bool,
     /// The `scourge.capture_enabled` second gate -- gates the capture section.
     pub capture_enabled: bool,
+    /// The `scourge.ips_enabled` second gate -- gates the inline-IPS section.
+    pub ips_enabled: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
     pub result_label: Option<String>,
@@ -1748,6 +1751,11 @@ pub struct ScourgeAlertsView {
     pub top_signatures: Vec<(String, i64)>,
     pub top_talkers: Vec<(String, i64)>,
     pub alerts: Vec<ScourgeAlertRow>,
+    /// Cross-arsenal "Suggested Next Steps" derived from the high-severity
+    /// alerts on this page (block the source IP in Inquest, correlate in
+    /// Thanatos, investigate in Postmortem, harden in Cadavault). Deduped
+    /// across the page's alerts; empty when nothing on the page qualifies.
+    pub suggested_actions: Vec<SuggestedActionView>,
     pub total: i64,
     pub page: Option<NumberedPageInfo>,
     /// The hx-get poll target, carrying the current filter/range/page.

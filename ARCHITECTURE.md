@@ -969,14 +969,22 @@ The pattern: a dedicated, off-by-default setting
 that leads to dispatching the operation -- both the GET confirm-page
 route and the POST dispatch route, never assumed from an earlier check --
 on top of (never instead of) the type-to-confirm the operation still
-requires individually. Three operations use it so far: Ossuary's
+requires individually. The operations using it so far: Ossuary's
 partition/RAID/LVM-create and `mkfs` (a wrong device path destroys a
 disk instantly), Inquest's full host network isolation (a wrong edge
-case severs the agent's own manageability with no remote fix), and
+case severs the agent's own manageability with no remote fix),
 Thanatos's background monitoring sweep (a different kind of risk -- not
 one destructive action, but an unattended task that reads and persists
 security-log content across the whole fleet on its own, which an admin
-should have to consciously opt into). A future operation belongs behind
+should have to consciously opt into), and Scourge's gated capabilities
+(`scourge.monitoring_enabled` for the sweep's Thanatos forwarding,
+`scourge.config_changes_enabled` for config/ruleset/SID mutations,
+`scourge.capture_enabled` for packet capture and rule testing, and
+`scourge.ips_enabled` for inline IPS -- the highest-risk of these, since
+a wrong inline-drop ruleset could in principle cut connectivity, which is
+why IPS additionally carries a mandatory, non-editable always-allow
+lockout for the control plane and SSH, derived the way Inquest isolation
+derives the control-plane address). A future operation belongs behind
 this pattern if getting it wrong once, unattended or with a typo, would
 be worse than what the existing Destructive tier already assumes it
 might be.
@@ -1053,6 +1061,21 @@ below for what that implies for toggling them).
   (default 90, `0` = keep everything) so the SIEM event store stays bounded.
   Runs regardless of `thanatos.monitoring_enabled` -- it's a storage policy,
   not part of detection.
+- **Scourge sweep** (`abyssal_web::spawn_scourge_sweep`, every
+  `scourge.sweep_seconds`): for each host, dispatches `ScourgeCollectEvents`
+  from the host's stored EVE cursor, content-hash-dedups new Suricata alerts
+  into the read-only alert cache (`repo::scourge`), and advances the cursor
+  monotonically (`GREATEST`). When `scourge.monitoring_enabled` is on, alerts
+  at/above `scourge.min_forward_severity` are forwarded to Thanatos over the
+  existing `ingest_pushed_telemetry` path (Scourge never writes
+  `thanatos_events` itself). The sweep works from file permissions alone and
+  records an "unreadable, needs permissions" state when the EVE log isn't
+  agent-readable, rather than failing. Registered with `task_health`
+  (`SCOURGE_SWEEP`). The cache is a short detection-UI convenience, not an
+  event store -- Thanatos is.
+- **Scourge retention** (`abyssal_web::spawn_scourge_retention`): prunes
+  cached alerts older than `scourge.event_retention_days` and enforces a row
+  cap, keeping the Scourge cache a short window rather than a history store.
 - **Panopticon sweep** (`abyssal_web::spawn_panopticon_sweep`, two
   independent loops): a passive refresh every 60s, unconditional --
   re-reads the control plane's own kernel neighbor table (`ip neigh`,

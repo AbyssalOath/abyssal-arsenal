@@ -510,5 +510,71 @@
     "target_action": "show_host",
     "label": "Configure automatic updates with Apothecary",
     "context_fields": []
+  },
+  {
+    "source_arsenal": "scourge",
+    "source_action": "alerts",
+    "condition": {
+      "all": [
+        {
+          "any": [
+            { "field": "severity", "operator": "equals", "value": "high" },
+            { "field": "severity", "operator": "equals", "value": "critical" }
+          ]
+        },
+        { "field": "src_ip", "operator": "exists" }
+      ]
+    },
+    "target_arsenal": "inquest",
+    "target_action": "block_ip",
+    "label": "Block {src_ip} with Inquest",
+    "context_fields": ["src_ip"]
+  },
+  {
+    "source_arsenal": "scourge",
+    "source_action": "alerts",
+    "condition": {
+      "all": [
+        {
+          "any": [
+            { "field": "severity", "operator": "equals", "value": "high" },
+            { "field": "severity", "operator": "equals", "value": "critical" }
+          ]
+        },
+        { "field": "src_ip", "operator": "exists" }
+      ]
+    },
+    "target_arsenal": "thanatos",
+    "target_action": "scan_security_events",
+    "label": "Correlate {src_ip} in Thanatos",
+    "context_fields": ["src_ip"]
+  },
+  {
+    "source_arsenal": "scourge",
+    "source_action": "alerts",
+    "condition": {
+      "any": [
+        { "field": "severity", "operator": "equals", "value": "high" },
+        { "field": "severity", "operator": "equals", "value": "critical" }
+      ]
+    },
+    "target_arsenal": "postmortem",
+    "target_action": "show_host",
+    "label": "Investigate this host with Postmortem",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "scourge",
+    "source_action": "alerts",
+    "condition": {
+      "any": [
+        { "field": "signature", "operator": "matches", "value": "(?i)brute[ -]?force|ssh" },
+        { "field": "category", "operator": "matches", "value": "(?i)scan|brute" }
+      ]
+    },
+    "target_arsenal": "cadavault",
+    "target_action": "sshd_config_audit",
+    "label": "Harden exposed services with Cadavault",
+    "context_fields": []
   }
 ]

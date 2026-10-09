@@ -75,6 +75,12 @@ admin opt-in on top of the usual confirmation. Grouped by function:
 | Scourge | Network intrusion detection/prevention (IDS/IPS): a Suricata sensor that inspects live traffic, surfaces and forwards alerts to Thanatos, captures and analyzes packets, and (gated) runs inline IPS |
 | Thanatos | Security telemetry (SIEM/EDR): MITRE-tagged detection, cross-host search & retention, correlation, suppression/allowlist & threat-intel IOC rules, multi-channel alerting (email/syslog/Slack/Teams/webhook), and inline response |
 
+These form a lifecycle: **Cadavault** hardens, **Scourge** inspects the wire
+(and, gated, prevents inline), **Thanatos** detects and correlates,
+**Inquest** responds, and **Postmortem** investigates. A high-severity
+Scourge alert surfaces one-click hand-offs into Inquest, Thanatos, and
+Postmortem (see [docs/scourge.md](docs/scourge.md)).
+
 **Preserve / Recover**
 
 | Arsenal | Covers |

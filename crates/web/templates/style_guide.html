@@ -66,8 +66,10 @@
     <button type="button" class="btn-danger" disabled>Danger (disabled)</button>
   </div>
   <p class="results-empty" style="padding-left:0;">
-    Loading spinners are not implemented: this app is JavaScript-free by design, and a
-    true per-click spinner needs script to intercept the submit and swap in an overlay.
+    Loading spinners are not implemented: this app is JavaScript-free by default (the only
+    scripts are opt-in, vendored, same-origin ones -- htmx for live partial refresh, and a
+    cosmetic easter egg), and a core page must work with scripting off; a
+    true per-click spinner would need script to intercept the submit and swap in an overlay.
     The closest CSS-only affordance is the <code>:active</code> press-state above (click
     and hold a button to see it) plus the disabled state on the confirm/results pages
     that already re-render after a submit completes.

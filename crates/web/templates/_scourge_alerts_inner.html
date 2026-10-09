@@ -20,6 +20,17 @@
 </div>
 {% endif %}
 
+{% if !view.suggested_actions.is_empty() %}
+<div class="suggested-actions-panel">
+  <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
+  <div class="action-grid" style="margin-top:8px;">
+    {% for action in view.suggested_actions %}
+    <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div style="display:flex; gap:28px; flex-wrap:wrap;">
     <div>

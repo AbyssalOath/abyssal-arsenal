@@ -87,8 +87,10 @@ fn percent_decode(input: &str) -> Result<String, String> {
 
 /// Resolves the agent's own `--control-plane-url` host to a single IP,
 /// for whichever platform's isolation implementation needs to carve out
-/// an exception for it.
-async fn resolve_control_plane_ip(host: &str) -> Result<IpAddr, String> {
+/// an exception for it. Also reused by Scourge's IPS always-allow lockout
+/// (`crate::scourge`), which must never let an inline drop cut the control
+/// plane -- same "derive it from the agent's own address, not the wire" rule.
+pub(crate) async fn resolve_control_plane_ip(host: &str) -> Result<IpAddr, String> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(ip);
     }

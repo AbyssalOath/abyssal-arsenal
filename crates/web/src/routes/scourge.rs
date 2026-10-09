@@ -38,8 +38,8 @@ use crate::templates::{
 use crate::theme;
 use abyssal_audit::{AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
-    SCOURGE_CAPTURE_ENABLED, SCOURGE_CONFIG_CHANGES_ENABLED, SCOURGE_PCAP_MAX_TOTAL_MB,
-    SCOURGE_PCAP_MAX_TOTAL_MB_DEFAULT, SCOURGE_PCAP_RETENTION_DAYS,
+    SCOURGE_CAPTURE_ENABLED, SCOURGE_CONFIG_CHANGES_ENABLED, SCOURGE_IPS_ENABLED,
+    SCOURGE_PCAP_MAX_TOTAL_MB, SCOURGE_PCAP_MAX_TOTAL_MB_DEFAULT, SCOURGE_PCAP_RETENTION_DAYS,
     SCOURGE_PCAP_RETENTION_DAYS_DEFAULT,
 };
 use abyssal_database::repo::scourge::AlertFilter;
@@ -177,10 +177,12 @@ async fn render_host(
         repo::settings::get_bool(&state.pool, SCOURGE_CONFIG_CHANGES_ENABLED, false).await?;
     let capture_enabled =
         repo::settings::get_bool(&state.pool, SCOURGE_CAPTURE_ENABLED, false).await?;
+    let ips_enabled = repo::settings::get_bool(&state.pool, SCOURGE_IPS_ENABLED, false).await?;
     let tpl = ScourgeHostTemplate {
         can_manage: ctx.has(Permission::ScourgeManage),
         config_changes_enabled,
         capture_enabled,
+        ips_enabled,
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         base,
@@ -524,9 +526,26 @@ async fn build_alerts_view(
             _ => "-".to_string(),
         }
     };
-    let alerts: Vec<ScourgeAlertRow> = rows
-        .into_iter()
-        .map(|a| ScourgeAlertRow {
+    // Build the display rows and, in the same pass, one structured result
+    // per alert (grouped by host) for the workflow registry. Suggestions are
+    // evaluated per host so each button links to the right host's arsenal
+    // page; see `suggested_actions_for`.
+    let mut alerts: Vec<ScourgeAlertRow> = Vec::with_capacity(rows.len());
+    let mut by_host: std::collections::HashMap<Uuid, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    for a in rows {
+        let mut result = serde_json::json!({
+            "severity": a.severity,
+            "signature": a.signature,
+        });
+        if let Some(ip) = &a.src_ip {
+            result["src_ip"] = serde_json::json!(ip);
+        }
+        if let Some(cat) = &a.category {
+            result["category"] = serde_json::json!(cat);
+        }
+        by_host.entry(a.host_id).or_default().push(result);
+        alerts.push(ScourgeAlertRow {
             host_name: host_name(a.host_id),
             occurred_at: crate::common::format_in_tz(a.occurred_at, &ctx.user.timezone),
             severity: a.severity,
@@ -536,8 +555,20 @@ async fn build_alerts_view(
             proto: a.proto.unwrap_or_default(),
             src: endpoint(&a.src_ip, &a.src_port),
             dst: endpoint(&a.dst_ip, &a.dst_port),
-        })
-        .collect();
+        });
+    }
+
+    // Resolve workflow suggestions per host, then dedup across the page
+    // (several alerts from one host collapse to one "block the IP" button
+    // only when they share the same source IP, so dedup on the final URL).
+    let mut suggested_actions: Vec<crate::templates::SuggestedActionView> = Vec::new();
+    for (hid, results) in &by_host {
+        let mut views =
+            crate::common::suggested_actions_for(state, "scourge", "alerts", results, *hid).await;
+        suggested_actions.append(&mut views);
+    }
+    suggested_actions.sort_by(|a, b| a.url.cmp(&b.url).then(a.label.cmp(&b.label)));
+    suggested_actions.dedup_by(|a, b| a.url == b.url && a.label == b.label);
 
     let severity_breakdown = repo::scourge::severity_breakdown(&state.pool, &filter).await?;
     let top_signatures = repo::scourge::top_signatures(&state.pool, &filter, 10).await?;
@@ -607,6 +638,7 @@ async fn build_alerts_view(
         top_signatures,
         top_talkers,
         alerts,
+        suggested_actions,
         total,
         page,
         fragment_url: alerts_href(ALERTS_FRAGMENT_PATH, q, Some(page_num)),
@@ -1962,6 +1994,284 @@ pub async fn pcap_delete(
     .await
 }
 
+// ---------------------------------------------------------------------
+// Inline IPS (phase 6): the highest-risk capability -- most conservative.
+// Mode switch + per-SID drop/reject promotion behind `scourge.ips_enabled`
+// + type-to-confirm. The agent installs mandatory always-allow lockout rules
+// on enable; reverting to passive IDS is fast and plainly confirmed.
+// ---------------------------------------------------------------------
+
+/// The inline-IPS second gate, re-checked at every entry point.
+async fn ensure_ips_enabled(state: &AppState) -> Result<(), WebError> {
+    let enabled = repo::settings::get_bool(&state.pool, SCOURGE_IPS_ENABLED, false).await?;
+    if !enabled {
+        return Err(WebError(AppError::Validation(
+            "Scourge inline IPS is disabled. An admin must enable it on the Settings page first."
+                .into(),
+        )));
+    }
+    Ok(())
+}
+
+pub async fn ips_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    // Read-only; manage-level feature. No second gate (seeing "passive" is fine).
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    run_managed(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::ScourgeIpsStatus,
+        "IPS Status",
+        OperationKind::Read,
+        None,
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct ModeConfirmQuery {
+    #[serde(default)]
+    ips: bool,
+}
+
+pub async fn mode_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Query(q): Query<ModeConfirmQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    ensure_ips_enabled(&state).await?;
+    // Enabling inline mode is the dangerous direction -> type-to-confirm.
+    // Reverting to passive is the safety move -> plain confirm (fast).
+    let (ttc, title, message) = if q.ips {
+        let host = repo::hosts::find_by_id(&state.pool, host_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        (
+            Some(TypeToConfirm {
+                label: "host name".to_string(),
+                expected: host.name.clone(),
+            }),
+            "Switch to inline IPS",
+            format!(
+                "Switch {} to INLINE IPS. Traffic will pass through the sensor and promoted \
+                 signatures will actively block. Mandatory always-allow rules protect the control \
+                 plane and SSH, and you can revert to passive IDS at any time. Signatures stay in \
+                 'alert' until you promote them individually. Type the host name to confirm.",
+                host.name
+            ),
+        )
+    } else {
+        (
+            None,
+            "Revert to passive IDS",
+            "Revert this sensor to passive IDS (detection only -- nothing is blocked). This removes \
+             the inline hook and is the safe fallback."
+                .to_string(),
+        )
+    };
+    render_confirm(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        title,
+        message,
+        format!("/arsenals/scourge/{host_id}/ips/mode"),
+        ttc,
+        vec![("ips".to_string(), q.ips.to_string())],
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct ModeForm {
+    csrf_token: String,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
+    #[serde(default)]
+    sudo_password: String,
+    #[serde(default)]
+    ips: bool,
+}
+
+pub async fn mode_set(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<ModeForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    ensure_ips_enabled(&state).await?;
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Mode change was not confirmed.".into(),
+        )));
+    }
+    // Enabling inline is Destructive + type-to-confirm; reverting is Write.
+    let kind = if form.ips {
+        let host = repo::hosts::find_by_id(&state.pool, host_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
+        OperationKind::Destructive
+    } else {
+        OperationKind::Write
+    };
+    run_managed(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::ScourgeSetMode { ips: form.ips },
+        if form.ips {
+            "Enable inline IPS"
+        } else {
+            "Revert to passive IDS"
+        },
+        kind,
+        Some(form.sudo_password),
+        Some((
+            AuditAction::ScourgeModeChanged,
+            serde_json::json!({ "mode": if form.ips { "ips" } else { "ids" } }),
+        )),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct SidActionConfirmQuery {
+    sid: u32,
+    action: String,
+}
+
+fn valid_sid_action(a: &str) -> bool {
+    matches!(a, "alert" | "drop" | "reject")
+}
+
+pub async fn sid_action_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Query(q): Query<SidActionConfirmQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    ensure_ips_enabled(&state).await?;
+    if !valid_sid_action(&q.action) {
+        return Err(WebError(AppError::Validation("Unknown action.".into())));
+    }
+    // Promoting to an active block (drop/reject) is type-to-confirm; demoting
+    // back to alert is a plain confirm.
+    let ttc = if q.action == "alert" {
+        None
+    } else {
+        let host = repo::hosts::find_by_id(&state.pool, host_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        Some(TypeToConfirm {
+            label: "host name".to_string(),
+            expected: host.name,
+        })
+    };
+    render_confirm(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        &format!("Set SID {} to {}", q.sid, q.action),
+        format!(
+            "Set signature {} to '{}'. In inline mode a '{}' action actively blocks matching \
+             traffic (the always-allow rules still protect the control plane and SSH).",
+            q.sid, q.action, q.action
+        ),
+        format!("/arsenals/scourge/{host_id}/ips/sid-action"),
+        ttc,
+        vec![
+            ("sid".to_string(), q.sid.to_string()),
+            ("action".to_string(), q.action.clone()),
+        ],
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct SidActionForm {
+    csrf_token: String,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    confirm_text: String,
+    #[serde(default)]
+    sudo_password: String,
+    sid: u32,
+    action: String,
+}
+
+pub async fn sid_action_set(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Form(form): Form<SidActionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    ensure_ips_enabled(&state).await?;
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "Action was not confirmed.".into(),
+        )));
+    }
+    if !valid_sid_action(&form.action) {
+        return Err(WebError(AppError::Validation("Unknown action.".into())));
+    }
+    let kind = if form.action == "alert" {
+        OperationKind::Write
+    } else {
+        let host = repo::hosts::find_by_id(&state.pool, host_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
+        OperationKind::Destructive
+    };
+    run_managed(
+        &state,
+        &jar,
+        &ctx,
+        host_id,
+        AgentOperation::ScourgeSetSidAction {
+            sid: form.sid,
+            action: form.action.clone(),
+        },
+        "Set SID action",
+        kind,
+        Some(form.sudo_password),
+        Some((
+            AuditAction::ScourgeModeChanged,
+            serde_json::json!({ "sid": form.sid, "action": form.action }),
+        )),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2009,5 +2319,76 @@ mod tests {
         assert!(!valid_service_verb("enable"));
         assert!(!valid_service_verb("stop; rm -rf"));
         assert!(!valid_service_verb(""));
+    }
+
+    #[test]
+    fn sid_action_allowlist() {
+        for a in ["alert", "drop", "reject"] {
+            assert!(valid_sid_action(a));
+        }
+        assert!(!valid_sid_action("pass"));
+        assert!(!valid_sid_action("drop; rm"));
+        assert!(!valid_sid_action(""));
+    }
+
+    #[test]
+    fn high_severity_alert_suggests_respond_investigate_correlate() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({
+            "severity": "high",
+            "signature": "ET MALWARE Observed",
+            "src_ip": "10.0.0.5",
+        });
+        let matches = registry.evaluate("scourge", "alerts", &entry).matches;
+        let targets: Vec<&str> = matches.iter().map(|m| m.target_arsenal.as_str()).collect();
+        assert!(targets.contains(&"inquest"), "block the source IP");
+        assert!(targets.contains(&"thanatos"), "correlate");
+        assert!(targets.contains(&"postmortem"), "investigate");
+        // The Inquest button must carry the source IP forward.
+        let inquest = matches
+            .iter()
+            .find(|m| m.target_arsenal == "inquest")
+            .expect("inquest suggestion present");
+        assert!(
+            inquest
+                .context
+                .iter()
+                .any(|(k, v)| k == "src_ip" && v == "10.0.0.5")
+        );
+    }
+
+    #[test]
+    fn low_severity_alert_suggests_nothing_destructive() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({ "severity": "low", "signature": "ET INFO ping" });
+        let targets: Vec<String> = registry
+            .evaluate("scourge", "alerts", &entry)
+            .matches
+            .iter()
+            .map(|m| m.target_arsenal.clone())
+            .collect();
+        assert!(!targets.contains(&"inquest".to_string()));
+        assert!(!targets.contains(&"thanatos".to_string()));
+        assert!(!targets.contains(&"postmortem".to_string()));
+    }
+
+    #[test]
+    fn brute_force_alert_suggests_hardening() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let entry = serde_json::json!({
+            "severity": "medium",
+            "signature": "ET SCAN SSH BruteForce",
+            "category": "Attempted Administrator Privilege Gain",
+        });
+        let targets: Vec<String> = registry
+            .evaluate("scourge", "alerts", &entry)
+            .matches
+            .iter()
+            .map(|m| m.target_arsenal.clone())
+            .collect();
+        assert!(
+            targets.contains(&"cadavault".to_string()),
+            "harden exposed services"
+        );
     }
 }

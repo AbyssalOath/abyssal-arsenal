@@ -174,6 +174,47 @@
 </div>
 
 <div class="card kind-destructive">
+  <h3>{% call macros::icon("shield") %} Inline IPS</h3>
+  {% if ips_enabled %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    Inline mode actively blocks traffic. Enabling it installs mandatory always-allow rules
+    (control plane + SSH) so a drop can never cut management. Monitor-first: promote individual
+    SIDs to drop/reject after review; revert to passive IDS any time.
+  </p>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/ips/status">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} IPS Status</button>
+    </form>
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/ips/mode/confirm">
+      <input type="hidden" name="ips" value="true">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Switch to inline IPS&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/ips/mode/confirm">
+      <input type="hidden" name="ips" value="false">
+      <button type="submit" class="btn-warning">{% call macros::icon("check") %} Revert to passive IDS&hellip;</button>
+    </form>
+  </div>
+  <form method="get" action="/arsenals/scourge/{{ host_id }}/ips/sid-action/confirm" style="margin-top:12px;">
+    <label for="ips-sid">Signature action (per SID)</label>
+    <input type="number" id="ips-sid" name="sid" min="1" required placeholder="SID">
+    <select name="action">
+      <option value="drop">Drop (block)</option>
+      <option value="reject">Reject (block + RST)</option>
+      <option value="alert">Alert (monitor only)</option>
+    </select>
+    <button type="submit" class="btn-danger">{% call macros::icon("shield") %} Set SID action&hellip;</button>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted); margin:0;">
+    Inline IPS is disabled. An admin must enable "Scourge inline IPS" on the
+    <a href="/admin/settings">Settings</a> page first &mdash; it actively blocks traffic, so it's the
+    most gated Scourge control.
+  </p>
+  {% endif %}
+</div>
+
+<div class="card kind-destructive">
   <h3>{% call macros::icon("danger") %} Stop sensor</h3>
   <p style="color:var(--text-muted); margin-top:0;">
     Stopping the sensor blinds network intrusion detection on this host until it's started again.

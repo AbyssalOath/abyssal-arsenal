@@ -11,7 +11,7 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
     SCOURGE_CAPTURE_ENABLED, SCOURGE_CONFIG_CHANGES_ENABLED, SCOURGE_EVENT_RETENTION_DAYS,
-    SCOURGE_EVENT_RETENTION_DAYS_DEFAULT, SCOURGE_MIN_FORWARD_SEVERITY,
+    SCOURGE_EVENT_RETENTION_DAYS_DEFAULT, SCOURGE_IPS_ENABLED, SCOURGE_MIN_FORWARD_SEVERITY,
     SCOURGE_MIN_FORWARD_SEVERITY_DEFAULT, SCOURGE_MONITORING_ENABLED, SCOURGE_PCAP_MAX_TOTAL_MB,
     SCOURGE_PCAP_MAX_TOTAL_MB_DEFAULT, SCOURGE_PCAP_RETENTION_DAYS,
     SCOURGE_PCAP_RETENTION_DAYS_DEFAULT, SCOURGE_SWEEP_SECONDS, SCOURGE_SWEEP_SECONDS_DEFAULT,
@@ -273,6 +273,8 @@ async fn render(
         repo::settings::get_bool(&state.pool, SCOURGE_CONFIG_CHANGES_ENABLED, false).await?;
     let scourge_capture_enabled =
         repo::settings::get_bool(&state.pool, SCOURGE_CAPTURE_ENABLED, false).await?;
+    let scourge_ips_enabled =
+        repo::settings::get_bool(&state.pool, SCOURGE_IPS_ENABLED, false).await?;
     let scourge_pcap_retention_days = repo::settings::get_u32(
         &state.pool,
         SCOURGE_PCAP_RETENTION_DAYS,
@@ -325,6 +327,7 @@ async fn render(
         scourge_min_forward_severity,
         scourge_config_changes_enabled,
         scourge_capture_enabled,
+        scourge_ips_enabled,
         scourge_pcap_retention_days,
         scourge_pcap_max_total_mb,
         message: None,
@@ -738,6 +741,45 @@ pub async fn set_scourge_capture(
                 username: &ctx.user.username,
             })
             .resource(SCOURGE_CAPTURE_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ScourgeIpsForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+}
+
+/// The inline-IPS second gate -- the highest-risk Scourge control. Off by
+/// default; an admin must deliberately allow Scourge to switch a sensor inline
+/// and promote signatures to drop/reject.
+pub async fn set_scourge_ips(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ScourgeIpsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_IPS_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(SCOURGE_IPS_ENABLED)
             .metadata(serde_json::json!({ "enabled": form.enabled })),
     )
     .await?;

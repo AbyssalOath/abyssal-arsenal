@@ -12,6 +12,39 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Scourge (network IDS/IPS): a Suricata sensor for the Defend lifecycle.**
+  A new host-agent Arsenal that answers *"what is actually happening on my
+  network?"* -- the inspection point between Cadavault (harden) and Inquest
+  (respond). Linux-only (Windows returns `platform_unsupported()`); installs
+  Suricata via Apothecary; privilege via Apotheosis (`sudo -n`); engine
+  detection prefers file probing over `PATH` like `firewall.rs`. Capabilities:
+  sensor status, ruleset management (list/enable/disable/suppress SIDs,
+  `suricata-update`), validate-before-apply config deploy with backup +
+  rollback (the Sepulchre model), a read-only alert-inspection cache swept
+  from each sensor on an interval (with a 5s live-poll option) and pruned on a
+  retention timer, and bounded host-local packet capture (stop-at-N-MB; pcaps
+  never cross the agent channel; delete offers shred + witness sign-off). The
+  unattended sweep works from file permissions alone and surfaces a clear
+  "unreadable, needs permissions" state when the EVE log isn't agent-readable.
+  Alerts at/above `scourge.min_forward_severity` forward to Thanatos over the
+  existing push-telemetry ingest (never writing `thanatos_events` directly).
+  Two permissions (`scourge.view` / `scourge.manage`); higher-risk actions sit
+  behind second-gate settings re-checked at both confirm and dispatch. The
+  alert page renders cross-Arsenal "Suggested Next Steps" (Inquest to block the
+  source IP, Thanatos to correlate, Postmortem to investigate, Cadavault to
+  harden on scan/brute-force). See [docs/scourge.md](docs/scourge.md).
+  - **Inline IPS (gated, conservative).** `scourge.ips_enabled` unlocks
+    switching a sensor to NFQUEUE inline mode and setting per-SID
+    `drop`/`reject` actions (`alert`/`drop`/`reject` allowlisted;
+    `drop`/`reject` are type-to-confirm Destructive). Lockout protection is
+    mandatory and non-negotiable: both the `iptables` `SCOURGE_IPS` chain
+    (loopback, established, control-plane, and SSH ACCEPT'd before a
+    `--queue-bypass` NFQUEUE target) and prepended Suricata `pass` rules always
+    permit the control-plane connection and SSH, and the control-plane address
+    is auto-derived the way Inquest isolation derives it -- not operator-
+    editable. Mode and rule changes validate-before-reload and roll back to
+    passive on any failure; a dead Suricata fails open. Agent protocol 41.
+
 - **Scourge (network IDS/IPS) -- review fixes before merge.** Packet capture
   now stops at its size cap and keeps the *first* N MB (it was a one-file
   ring buffer that silently overwrote the start of the capture); the agent

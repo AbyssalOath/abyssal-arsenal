@@ -840,6 +840,36 @@
       </div>
     </div>
 
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("shield") %} Scourge inline IPS</div>
+        <p class="settings-row-desc">
+          Second gate for switching a sensor to inline IPS and promoting signatures to drop/reject.
+          The highest-risk Scourge control &mdash; off by default.
+        </p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Inline mode actively blocks traffic, so it is gated here, requires type-to-confirm per
+            action, and is monitor-first: signatures stay <code>alert</code> until an operator
+            promotes them one at a time after review. Enabling inline mode first installs mandatory
+            always-allow lockout rules (loopback, established connections, the control plane, and
+            SSH, derived from the agent's own control-plane address) at both the netfilter and rule
+            layers, so an inline drop can never sever the management channel; and there is a fast
+            one-click revert to passive IDS. Inline hookup is vendor/kernel-dependent (NFQUEUE) --
+            validate on a lab host before a production sensor.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/scourge-ips" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label><input type="checkbox" name="enabled" value="true"{% if scourge_ips_enabled %} checked{% endif %}> Enabled</label>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
   </div>
 </div>
 {% endif %}

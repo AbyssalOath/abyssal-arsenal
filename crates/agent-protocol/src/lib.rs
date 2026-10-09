@@ -28,7 +28,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 40;
+pub const PROTOCOL_VERSION: u32 = 41;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1512,6 +1512,30 @@ pub enum AgentOperation {
         #[serde(default)]
         shred_passes: u8,
     },
+    /// Read: current IPS state -- IDS (passive) vs IPS (inline) mode, the
+    /// per-SID actions Scourge has promoted, and whether the mandatory
+    /// always-allow lockout rules are in place.
+    ScourgeIpsStatus,
+    /// Destructive (inline mode is the highest-risk action): switch the sensor
+    /// between passive IDS and inline IPS. Enabling IPS first installs the
+    /// mandatory always-allow lockout rules (loopback, established, the control
+    /// plane, and SSH -- derived from the agent's own control-plane address, not
+    /// anything supplied over the wire) at BOTH the netfilter and rule layers so
+    /// an inline drop can never sever the management channel. Validated before
+    /// reload with a safe rollback to passive IDS on any failure. Requires
+    /// elevation.
+    ScourgeSetMode {
+        ips: bool,
+    },
+    /// Destructive: set a signature's inline action -- `alert` (monitor, the
+    /// default), `drop`, or `reject`. Monitor-first: a SID stays `alert` until an
+    /// operator deliberately promotes it after review. Applied via the engine's
+    /// rule-action override + a validated reload, with rollback. Requires
+    /// elevation.
+    ScourgeSetSidAction {
+        sid: u32,
+        action: String,
+    },
 }
 
 /// Which Sepulchre-owned config drop-in/include an operation targets --
@@ -2746,6 +2770,15 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("ScourgePcapDelete")
                 .field("pcap_name", pcap_name)
                 .field("shred_passes", shred_passes)
+                .finish(),
+            AgentOperation::ScourgeIpsStatus => write!(f, "ScourgeIpsStatus"),
+            AgentOperation::ScourgeSetMode { ips } => {
+                f.debug_struct("ScourgeSetMode").field("ips", ips).finish()
+            }
+            AgentOperation::ScourgeSetSidAction { sid, action } => f
+                .debug_struct("ScourgeSetSidAction")
+                .field("sid", sid)
+                .field("action", action)
                 .finish(),
         }
     }

@@ -266,6 +266,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_scourge_capture),
         )
         .route(
+            "/admin/settings/scourge-ips",
+            post(routes::settings::set_scourge_ips),
+        )
+        .route(
             "/admin/settings/panopticon-sweep-target",
             post(routes::settings::set_panopticon_sweep_target),
         )
@@ -1612,6 +1616,26 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/scourge/:host_id/pcap/delete",
             post(routes::scourge::pcap_delete),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/ips/status",
+            post(routes::scourge::ips_status),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/ips/mode/confirm",
+            get(routes::scourge::mode_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/ips/mode",
+            post(routes::scourge::mode_set),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/ips/sid-action/confirm",
+            get(routes::scourge::sid_action_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/ips/sid-action",
+            post(routes::scourge::sid_action_set),
         )
         .route("/arsenals/cryptkeeper", get(routes::cryptkeeper::show))
         .route(
