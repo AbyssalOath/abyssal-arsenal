@@ -69,6 +69,8 @@ pub struct SettingsAccess {
     /// whoever is audited mustn't be able to stop their actions reaching
     /// the SIEM.
     pub audit_export: bool,
+    /// Scourge (IDS/IPS): sweep, config/ruleset-change and capture gates.
+    pub scourge: bool,
 }
 
 impl SettingsAccess {
@@ -84,6 +86,7 @@ impl SettingsAccess {
             panopticon: ctx.has(Permission::NetworkManage),
             nac: ctx.has(Permission::NetworkNac),
             audit_export: ctx.has(Permission::AuditExport),
+            scourge: ctx.has(Permission::ScourgeManage),
         }
     }
 
@@ -591,7 +594,7 @@ pub async fn set_scourge_monitoring(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ScourgeMonitoringForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
     let min_forward = match form.min_forward_severity.as_str() {
@@ -662,7 +665,7 @@ pub async fn set_scourge_config_changes(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ScourgeConfigChangesForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
     require_csrf(&jar, &form.csrf_token)?;
     repo::settings::set(
         &state.pool,
@@ -703,7 +706,7 @@ pub async fn set_scourge_capture(
     CurrentUser(ctx): CurrentUser,
     Form(form): Form<ScourgeCaptureForm>,
 ) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
     require_csrf(&jar, &form.csrf_token)?;
     let uid = Some(ctx.user.id);
     repo::settings::set(

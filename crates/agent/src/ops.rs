@@ -492,9 +492,10 @@ pub async fn run(
         AgentOperation::ScourgeCaptureCancel { capture_id } => {
             scourge::capture_cancel(capture_id, elevation).await
         }
-        AgentOperation::ScourgePcapDelete { pcap_name } => {
-            scourge::pcap_delete(pcap_name, elevation).await
-        }
+        AgentOperation::ScourgePcapDelete {
+            pcap_name,
+            shred_passes,
+        } => scourge::pcap_delete(pcap_name, shred_passes, elevation).await,
         AgentOperation::AdDnsReport { domain } => haruspex::ad_dns_report(domain).await,
         AgentOperation::AdHealthReport { domain } => haruspex::ad_health_report(domain).await,
         AgentOperation::DetectPackageBackend => sepulchre::detect_package_backend(elevation).await,

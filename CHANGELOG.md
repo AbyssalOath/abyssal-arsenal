@@ -12,6 +12,17 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Scourge (network IDS/IPS) -- review fixes before merge.** Packet capture
+  now stops at its size cap and keeps the *first* N MB (it was a one-file
+  ring buffer that silently overwrote the start of the capture); the agent
+  stops tcpdump when it rotates and drops the overflow, and capture status /
+  cleanup do the same if the agent restarted mid-capture. Deleting a pcap
+  offers shredding (default 3 passes) and the witness sign-off, like other
+  sensitive deletions. The Scourge settings are their own section, managed
+  with `scourge.manage`; Security Admin gets `scourge.view`/`.manage`, and
+  Network Admin and Regular User `scourge.view`, on existing installs too
+  (role defaults v3). Agent protocol 40; Scourge's migration is 0042.
+
 - **Shred instead of delete.** Deleting a Reliquary backup, a quarantined
   file (Inquest/Thanatos) or an SSH keypair (Cryptkeeper) now takes a
   "shred passes" count, defaulting to 3 (the minimum CJIS Security Policy
@@ -22,7 +33,7 @@ for what that means for cloning and updating.
   run GNU `shred -f -n <passes> -u`; Windows (no `shred`) gets an equivalent
   overwrite-and-flush loop. A shred is all-or-nothing -- if it can't run,
   nothing is deleted -- and is never sent to an out-of-date agent, which
-  would ignore it and plain-delete (agent protocol 39). Backups on a remote
+  would ignore it and plain-delete (needs a v0.2.2 agent). Backups on a remote
   Sepulchre connection (SFTP/SMB) can't be shredded and say so. The pass
   count is in the audit trail. As with any overwrite, SSDs, copy-on-write
   filesystems and snapshots can retain older copies.

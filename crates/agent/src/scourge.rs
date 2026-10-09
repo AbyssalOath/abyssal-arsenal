@@ -72,7 +72,7 @@ mod stubs {
     pub async fn capture_cancel(_id: String, _e: &ElevationState) -> CommandOutcome {
         crate::process::platform_unsupported()
     }
-    pub async fn pcap_delete(_name: String, _e: &ElevationState) -> CommandOutcome {
+    pub async fn pcap_delete(_name: String, _passes: u8, _e: &ElevationState) -> CommandOutcome {
         crate::process::platform_unsupported()
     }
 }
@@ -999,6 +999,31 @@ mod linux {
     /// older than `retention_days`, then deletes the oldest until the total is
     /// under `max_total_mb`. Best-effort (never fails the capture).
     async fn enforce_pcap_caps(retention_days: u32, max_total_mb: u32, elevation: &ElevationState) {
+        // Any capture left past its size cap (its watcher gone with an agent
+        // restart): stop it and drop its overflow files.
+        let overflow = elevation
+            .run_allow_failure(
+                "find",
+                &[
+                    PCAP_DIR,
+                    "-maxdepth",
+                    "1",
+                    "-name",
+                    "*.pcap1",
+                    "-printf",
+                    "%f\\n",
+                ],
+            )
+            .await
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        for name in overflow.lines() {
+            if let Some(base) = name.strip_suffix('1')
+                && valid_pcap_name(base)
+            {
+                stop_if_capped(&format!("{PCAP_DIR}/{base}"), elevation).await;
+            }
+        }
         if retention_days > 0 {
             let age = format!("+{retention_days}");
             let _ = elevation
@@ -1112,10 +1137,13 @@ mod linux {
             pcap.clone(),
             "-s".into(),
             "0".into(),
+            // -C rotates at the cap: the moment `<pcap>1` appears, the first
+            // file holds exactly the first N MB, and `watch_capture` stops
+            // tcpdump and discards the overflow ("stop at N MB"). Not -W: a
+            // ring buffer would overwrite the start of the capture, and -W
+            // also renames the first file to `<pcap>0`.
             "-C".into(),
             mb_s,
-            "-W".into(),
-            "1".into(),
             "-n".into(),
             // End of tcpdump options: everything after is the filter expression,
             // so a filter term can't be parsed as a flag even if one slipped the
@@ -1127,9 +1155,73 @@ mod linux {
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match elevation.run("setsid", &arg_refs).await {
-            Ok(_) => ok(id),
+            Ok(_) => {
+                tokio::spawn(watch_capture(pcap, secs, elevation.clone()));
+                ok(id)
+            }
             Err(e) => CommandOutcome::Err(format!("failed to start capture: {e}")),
         }
+    }
+
+    /// The size cap, enforced: polls until the capture ends (time limit,
+    /// cancel) or tcpdump rotates to `<pcap>1` -- the first file is then
+    /// full -- and stops it there. Bounded by the capture's own time limit.
+    /// If the agent restarts mid-capture this task is gone; `capture_status`
+    /// and `enforce_pcap_caps` call `stop_if_capped` too, so the next status
+    /// check or capture tidies up instead.
+    async fn watch_capture(pcap: String, max_seconds: u32, elevation: ElevationState) {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(u64::from(max_seconds) + 10);
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if stop_if_capped(&pcap, &elevation).await || !capture_running(&pcap, &elevation).await
+            {
+                return;
+            }
+        }
+    }
+
+    async fn capture_running(pcap: &str, elevation: &ElevationState) -> bool {
+        elevation
+            .run_allow_failure("pgrep", &["-f", pcap])
+            .await
+            .map(|o| !o.stdout.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// If `<pcap>` has reached its size cap (tcpdump rotated to `<pcap>1`):
+    /// stop the capture and delete the overflow file(s), keeping the first N
+    /// MB in `<pcap>`. Returns whether it stopped one.
+    async fn stop_if_capped(pcap: &str, elevation: &ElevationState) -> bool {
+        let overflow = format!("{pcap}1");
+        let rotated = elevation
+            .run_allow_failure("stat", &["-c", "%s", &overflow])
+            .await
+            .is_ok_and(|o| o.exit_code == Some(0));
+        if !rotated {
+            return false;
+        }
+        let _ = elevation
+            .run_allow_failure("pkill", &["-TERM", "-f", pcap])
+            .await;
+        let Some(name) = pcap.rsplit('/').next() else {
+            return true;
+        };
+        // `<name>1`, `<name>2`, ...: find's own pattern, no shell glob.
+        let _ = elevation
+            .run_allow_failure(
+                "find",
+                &[
+                    PCAP_DIR,
+                    "-maxdepth",
+                    "1",
+                    "-name",
+                    &format!("{name}[0-9]*"),
+                    "-delete",
+                ],
+            )
+            .await;
+        true
     }
 
     pub async fn capture_status(capture_id: String, elevation: &ElevationState) -> CommandOutcome {
@@ -1138,12 +1230,11 @@ mod linux {
         }
         let pcap = format!("{PCAP_DIR}/{capture_id}.pcap");
         let meta = format!("{PCAP_DIR}/{capture_id}.meta");
+        // Backstop for the size cap if the watcher didn't survive (agent
+        // restart): stop it here instead.
+        stop_if_capped(&pcap, elevation).await;
         // Running if a process has the unique pcap path in its command line.
-        let running = elevation
-            .run_allow_failure("pgrep", &["-f", &pcap])
-            .await
-            .map(|o| !o.stdout.trim().is_empty())
-            .unwrap_or(false);
+        let running = capture_running(&pcap, elevation).await;
         let size = elevation
             .run_allow_failure("stat", &["-c", "%s", &pcap])
             .await
@@ -1178,12 +1269,26 @@ mod linux {
         ok(format!("Capture {capture_id} cancelled."))
     }
 
-    pub async fn pcap_delete(pcap_name: String, elevation: &ElevationState) -> CommandOutcome {
+    pub async fn pcap_delete(
+        pcap_name: String,
+        shred_passes: u8,
+        elevation: &ElevationState,
+    ) -> CommandOutcome {
         if !valid_pcap_name(&pcap_name) {
             return CommandOutcome::Err("invalid pcap name".to_string());
         }
+        if let Err(e) = crate::shred::validate_passes(shred_passes) {
+            return CommandOutcome::Err(e);
+        }
         let pcap = format!("{PCAP_DIR}/{pcap_name}");
-        match elevation.run("rm", &["-f", &pcap]).await {
+        let removed = if shred_passes == 0 {
+            elevation.run("rm", &["-f", &pcap]).await
+        } else {
+            let args = crate::shred::shred_args(&pcap, shred_passes);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            elevation.run("shred", &args).await
+        };
+        match removed {
             Ok(_) => {
                 // Also drop the sidecar meta if present (best-effort).
                 if let Some(stem) = pcap_name.strip_suffix(".pcap") {
@@ -1191,7 +1296,10 @@ mod linux {
                         .run_allow_failure("rm", &["-f", &format!("{PCAP_DIR}/{stem}.meta")])
                         .await;
                 }
-                ok(format!("Deleted {pcap_name}."))
+                ok(format!(
+                    "{} {pcap_name}.",
+                    abyssal_agent_protocol::shred_verb(shred_passes)
+                ))
             }
             Err(e) => CommandOutcome::Err(format!("failed to delete pcap: {e}")),
         }

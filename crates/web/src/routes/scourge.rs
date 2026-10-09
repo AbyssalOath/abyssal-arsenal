@@ -724,6 +724,7 @@ async fn render_confirm(
     action_url: String,
     type_to_confirm: Option<TypeToConfirm>,
     extra_hidden_fields: Vec<(String, String)>,
+    shred_option: Option<crate::templates::ShredOption>,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -737,8 +738,10 @@ async fn render_confirm(
     )
     .await?;
     // Offer inline elevation on the confirm page when the host isn't already
-    // elevated (these ops need sudo on the agent).
-    let escalate_host_id = (!state.elevation.is_elevated(host_id)).then(|| host_id.to_string());
+    // elevated (these ops need sudo on the agent) -- and only to someone who
+    // may elevate, like every other arsenal's confirm page.
+    let escalate_host_id = (base.can_hosts_elevate && !state.elevation.is_elevated(host_id))
+        .then(|| host_id.to_string());
     let tpl = ConfirmTemplate {
         base,
         title: title.to_string(),
@@ -748,6 +751,7 @@ async fn render_confirm(
         escalate_host_id,
         type_to_confirm,
         extra_hidden_fields,
+        shred_option,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -886,6 +890,7 @@ pub async fn install_confirm(
         format!("/arsenals/scourge/{host_id}/install"),
         None,
         vec![],
+        None,
     )
     .await
 }
@@ -969,6 +974,7 @@ pub async fn service_confirm(
         format!("/arsenals/scourge/{host_id}/service"),
         ttc,
         vec![("verb".to_string(), q.verb.clone())],
+        None,
     )
     .await
 }
@@ -1100,6 +1106,7 @@ pub async fn config_confirm(
             ("external_net".to_string(), q.external_net.clone()),
             ("eve_enabled".to_string(), q.eve_enabled.to_string()),
         ],
+        None,
     )
     .await
 }
@@ -1190,6 +1197,7 @@ pub async fn rules_update_confirm(
         format!("/arsenals/scourge/{host_id}/rules/update"),
         None,
         vec![],
+        None,
     )
     .await
 }
@@ -1258,6 +1266,7 @@ pub async fn sid_confirm(
             ("sid".to_string(), q.sid.to_string()),
             ("enabled".to_string(), q.enabled.to_string()),
         ],
+        None,
     )
     .await
 }
@@ -1350,6 +1359,7 @@ pub async fn suppress_confirm(
             ("sid".to_string(), q.sid.to_string()),
             ("suppress".to_string(), q.suppress.to_string()),
         ],
+        None,
     )
     .await
 }
@@ -1505,6 +1515,7 @@ pub async fn capture_confirm(
             ("max_seconds".to_string(), secs.to_string()),
             ("max_mb".to_string(), mb.to_string()),
         ],
+        None,
     )
     .await
 }
@@ -1840,8 +1851,9 @@ pub async fn pcap_delete_confirm(
         host_id,
         "Delete pcap",
         format!(
-            "Permanently delete the capture \"{name}\" from this host. This can't be undone. Type \
-             the pcap filename to confirm."
+            "Permanently delete the capture \"{name}\" from this host -- captures hold raw \
+             network traffic, so shredding is the default. This can't be undone. Type the pcap \
+             filename to confirm."
         ),
         format!("/arsenals/scourge/{host_id}/pcap/delete"),
         Some(TypeToConfirm {
@@ -1849,6 +1861,7 @@ pub async fn pcap_delete_confirm(
             expected: name.clone(),
         }),
         vec![("name".to_string(), name)],
+        Some(crate::templates::ShredOption::for_host(&state, host_id).await?),
     )
     .await
 }
@@ -1863,6 +1876,18 @@ pub struct PcapDeleteForm {
     #[serde(default)]
     sudo_password: String,
     name: String,
+    /// Blank or 0 = an ordinary delete; 1-35 = shred the capture first.
+    #[serde(default)]
+    shred_passes: String,
+    /// Witness sign-off for a shred (see `common::sanitization_sign_off`).
+    #[serde(default)]
+    witnessed: Option<String>,
+    #[serde(default)]
+    witness_username: String,
+    #[serde(default)]
+    witness_password: String,
+    #[serde(default)]
+    sanitization_note: String,
 }
 
 pub async fn pcap_delete(
@@ -1882,6 +1907,41 @@ pub async fn pcap_delete(
     }
     let name = form.name.trim().to_string();
     crate::common::require_typed_confirmation(&form.confirm_text, &name)?;
+    // Shred like every other sensitive deletion -- verified (and the sign-off
+    // recorded) only once the deletion itself is allowed and confirmed.
+    let shred_passes = crate::common::shred_passes_for_host(&state, host_id, &form.shred_passes)?;
+    let sign_off = crate::common::sanitization_sign_off(
+        &state,
+        &ctx,
+        shred_passes,
+        crate::common::SignOffFields {
+            witnessed: form.witnessed.is_some(),
+            witness_username: form.witness_username.clone(),
+            witness_password: form.witness_password.clone(),
+            note: form.sanitization_note.clone(),
+        },
+        Permission::ScourgeManage,
+    )
+    .await?;
+    if let Some(sign_off) = &sign_off {
+        let host_name = repo::hosts::find_by_id(&state.pool, host_id)
+            .await?
+            .map(|h| h.name)
+            .unwrap_or_default();
+        crate::common::record_sign_off(
+            &state,
+            &ctx,
+            sign_off,
+            &format!("packet capture {name} on {host_name}"),
+            shred_passes,
+        )
+        .await?;
+    }
+    let label = if shred_passes == 0 {
+        "Delete pcap".to_string()
+    } else {
+        format!("Shred pcap ({shred_passes} passes)")
+    };
     run_managed(
         &state,
         &jar,
@@ -1889,13 +1949,14 @@ pub async fn pcap_delete(
         host_id,
         AgentOperation::ScourgePcapDelete {
             pcap_name: name.clone(),
+            shred_passes,
         },
-        "Delete pcap",
+        &label,
         OperationKind::Destructive,
         Some(form.sudo_password),
         Some((
             AuditAction::ScourgePcapDeleted,
-            serde_json::json!({ "pcap": name }),
+            serde_json::json!({ "pcap": name, "shred_passes": shred_passes }),
         )),
     )
     .await

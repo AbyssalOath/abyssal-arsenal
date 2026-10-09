@@ -28,7 +28,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 39;
+pub const PROTOCOL_VERSION: u32 = 40;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1507,6 +1507,10 @@ pub enum AgentOperation {
     /// `pcap_name` is a bare filename (no path separators). Requires elevation.
     ScourgePcapDelete {
         pcap_name: String,
+        /// As `DeleteQuarantinedFile::shred_passes`: captures hold raw
+        /// traffic, so they can be shredded rather than just unlinked.
+        #[serde(default)]
+        shred_passes: u8,
     },
 }
 
@@ -2735,9 +2739,13 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("ScourgeCaptureCancel")
                 .field("capture_id", capture_id)
                 .finish(),
-            AgentOperation::ScourgePcapDelete { pcap_name } => f
+            AgentOperation::ScourgePcapDelete {
+                pcap_name,
+                shred_passes,
+            } => f
                 .debug_struct("ScourgePcapDelete")
                 .field("pcap_name", pcap_name)
+                .field("shred_passes", shred_passes)
                 .finish(),
         }
     }

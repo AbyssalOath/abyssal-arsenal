@@ -738,8 +738,8 @@
 </div>
 {% endif %}
 
-{% if access.audit_export %}
-<div class="settings-section">
+{% if access.scourge %}
+<div class="settings-section" id="scourge">
   <h2 class="settings-section-title">Scourge (IDS/IPS)</h2>
   <div class="card settings-list">
 
@@ -842,7 +842,9 @@
 
   </div>
 </div>
+{% endif %}
 
+{% if access.audit_export %}
 <div class="settings-section">
   <h2 class="settings-section-title">External Export</h2>
   <div class="card settings-list">
