@@ -87,6 +87,26 @@
   </table>
   {% endif %}
 
+  <form method="get" action="/account/macros/open" style="margin-top:14px;">
+    <label for="saved-macro">Saved macro</label>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; max-width:520px;">
+      <select id="saved-macro" name="id" style="max-width:360px; margin-bottom:0;">
+        {% if visible_macros.is_empty() %}
+        <option value="">-- no saved macros yet: add one below --</option>
+        {% else %}
+        {% for m in visible_macros %}
+        <option value="{{ m.id }}">{{ m.name }} ({{ m.scope_label }}){% if !m.can_edit %} -- use only{% endif %}</option>
+        {% endfor %}
+        {% endif %}
+      </select>
+      <button type="submit" class="btn-secondary"{% if visible_macros.is_empty() %} disabled{% endif %}>Edit</button>
+    </div>
+    <p style="color:var(--text-muted); font-size:0.85rem; margin:4px 0 0;">
+      Every macro you can use: your personal ones, and ones shared with your role (whoever
+      created them). Pick one on Panopticon's add/edit switch forms instead of retyping it.
+    </p>
+  </form>
+
   <form method="post" action="/account/macros" style="margin-top:14px;">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label for="macro-name">Macro name</label>

@@ -930,6 +930,9 @@ pub struct AccountTemplate {
     /// SNMP community-string macros this user owns -- see
     /// `routes/account.rs::add_community_macro`.
     pub community_macros: Vec<CommunityMacroRow>,
+    /// Every macro this user can use (personal + their roles'), for the
+    /// "Saved macro" dropdown.
+    pub visible_macros: Vec<CommunityMacroRow>,
     /// (role_id, role_name) for every role this user belongs to -- the
     /// "My role: X" options on the Add Macro scope picker.
     pub macro_roles: Vec<(String, String)>,

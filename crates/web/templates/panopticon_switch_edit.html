@@ -28,18 +28,20 @@
       {% endfor %}
 
       <div class="snmp-community-fields">
-        {% if !community_macros.is_empty() %}
         <label for="switch-community-macro">Saved macro</label>
         <select id="switch-community-macro" name="community_macro_id" style="max-width:360px;">
+          {% if community_macros.is_empty() %}
+          <option value="">-- no saved macros yet: type the community string below --</option>
+          {% else %}
           <option value="">-- none, type the community string below --</option>
           {% for m in community_macros %}
           <option value="{{ m.id }}">{{ m.name }} ({{ m.scope_label }})</option>
           {% endfor %}
+          {% endif %}
         </select>
         <p style="color:var(--text-muted); font-size:0.85rem; margin:-8px 0 12px;">
-          A saved macro is used instead of anything typed below; its value stays on the server.
+          {% if community_macros.is_empty() %}Personal macros you save, and macros shared with your role, show up here.{% else %}A saved macro is used instead of anything typed below; its value stays on the server.{% endif %}
         </p>
-        {% endif %}
         <label for="switch-community">Community string</label>
         <input type="password" id="switch-community" name="community" autocomplete="new-password" placeholder="Leave blank to keep the existing one" style="max-width:360px;">
       </div>

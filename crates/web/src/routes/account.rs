@@ -73,6 +73,11 @@ async fn render_account(
     .await?;
 
     let community_macros = owned_community_macro_rows(state, ctx).await?;
+    // Every macro this user can *use* (theirs plus their roles', whoever
+    // created it) -- the "Saved macro" dropdown; the table below lists only
+    // the ones they created.
+    let visible_macros =
+        crate::routes::panopticon::visible_community_macro_rows(state, ctx).await?;
     let user_roles = repo::roles::roles_for_user(&state.pool, ctx.user.id).await?;
     let macro_roles = user_roles
         .into_iter()
@@ -84,6 +89,7 @@ async fn render_account(
         base,
         password_error,
         community_macros,
+        visible_macros,
         macro_roles,
         macro_error,
     };
@@ -391,6 +397,62 @@ async fn render_community_macro_edit(
 pub struct MacroReturnQuery {
     #[serde(default)]
     return_to: String,
+}
+
+#[derive(Deserialize)]
+pub struct OpenMacroQuery {
+    #[serde(default)]
+    id: String,
+}
+
+/// `GET /account/macros/open?id=` -- the Account page's "Saved macro"
+/// dropdown + Edit: to the macro's edit page when this user may change it,
+/// otherwise back to the Account page saying why (a role-mate's macro is
+/// usable, not editable).
+pub async fn open_community_macro(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<OpenMacroQuery>,
+) -> Result<Response, WebError> {
+    let Ok(id) = Uuid::parse_str(q.id.trim()) else {
+        return render_account(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            Some("Pick a saved macro first.".to_string()),
+        )
+        .await;
+    };
+    // Only a macro this user can see -- never confirm one exists otherwise.
+    let visible = crate::routes::panopticon::visible_community_macro_rows(&state, &ctx).await?;
+    let Some(row) = visible.into_iter().find(|m| m.id == q.id.trim()) else {
+        return render_account(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            Some("That macro isn't available.".to_string()),
+        )
+        .await;
+    };
+    if !row.can_edit {
+        return render_account(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            Some(format!(
+                "\"{}\" is shared with your role ({}) -- you can use it on Panopticon's switch \
+                 forms, but only the person who created it (or an admin with macros.manage_all) \
+                 can change it.",
+                row.name, row.scope_label
+            )),
+        )
+        .await;
+    }
+    Ok(Redirect::to(&format!("/account/macros/{id}/edit?return_to=%2Faccount")).into_response())
 }
 
 pub async fn community_macro_edit_form(

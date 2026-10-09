@@ -1209,7 +1209,7 @@ fn validate_snmp_fields(
 /// personal ones plus their roles') -- the add/edit switch forms'
 /// "Saved macro" dropdown and the management list above them. `can_edit` is only true for the macro's owner or someone with
 /// `Permission::MacrosManageAll`.
-async fn visible_community_macro_rows(
+pub(crate) async fn visible_community_macro_rows(
     state: &AppState,
     ctx: &AuthContext,
 ) -> anyhow::Result<Vec<crate::templates::CommunityMacroRow>> {

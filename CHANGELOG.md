@@ -115,6 +115,14 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **The "Saved macro" dropdown disappeared when you had no macros, and the
+  Account page never had one.** It's now always shown wherever the macro
+  name / community string boxes are: Panopticon's add and edit switch forms
+  (with "no saved macros yet" when empty), and the Account page's SNMP
+  Community String Macros section, which lists every macro you can use --
+  your own and ones shared with your role, whoever created them -- with an
+  Edit button (macros you can use but didn't create say so instead).
+
 - **Scourge inline IPS bypassed the host's own firewall.** Its netfilter
   chain sat at the top of the `filter` table with ACCEPT bypasses, and in
   `filter` an ACCEPT is final -- so enabling IPS opened SSH past firewall

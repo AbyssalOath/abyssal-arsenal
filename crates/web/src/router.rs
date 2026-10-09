@@ -70,6 +70,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::account::add_community_macro),
         )
         .route(
+            "/account/macros/open",
+            get(routes::account::open_community_macro),
+        )
+        .route(
             "/account/macros/:macro_id/edit",
             get(routes::account::community_macro_edit_form)
                 .post(routes::account::community_macro_edit),
