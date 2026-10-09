@@ -359,6 +359,11 @@ EOF
         fi
 fi
 
+# A re-run skips the proxy question that sets this; use what .env recorded.
+if [ -z "${public_base_url:-}" ]; then
+        public_base_url="$(grep -E '^PUBLIC_URL=' .env 2>/dev/null | tail -n 1 | cut -d '=' -f2- | sed -E "s/^['\"]//; s/['\"]$//")"
+fi
+
 # --- Build and start ---
 echo ""
 echo "Building and starting containers..."
@@ -419,8 +424,8 @@ echo ""
 if [ -n "$aat" ]; then
         echo "Agent install token (AAT) -- like a CrowdStrike CID, for PDQ/Intune/GPO rollouts:"
         echo "  $aat"
-        echo "Windows (exe):  abyssal-agent.exe /install /quiet /norestart SERVER=${public_base_url:-<this server's URL>} AAT=$aat"
-        echo "Windows (MSI):  msiexec /i AbyssalAgent.msi /qn /norestart SERVER=${public_base_url:-<this server's URL>} AAT=$aat"
+        echo "Windows (exe):  abyssal-agent.exe /install /quiet /norestart SERVER=${public_base_url:-<server URL>} AAT=$aat"
+        echo "Windows (MSI):  msiexec /i AbyssalAgent.msi /qn /norestart SERVER=${public_base_url:-<server URL>} AAT=$aat"
         echo "Treat it as a secret. View, rotate, or require approval for new hosts at"
         echo "/admin/hosts; re-print it with: docker compose exec app /app/abyssal-arsenal aat show"
 else
