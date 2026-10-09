@@ -10,6 +10,11 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS, PUBLIC_REGISTRATION_ENABLED,
+    SCOURGE_CAPTURE_ENABLED, SCOURGE_CONFIG_CHANGES_ENABLED, SCOURGE_EVENT_RETENTION_DAYS,
+    SCOURGE_EVENT_RETENTION_DAYS_DEFAULT, SCOURGE_MIN_FORWARD_SEVERITY,
+    SCOURGE_MIN_FORWARD_SEVERITY_DEFAULT, SCOURGE_MONITORING_ENABLED, SCOURGE_PCAP_MAX_TOTAL_MB,
+    SCOURGE_PCAP_MAX_TOTAL_MB_DEFAULT, SCOURGE_PCAP_RETENTION_DAYS,
+    SCOURGE_PCAP_RETENTION_DAYS_DEFAULT, SCOURGE_SWEEP_SECONDS, SCOURGE_SWEEP_SECONDS_DEFAULT,
     THANATOS_ALERT_RECIPIENTS, THANATOS_AUTO_DISABLE_ACCOUNT_ENABLED,
     THANATOS_AUTO_QUARANTINE_SSH_KEYS_ENABLED, THANATOS_C2_PORTS, THANATOS_C2_PORTS_DEFAULT,
     THANATOS_CORRELATION_THRESHOLD, THANATOS_CORRELATION_THRESHOLD_DEFAULT,
@@ -241,6 +246,42 @@ async fn render(
     .await?;
     let audit_syslog_export_enabled =
         repo::settings::get_bool(&state.pool, AUDIT_SYSLOG_EXPORT_ENABLED, false).await?;
+    let scourge_monitoring_enabled =
+        repo::settings::get_bool(&state.pool, SCOURGE_MONITORING_ENABLED, false).await?;
+    let scourge_sweep_seconds = repo::settings::get_u32(
+        &state.pool,
+        SCOURGE_SWEEP_SECONDS,
+        SCOURGE_SWEEP_SECONDS_DEFAULT,
+    )
+    .await?;
+    let scourge_event_retention_days = repo::settings::get_u32(
+        &state.pool,
+        SCOURGE_EVENT_RETENTION_DAYS,
+        SCOURGE_EVENT_RETENTION_DAYS_DEFAULT,
+    )
+    .await?;
+    let scourge_min_forward_severity = repo::settings::get_string(
+        &state.pool,
+        SCOURGE_MIN_FORWARD_SEVERITY,
+        SCOURGE_MIN_FORWARD_SEVERITY_DEFAULT,
+    )
+    .await?;
+    let scourge_config_changes_enabled =
+        repo::settings::get_bool(&state.pool, SCOURGE_CONFIG_CHANGES_ENABLED, false).await?;
+    let scourge_capture_enabled =
+        repo::settings::get_bool(&state.pool, SCOURGE_CAPTURE_ENABLED, false).await?;
+    let scourge_pcap_retention_days = repo::settings::get_u32(
+        &state.pool,
+        SCOURGE_PCAP_RETENTION_DAYS,
+        SCOURGE_PCAP_RETENTION_DAYS_DEFAULT,
+    )
+    .await?;
+    let scourge_pcap_max_total_mb = repo::settings::get_u32(
+        &state.pool,
+        SCOURGE_PCAP_MAX_TOTAL_MB,
+        SCOURGE_PCAP_MAX_TOTAL_MB_DEFAULT,
+    )
+    .await?;
 
     let tpl = SettingsTemplate {
         base,
@@ -275,6 +316,14 @@ async fn render(
         panopticon_traffic_hourly_retention_days,
         panopticon_traffic_daily_retention_days,
         audit_syslog_export_enabled,
+        scourge_monitoring_enabled,
+        scourge_sweep_seconds,
+        scourge_event_retention_days,
+        scourge_min_forward_severity,
+        scourge_config_changes_enabled,
+        scourge_capture_enabled,
+        scourge_pcap_retention_days,
+        scourge_pcap_max_total_mb,
         message: None,
         email_configured: state.notifications.has_email(),
         email_test_default_to: ctx.user.email.clone(),
@@ -519,6 +568,177 @@ pub async fn set_thanatos_auto_disable_account(
 pub struct AuditSyslogExportForm {
     csrf_token: String,
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+pub struct ScourgeMonitoringForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    sweep_seconds: u32,
+    #[serde(default)]
+    event_retention_days: u32,
+    #[serde(default)]
+    min_forward_severity: String,
+}
+
+/// Scourge collection sweep settings: the monitoring toggle, sweep cadence,
+/// cache retention, and the min severity forwarded into Thanatos.
+pub async fn set_scourge_monitoring(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ScourgeMonitoringForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let min_forward = match form.min_forward_severity.as_str() {
+        "low" | "medium" | "high" | "critical" => form.min_forward_severity.as_str(),
+        _ => SCOURGE_MIN_FORWARD_SEVERITY_DEFAULT,
+    };
+    // Clamp the sweep interval to the agent-accepted range; 0 keeps the default.
+    let sweep = if form.sweep_seconds == 0 {
+        SCOURGE_SWEEP_SECONDS_DEFAULT
+    } else {
+        form.sweep_seconds.clamp(5, 60)
+    };
+    let uid = Some(ctx.user.id);
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_MONITORING_ENABLED,
+        serde_json::json!(form.enabled),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_SWEEP_SECONDS,
+        serde_json::json!(sweep),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_EVENT_RETENTION_DAYS,
+        serde_json::json!(form.event_retention_days),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_MIN_FORWARD_SEVERITY,
+        serde_json::json!(min_forward),
+        uid,
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(SCOURGE_MONITORING_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled, "sweep_seconds": sweep })),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ScourgeConfigChangesForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+}
+
+/// The second gate allowing Scourge to change sensor config/rulesets.
+pub async fn set_scourge_config_changes(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ScourgeConfigChangesForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_CONFIG_CHANGES_ENABLED,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(SCOURGE_CONFIG_CHANGES_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ScourgeCaptureForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    pcap_retention_days: u32,
+    #[serde(default)]
+    pcap_max_total_mb: u32,
+}
+
+/// The packet-capture second gate + host-side pcap retention/size caps.
+pub async fn set_scourge_capture(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ScourgeCaptureForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SettingsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let uid = Some(ctx.user.id);
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_CAPTURE_ENABLED,
+        serde_json::json!(form.enabled),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_PCAP_RETENTION_DAYS,
+        serde_json::json!(form.pcap_retention_days),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        SCOURGE_PCAP_MAX_TOTAL_MB,
+        serde_json::json!(form.pcap_max_total_mb),
+        uid,
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(SCOURGE_CAPTURE_ENABLED)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/settings").into_response())
 }
 
 pub async fn set_audit_syslog_export(

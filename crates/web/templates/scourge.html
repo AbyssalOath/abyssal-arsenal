@@ -1,0 +1,56 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
+{% block title %}Scourge — Abyssal Arsenal{% endblock %}
+{% block heading %}Scourge — Intrusion Detection{% endblock %}
+{% block content %}
+
+<div class="card">
+  {% if groups.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    No hosts are currently online. Enroll and connect a host from
+    <a href="/admin/hosts">Hosts</a> first.
+  </p>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    Pick a host to inspect its IDS/IPS sensor. Scourge watches what's happening on the network;
+    pair it with Panopticon (what's <em>on</em> it) and Thanatos (which stores and correlates the
+    alerts Scourge forwards).
+    <a href="/arsenals/scourge/alerts">{% call macros::icon("alert") %} Alert inspection</a>
+  </p>
+  {% for group in groups %}
+  <details class="inventory-group"{% if group.is_open %} open{% endif %}>
+    <summary>
+      <span class="chevron-wrap">{% call macros::icon("chevron") %}</span>
+      <span class="inventory-group-label">{{ group.host_name }}</span>
+      <span class="badge badge-muted">{{ group.os_label }}</span>
+      <span class="inventory-group-actions actions">
+        <a class="btn btn-secondary btn-sm" href="/arsenals/scourge/{{ group.host_id }}">{% call macros::icon("sensor") %} Open host page</a>
+      </span>
+    </summary>
+
+    {% if group.is_open %}
+    <div class="action-grid" style="margin-top:10px;">
+      <form method="post" action="/arsenals/scourge/{{ group.host_id }}/status">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-secondary">{% call macros::icon("sensor") %} Sensor Status</button>
+      </form>
+    </div>
+    <p style="color:var(--text-muted); margin:8px 0 0; font-size:0.85rem;">
+      Running a check here jumps to this host's full page to show the result.
+    </p>
+    {% else %}
+    {% if let Some(href) = group.open_href %}
+    <p><a href="{{ href }}">{% call macros::icon("generate") %} Load quick checks</a></p>
+    {% endif %}
+    {% endif %}
+  </details>
+  {% endfor %}
+
+  {% if let Some(p) = group_list_page %}
+  {% call pager::pagination_nav(p) %}
+  {% endif %}
+  {% endif %}
+</div>
+
+{% endblock %}

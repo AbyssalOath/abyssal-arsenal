@@ -254,6 +254,18 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_panopticon_enforcement),
         )
         .route(
+            "/admin/settings/scourge-monitoring",
+            post(routes::settings::set_scourge_monitoring),
+        )
+        .route(
+            "/admin/settings/scourge-config-changes",
+            post(routes::settings::set_scourge_config_changes),
+        )
+        .route(
+            "/admin/settings/scourge-capture",
+            post(routes::settings::set_scourge_capture),
+        )
+        .route(
             "/admin/settings/panopticon-sweep-target",
             post(routes::settings::set_panopticon_sweep_target),
         )
@@ -1499,6 +1511,108 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/inquest/:host_id/elevate",
             post(routes::inquest::elevate),
         )
+        .route("/arsenals/scourge", get(routes::scourge::show))
+        .route("/arsenals/scourge/alerts", get(routes::scourge::alerts))
+        .route(
+            "/arsenals/scourge/alerts/fragment",
+            get(routes::scourge::alerts_fragment),
+        )
+        .route(
+            "/arsenals/scourge/:host_id",
+            get(routes::scourge::show_host),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/status",
+            post(routes::scourge::sensor_status),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules",
+            post(routes::scourge::list_rules),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/pcaps",
+            post(routes::scourge::list_pcaps),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/elevate",
+            post(routes::scourge::elevate),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/install/confirm",
+            get(routes::scourge::install_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/install",
+            post(routes::scourge::install),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/service/confirm",
+            get(routes::scourge::service_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/service",
+            post(routes::scourge::service_action),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/config/confirm",
+            get(routes::scourge::config_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/config",
+            post(routes::scourge::config_apply),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules/update/confirm",
+            get(routes::scourge::rules_update_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules/update",
+            post(routes::scourge::rules_update),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules/sid/confirm",
+            get(routes::scourge::sid_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules/sid",
+            post(routes::scourge::sid_set),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules/suppress/confirm",
+            get(routes::scourge::suppress_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules/suppress",
+            post(routes::scourge::suppress_set),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/rules/test",
+            post(routes::scourge::rule_test),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/capture/confirm",
+            get(routes::scourge::capture_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/capture",
+            post(routes::scourge::capture_start),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/capture/:job_id",
+            get(routes::scourge::capture_progress),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/capture/:job_id/cancel",
+            post(routes::scourge::capture_cancel),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/pcap/delete/confirm",
+            get(routes::scourge::pcap_delete_confirm),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/pcap/delete",
+            post(routes::scourge::pcap_delete),
+        )
         .route("/arsenals/cryptkeeper", get(routes::cryptkeeper::show))
         .route(
             "/arsenals/cryptkeeper/:host_id",
@@ -1878,4 +1992,41 @@ fn static_dir() -> PathBuf {
     std::env::var("STATIC_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("crates/web/static"))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::Router;
+    use axum::routing::get;
+
+    /// Scourge mixes a static sub-path (`/arsenals/scourge/alerts`) with the
+    /// per-host param route (`/arsenals/scourge/:host_id`) at the same depth.
+    /// matchit builds its tree at `.route()` time and panics on a conflict, so
+    /// this asserts the path set is accepted (independently of `AppState`).
+    #[test]
+    fn scourge_static_and_param_routes_coexist() {
+        let _r: Router<()> = Router::new()
+            .route("/arsenals/scourge", get(|| async {}))
+            .route("/arsenals/scourge/alerts", get(|| async {}))
+            .route("/arsenals/scourge/alerts/fragment", get(|| async {}))
+            .route("/arsenals/scourge/:host_id", get(|| async {}))
+            .route("/arsenals/scourge/:host_id/status", get(|| async {}))
+            .route("/arsenals/scourge/:host_id/rules", get(|| async {}))
+            .route("/arsenals/scourge/:host_id/pcaps", get(|| async {}))
+            .route("/arsenals/scourge/:host_id/elevate", get(|| async {}))
+            // Capture: static `capture/confirm` coexists with `capture/:job_id`.
+            .route(
+                "/arsenals/scourge/:host_id/capture/confirm",
+                get(|| async {}),
+            )
+            .route("/arsenals/scourge/:host_id/capture", get(|| async {}))
+            .route(
+                "/arsenals/scourge/:host_id/capture/:job_id",
+                get(|| async {}),
+            )
+            .route(
+                "/arsenals/scourge/:host_id/capture/:job_id/cancel",
+                get(|| async {}),
+            );
+    }
 }

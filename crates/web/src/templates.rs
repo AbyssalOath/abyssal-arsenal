@@ -886,6 +886,14 @@ pub struct SettingsTemplate {
     pub panopticon_traffic_hourly_retention_days: u32,
     pub panopticon_traffic_daily_retention_days: u32,
     pub audit_syslog_export_enabled: bool,
+    pub scourge_monitoring_enabled: bool,
+    pub scourge_sweep_seconds: u32,
+    pub scourge_event_retention_days: u32,
+    pub scourge_min_forward_severity: String,
+    pub scourge_config_changes_enabled: bool,
+    pub scourge_capture_enabled: bool,
+    pub scourge_pcap_retention_days: u32,
+    pub scourge_pcap_max_total_mb: u32,
     pub message: Option<String>,
 }
 
@@ -1667,6 +1675,139 @@ pub struct InquestHostTemplate {
     pub result_error: Option<String>,
     pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
+}
+
+/// Same shape and reasoning as `InquestHostGroup` -- one collapsible host entry
+/// on the Scourge landing page's group list.
+pub struct ScourgeHostGroup {
+    pub host_id: String,
+    pub host_name: String,
+    pub os_label: &'static str,
+    pub is_open: bool,
+    pub open_href: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "scourge.html")]
+pub struct ScourgeTemplate {
+    pub base: BaseCtx,
+    pub groups: Vec<ScourgeHostGroup>,
+    pub group_list_page: Option<NumberedPageInfo>,
+}
+
+/// The per-host Scourge page (phase 2: read-only actions). Mirrors
+/// `InquestHostTemplate`'s shape.
+#[derive(Template)]
+#[template(path = "scourge_host.html")]
+pub struct ScourgeHostTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub os_label: &'static str,
+    /// What Scourge can/can't do on this host's OS -- see
+    /// `routes::scourge::platform_note`.
+    pub platform_note: &'static str,
+    /// `scourge.manage` -- gates the write/destructive sections, distinct from
+    /// the `scourge.view` the read operations use.
+    pub can_manage: bool,
+    /// The `scourge.config_changes_enabled` second gate -- when off, the
+    /// config/ruleset-change actions are hidden behind an explanatory note (the
+    /// gate is still re-checked server-side at dispatch).
+    pub config_changes_enabled: bool,
+    /// The `scourge.capture_enabled` second gate -- gates the capture section.
+    pub capture_enabled: bool,
+    pub elevated: bool,
+    pub protocol_mismatch: bool,
+    pub result_label: Option<String>,
+    pub result_output: Option<String>,
+    pub result_error: Option<String>,
+}
+
+/// One cached alert row for the inspection table.
+pub struct ScourgeAlertRow {
+    pub host_name: String,
+    pub occurred_at: String,
+    /// `low`/`medium`/`high`/`critical` -- the template maps this to a badge.
+    pub severity: String,
+    pub sid: String,
+    pub signature: String,
+    pub category: String,
+    pub proto: String,
+    /// `ip:port` (or `ip` / `-`).
+    pub src: String,
+    pub dst: String,
+}
+
+/// Everything the alert-inspection page and its live fragment render from the
+/// cache -- built once by `build_alerts_view` and shared by both, so the page
+/// and a poll can never disagree. Mirrors the dashboard's view-builder pattern.
+pub struct ScourgeAlertsView {
+    pub tiles: Vec<SummaryTile>,
+    /// `(severity, count)` -- template badges each.
+    pub severity_breakdown: Vec<(String, i64)>,
+    pub top_signatures: Vec<(String, i64)>,
+    pub top_talkers: Vec<(String, i64)>,
+    pub alerts: Vec<ScourgeAlertRow>,
+    pub total: i64,
+    pub page: Option<NumberedPageInfo>,
+    /// The hx-get poll target, carrying the current filter/range/page.
+    pub fragment_url: String,
+    /// The preferences-form return-to (the full page URL with filters).
+    pub self_url: String,
+    /// Whether this view is pollable: only the "latest" view (page 1, a
+    /// relative range), never a paged-back or all-time query.
+    pub live_eligible: bool,
+    /// `(host_id, name)` for the host filter dropdown.
+    pub hosts: Vec<(String, String)>,
+    // Current filter values, echoed back into the form.
+    pub f_host: String,
+    pub f_severity: String,
+    pub f_signature: String,
+    pub f_src_ip: String,
+    pub f_dst_ip: String,
+    pub f_port: String,
+    pub f_proto: String,
+    pub f_category: String,
+    pub f_range: String,
+}
+
+#[derive(Template)]
+#[template(path = "scourge_alerts.html")]
+pub struct ScourgeAlertsTemplate {
+    pub base: BaseCtx,
+    pub view: ScourgeAlertsView,
+    pub refresh_seconds: u32,
+    pub htmx_pref: bool,
+    /// `htmx_pref && refresh_seconds > 0`.
+    pub live_htmx: bool,
+}
+
+#[derive(Template)]
+#[template(path = "_scourge_alerts_inner.html")]
+pub struct ScourgeAlertsFragment {
+    pub view: ScourgeAlertsView,
+}
+
+/// Packet-capture progress page (phase 5). Refreshes itself with a no-JS
+/// `<meta refresh>` while the capture is running (`running`), then stops.
+#[derive(Template)]
+#[template(path = "scourge_capture.html")]
+pub struct ScourgeCaptureTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    pub job_id: String,
+    pub capture_id: String,
+    pub bpf: String,
+    pub state_label: String,
+    pub running: bool,
+    pub elapsed_secs: u64,
+    pub size: String,
+    pub remaining_secs: u64,
+    pub max_seconds: u32,
+    pub pcap_name: String,
+    pub error: Option<String>,
+    pub csrf_token: String,
 }
 
 pub struct NetworkDeviceRow {

@@ -6,7 +6,7 @@ use crate::init_system::{self, InitSystem};
 use crate::{
     apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, haruspex, incarnation,
     inquest, mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem,
-    reanimation, reliquary, resurrection, sepulchre, thanatos, vivisection,
+    reanimation, reliquary, resurrection, scourge, sepulchre, thanatos, vivisection,
 };
 // `run_command` is only referenced by the Unix branches of the helpers below;
 // the Windows branches use `process::run_powershell` instead.
@@ -438,6 +438,62 @@ pub async fn run(
                 fast_only,
             )
             .await
+        }
+        AgentOperation::ScourgeSensorStatus => scourge::sensor_status().await,
+        AgentOperation::ScourgeCollectEvents {
+            eve_offset,
+            eve_inode,
+            max_events,
+        } => scourge::collect_events(eve_offset, eve_inode, max_events).await,
+        AgentOperation::ScourgeListRules { query } => scourge::list_rules(query).await,
+        AgentOperation::ScourgePcapList => scourge::pcap_list().await,
+        AgentOperation::ScourgeInstall => scourge::install(elevation).await,
+        AgentOperation::ScourgeApplyConfig {
+            interfaces,
+            home_net,
+            external_net,
+            eve_enabled,
+        } => {
+            scourge::apply_config(interfaces, home_net, external_net, eve_enabled, elevation).await
+        }
+        AgentOperation::ScourgeServiceAction { verb } => {
+            scourge::service_action(verb, elevation).await
+        }
+        AgentOperation::ScourgeUpdateRules => scourge::update_rules(elevation).await,
+        AgentOperation::ScourgeSetSidEnabled { sid, enabled } => {
+            scourge::set_sid_enabled(sid, enabled, elevation).await
+        }
+        AgentOperation::ScourgeSuppressSid { sid, suppress } => {
+            scourge::suppress_sid(sid, suppress, elevation).await
+        }
+        AgentOperation::ScourgeRuleTest { pcap_name } => {
+            scourge::rule_test(pcap_name, elevation).await
+        }
+        AgentOperation::ScourgeCaptureStart {
+            bpf,
+            max_seconds,
+            max_mb,
+            retention_days,
+            max_total_mb,
+        } => {
+            scourge::capture_start(
+                bpf,
+                max_seconds,
+                max_mb,
+                retention_days,
+                max_total_mb,
+                elevation,
+            )
+            .await
+        }
+        AgentOperation::ScourgeCaptureStatus { capture_id } => {
+            scourge::capture_status(capture_id, elevation).await
+        }
+        AgentOperation::ScourgeCaptureCancel { capture_id } => {
+            scourge::capture_cancel(capture_id, elevation).await
+        }
+        AgentOperation::ScourgePcapDelete { pcap_name } => {
+            scourge::pcap_delete(pcap_name, elevation).await
         }
         AgentOperation::AdDnsReport { domain } => haruspex::ad_dns_report(domain).await,
         AgentOperation::AdHealthReport { domain } => haruspex::ad_health_report(domain).await,

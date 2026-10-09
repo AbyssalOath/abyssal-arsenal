@@ -46,6 +46,7 @@ arsenal-vivisection.workspace = true
 arsenal-inquest.workspace = true
 arsenal-thanatos.workspace = true
 arsenal-panopticon.workspace = true
+arsenal-scourge.workspace = true
 arsenal-sepulchre.workspace = true
 
 tokio.workspace = true

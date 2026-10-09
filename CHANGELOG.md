@@ -249,6 +249,15 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **5-second live-updates refresh option.** The dashboard family's "Live
+  updates" control (and every arsenal page that reuses the shared
+  `live_updates_control`/`refresh_head` macros) now offers **5s** alongside
+  Off/15s/30s/60s. The 5s cadence only applies with the opt-in htmx partial
+  refresh on; in the no-JavaScript `<meta refresh>` fallback a 5s selection is
+  clamped up to 15s, since a full-page reload every 5 seconds is jarring (the
+  option is labelled accordingly). The allowed set stays enforced server-side
+  (`dashboard_prefs::REFRESH_CHOICES`), so a hand-edited cookie or out-of-set form
+  value still falls back to off.
 - **Thanatos Windows EDR/SIEM depth, phase 1 (telemetry breadth, process
   ancestry & MITRE ATT&CK).** A broad deepening of what the Windows security
   scan detects, with every finding now tagged to an ATT&CK technique:

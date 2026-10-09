@@ -740,6 +740,110 @@
 
 {% if access.audit_export %}
 <div class="settings-section">
+  <h2 class="settings-section-title">Scourge (IDS/IPS)</h2>
+  <div class="card settings-list">
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("sensor") %} Scourge collection sweep</div>
+        <p class="settings-row-desc">
+          Pull new IDS alerts from sensors into the live cache and forward qualifying ones into
+          Thanatos. Off by default.
+        </p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            When on, the sweep polls each connected Linux host's EVE log every <em>interval</em>
+            seconds (5&ndash;60), caches new alerts for <em>retention</em> days, and forwards alerts
+            at or above <em>min forward severity</em> into Thanatos (only when Thanatos monitoring is
+            also on). The sweep reads the EVE log from file permissions alone -- if it can't, the
+            host shows an "unreadable / needs permissions" state rather than failing silently.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/scourge-monitoring" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label><input type="checkbox" name="enabled" value="true"{% if scourge_monitoring_enabled %} checked{% endif %}> Enabled</label>
+          <label for="scourge-sweep">Interval (s)</label>
+          <input type="number" id="scourge-sweep" name="sweep_seconds" min="5" max="60" value="{{ scourge_sweep_seconds }}" style="max-width:90px;">
+          <label for="scourge-retention">Retention (days)</label>
+          <input type="number" id="scourge-retention" name="event_retention_days" min="0" max="365" value="{{ scourge_event_retention_days }}" style="max-width:90px;">
+          <label for="scourge-minfwd">Forward &ge;</label>
+          <select id="scourge-minfwd" name="min_forward_severity">
+            <option value="low"{% if scourge_min_forward_severity == "low" %} selected{% endif %}>Low</option>
+            <option value="medium"{% if scourge_min_forward_severity == "medium" %} selected{% endif %}>Medium</option>
+            <option value="high"{% if scourge_min_forward_severity == "high" %} selected{% endif %}>High</option>
+            <option value="critical"{% if scourge_min_forward_severity == "critical" %} selected{% endif %}>Critical</option>
+          </select>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("firewall") %} Scourge configuration/ruleset changes</div>
+        <p class="settings-row-desc">
+          Second gate allowing Scourge to change what a sensor runs (config, rule updates, SID
+          enable/disable, suppressions). Off by default.
+        </p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Off by default so Scourge is read-only until an admin deliberately permits it to modify
+            sensor configuration and rulesets. Re-checked at every entry point on top of the normal
+            <code>scourge.manage</code> permission and the per-action confirmation. Config changes
+            are validated (<code>suricata -T</code>) before reload with automatic rollback on
+            failure; sensor install and start/stop/restart/reload are standard lifecycle and are not
+            behind this gate. Inline IPS and packet capture have their own separate gates.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/scourge-config-changes" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label><input type="checkbox" name="enabled" value="true"{% if scourge_config_changes_enabled %} checked{% endif %}> Enabled</label>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("packet") %} Scourge packet capture</div>
+        <p class="settings-row-desc">
+          Second gate for bounded packet capture and pcap deletion (privacy-sensitive). Off by
+          default. Also sets the host-side pcap retention and total-size caps.
+        </p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Captures are always bounded (max duration + max file size, chosen per capture) and the
+            pcaps never leave the host -- the UI shows metadata only. Before each capture the agent
+            prunes pcaps older than <em>retention days</em> and deletes the oldest until the
+            directory is under the <em>total size</em> cap. Rule testing (which reads captured pcap
+            data) also sits behind this gate.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/scourge-capture" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label><input type="checkbox" name="enabled" value="true"{% if scourge_capture_enabled %} checked{% endif %}> Enabled</label>
+          <label for="scourge-pcap-retention">Retention (days)</label>
+          <input type="number" id="scourge-pcap-retention" name="pcap_retention_days" min="0" max="365" value="{{ scourge_pcap_retention_days }}" style="max-width:90px;">
+          <label for="scourge-pcap-max">Max total (MB)</label>
+          <input type="number" id="scourge-pcap-max" name="pcap_max_total_mb" min="0" max="51200" value="{{ scourge_pcap_max_total_mb }}" style="max-width:110px;">
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="settings-section">
   <h2 class="settings-section-title">External Export</h2>
   <div class="card settings-list">
 

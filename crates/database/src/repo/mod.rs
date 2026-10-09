@@ -25,6 +25,7 @@ pub mod pinned_modules;
 pub mod reliquary_backups;
 pub mod role_module_visibility;
 pub mod roles;
+pub mod scourge;
 pub mod security_events;
 pub mod sessions;
 pub mod settings;

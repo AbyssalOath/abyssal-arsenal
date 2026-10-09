@@ -99,6 +99,18 @@ pub enum AuditAction {
     StorageShareRemoved,
     StorageMountProvisioned,
     StorageMountRemoved,
+
+    /// Scourge (network IDS/IPS). Config/rule/mode changes carry before/after
+    /// context in `metadata` (never raw payloads). `ScourgeEventScanRun` is the
+    /// unattended collection sweep's own record (it bypasses the executor's
+    /// automatic auditing, like Thanatos's `SecurityEventScanRun`).
+    ScourgeSensorConfigured,
+    ScourgeRuleChanged,
+    ScourgeModeChanged,
+    ScourgeCaptureStarted,
+    ScourgePcapDeleted,
+    ScourgeSensorRemoved,
+    ScourgeEventScanRun,
 }
 
 impl AuditAction {
@@ -178,6 +190,13 @@ impl AuditAction {
             AuditAction::StorageShareRemoved => "STORAGE_SHARE_REMOVED",
             AuditAction::StorageMountProvisioned => "STORAGE_MOUNT_PROVISIONED",
             AuditAction::StorageMountRemoved => "STORAGE_MOUNT_REMOVED",
+            AuditAction::ScourgeSensorConfigured => "SCOURGE_SENSOR_CONFIGURED",
+            AuditAction::ScourgeRuleChanged => "SCOURGE_RULE_CHANGED",
+            AuditAction::ScourgeModeChanged => "SCOURGE_MODE_CHANGED",
+            AuditAction::ScourgeCaptureStarted => "SCOURGE_CAPTURE_STARTED",
+            AuditAction::ScourgePcapDeleted => "SCOURGE_PCAP_DELETED",
+            AuditAction::ScourgeSensorRemoved => "SCOURGE_SENSOR_REMOVED",
+            AuditAction::ScourgeEventScanRun => "SCOURGE_EVENT_SCAN_RUN",
         }
     }
 
@@ -255,6 +274,13 @@ impl AuditAction {
         AuditAction::StorageShareRemoved,
         AuditAction::StorageMountProvisioned,
         AuditAction::StorageMountRemoved,
+        AuditAction::ScourgeSensorConfigured,
+        AuditAction::ScourgeRuleChanged,
+        AuditAction::ScourgeModeChanged,
+        AuditAction::ScourgeCaptureStarted,
+        AuditAction::ScourgePcapDeleted,
+        AuditAction::ScourgeSensorRemoved,
+        AuditAction::ScourgeEventScanRun,
     ];
 }
 

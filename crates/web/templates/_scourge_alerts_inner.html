@@ -1,0 +1,96 @@
+{% import "_macros.html" as macros %}
+{% import "_pagination.html" as pager %}
+{# The swappable results region of the alert-inspection page: tiles, summaries,
+   and the alert table. Rendered identically by the full page and the live
+   fragment, from the same `view`. Never contains the filter form. #}
+
+{% if !view.tiles.is_empty() %}
+<div class="stat-grid">
+  {% for t in view.tiles %}
+  {% if let Some(href) = t.href %}
+  <a class="stat-tile stat-tile-{{ t.tone }}" href="{{ href }}">
+  {% else %}
+  <div class="stat-tile stat-tile-{{ t.tone }}">
+  {% endif %}
+    <div class="stat-tile-head">{% call macros::icon(t.icon) %} <span>{{ t.label }}</span></div>
+    <div class="stat-tile-value">{{ t.value }}</div>
+    <div class="stat-tile-sub">{{ t.sub }}</div>
+  {% if t.href.is_some() %}</a>{% else %}</div>{% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card">
+  <div style="display:flex; gap:28px; flex-wrap:wrap;">
+    <div>
+      <strong>Severity</strong>
+      {% if view.severity_breakdown.is_empty() %}
+      <p style="color:var(--text-muted); margin:6px 0 0;">&mdash;</p>
+      {% else %}
+      <ul style="list-style:none; padding:0; margin:6px 0 0;">
+        {% for (sev, count) in view.severity_breakdown %}
+        <li style="margin:2px 0;">{% call macros::severity_badge(sev) %} {{ count }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    <div>
+      <strong>Top signatures</strong>
+      {% if view.top_signatures.is_empty() %}
+      <p style="color:var(--text-muted); margin:6px 0 0;">&mdash;</p>
+      {% else %}
+      <ul style="margin:6px 0 0; padding-left:18px;">
+        {% for (sig, count) in view.top_signatures %}
+        <li>{{ sig }} <span class="badge badge-muted">{{ count }}</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    <div>
+      <strong>Top talkers</strong>
+      {% if view.top_talkers.is_empty() %}
+      <p style="color:var(--text-muted); margin:6px 0 0;">&mdash;</p>
+      {% else %}
+      <ul style="margin:6px 0 0; padding-left:18px;">
+        {% for (ip, count) in view.top_talkers %}
+        <li>{{ ip }} <span class="badge badge-muted">{{ count }}</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("alert") %} Alerts <span class="badge badge-muted">{{ view.total }}</span></h3>
+  {% if view.alerts.is_empty() %}
+  <p class="results-empty" style="color:var(--text-muted);">
+    No alerts match. If you expected some, check that monitoring is enabled and the sensor's EVE
+    log is readable (the "Sensors reporting" / "Logs unreadable" tiles above).
+  </p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Sev</th><th>Host</th><th>SID</th><th>Signature</th><th>Category</th><th>Proto</th><th>Source</th><th>Dest</th></tr>
+    </thead>
+    <tbody>
+      {% for a in view.alerts %}
+      <tr>
+        <td style="white-space:nowrap;">{{ a.occurred_at }}</td>
+        <td>{% call macros::severity_badge(a.severity) %}</td>
+        <td>{{ a.host_name }}</td>
+        <td>{% if a.sid.is_empty() %}&mdash;{% else %}{{ a.sid }}{% endif %}</td>
+        <td>{{ a.signature }}</td>
+        <td>{% if a.category.is_empty() %}&mdash;{% else %}{{ a.category }}{% endif %}</td>
+        <td>{% if a.proto.is_empty() %}&mdash;{% else %}{{ a.proto }}{% endif %}</td>
+        <td>{{ a.src }}</td>
+        <td>{{ a.dst }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if let Some(p) = view.page %}
+  {% call pager::pagination_nav(p) %}
+  {% endif %}
+  {% endif %}
+</div>

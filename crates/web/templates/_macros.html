@@ -48,6 +48,14 @@
 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.5 4.5 0 0 1-1-8.9A5 5 0 0 1 16 8a4 4 0 0 1 1 7.9"/><path d="M7 18h10"/></svg>
 {% when "chevron" %}
 <svg class="icon icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg>
+{% when "sensor" %}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2.5"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4"/><path d="M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M5 5a10 10 0 0 0 0 14"/><path d="M19 19a10 10 0 0 0 0-14"/></svg>
+{% when "shield" %}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 5-3.4 8.4-7 9c-3.6-.6-7-4-7-9V6z"/></svg>
+{% when "packet" %}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4"/><path d="M12 11v10"/></svg>
+{% when "alert" %}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 16H3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17.5"/></svg>
 {% when _ %}
 {% endmatch %}
 {% endmacro %}
@@ -64,11 +72,28 @@
 </div>
 {% endmacro %}
 
+{# Alert severity badge (Scourge). A documented tiering that maps IDS/IPS
+   severity onto the app's existing, already-WCAG-AA-verified semantic badge
+   colors (critical/high -> danger, medium -> warning, low -> muted), always
+   with the text label so color is never the only signal. #}
+{% macro severity_badge(sev) %}
+{% if sev == "critical" %}<span class="badge badge-danger">Critical</span>
+{% else if sev == "high" %}<span class="badge badge-danger">High</span>
+{% else if sev == "medium" %}<span class="badge badge-warning">Medium</span>
+{% else if sev == "low" %}<span class="badge badge-muted">Low</span>
+{% else %}<span class="badge badge-muted">{{ sev }}</span>{% endif %}
+{% endmacro %}
+
 {# Head auto-refresh: load the vendored htmx enhancement when opted in,
-   otherwise a plain no-JS <meta refresh>. Off entirely when interval is 0. #}
+   otherwise a plain no-JS <meta refresh>. Off entirely when interval is 0.
+   A 5s selection only applies at that cadence with htmx partial updates on;
+   in the no-JS full-reload fallback it is clamped up to 15s, because a full
+   page reload every 5 seconds is jarring. #}
 {% macro refresh_head(refresh_seconds, live_htmx) %}
 {% if live_htmx %}
 <script src="/static/vendor/htmx.min.js" defer></script>
+{% else if refresh_seconds == 5 %}
+<meta http-equiv="refresh" content="15">
 {% else if refresh_seconds > 0 %}
 <meta http-equiv="refresh" content="{{ refresh_seconds }}">
 {% endif %}
@@ -84,6 +109,7 @@
   <label for="lu-interval">Auto-refresh</label>
   <select id="lu-interval" name="refresh">
     <option value="0"{% if refresh_seconds == 0 %} selected{% endif %}>Off</option>
+    <option value="5"{% if refresh_seconds == 5 %} selected{% endif %}>5s (needs Partial updates)</option>
     <option value="15"{% if refresh_seconds == 15 %} selected{% endif %}>15s</option>
     <option value="30"{% if refresh_seconds == 30 %} selected{% endif %}>30s</option>
     <option value="60"{% if refresh_seconds == 60 %} selected{% endif %}>60s</option>

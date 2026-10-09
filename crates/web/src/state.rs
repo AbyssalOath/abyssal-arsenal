@@ -17,6 +17,7 @@ use crate::panopticon_ops::ScanJob;
 use crate::reliquary_backup::provider::BackupProvider;
 use crate::reliquary_backup::restore::MaintenanceMode;
 use crate::reliquary_backup::storage::StorageDestination;
+use crate::scourge_ops::ScourgeCaptureJob;
 use crate::ssh_deploy::DeployJob;
 use crate::update_check::UpdateStatus;
 
@@ -73,6 +74,11 @@ pub struct AppState {
     /// Same in-memory-only shape and reasoning as `deploy_jobs`, for
     /// discovery scans -- see `panopticon_ops::ScanJob`.
     pub scan_jobs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ScanJob>>>>>,
+    /// Same in-memory-only shape for Scourge packet captures -- see
+    /// `scourge_ops::ScourgeCaptureJob`. Losing the handle on restart is fine:
+    /// the capture self-terminates on the host (its hard `timeout`) and the pcap
+    /// is discoverable via the capture listing regardless.
+    pub scourge_capture_jobs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ScourgeCaptureJob>>>>>,
     /// Native (control-plane) backups -- GitHub issue #9. Job *records*
     /// live durably in `reliquary_backups` (unlike `deploy_jobs`/
     /// `scan_jobs` above); what's here is just the engine + destination

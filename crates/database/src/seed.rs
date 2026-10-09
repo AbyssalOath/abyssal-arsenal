@@ -79,6 +79,8 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::AuditExport,
             Permission::HostsView,
             Permission::HostsElevate,
+            Permission::ScourgeView,
+            Permission::ScourgeManage,
         ],
     )
     .await?;

@@ -1,0 +1,84 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Scourge Alerts — Abyssal Arsenal{% endblock %}
+{% block head_extra %}{% call macros::refresh_head(refresh_seconds, live_htmx) %}{% endblock %}
+{% block heading %}Scourge — Alert Inspection{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/scourge">&larr; Back to sensors</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+    <p style="color:var(--text-muted); margin:0; max-width:60ch;">
+      Alerts the collection sweep has cached from your sensors' EVE logs. This is a bounded live
+      view, not long-term history; qualifying alerts are also forwarded into Thanatos.
+    </p>
+    {% call macros::live_updates_control(refresh_seconds, htmx_pref, base.csrf_token, view.self_url) %}
+  </div>
+
+  {# Filter form -- a GET, never inside the swapped region. #}
+  <form method="get" action="/arsenals/scourge/alerts" class="filter-form" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+    <div>
+      <label for="f-range">Range</label>
+      <select id="f-range" name="range">
+        <option value="1h"{% if view.f_range == "1h" %} selected{% endif %}>Last hour</option>
+        <option value="24h"{% if view.f_range == "24h" %} selected{% endif %}>Last 24h</option>
+        <option value="7d"{% if view.f_range == "7d" %} selected{% endif %}>Last 7d</option>
+        <option value="all"{% if view.f_range == "all" %} selected{% endif %}>All cached</option>
+      </select>
+    </div>
+    <div>
+      <label for="f-host">Host</label>
+      <select id="f-host" name="host">
+        <option value="">Any</option>
+        {% for (id, name) in view.hosts %}
+        <option value="{{ id }}"{% if view.f_host == id.as_str() %} selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="f-severity">Severity</label>
+      <select id="f-severity" name="severity">
+        <option value=""{% if view.f_severity.is_empty() %} selected{% endif %}>Any</option>
+        <option value="critical"{% if view.f_severity == "critical" %} selected{% endif %}>Critical</option>
+        <option value="high"{% if view.f_severity == "high" %} selected{% endif %}>High</option>
+        <option value="medium"{% if view.f_severity == "medium" %} selected{% endif %}>Medium</option>
+        <option value="low"{% if view.f_severity == "low" %} selected{% endif %}>Low</option>
+      </select>
+    </div>
+    <div>
+      <label for="f-signature">Signature</label>
+      <input type="text" id="f-signature" name="signature" value="{{ view.f_signature }}" placeholder="substring">
+    </div>
+    <div>
+      <label for="f-src">Source IP</label>
+      <input type="text" id="f-src" name="src_ip" value="{{ view.f_src_ip }}" placeholder="e.g. 10.0.0.5">
+    </div>
+    <div>
+      <label for="f-dst">Dest IP</label>
+      <input type="text" id="f-dst" name="dst_ip" value="{{ view.f_dst_ip }}" placeholder="e.g. 8.8.8.8">
+    </div>
+    <div>
+      <label for="f-port">Port</label>
+      <input type="text" id="f-port" name="port" value="{{ view.f_port }}" placeholder="src or dst">
+    </div>
+    <div>
+      <label for="f-proto">Proto</label>
+      <input type="text" id="f-proto" name="proto" value="{{ view.f_proto }}" placeholder="TCP/UDP">
+    </div>
+    <div>
+      <label for="f-category">Category</label>
+      <input type="text" id="f-category" name="category" value="{{ view.f_category }}">
+    </div>
+    <div class="actions">
+      <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Filter</button>
+      <a class="btn btn-secondary" href="/arsenals/scourge/alerts">Clear</a>
+    </div>
+  </form>
+</div>
+
+<div class="live-region"{% if live_htmx && view.live_eligible %} hx-get="{{ view.fragment_url }}" hx-trigger="every {{ refresh_seconds }}s" hx-swap="innerHTML"{% endif %}>
+  {% include "_scourge_alerts_inner.html" %}
+</div>
+
+{% endblock %}
