@@ -106,6 +106,9 @@ jobs:
         with:
           context: .
           push: false
+          # Base images from Google's Docker Hub mirror: shared runners hit
+          # Docker Hub's anonymous rate limit (429) -- see the Dockerfile.
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

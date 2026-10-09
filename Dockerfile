@@ -1,5 +1,10 @@
 # ---- Build stage ----
-FROM rust:1-slim-bookworm AS builder
+# Where the base images come from. Docker Hub by default (install.sh and
+# local builds); CI passes Google's Docker Hub mirror (mirror.gcr.io/library),
+# since GitHub's shared runners hit Docker Hub's anonymous pull limit (429).
+ARG BASE_REGISTRY=docker.io/library
+
+FROM ${BASE_REGISTRY}/rust:1-slim-bookworm AS builder
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -96,7 +101,7 @@ RUN mkdir -p /agent-bundle \
     fi
 
 # ---- Runtime stage ----
-FROM debian:bookworm-slim
+FROM ${BASE_REGISTRY}/debian:bookworm-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

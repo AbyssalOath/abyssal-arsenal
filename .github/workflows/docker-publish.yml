@@ -60,5 +60,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Base images from Google's Docker Hub mirror: shared runners hit
+          # Docker Hub's anonymous rate limit (429) -- see the Dockerfile.
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           cache-from: type=gha
           cache-to: type=gha,mode=max
