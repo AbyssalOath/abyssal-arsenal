@@ -314,6 +314,14 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/admin/hosts/:id/approve", post(routes::hosts::approve))
         .route(
+            "/admin/hosts/update-all",
+            post(routes::hosts::update_all_agents),
+        )
+        .route(
+            "/admin/hosts/update-all/:job_id",
+            get(routes::hosts::update_all_status),
+        )
+        .route(
             "/admin/hosts/:id/control-plane",
             post(routes::hosts::set_control_plane),
         )
@@ -1780,6 +1788,24 @@ pub fn build(state: AppState) -> Router {
             post(routes::sepulchre::delete_mount),
         )
         .route("/arsenals/panopticon", get(routes::panopticon::show))
+        .route(
+            "/arsenals/panopticon/topology",
+            get(routes::panopticon_topology::topology),
+        )
+        .route(
+            "/arsenals/panopticon/dhcp",
+            get(routes::panopticon_topology::dhcp),
+        )
+        .route(
+            "/arsenals/panopticon/dhcp/import",
+            // Lease files from busy servers run to megabytes.
+            post(routes::panopticon_topology::dhcp_import)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        .route(
+            "/arsenals/panopticon/dhcp/import-host",
+            post(routes::panopticon_topology::dhcp_import_host),
+        )
         .route(
             "/arsenals/panopticon/scan/confirm",
             get(routes::panopticon::scan_confirm),

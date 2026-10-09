@@ -512,6 +512,14 @@ async fn run_discovery_scan(
         }
         .or_else(|| host.netbios_name.clone())
         .or_else(|| agent_neighbors.own.get(&host.ip).cloned());
+        // A current DHCP lease's name, from an import (`panopticon_dhcp`).
+        let hostname = match hostname {
+            Some(h) => Some(h),
+            None => repo::panopticon_topology::lease_hostname(pool, &host.ip)
+                .await
+                .ok()
+                .flatten(),
+        };
 
         match repo::network_devices::upsert(pool, &host.ip, mac, hostname.as_deref()).await {
             Ok(device_id) => {

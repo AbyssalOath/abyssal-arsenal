@@ -719,7 +719,7 @@ fn classify(line: &str) -> Option<(&'static str, &'static str)> {
 /// operator-configurable C2 port set by **exact numeric port** (so port 13370
 /// never trips a rule meant for 1337, which prefix-substring matching did).
 /// Shared by both platforms' scan loops.
-fn classify_line(
+pub(crate) fn classify_line(
     source: &str,
     line: &str,
     c2_ports: &[u16],
@@ -1374,6 +1374,16 @@ const OFFSET_FETCH_CAP: u32 = 1000;
 /// First-scan (no offset yet) bounded baseline window per channel.
 const BASELINE_FETCH: u32 = 500;
 
+/// The PowerShell that turns one event record (`$_`) into the line
+/// `classify()` reads: `EventID=<id>`, the time, the source IP and account
+/// pulled from the raw message (so they survive the 300-character cap and
+/// drive cross-host correlation), then the message flattened to one line.
+/// `EventID=` is the stable, non-localized marker the rules match on. One
+/// copy, shared by the full sweep, the fast sweep and the real-time stream
+/// (`thanatos_stream`), so a streamed event classifies exactly like a polled
+/// one.
+pub(crate) const WINDOWS_EVENT_LINE: &str = r#"$raw = $_.Message; $m = ($raw -replace '\r?\n', ' ').Trim(); if ($m.Length -gt 300) { $m = $m.Substring(0, 300) }; $ipm = [regex]::Match($raw, 'Source Network Address:\s+(\S+)'); $ip = if ($ipm.Success -and $ipm.Groups[1].Value -ne '-') { $ipm.Groups[1].Value } else { '' }; $accts = [regex]::Matches($raw, 'Account Name:\s+(\S+)') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -ne '-' }; $acct = if ($accts) { @($accts)[-1] } else { '' }; "EventID=$($_.Id)`tTime=$($_.TimeCreated.ToString('o'))`tIpAddress=$ip`tAccount=$acct`t$m""#;
+
 /// Builds the PowerShell for one channel. With a known `offset` (>0) it uses a
 /// `FilterXml` query that filters *server-side* by event id AND
 /// `EventRecordID > offset`, so only genuinely new events are read (no lost
@@ -1412,14 +1422,7 @@ fn windows_channel_script(log_name: &str, ids: &[u32], offset: u64) -> String {
     format!(
         "$events = @(Get-WinEvent {selector} -ErrorAction SilentlyContinue); \
          $events | ForEach-Object {{ \
-         $raw = $_.Message; \
-         $m = ($raw -replace '\\r?\\n', ' ').Trim(); \
-         if ($m.Length -gt 300) {{ $m = $m.Substring(0, 300) }}; \
-         $ipm = [regex]::Match($raw, 'Source Network Address:\\s+(\\S+)'); \
-         $ip = if ($ipm.Success -and $ipm.Groups[1].Value -ne '-') {{ $ipm.Groups[1].Value }} else {{ '' }}; \
-         $accts = [regex]::Matches($raw, 'Account Name:\\s+(\\S+)') | ForEach-Object {{ $_.Groups[1].Value }} | Where-Object {{ $_ -ne '-' }}; \
-         $acct = if ($accts) {{ @($accts)[-1] }} else {{ '' }}; \
-         \"EventID=$($_.Id)`tTime=$($_.TimeCreated.ToString('o'))`tIpAddress=$ip`tAccount=$acct`t$m\" }}; \
+         {WINDOWS_EVENT_LINE} }}; \
          if ($events.Count -gt 0) {{ \"MAXRID=\" + (($events | Measure-Object -Property RecordId -Maximum).Maximum) }}"
     )
 }
@@ -1464,14 +1467,7 @@ fn windows_fast_channel_script(log_name: &str, ids: &[u32]) -> String {
     let id_list = ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     format!(
         "Get-WinEvent -FilterHashtable @{{LogName='{log_name}';Id={id_list}}} -MaxEvents {FAST_FETCH} -ErrorAction SilentlyContinue | ForEach-Object {{ \
-         $raw = $_.Message; \
-         $m = ($raw -replace '\\r?\\n', ' ').Trim(); \
-         if ($m.Length -gt 300) {{ $m = $m.Substring(0, 300) }}; \
-         $ipm = [regex]::Match($raw, 'Source Network Address:\\s+(\\S+)'); \
-         $ip = if ($ipm.Success -and $ipm.Groups[1].Value -ne '-') {{ $ipm.Groups[1].Value }} else {{ '' }}; \
-         $accts = [regex]::Matches($raw, 'Account Name:\\s+(\\S+)') | ForEach-Object {{ $_.Groups[1].Value }} | Where-Object {{ $_ -ne '-' }}; \
-         $acct = if ($accts) {{ @($accts)[-1] }} else {{ '' }}; \
-         \"EventID=$($_.Id)`tTime=$($_.TimeCreated.ToString('o'))`tIpAddress=$ip`tAccount=$acct`t$m\" }}"
+         {WINDOWS_EVENT_LINE} }}"
     )
 }
 

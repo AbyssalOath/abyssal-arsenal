@@ -37,9 +37,6 @@ use chrono::{DateTime, Utc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-/// Agents older than this can't deserialize `UpdateTrustedCa` and would drop
-/// their connection if sent it -- never push to them.
-const MIN_PUSH_PROTOCOL: u32 = 36;
 const PUSH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Serializes every change to the stored certificates.
@@ -602,16 +599,11 @@ pub async fn push_to_host(hosts: &HostConnectionRegistry, host_id: Uuid) -> Host
         at: Utc::now(),
     };
 
+    let operation = AgentOperation::UpdateTrustedCa { bundle_pem: bundle };
     let result = match hosts.agent_protocol_status(host_id) {
-        AgentProtocolStatus::Version(v) if v >= MIN_PUSH_PROTOCOL => {
-            match hosts
-                .dispatch(
-                    host_id,
-                    AgentOperation::UpdateTrustedCa { bundle_pem: bundle },
-                    PUSH_TIMEOUT,
-                )
-                .await
-            {
+        AgentProtocolStatus::NotConnected => push("failed", "not connected".to_string()),
+        _ if hosts.supports(host_id, &operation) => {
+            match hosts.dispatch(host_id, operation, PUSH_TIMEOUT).await {
                 Ok(CommandOutcome::Ok(output)) => {
                     let status = serde_json::from_str::<serde_json::Value>(&output.stdout)
                         .ok()
@@ -629,7 +621,6 @@ pub async fn push_to_host(hosts: &HostConnectionRegistry, host_id: Uuid) -> Host
                 Err(e) => push("failed", e.to_string()),
             }
         }
-        AgentProtocolStatus::NotConnected => push("failed", "not connected".to_string()),
         _ => push(
             "too-old",
             "agent predates CA updates -- use 'Update agent' on /admin/hosts".to_string(),

@@ -1,0 +1,5 @@
+# abyssal-dhcp-source: Windows DHCP Server (DC01)
+"IPAddress","ClientId","HostName","AddressState","LeaseExpiryTime"
+"10.2.0.15","00-15-5d-01-02-03","WKS-FINANCE-07.corp.local","Active","2026-10-10T08:00:00.0000000Z"
+"10.2.0.16","00-15-5d-01-02-04","PRN-LOBBY","ActiveReservation",""
+"10.3.0.9","aa-bb-cc-00-03-09","odd, name","Active","2026-10-11T00:00:00.0000000Z"

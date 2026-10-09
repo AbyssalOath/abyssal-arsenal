@@ -158,10 +158,16 @@ async fn render_full(
         pending_count: hosts.iter().filter(|h| h.pending_approval).count(),
     };
 
+    let update_all_count = if ctx.has(Permission::HostsManage) {
+        crate::agent_update::updatable_count(state).await
+    } else {
+        0
+    };
     let tpl = HostsTemplate {
         base,
         can_enroll: ctx.has(Permission::HostsEnroll),
         can_manage: ctx.has(Permission::HostsManage),
+        update_all_count,
         aat,
         hosts,
         enrollment,
@@ -558,11 +564,9 @@ pub async fn set_control_plane(
 
 /// Pushes the currently-connected agent to update itself to this control
 /// plane's own version, over the existing WebSocket -- the one-click answer
-/// to the "Agent out of date" badge. Only works on an agent build new
-/// enough to understand `AgentOperation::SelfUpdate`; one that predates it
-/// can't deserialize the message and drops the connection, which surfaces
-/// here as a clear "too old to self-update" message pointing back at the
-/// re-deploy path, rather than a silent failure.
+/// to the "Agent out of date" badge. An agent too old to understand
+/// `AgentOperation::SelfUpdate` is never sent it (`min_protocol`); the
+/// admin is pointed at a re-deploy instead.
 pub async fn update_agent(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -577,24 +581,14 @@ pub async fn update_agent(
         .await?
         .ok_or(AppError::NotFound)?;
 
-    // Whether it looked out of date *before* we dispatched -- used only to
-    // phrase the failure message, since a stale agent disconnecting on the
-    // unknown operation is exactly the expected outcome for a mismatch.
-    let was_mismatched = state.hosts.agent_protocol_mismatch(id);
-
-    // The newest *published* release, never an unreleased version the agent
-    // couldn't download (a control plane built from main after a bump).
-    let version = crate::update_check::agent_release_version(&state).await;
-    // Never offer a downgrade: an agent from this control plane's own
-    // bundle (SSH quick-add, /agent/linux) can be newer than the newest
-    // release the hourly check has seen.
-    use crate::update_check::parse_version;
-    if let (Some(running), Some(target)) = (
-        host.agent_version.as_deref().and_then(parse_version),
-        parse_version(&version),
-    ) && target < running
-    {
-        let running = host.agent_version.clone().unwrap_or_default();
+    let (operation, version) = match self_update_operation(&state, &host).await {
+        Ok(planned) => planned,
+        Err(message) => {
+            return render(&state, &jar, &ctx, None, None, None, None, Some(message)).await;
+        }
+    };
+    // Too old for even this: the only way forward is a re-deploy.
+    if state.hosts.is_connected(id) && !state.hosts.supports(id, &operation) {
         return render(
             &state,
             &jar,
@@ -604,9 +598,9 @@ pub async fn update_agent(
             None,
             None,
             Some(format!(
-                "{} is already on v{running}, newer than the newest release this control plane \
-                 knows of (v{version}), so there's nothing to update to. If v{running} has just \
-                 been released, use 'Check now' on the dashboard and try again.",
+                "{}'s agent is too old to update itself over its connection. Re-deploy it to \
+                 {version} with the bootstrap one-liner (generate a token above) or the SSH \
+                 quick-add from a Panopticon scan; after that, updates are one click from here.",
                 host.name
             )),
         )
@@ -620,9 +614,7 @@ pub async fn update_agent(
             &state.hosts,
             id,
             &format!("Update agent -- {}", host.name),
-            AgentOperation::SelfUpdate {
-                version: version.clone(),
-            },
+            operation,
             Permission::HostsManage,
             OperationKind::Write,
             false,
@@ -649,26 +641,235 @@ pub async fn update_agent(
             .await
         }
         Err(e) => {
-            let message = e.to_string();
-            // The signature of an agent too old to know the SelfUpdate
-            // operation: it fails to deserialize the command and drops the
-            // connection instead of replying.
-            let looks_too_old =
-                was_mismatched && message.contains("disconnected before responding");
-            let friendly = if looks_too_old {
-                format!(
-                    "This agent is too old to update itself over its connection (it doesn't \
-                     understand the update command yet, so it dropped the connection). Re-deploy \
-                     it to v{version} using the bootstrap one-liner (generate a token above) or \
-                     the SSH quick-add from a Panopticon scan, then future updates can be done \
-                     from here. Underlying error: {message}"
-                )
-            } else {
-                message
-            };
-            render(&state, &jar, &ctx, None, None, None, None, Some(friendly)).await
+            render(
+                &state,
+                &jar,
+                &ctx,
+                None,
+                None,
+                None,
+                None,
+                Some(e.to_string()),
+            )
+            .await
         }
     }
+}
+
+/// The `SelfUpdate` to send `host`, and the version it updates to; `Err` is
+/// why there's nothing to send, for the admin.
+///
+/// A 0.2.3+ agent gets exactly what `/agent/<os>` serves -- the build in
+/// this image for Linux, the release cached here (fetched once from GitHub,
+/// or put in the agent folder) for Windows -- with its SHA-256, so hosts
+/// without internet access can update. An older agent can only download
+/// from GitHub, so it gets the newest *published* release (never an
+/// unreleased version a control plane built from main is ahead of).
+/// Either way, never a downgrade.
+pub(crate) async fn self_update_operation(
+    state: &AppState,
+    host: &abyssal_core::Host,
+) -> Result<(AgentOperation, String), String> {
+    use crate::update_check::parse_version;
+
+    let from_control_plane = state.hosts.supports(
+        host.id,
+        &AgentOperation::SelfUpdate {
+            version: String::new(),
+            from_control_plane: true,
+            sha256: None,
+        },
+    );
+    let (operation, version) = if from_control_plane {
+        let os = match host.os.as_deref() {
+            Some("linux") => "linux",
+            Some("windows") => "windows",
+            other => {
+                return Err(format!(
+                    "{} reports platform {:?}; agent builds exist only for Linux and Windows.",
+                    host.name,
+                    other.unwrap_or("unknown")
+                ));
+            }
+        };
+        let agent = crate::routes::bootstrap::resolve_agent(state, os)
+            .await
+            .map_err(|e| format!("No agent build to update {} to: {e}", host.name))?;
+        let sha256: String = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(&agent.bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let version = agent
+            .version
+            .clone()
+            .unwrap_or_else(|| crate::update_check::CURRENT_VERSION.trim().to_string());
+        (
+            AgentOperation::SelfUpdate {
+                version: version.clone(),
+                from_control_plane: true,
+                sha256: Some(sha256),
+            },
+            // An operator-placed build's version isn't known until the agent
+            // runs it, so the downgrade check below can't apply; the agent
+            // makes it itself.
+            agent.version.unwrap_or_default(),
+        )
+    } else {
+        let version = crate::update_check::agent_release_version(state).await;
+        (
+            AgentOperation::SelfUpdate {
+                version: version.clone(),
+                from_control_plane: false,
+                sha256: None,
+            },
+            version,
+        )
+    };
+
+    if let (Some(running), Some(target)) = (
+        host.agent_version.as_deref().and_then(parse_version),
+        parse_version(&version),
+    ) && target < running
+    {
+        let running = host.agent_version.clone().unwrap_or_default();
+        return Err(if from_control_plane {
+            format!(
+                "{} is already on v{running}, newer than the agent this control plane has \
+                 (v{version}), so there's nothing to update to.",
+                host.name
+            )
+        } else {
+            format!(
+                "{} is already on v{running}, newer than the newest release this control \
+                 plane knows of (v{version}), so there's nothing to update to. If v{running} \
+                 has just been released, use 'Check now' on the dashboard and try again.",
+                host.name
+            )
+        });
+    }
+    let shown = if version.is_empty() {
+        "the build on this control plane".to_string()
+    } else {
+        format!("v{version}")
+    };
+    Ok((operation, shown))
+}
+
+/// Starts an "Update all out-of-date agents" job and shows its progress.
+pub async fn update_all_agents(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let hosts = crate::agent_update::out_of_date_hosts(&state).await?;
+    if !hosts
+        .iter()
+        .any(|h| h.state == crate::agent_update::UpdateState::Queued)
+    {
+        return render(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            None,
+            None,
+            Some(if hosts.is_empty() {
+                "Every agent is up to date.".to_string()
+            } else {
+                format!(
+                    "Nothing to update right now. {} out-of-date host(s) can't be updated from \
+                     here yet: {}",
+                    hosts.len(),
+                    hosts
+                        .iter()
+                        .map(|h| format!("{} ({})", h.name, h.detail.trim_end_matches('.')))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )
+            }),
+            None,
+        )
+        .await;
+    }
+    let id = Uuid::new_v4();
+    let job = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::agent_update::AgentUpdateJob {
+            id,
+            started_by: ctx.user.username.clone(),
+            started_at: chrono::Utc::now(),
+            hosts,
+        },
+    ));
+    state
+        .agent_update_jobs
+        .write()
+        .await
+        .insert(id, job.clone());
+    tokio::spawn(crate::agent_update::run(state.clone(), ctx.clone(), job));
+    Ok(Redirect::to(&format!("/admin/hosts/update-all/{id}")).into_response())
+}
+
+pub async fn update_all_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    let job = state
+        .agent_update_jobs
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or(AppError::NotFound)?;
+    let job = job.read().await.clone();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    use crate::agent_update::UpdateState;
+    let tpl = crate::templates::AgentUpdateStatusTemplate {
+        base,
+        started_by: job.started_by.clone(),
+        started_at: crate::common::format_in_tz(job.started_at, &ctx.user.timezone),
+        finished: job.finished(),
+        updated: job.count(UpdateState::Updated),
+        failed: job.count(UpdateState::Failed) + job.count(UpdateState::NotBackYet),
+        skipped: job.count(UpdateState::Skipped),
+        rows: job
+            .hosts
+            .iter()
+            .map(|h| crate::templates::AgentUpdateRow {
+                name: h.name.clone(),
+                os: h.os.clone(),
+                from_version: h.from_version.clone(),
+                state_label: h.state.label(),
+                badge_class: h.state.badge_class(),
+                detail: h.detail.clone(),
+            })
+            .collect(),
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
 }
 
 pub async fn run_system_info(
@@ -1017,9 +1218,6 @@ pub async fn remove(
     .await
 }
 
-/// Agents from protocol 42 (0.2.2) uninstall themselves.
-const UNINSTALL_MIN_PROTOCOL: u32 = 42;
-
 /// Asks the host's agent to uninstall itself. `(true, None)` when it
 /// accepted; otherwise `(false, Some(why))` for the admin, who then gets the
 /// command to run on the host.
@@ -1037,13 +1235,16 @@ async fn uninstall_agent_for_removal(
             )),
         );
     }
-    if !state.hosts.agent_supports(host.id, UNINSTALL_MIN_PROTOCOL) {
+    let uninstall = AgentOperation::UninstallAgent { purge: true };
+    if !state.hosts.supports(host.id, &uninstall) {
         return (
             false,
             Some(format!(
-                "{}'s agent (v{}) is too old to uninstall itself (0.2.2 or later can).",
+                "{}'s agent (v{}) is too old to uninstall itself ({} or later can).",
                 host.name,
-                host.agent_version.as_deref().unwrap_or("unknown")
+                host.agent_version.as_deref().unwrap_or("unknown"),
+                abyssal_agent_protocol::agent_release_for_protocol(uninstall.min_protocol())
+                    .unwrap_or("a newer agent")
             )),
         );
     }
@@ -1054,7 +1255,7 @@ async fn uninstall_agent_for_removal(
             &state.hosts,
             host.id,
             &host.name,
-            AgentOperation::UninstallAgent { purge: true },
+            uninstall,
             Permission::HostsManage,
             OperationKind::Destructive,
             true,

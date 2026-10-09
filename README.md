@@ -117,7 +117,7 @@ role-scoped macro is shared with can use it.
 ```bash
 git clone https://github.com/AbyssalOath/abyssal-arsenal.git
 cd abyssal-arsenal
-git checkout v0.2.2   # pin to the latest stable release; omit to run main
+git checkout v0.2.3   # pin to the latest stable release; omit to run main
 ./install.sh
 ```
 
@@ -266,8 +266,10 @@ an internal CA, that command:
    and its control-channel WebSocket (and every reconnect) trust that CA --
    independently of the OS store. When you rotate the CA from
    `/admin/health/tls`, the control plane updates that file on the agent
-   over the control channel. (Self-update downloads come from GitHub and
-   only ever use the OS store: the control plane's CA can't vouch for them.)
+   over the control channel. Agents from 0.2.3 also download updates from
+   the control plane with that CA, checked against a SHA-256 sent over the
+   control channel. Older agents update from GitHub, using only the OS
+   store.
 
 The Windows command must run in an **elevated** PowerShell (or as SYSTEM
 from an RMM tool -- `/admin/hosts` shows an unattended variant for PDQ /
@@ -366,7 +368,7 @@ The control plane serves from a volume (`abyssal_agent_dist`, mounted at
   binaries attached, and a matching container image published to GHCR (see
   `.github/workflows/release.yml` and `docker-publish.yml`).
 - **For a production or otherwise long-lived deployment**, check out the
-  latest tag (`git checkout v0.2.2`) rather than tracking `main`. Pull `main`
+  latest tag (`git checkout v0.2.3`) rather than tracking `main`. Pull `main`
   only if you specifically want unreleased changes and accept the
   reduced stability that comes with it.
 - **`VERSION`** at the repository root is the single source of truth for

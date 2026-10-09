@@ -8,6 +8,8 @@
 //! adding a variant here (and implementing it in the agent) — the protocol
 //! itself can't be used to smuggle in anything else.
 
+mod min_protocol;
+pub use min_protocol::agent_release_for_protocol;
 pub mod aat;
 
 use std::fmt;
@@ -28,7 +30,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 42;
+pub const PROTOCOL_VERSION: u32 = 45;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1377,8 +1379,23 @@ pub enum AgentOperation {
     /// surfaces as a clear "too old to self-update -- re-deploy it" rather
     /// than a silent failure. The bootstrap one-liner and SSH deploy cover
     /// that first jump.
+    ///
+    /// From protocol 43, `from_control_plane` has the agent download the
+    /// build from the control plane's own `/agent/<os>` (over TLS pinned to
+    /// the control plane's CA) instead of GitHub, so hosts without internet
+    /// access can update. `sha256` -- required then -- is the hash of the
+    /// exact archive the control plane resolved, sent over this
+    /// authenticated channel; the agent refuses anything else. The agent
+    /// learns the new build's real version from the binary itself
+    /// (`--version`) and won't install an older one. `version` is then only
+    /// what the control plane expects. Agents before 43 ignore both fields
+    /// and use GitHub.
     SelfUpdate {
         version: String,
+        #[serde(default)]
+        from_control_plane: bool,
+        #[serde(default)]
+        sha256: Option<String>,
     },
     /// Uninstalls this agent from its host -- what removing a host on
     /// /admin/hosts does while the agent is connected. The agent replies
@@ -1390,6 +1407,25 @@ pub enum AgentOperation {
         #[serde(default)]
         purge: bool,
     },
+    /// Starts (or stops) streaming security events in real time, Windows
+    /// only: the agent subscribes to the high-signal Event Log channels
+    /// (`EventLogWatcher`, i.e. `EvtSubscribe`), classifies each event with
+    /// the same rules as `ScanSecurityEvents`, and pushes matches as
+    /// `AgentMessage::Telemetry` the moment they happen, instead of waiting
+    /// for the next poll. `c2_ports` is the same operator list the scans
+    /// use. Idempotent; the control plane re-sends it on every connection.
+    /// Write (it starts a long-running process), never destructive.
+    ThanatosStream {
+        enabled: bool,
+        #[serde(default)]
+        c2_ports: Vec<u16>,
+    },
+    /// This host's DHCP server leases, for Panopticon's hostnames: Windows
+    /// DHCP Server (every IPv4 scope, as CSV), or the first lease file
+    /// found for dnsmasq, ISC dhcpd or Kea on Linux, returned as-is after a
+    /// `# abyssal-dhcp-source: <where>` line. The control plane parses it.
+    /// Read.
+    DhcpLeases,
     /// This host's IPv4 neighbor (ARP) table and its own interfaces'
     /// addresses, one tab-separated line each: `neighbor\t<ip>\t<mac>\t<interface>` and
     /// `self\t<ip>\t<mac>\t<interface>`. Panopticon fills in the MAC (and
@@ -1800,6 +1836,129 @@ pub fn recommended_sysctl(key: &str) -> Option<&'static str> {
 }
 
 impl AgentOperation {
+    /// Whether the agent may run this alongside other operations. True only
+    /// for operations that change nothing on the host and keep no state of
+    /// their own between calls; everything else -- every write, and any
+    /// operation not listed here, including ones added later -- runs alone,
+    /// one at a time in arrival order. Leaving a new read out of this list
+    /// only costs speed; wrongly adding a write could let two package
+    /// installs (or a read and a half-applied change) collide.
+    pub fn runs_concurrently(&self) -> bool {
+        use AgentOperation as Op;
+        matches!(
+            self,
+            Op::Ping
+                | Op::SystemInfo
+                | Op::ResourceUsage
+                | Op::LoggedInUsers
+                | Op::ListeningPorts
+                | Op::RecentAuthLog
+                | Op::FirewallStatus
+                | Op::SshdConfigAudit
+                | Op::SysctlSecurityPosture
+                | Op::AccountPolicyAudit
+                | Op::MacStatus
+                | Op::AutomaticUpdatesStatus
+                | Op::ElevationStatus
+                | Op::NetworkInterfaces
+                | Op::NetworkRoutes
+                | Op::DnsConfig
+                | Op::ActiveConnections
+                | Op::ConnectivityCheck { .. }
+                | Op::NetworkScan { .. }
+                | Op::BootHistory
+                | Op::KernelRingBuffer
+                | Op::SystemJournalErrors
+                | Op::FailedLoginAttempts
+                | Op::OomKillEvents
+                | Op::CoreDumps
+                | Op::RecentlyModifiedFiles { .. }
+                | Op::JournalDiskUsage
+                | Op::LogRotationStatus
+                | Op::ArchivedLogListing
+                | Op::LogDirectorySizes
+                | Op::ListBackups
+                | Op::LoadAverage
+                | Op::TopProcessesByCpu
+                | Op::TopProcessesByMemory
+                | Op::MemoryDetail
+                | Op::DiskIoStats
+                | Op::FailedServices
+                | Op::CpuUtilization
+                | Op::NetworkThroughput
+                | Op::ThermalSensors
+                | Op::MemoryPressure
+                | Op::ListServices
+                | Op::ServiceStatus { .. }
+                | Op::ServiceLogs { .. }
+                | Op::PreviousBootErrors
+                | Op::SystemRunningState
+                | Op::ReadOnlyFilesystems
+                | Op::ListFailedUnits
+                | Op::DiskSpaceCritical
+                | Op::FstabCheck
+                | Op::CpuInfo
+                | Op::PciDevices
+                | Op::BlockDevices
+                | Op::MemoryHardware
+                | Op::DiskHealth { .. }
+                | Op::ListContainers
+                | Op::ContainerLogs { .. }
+                | Op::ContainerInspect { .. }
+                | Op::ListImages
+                | Op::RuntimeInfo
+                | Op::ListProcesses
+                | Op::ProcessDetail { .. }
+                | Op::ProcessOpenFiles { .. }
+                | Op::ProcessLimits { .. }
+                | Op::ZombieReport
+                | Op::CleanupTargetsSummary
+                | Op::VmStatistics
+                | Op::InterruptStatistics
+                | Op::CpuGovernorStatus
+                | Op::TuningParametersStatus
+                | Op::ListUsers
+                | Op::ListGroups
+                | Op::UserDetail { .. }
+                | Op::DirectoryUsageBreakdown { .. }
+                | Op::FindLargeFiles { .. }
+                | Op::ListInstalledPackages
+                | Op::SearchPackage { .. }
+                | Op::PackageInfo { .. }
+                | Op::PartitionTable { .. }
+                | Op::LvmSummary
+                | Op::RaidStatus
+                | Op::ViewManagedSysctl
+                | Op::ViewManagedCronJobs
+                | Op::SysctlManagedDrift
+                | Op::ViewModuleBlacklist
+                | Op::ViewJournaldConfig
+                | Op::ListBlockedIps
+                | Op::IsolationStatus
+                | Op::ListQuarantinedFiles
+                | Op::ListSshHostKeys
+                | Op::ListSshAuthorizedKeys { .. }
+                | Op::ListTlsCertificates
+                | Op::CertificateDetail { .. }
+                | Op::ScanSensitiveFilePermissions
+                | Op::ViewSensitiveFile { .. }
+                | Op::ScanSecurityEvents { .. }
+                | Op::AdDnsReport { .. }
+                | Op::AdHealthReport { .. }
+                | Op::DetectPackageBackend
+                | Op::CheckSepulchreConfigIncludeDirective { .. }
+                | Op::CheckMountStatus { .. }
+                | Op::NeighborTable
+                | Op::DhcpLeases
+                | Op::ScourgeSensorStatus
+                | Op::ScourgeCollectEvents { .. }
+                | Op::ScourgeListRules { .. }
+                | Op::ScourgePcapList
+                | Op::ScourgeCaptureStatus { .. }
+                | Op::ScourgeIpsStatus
+        )
+    }
+
     /// A short, human-readable past-tense description for the audit trail
     /// and the dashboard's "recent activity" feed (e.g. `"Rebooted"`,
     /// `"Created backup: nightly"`). Every mutating (Write/Destructive)
@@ -2029,13 +2188,19 @@ impl AgentOperation {
             AgentOperation::CreateSepulchreShareDirectory { path, .. } => {
                 format!("Created share directory {path}")
             }
-            AgentOperation::SelfUpdate { version } => {
+            AgentOperation::SelfUpdate { version, .. } => {
                 format!("Updated agent to v{version}")
             }
             AgentOperation::UninstallAgent { purge: true } => {
                 "Uninstalled the agent and removed its enrollment".to_string()
             }
             AgentOperation::UninstallAgent { purge: false } => "Uninstalled the agent".to_string(),
+            AgentOperation::ThanatosStream { enabled: true, .. } => {
+                "Started real-time security event streaming".to_string()
+            }
+            AgentOperation::ThanatosStream { enabled: false, .. } => {
+                "Stopped real-time security event streaming".to_string()
+            }
             AgentOperation::UpdateTrustedCa { .. } => {
                 "Updated the agent's trusted control-plane CA".to_string()
             }
@@ -2702,15 +2867,27 @@ impl fmt::Debug for AgentOperation {
                 .field("path", path)
                 .field("owner", owner)
                 .finish(),
-            AgentOperation::SelfUpdate { version } => f
+            AgentOperation::SelfUpdate {
+                version,
+                from_control_plane,
+                sha256,
+            } => f
                 .debug_struct("SelfUpdate")
                 .field("version", version)
+                .field("from_control_plane", from_control_plane)
+                .field("sha256", sha256)
                 .finish(),
             AgentOperation::UninstallAgent { purge } => f
                 .debug_struct("UninstallAgent")
                 .field("purge", purge)
                 .finish(),
             AgentOperation::NeighborTable => write!(f, "NeighborTable"),
+            AgentOperation::DhcpLeases => write!(f, "DhcpLeases"),
+            AgentOperation::ThanatosStream { enabled, c2_ports } => f
+                .debug_struct("ThanatosStream")
+                .field("enabled", enabled)
+                .field("c2_ports", c2_ports)
+                .finish(),
             AgentOperation::UpdateTrustedCa { bundle_pem } => f
                 .debug_struct("UpdateTrustedCa")
                 .field(

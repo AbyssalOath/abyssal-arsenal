@@ -29,6 +29,7 @@ pub mod ossuary;
 pub mod panopticon;
 pub mod panopticon_deploy;
 pub mod panopticon_scan;
+pub mod panopticon_topology;
 pub mod parish;
 pub mod password_reset;
 pub mod postmortem;

@@ -19,6 +19,7 @@ pub mod panopticon_enforcement;
 pub mod panopticon_policy;
 pub mod panopticon_radius;
 pub mod panopticon_switches;
+pub mod panopticon_topology;
 pub mod panopticon_traffic;
 pub mod password_resets;
 pub mod pinned_modules;

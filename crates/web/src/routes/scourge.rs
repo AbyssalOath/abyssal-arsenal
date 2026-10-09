@@ -185,6 +185,22 @@ async fn render_host(
         ips_enabled,
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
+        control_plane: crate::control_plane::page_note(&state.hosts, host_id),
+        ips_refusal: crate::control_plane::refusal(
+            &state.hosts,
+            host_id,
+            &AgentOperation::ScourgeSetMode { ips: true },
+        ),
+        // Every Scourge operation needs the same protocol; an offline host
+        // just shows its page (its actions fail with "not connected").
+        scourge_supported: !state.hosts.is_connected(host_id)
+            || state
+                .hosts
+                .supports(host_id, &AgentOperation::ScourgeSensorStatus),
+        scourge_needs: abyssal_agent_protocol::agent_release_for_protocol(
+            AgentOperation::ScourgeSensorStatus.min_protocol(),
+        )
+        .unwrap_or("a newer release"),
         base,
         host_id: host_id.to_string(),
         host_name: host.name,

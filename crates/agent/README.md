@@ -64,7 +64,7 @@ when you'd rather do it by hand.
 
 | Option | Purpose |
 |---|---|
-| `--ca-cert <ca.pem>` | Trust this CA (PEM) for the control plane, in addition to the OS store. `install` copies it next to the credentials file and puts it into the service definition, so enrollment, the WebSocket, and its reconnects use it (self-update downloads come from GitHub and use only the OS store). The control plane keeps this file current when it rotates its CA (`UpdateTrustedCa`, pushed on every connect). Never picked up implicitly. |
+| `--ca-cert <ca.pem>` | Trust this CA (PEM) for the control plane, in addition to the OS store. `install` copies it next to the credentials file and puts it into the service definition, so enrollment, the WebSocket, and its reconnects use it (self-updates from 0.2.3 download from the control plane with it, checked against a SHA-256 sent over the WebSocket; older agents update from GitHub using only the OS store). The control plane keeps this file current when it rotates its CA (`UpdateTrustedCa`, pushed on every connect). Never picked up implicitly. |
 | `--ca-fingerprint <sha256>` | With `--ca-cert`: refuse to install unless the CA matches (hex, colons optional). |
 | `--enrollment-token-file <file>` / `ABYSSAL_ENROLLMENT_TOKEN` | Supply the token without putting it on a command line (visible in `ps` and in RMM job logs). |
 | `--aat <token>` / `ABYSSAL_AAT` | Enroll with the control plane's reusable install token (AAT) instead of a single-use one. It also verifies the control plane's CA (no `--ca-cert` needed). See [Mass deployment with the install token](#mass-deployment-with-the-install-token-aat). |
@@ -158,10 +158,25 @@ install --control-plane-url https://arsenal.corp --aat AAT1-...`.
 When a host's agent is older than the control plane, `/admin/hosts` shows
 an **Agent out of date** badge next to it. Use the **Update agent** action
 there to push the control plane's current version to the connected host
-over its existing WebSocket: the agent downloads the matching release for
-its own platform (TLS-pinned to GitHub -- the wire only carries a version
-tag, never a URL), replaces its installed binary, and restarts its service
-so the new build takes over (a couple of seconds' disconnect/reconnect).
+over its existing WebSocket. The agent replaces its installed binary and
+restarts its service, so the new build takes over after a disconnect and
+reconnect of a couple of seconds.
+
+Where the build comes from depends on the agent's version:
+
+- **0.2.3 and later** download it from the control plane, the same file
+  `/agent/linux` or `/agent/windows` serves. For Linux that's the build in
+  the control plane's image. For Windows it's the release the control plane
+  fetched once from GitHub, or one you put in its agent folder. Hosts
+  therefore need no internet access. The control plane sends the file's
+  SHA-256 over the WebSocket, and the agent refuses anything that doesn't
+  match.
+- **Older agents** download the matching GitHub release, TLS-pinned to
+  GitHub. The wire only carries a version tag, never a URL.
+
+Either way, the new binary has to run on the host (`--version`, from where
+it's staged next to the installed one), and it must not be older than the
+running agent, or the update is refused and nothing changes.
 
 This works on any agent new enough to understand the update operation. An
 agent that predates it can't -- it drops the connection instead of

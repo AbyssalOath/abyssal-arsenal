@@ -23,11 +23,20 @@
   </form>
   {% endif %}
 
+  {% if let Some(cp) = control_plane %}
+  <div class="info-banner" style="margin-top:10px;">
+    {% call macros::icon("shield") %} <strong>This is the control plane's own server.</strong>
+    Operations that would take the control plane down are refused here: {{ cp.summary }}.
+    Anything refused can still be done deliberately from a shell on the server
+    (<a href="https://github.com/AbyssalOath/abyssal-arsenal/blob/main/docs/control-plane-host.md">why</a>).
+  </div>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
-    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
-    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
-    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+    {% call macros::icon("warning") %} <strong>This host's agent is older than the control plane.</strong>
+    Anything it can't do yet is refused before it's sent, with a message saying so, so nothing breaks --
+    but those actions won't work until it's updated: use <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
   </div>
   {% endif %}
 
@@ -84,6 +93,7 @@
 {% if can_manage %}
 <div class="card kind-write">
   <h3>Write</h3>
+  {% if let Some(cp) = control_plane %}<p class="cp-hint" style="color:var(--text-muted); margin:0 0 8px;">{% call macros::icon("shield") %} On this server, Docker's files and this agent's own can't be quarantined.</p>{% endif %}
   <div class="action-grid">
     <form method="post" action="/arsenals/inquest/{{ host_id }}/block-ip">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
@@ -159,9 +169,16 @@
     no remote way to undo it -- recovery would then need physical or console access.
   </p>
   <div class="action-grid">
+    {% if let Some(why) = isolate_refusal %}
+    <div>
+      <button type="button" class="btn-danger" disabled title="{{ why }}">Isolate Host&hellip;</button>
+      <p style="color:var(--text-muted); margin:6px 0 0;">{{ why }}</p>
+    </div>
+    {% else %}
     <form method="get" action="/arsenals/inquest/{{ host_id }}/isolate/confirm">
       <button type="submit" class="btn-danger">Isolate Host&hellip;</button>
     </form>
+    {% endif %}
   </div>
   {% else %}
   <p style="color:var(--text-muted); margin-top:0;">

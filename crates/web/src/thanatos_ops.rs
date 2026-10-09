@@ -1188,20 +1188,21 @@ pub async fn ingest_scan(
     ))
 }
 
-/// Ingests security telemetry an agent pushed up the WebSocket unsolicited (M6
-/// Option B, real-time "fast channel" -- **scaffold**). The agent does not yet
-/// produce `AgentMessage::Telemetry`; this is the control-plane landing point so
-/// that enabling real-time push later is purely agent-side work. It reuses the
-/// exact `ingest_scan` path a poll uses, so the push transport needs no bespoke
-/// detection/suppression/IOC/alerting logic -- `stdout` is the same tab-
-/// delimited line format and is treated as untrusted input the same way. A
-/// production push producer should pair this with a per-host rate limit; that's
-/// deferred with the producer itself.
+/// Ingests security telemetry an agent pushed up the WebSocket unsolicited --
+/// the real-time Windows event stream (`crate::thanatos_stream`). It reuses
+/// the exact `ingest_scan` path a poll uses, so the push transport needs no
+/// bespoke detection/suppression/IOC/alerting logic -- `stdout` is the same
+/// tab-delimited line format and is treated as untrusted input the same way.
+/// Rate limited per host (`thanatos_stream::allow_push`); what's dropped is
+/// still picked up by the full sweep.
 pub async fn ingest_pushed_telemetry(
     state: &AppState,
     host_id: Uuid,
     stdout: &str,
 ) -> anyhow::Result<()> {
+    if !crate::thanatos_stream::allow_push(host_id) {
+        return Ok(());
+    }
     let Some(host) = repo::hosts::find_by_id(&state.pool, host_id).await? else {
         return Ok(());
     };
@@ -1382,6 +1383,11 @@ pub fn spawn_thanatos_fast_sweep(state: AppState) {
             };
             for host in hosts {
                 if !host.is_active() || !state.hosts.is_connected(host.id) {
+                    continue;
+                }
+                // Its real-time stream already delivers these events as they
+                // happen.
+                if crate::thanatos_stream::is_streaming(&state, host.id) {
                     continue;
                 }
                 let outcome = state

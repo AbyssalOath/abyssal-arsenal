@@ -602,7 +602,13 @@ pub fn parse_shred_passes(raw: &str) -> Result<u8, WebError> {
 /// what the admin asked not to happen.
 pub fn shred_passes_for_host(state: &AppState, host_id: Uuid, raw: &str) -> Result<u8, WebError> {
     let passes = parse_shred_passes(raw)?;
-    if passes > 0 && state.hosts.agent_protocol_mismatch(host_id) {
+    // Any agent that can shred will do (its delete operations all gained
+    // `shred_passes` together); an older one would just delete.
+    let shred = abyssal_agent_protocol::AgentOperation::DeleteQuarantinedFile {
+        filename: String::new(),
+        shred_passes: passes,
+    };
+    if passes > 0 && state.hosts.is_connected(host_id) && !state.hosts.supports(host_id, &shred) {
         return Err(WebError(AppError::Validation(
             "This host's agent is out of date and doesn't support shredding -- it would just \
              delete the file. Update the agent (Hosts > Update agent), then try again."

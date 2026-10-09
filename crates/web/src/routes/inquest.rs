@@ -247,6 +247,12 @@ async fn render_host_with_context(
         host_isolation_enabled,
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
+        control_plane: crate::control_plane::page_note(&state.hosts, host_id),
+        isolate_refusal: crate::control_plane::refusal(
+            &state.hosts,
+            host_id,
+            &AgentOperation::IsolateHost,
+        ),
         base,
         host_id: host_id.to_string(),
         host_name: host.name,
@@ -915,6 +921,15 @@ async fn run_destructive_op(
         .await?
         .ok_or(AppError::NotFound)?;
     let result_label = Some(format!("{label} -- {}", host.name));
+
+    // A PID can't be judged by the guard alone; look the process up.
+    if let AgentOperation::SendSignal { pid, .. } = &operation
+        && let Err(reason) = crate::control_plane::check_signal(&state.hosts, host_id, *pid).await
+    {
+        crate::control_plane::audit_refusal(&state.pool, &ctx, &host.name, &operation, &reason)
+            .await;
+        return render_host(state, &jar, &ctx, host_id, result_label, None, Some(reason)).await;
+    }
 
     let elevated = state.elevation.is_elevated(host_id);
     let result = state

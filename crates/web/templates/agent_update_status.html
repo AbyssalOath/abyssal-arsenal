@@ -1,0 +1,42 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Agent Updates — Abyssal Arsenal{% endblock %}
+{% block head_extra %}
+{% if !finished %}
+<meta http-equiv="refresh" content="3">
+{% endif %}
+{% endblock %}
+{% block heading %}Agent Updates{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Started by {{ started_by }} at {{ started_at }}.
+    {% if finished %}
+    Done: {{ updated }} updated, {{ failed }} failed or not back yet, {{ skipped }} skipped.
+    {% else %}
+    This page refreshes on its own every few seconds.
+    {% endif %}
+  </p>
+
+  <table>
+    <thead><tr><th>Host</th><th>Platform</th><th>From</th><th>Status</th><th>Details</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ r.os }}</td>
+        <td>v{{ r.from_version }}</td>
+        <td><span class="badge {{ r.badge_class }}">{{ r.state_label }}</span></td>
+        <td>{{ r.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div style="margin-top:14px;">
+    <a class="btn btn-secondary" href="/admin/hosts">{% call macros::icon("host") %} Managed Hosts</a>
+  </div>
+</div>
+
+{% endblock %}

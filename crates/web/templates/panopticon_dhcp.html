@@ -1,0 +1,56 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}DHCP leases — Panopticon — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — DHCP leases{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/panopticon">&larr; Back to Panopticon</a></p>
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    On a network without reverse DNS, a DHCP server already knows every client's name.
+    Imported leases fill in missing hostnames and MACs on devices in the inventory right away,
+    and later scans use them for devices they find. Only current leases are kept
+    ({{ lease_count }} stored).
+  </p>
+  {% if let Some(r) = result %}<div class="info-banner">{{ r }}</div>{% endif %}
+  {% if let Some(e) = error %}<div class="error-banner">{{ e }}</div>{% endif %}
+</div>
+
+{% if can_manage %}
+<div class="card kind-read">
+  <h3>{% call macros::icon("host") %} From a managed DHCP server</h3>
+  {% if hosts.is_empty() %}
+  <p style="color:var(--text-muted); margin:0;">
+    No connected agent (0.2.3 or later) to read leases from. Windows DHCP Server, dnsmasq,
+    ISC dhcpd and Kea are supported.
+  </p>
+  {% else %}
+  <form method="post" action="/arsenals/panopticon/dhcp/import-host" class="action-grid">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="dhcp-host">Host running the DHCP server (Windows DHCP Server, dnsmasq, ISC dhcpd or Kea)</label>
+    <select id="dhcp-host" name="host_id" required>
+      {% for h in hosts %}<option value="{{ h.id }}">{{ h.name }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="btn-secondary">{% call macros::icon("database") %} Import leases</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card kind-write">
+  <h3>{% call macros::icon("database") %} Paste a lease file</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    The format is detected: ISC <code>dhcpd.leases</code>, <code>dnsmasq.leases</code>, a Kea
+    leases CSV, or a Windows export
+    (<code>Get-DhcpServerv4Scope | Get-DhcpServerv4Lease | Export-Csv leases.csv</code>).
+  </p>
+  <form method="post" action="/arsenals/panopticon/dhcp/import">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="dhcp-leases" class="sr-only">Lease file contents</label>
+    <textarea id="dhcp-leases" name="leases" rows="12" style="width:100%; font-family:monospace;" required></textarea>
+    <button type="submit" class="btn-secondary" style="margin-top:8px;">{% call macros::icon("database") %} Import</button>
+  </form>
+</div>
+{% endif %}
+
+{% endblock %}

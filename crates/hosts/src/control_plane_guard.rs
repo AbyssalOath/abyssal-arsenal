@@ -43,9 +43,9 @@ impl ControlPlaneProtection {
 const PREFIX: &str = "Refused on the control plane's own server";
 
 /// Docker, the units it needs, and this agent.
-const PROTECTED_UNITS: &[&str] = &["docker", "containerd", "abyssal-agent"];
+pub const PROTECTED_UNITS: &[&str] = &["docker", "containerd", "abyssal-agent"];
 /// Processes that make up the running control plane.
-const PROTECTED_PROCESSES: &[&str] = &[
+pub const PROTECTED_PROCESSES: &[&str] = &[
     "dockerd",
     "containerd",
     "containerd-shim",
@@ -58,9 +58,9 @@ const PROTECTED_PROCESSES: &[&str] = &[
     "caddy",
 ];
 /// Mount points whose loss (or being mounted over) hides Docker's data.
-const PROTECTED_MOUNTS: &[&str] = &["/", "/var", "/var/lib", "/var/lib/docker"];
+pub const PROTECTED_MOUNTS: &[&str] = &["/", "/var", "/var/lib", "/var/lib/docker"];
 /// Paths that must not be quarantined away.
-const PROTECTED_PATH_PREFIXES: &[&str] = &[
+pub const PROTECTED_PATH_PREFIXES: &[&str] = &[
     "/var/lib/docker",
     "/var/lib/containerd",
     "/usr/bin/docker",
@@ -108,8 +108,13 @@ pub fn check(
             interface,
             up: false,
         } => Err(format!(
-            "{PREFIX}: bringing {interface} down could take the control plane off the network, \
-             and the web UI is how it would be brought back up."
+            "{PREFIX}: bringing {} down could take the control plane off the network, and the \
+             web UI is how it would be brought back up.",
+            if interface.trim().is_empty() {
+                "an interface"
+            } else {
+                interface.as_str()
+            }
         )),
         Op::StopService { unit } | Op::RestartService { unit } | Op::DisableService { unit }
             if is_protected_unit(unit) =>
@@ -188,6 +193,55 @@ pub fn check(
         Op::StopRaidArray { .. } => check_layered(protection, Layer::Raid, "stopping RAID arrays"),
         _ => Ok(()),
     }
+}
+
+/// For a signal sent by PID: refuses when the process (by its name, as
+/// `process_name_from_ps` reads it) is part of the running control plane.
+/// Exact names here -- unlike a `pgrep` pattern, this is the one process
+/// the PID is.
+pub fn check_process_name(pid: u32, name: &str) -> Result<(), String> {
+    let lower = name.to_ascii_lowercase();
+    let protected = PROTECTED_PROCESSES.contains(&lower.as_str())
+        || lower.starts_with("abyssal")
+        || lower.starts_with("containerd-shim");
+    if protected {
+        return Err(format!(
+            "{PREFIX}: PID {pid} is {name}, part of the running control plane. Signalling it \
+             would take the web UI down."
+        ));
+    }
+    Ok(())
+}
+
+/// The process name from the agent's `ProcessDetail` output: `ps -o
+/// pid,ppid,user,stat,%cpu,%mem,etime,lstart,cmd` -- seven fields, a
+/// five-word start time, then the command line, whose first word's basename
+/// is the name (`/usr/bin/dockerd -H fd://` -> `dockerd`). `None` if there's
+/// no such process or the line doesn't parse.
+pub fn process_name_from_ps(output: &str) -> Option<String> {
+    let line = output.lines().skip(1).find(|l| !l.trim().is_empty())?;
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let command = fields.get(12)?;
+    let name = command.rsplit('/').next()?.trim_end_matches(':');
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// What `check` refuses, in a sentence, for a page that's about to offer
+/// some of it.
+pub fn summary(protection: &ControlPlaneProtection) -> String {
+    let disk = match protection.docker_device.as_deref() {
+        Some(device) => format!("the disk holding Docker's data ({device})"),
+        None => "any disk, until this agent reports which one holds Docker's data".to_string(),
+    };
+    format!(
+        "isolating it; inline IPS; closing {}; turning the firewall on; taking an interface \
+         down; stopping, restarting or disabling {}; stopping or removing the abyssal \
+         containers; signalling {}; upgrading or removing the container runtime; quarantining \
+         Docker's files; and partitioning, formatting or unmounting {disk}",
+        port_list(&protection.ports),
+        PROTECTED_UNITS.join(", "),
+        "dockerd, containerd, MariaDB, Caddy or the abyssal processes",
+    )
 }
 
 fn port_list(ports: &BTreeSet<u16>) -> String {
@@ -698,6 +752,35 @@ mod tests {
             },
             &p
         ));
+    }
+
+    #[test]
+    fn signals_by_pid_check_the_process_it_is() {
+        assert!(check_process_name(812, "dockerd").is_err());
+        assert!(check_process_name(9, "containerd-shim-runc-v2").is_err());
+        assert!(check_process_name(9, "abyssal-arsenal").is_err());
+        assert!(check_process_name(9, "mariadbd").is_err());
+        assert!(check_process_name(9, "nginx").is_ok());
+        assert!(
+            check_process_name(9, "docker-compose-helper").is_ok(),
+            "exact, unlike patterns"
+        );
+    }
+
+    #[test]
+    fn reads_the_process_name_from_ps() {
+        let ps = "    PID    PPID USER     STAT %CPU %MEM     ELAPSED                  STARTED CMD\n\
+                  \x20   812       1 root     Ssl   0.3  1.2  2-03:04:05 Thu Oct  9 10:00:00 2026 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock\n";
+        assert_eq!(process_name_from_ps(ps).as_deref(), Some("dockerd"));
+        let caddy = "PID PPID USER STAT %CPU %MEM ELAPSED STARTED CMD\n\
+                     2210 2190 1000 Ssl 0.0 0.1 05:00 Thu Oct 9 10:00:00 2026 caddy run --config /etc/caddy/Caddyfile\n";
+        assert_eq!(process_name_from_ps(caddy).as_deref(), Some("caddy"));
+        assert_eq!(
+            process_name_from_ps("PID PPID USER STAT %CPU %MEM ELAPSED STARTED CMD\n"),
+            None,
+            "no such process"
+        );
+        assert_eq!(process_name_from_ps(""), None);
     }
 
     #[test]

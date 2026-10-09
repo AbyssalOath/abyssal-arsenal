@@ -15,8 +15,6 @@ use abyssal_agent_protocol::{AgentOperation, CommandOutcome};
 use abyssal_database::{DbPool, repo};
 use abyssal_hosts::HostConnectionRegistry;
 
-/// `NeighborTable` arrived in protocol 42 (0.2.2).
-pub const NEIGHBOR_TABLE_MIN_PROTOCOL: u32 = 42;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
 /// Agents asked at once.
 const BATCH: usize = 32;
@@ -125,7 +123,7 @@ pub async fn collect(
                 h.is_active()
                     && !h.pending_approval
                     && (!only_control_plane || h.is_control_plane)
-                    && hosts.agent_supports(h.id, NEIGHBOR_TABLE_MIN_PROTOCOL)
+                    && hosts.supports(h.id, &AgentOperation::NeighborTable)
             })
             .map(|h| (h.id, h.name))
             .collect(),
@@ -173,7 +171,7 @@ pub async fn enrich_from_host(
     host_id: uuid::Uuid,
     host_name: &str,
 ) {
-    if !hosts.agent_supports(host_id, NEIGHBOR_TABLE_MIN_PROTOCOL) {
+    if !hosts.supports(host_id, &AgentOperation::NeighborTable) {
         return;
     }
     let Ok(CommandOutcome::Ok(output)) = hosts

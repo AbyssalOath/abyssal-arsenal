@@ -7,8 +7,19 @@
 //! `install` copies to), and bounces the host's service manager so the new
 //! build takes over.
 //!
-//! **Trust model.** The wire only ever carries a *version tag*, never a
-//! URL: the download source is built here from that tag plus this binary's
+//! **Where the build comes from.** From protocol 43 the control plane
+//! normally sends `from_control_plane`: the agent downloads `/agent/<os>`
+//! from the control plane it's connected to (TLS pinned to that control
+//! plane's CA), so hosts with no internet access can update. The control
+//! plane sends the archive's SHA-256 over the authenticated WebSocket and
+//! anything else is refused. That trusts the control plane with the next
+//! binary -- no more than it's already trusted: it can run root/SYSTEM
+//! operations on this host anyway. Either way the new binary must run here
+//! (`--version`, from its staged location next to the installed one) and
+//! must not be older than this one before it's swapped in.
+//!
+//! **Trust model (GitHub).** Otherwise -- an older control plane -- the
+//! wire only ever carries a *version tag*, never a URL: the download source is built here from that tag plus this binary's
 //! own `std::env::consts::{OS, ARCH}`, so a control-plane message can only
 //! select which published release to install, not point the agent at an
 //! arbitrary host. The download is TLS-pinned to `github.com` -- the exact
@@ -46,25 +57,46 @@ const GITHUB_DOWNLOAD_BASE: &str =
 /// has its own dispatch timeout on top of this).
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
-pub async fn self_update(version: String) -> CommandOutcome {
-    match run_self_update(&version).await {
+static CONTROL_PLANE_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Called by `run`: where `from_control_plane` updates download from.
+pub fn set_control_plane_url(url: &str) {
+    let _ = CONTROL_PLANE_URL.set(url.trim_end_matches('/').to_string());
+}
+
+pub async fn self_update(
+    version: String,
+    from_control_plane: bool,
+    sha256: Option<String>,
+) -> CommandOutcome {
+    match run_self_update(&version, from_control_plane, sha256.as_deref()).await {
         Ok(message) => CommandOutcome::Ok(OperationOutput {
             stdout: message,
             stderr: String::new(),
             exit_code: Some(0),
         }),
-        Err(e) => CommandOutcome::Err(format!("self-update to v{version} failed: {e:#}")),
+        Err(e) => CommandOutcome::Err(format!(
+            "self-update to v{version} from {} failed: {e:#}",
+            if from_control_plane {
+                "the control plane"
+            } else {
+                "GitHub"
+            }
+        )),
     }
 }
 
-async fn run_self_update(version: &str) -> anyhow::Result<String> {
+async fn run_self_update(
+    version: &str,
+    from_control_plane: bool,
+    sha256: Option<&str>,
+) -> anyhow::Result<String> {
     if !is_plausible_version(version) {
         bail!(
             "control plane sent an implausible version string ({version:?}) -- refusing to \
              build a download URL or filesystem path from it"
         );
     }
-
     if is_downgrade(env!("CARGO_PKG_VERSION"), version) {
         bail!(
             "this agent is already v{}, newer than v{version} -- refusing to downgrade. (The \
@@ -75,7 +107,6 @@ async fn run_self_update(version: &str) -> anyhow::Result<String> {
     }
 
     let asset = PlatformAsset::for_this_host(version)?;
-    let url = format!("{GITHUB_DOWNLOAD_BASE}/v{version}/{}", asset.archive_name());
 
     let staging = staging_dir();
     // A stale staging dir from a previous run must never be trusted to
@@ -85,8 +116,29 @@ async fn run_self_update(version: &str) -> anyhow::Result<String> {
         .await
         .with_context(|| format!("could not create staging dir {}", staging.display()))?;
 
+    let (bytes, source) = if from_control_plane {
+        let expected = sha256
+            .filter(|h| is_sha256_hex(h))
+            .context("the control plane sent no valid SHA-256 for the build")?;
+        let base = CONTROL_PLANE_URL
+            .get()
+            .context("this agent doesn't know its control plane's URL")?;
+        let url = format!("{base}/agent/{}", asset.control_plane_key());
+        let bytes = download_from_control_plane(&url).await?;
+        let actual = sha256_hex(&bytes);
+        if !actual.eq_ignore_ascii_case(expected) {
+            bail!(
+                "the download from {url} doesn't match the SHA-256 the control plane sent \
+                 (got {actual}, expected {expected}) -- refusing to install it"
+            );
+        }
+        (bytes, "the control plane, SHA-256 verified")
+    } else {
+        let url = format!("{GITHUB_DOWNLOAD_BASE}/v{version}/{}", asset.archive_name());
+        (download(&url).await?, "GitHub")
+    };
+
     let archive_path = staging.join(asset.archive_name());
-    let bytes = download(&url).await?;
     tokio::fs::write(&archive_path, &bytes)
         .await
         .with_context(|| {
@@ -98,7 +150,54 @@ async fn run_self_update(version: &str) -> anyhow::Result<String> {
 
     let new_binary = asset.extract(&staging, &archive_path).await?;
 
-    install_and_restart(&new_binary, version).await
+    let message = install_and_restart(&new_binary).await?;
+    Ok(format!("{message} (Downloaded from {source}.)"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Asks a staged binary for its version (`abyssal-agent 0.2.3`), which also
+/// proves it runs on this host. Refuses one older than this agent.
+async fn check_new_binary(path: &Path) -> anyhow::Result<String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new(path).arg("--version").output(),
+    )
+    .await
+    .context("the new binary didn't answer --version within 30s")?
+    .with_context(|| format!("couldn't run the new binary at {}", path.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = parse_version_output(&stdout).with_context(|| {
+        format!(
+            "the new binary didn't report a version (exit {:?}): {}",
+            output.status.code(),
+            stdout.trim()
+        )
+    })?;
+    if is_downgrade(env!("CARGO_PKG_VERSION"), &version) {
+        bail!(
+            "the downloaded build is v{version}, older than this agent (v{}) -- refusing to \
+             downgrade",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    Ok(version)
+}
+
+/// `abyssal-agent 0.2.3` -> `0.2.3`.
+fn parse_version_output(stdout: &str) -> Option<String> {
+    let version = stdout.lines().next()?.split_whitespace().last()?;
+    parse_version(version).map(|_| version.trim_start_matches('v').to_string())
 }
 
 /// Only a version made of digits, dots, and the handful of characters a
@@ -184,6 +283,11 @@ impl PlatformAsset {
         format!("{}.tar.gz", self.stem)
     }
 
+    /// The control plane's `/agent/<key>` for this platform's archive.
+    fn control_plane_key(&self) -> &'static str {
+        if cfg!(windows) { "windows" } else { "linux" }
+    }
+
     /// The binary's basename inside the extracted archive.
     #[cfg(windows)]
     fn binary_name(&self) -> &'static str {
@@ -233,15 +337,66 @@ impl PlatformAsset {
             }
         }
 
-        let binary = staging.join(&self.stem).join(self.binary_name());
-        if tokio::fs::metadata(&binary).await.is_err() {
-            bail!(
-                "downloaded release did not contain the expected binary at {}",
-                binary.display()
-            );
-        }
-        Ok(binary)
+        // Usually `<stem>/<binary>`, but a build an operator put on the
+        // control plane may be laid out differently (or be another
+        // version), so look for it.
+        find_binary(staging, self.binary_name(), 3)
+            .with_context(|| format!("the downloaded archive has no {} in it", self.binary_name()))
     }
+}
+
+/// The first file named `name` under `dir`, at most `depth` levels down.
+fn find_binary(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+    let direct = dir.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let mut subdirs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    subdirs.sort();
+    subdirs
+        .iter()
+        .find_map(|sub| find_binary(sub, name, depth - 1))
+}
+
+/// From the control plane, trusting what this agent trusts for it (its
+/// pinned CA, or the OS roots for a publicly trusted certificate).
+async fn download_from_control_plane(url: &str) -> anyhow::Result<Vec<u8>> {
+    let trust = match crate::tls::current_trust() {
+        Some(trust) => trust,
+        None => crate::tls::Trust::os_only()?,
+    };
+    let client = trust
+        .http_client(
+            reqwest::Client::builder()
+                .timeout(DOWNLOAD_TIMEOUT)
+                .user_agent(concat!("abyssal-agent/", env!("CARGO_PKG_VERSION"))),
+        )
+        .context("failed to build the download client")?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to reach {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        // The control plane explains (no build for this OS, GitHub
+        // unreachable, where to put one).
+        let body = response.text().await.unwrap_or_default();
+        bail!("{url} returned {status}: {}", body.trim());
+    }
+    Ok(response
+        .bytes()
+        .await
+        .context("failed to read the downloaded build")?
+        .to_vec())
 }
 
 async fn download(url: &str) -> anyhow::Result<Vec<u8>> {
@@ -284,7 +439,7 @@ fn staging_dir() -> PathBuf {
 // --- Platform-specific install + restart -------------------------------
 
 #[cfg(unix)]
-async fn install_and_restart(new_binary: &Path, version: &str) -> anyhow::Result<String> {
+async fn install_and_restart(new_binary: &Path) -> anyhow::Result<String> {
     use std::os::unix::fs::PermissionsExt;
 
     let target = PathBuf::from(crate::INSTALLED_BINARY_PATH);
@@ -306,6 +461,14 @@ async fn install_and_restart(new_binary: &Path, version: &str) -> anyhow::Result
     // path applies, so a self-updated binary lands with the same
     // ownership/mode an operator-run `install` would produce.
     crate::harden_binary_permissions(&staged).await?;
+    // Run from here, beside the installed binary: /tmp may be noexec.
+    let version = match check_new_binary(&staged).await {
+        Ok(version) => version,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(e);
+        }
+    };
 
     tokio::fs::rename(&staged, &target).await.with_context(|| {
         format!(
@@ -366,7 +529,7 @@ fn schedule_restart_unix() -> anyhow::Result<()> {
 }
 
 #[cfg(windows)]
-async fn install_and_restart(new_binary: &Path, version: &str) -> anyhow::Result<String> {
+async fn install_and_restart(new_binary: &Path) -> anyhow::Result<String> {
     // A running `.exe` is locked on Windows, so the live binary can't be
     // overwritten from within this process. Stage the new build alongside
     // it (hardened the same way `install` hardens the real one), then hand
@@ -380,6 +543,13 @@ async fn install_and_restart(new_binary: &Path, version: &str) -> anyhow::Result
         .await
         .with_context(|| format!("failed to stage the new binary at {}", staged.display()))?;
     crate::winservice::harden_binary_acls(&staged)?;
+    let version = match check_new_binary(&staged).await {
+        Ok(version) => version,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(e);
+        }
+    };
 
     let service = crate::winservice::SERVICE_NAME;
     let script_path = staging_dir().join("abyssal-agent-selfupdate.cmd");
@@ -449,7 +619,7 @@ fn spawn_detached_windows(script_path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn install_and_restart(_new_binary: &Path, _version: &str) -> anyhow::Result<String> {
+async fn install_and_restart(_new_binary: &Path) -> anyhow::Result<String> {
     bail!("self-update is only supported on Linux and Windows")
 }
 
@@ -469,6 +639,95 @@ mod tests {
         assert!(!is_plausible_version("1.0 && rm -rf"));
         assert!(!is_plausible_version("v1.0\nreboot"));
         assert!(!is_plausible_version(&"9".repeat(65)));
+    }
+
+    #[test]
+    fn sha256_and_its_format() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(is_sha256_hex(&sha256_hex(b"x")));
+        assert!(is_sha256_hex(&sha256_hex(b"x").to_uppercase()));
+        assert!(!is_sha256_hex("abc"));
+        assert!(!is_sha256_hex(&"g".repeat(64)));
+    }
+
+    #[test]
+    fn reads_the_version_a_binary_reports() {
+        assert_eq!(
+            parse_version_output("abyssal-agent 0.2.3\n").as_deref(),
+            Some("0.2.3")
+        );
+        assert_eq!(
+            parse_version_output("abyssal-agent v1.0.0").as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(parse_version_output("Usage: something"), None);
+        assert_eq!(parse_version_output(""), None);
+    }
+
+    #[test]
+    fn finds_the_binary_wherever_the_archive_put_it() {
+        let dir = std::env::temp_dir().join(format!("selfupdate-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let nested = dir.join("abyssal-agent-v9.9.9-x86_64-unknown-linux-gnu");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("README.md"), "").unwrap();
+        assert_eq!(find_binary(&dir, "abyssal-agent", 3), None);
+        std::fs::write(nested.join("abyssal-agent"), "").unwrap();
+        assert_eq!(
+            find_binary(&dir, "abyssal-agent", 3),
+            Some(nested.join("abyssal-agent"))
+        );
+        assert_eq!(
+            find_binary(&dir, "abyssal-agent", 0),
+            None,
+            "depth is bounded"
+        );
+        std::fs::write(dir.join("abyssal-agent"), "").unwrap();
+        assert_eq!(
+            find_binary(&dir, "abyssal-agent", 3),
+            Some(dir.join("abyssal-agent"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_staged_binary_must_run_and_not_be_older() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("selfupdate-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let newer = fake("newer", "echo abyssal-agent 99.0.0");
+        assert_eq!(check_new_binary(&newer).await.unwrap(), "99.0.0");
+        let same = fake(
+            "same",
+            concat!("echo abyssal-agent ", env!("CARGO_PKG_VERSION")),
+        );
+        assert!(
+            check_new_binary(&same).await.is_ok(),
+            "the same version is allowed"
+        );
+        let older = fake("older", "echo abyssal-agent 0.0.1");
+        assert!(
+            check_new_binary(&older)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("refusing to downgrade")
+        );
+        let broken = fake("broken", "echo not an agent; exit 1");
+        assert!(check_new_binary(&broken).await.is_err());
+        assert!(check_new_binary(&dir.join("missing")).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

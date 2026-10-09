@@ -3,6 +3,7 @@ mod cadavault;
 mod catacomb;
 mod cryptkeeper;
 mod defleshing;
+mod dhcp;
 mod elevation;
 mod enroll;
 mod firewall;
@@ -32,6 +33,7 @@ mod selfupdate;
 mod sepulchre;
 mod shred;
 mod thanatos;
+mod thanatos_stream;
 mod tls;
 #[cfg(test)]
 mod tls_tests;
@@ -348,6 +350,7 @@ async fn run(
     }
     tls::set_process_trust(trust.clone(), ca_cert.clone());
     self_uninstall::set_credentials_file(credentials_file.clone());
+    selfupdate::set_control_plane_url(&control_plane_url);
 
     let enrollment_token = resolve_enrollment_token(enrollment_token, None)?;
     let credentials = enroll::load_or_enroll(

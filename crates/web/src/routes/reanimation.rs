@@ -238,10 +238,26 @@ async fn render_host_with_context(
     )
     .await?;
 
+    // The same check `send_signal` makes, so the control plane's own
+    // processes show as refused before anyone clicks.
+    let processes = if state.hosts.is_control_plane(host_id) {
+        processes
+            .into_iter()
+            .map(|mut p| {
+                let pid = p.pid.parse().unwrap_or(0);
+                p.signal_refused =
+                    abyssal_hosts::control_plane_guard::check_process_name(pid, &p.comm).err();
+                p
+            })
+            .collect()
+    } else {
+        processes
+    };
     let tpl = ReanimationHostTemplate {
         can_manage: ctx.has(Permission::SystemsManage),
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
+        control_plane: crate::control_plane::page_note(&state.hosts, host_id),
         base,
         host_id: host_id.to_string(),
         host_name: host.name,
@@ -323,6 +339,7 @@ fn parse_process_list(stdout: &str) -> Vec<ProcessRow> {
                 mem: mem.to_string(),
                 comm,
                 is_zombie: stat.starts_with('Z'),
+                signal_refused: None,
             })
         })
         .collect()
@@ -727,6 +744,29 @@ pub async fn send_signal(
     } else {
         OperationKind::Write
     };
+    if let Err(reason) = crate::control_plane::check_signal(&state.hosts, host_id, pid).await {
+        crate::control_plane::audit_refusal(
+            &state.pool,
+            &ctx,
+            &host.name,
+            &AgentOperation::SendSignal {
+                pid,
+                signal: signal.clone(),
+            },
+            &reason,
+        )
+        .await;
+        return render_host(
+            &state,
+            &jar,
+            &ctx,
+            host_id,
+            result_label,
+            None,
+            Some(reason),
+        )
+        .await;
+    }
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
         .executor

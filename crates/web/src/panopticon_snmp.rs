@@ -158,7 +158,7 @@ impl SnmpCredentials {
 }
 
 #[derive(Clone)]
-enum OwnedValue {
+pub(crate) enum OwnedValue {
     Integer(i64),
     OctetString(Vec<u8>),
     /// Unifies `Counter32`/`Unsigned32`/`Counter64` -- all three are just
@@ -316,6 +316,8 @@ async fn poll_switch(
         }
     }
 
+    collect_neighbors(pool, &mut sess, switch, &addr, &if_to_descr, &hw_descr).await;
+
     repo::network_devices::clear_switch_location(pool, switch.id)
         .await
         .map_err(|e| SnmpPollError::Protocol(e.to_string()))?;
@@ -361,6 +363,59 @@ async fn poll_switch(
     collect_port_traffic(pool, &mut sess, switch, &addr, &if_to_descr).await;
 
     Ok(matched)
+}
+
+/// Reads the switch's LLDP and CDP neighbors (`panopticon_topology`) and
+/// stores them. Best-effort, like the port-name walk: a switch that speaks
+/// neither has no neighbors, and a failed walk keeps the last ones rather
+/// than wiping them.
+async fn collect_neighbors(
+    pool: &DbPool,
+    sess: &mut AsyncSession,
+    switch: &abyssal_core::PanopticonSwitch,
+    addr: &str,
+    labels: &HashMap<i64, String>,
+    hw_descr: &HashMap<i64, String>,
+) {
+    use crate::panopticon_topology as topo;
+    let lldp_rem = walk_table(sess, topo::LLDP_REM_TABLE, addr).await;
+    let cdp = walk_table(sess, topo::CDP_CACHE_TABLE, addr).await;
+    if lldp_rem.is_err() && cdp.is_err() {
+        tracing::debug!(switch = %switch.name, "no LLDP or CDP neighbor table");
+        return;
+    }
+    let lldp = match lldp_rem {
+        Ok(rem) if !rem.is_empty() => {
+            let loc = walk_table(sess, topo::LLDP_LOC_PORT_TABLE, addr)
+                .await
+                .unwrap_or_default();
+            let man = walk_table(sess, topo::LLDP_REM_MAN_ADDR_IF_SUBTYPE, addr)
+                .await
+                .unwrap_or_default();
+            topo::lldp_neighbors(&rem, &loc, &man, labels, hw_descr)
+        }
+        _ => Vec::new(),
+    };
+    let cdp = cdp
+        .map(|rows| topo::cdp_neighbors(&rows, labels))
+        .unwrap_or_default();
+    let neighbors = topo::merge(lldp, cdp);
+    let rows: Vec<repo::panopticon_topology::NewNeighbor<'_>> = neighbors
+        .iter()
+        .map(|n| repo::panopticon_topology::NewNeighbor {
+            protocol: n.protocol,
+            local_port: &n.local_port,
+            local_if_index: n.local_if_index,
+            remote_name: &n.remote_name,
+            remote_port: &n.remote_port,
+            remote_address: n.remote_address.as_deref(),
+            remote_platform: &n.remote_platform,
+            chassis_id: &n.chassis_id,
+        })
+        .collect();
+    if let Err(e) = repo::panopticon_topology::replace_neighbors(pool, switch.id, &rows).await {
+        tracing::warn!(error = %e, switch = %switch.name, "failed to store switch neighbors");
+    }
 }
 
 /// Walks IF-MIB's `ifAdminStatus`, `ifOperStatus`, `ifHighSpeed` (Mbps) and

@@ -405,10 +405,10 @@ async fn handle_agent_message(state: &AppState, host_id: Uuid, msg: AgentMessage
             let _ = repo::hosts::touch_last_seen(&state.pool, host_id).await;
         }
         AgentMessage::Telemetry { stdout } => {
-            // M6 Option B scaffold: unsolicited real-time telemetry push. The
-            // agent doesn't emit this yet; when a future producer does it already
-            // flows through the same ingest path as a poll. Untrusted input,
-            // parsed exactly like scan output.
+            // Unsolicited real-time telemetry (a Windows agent's event stream,
+            // `crate::thanatos_stream`): the same ingest path as a poll, rate
+            // limited per host. Untrusted input, parsed exactly like scan
+            // output.
             let _ = repo::hosts::touch_last_seen(&state.pool, host_id).await;
             if let Err(e) =
                 crate::thanatos_ops::ingest_pushed_telemetry(state, host_id, &stdout).await

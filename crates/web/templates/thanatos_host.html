@@ -13,6 +13,14 @@
     {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
   </div>
 
+  {% if let Some((streaming, text)) = realtime %}
+  <p style="margin:8px 0 0;">
+    {% if streaming %}<span class="badge badge-success" title="Matching Windows events arrive within seconds instead of at the next poll.">Real-time</span>
+    {% else %}<span class="badge badge-warning">Real-time unavailable</span>{% endif %}
+    <span style="color:var(--text-muted);">{{ text }}</span>
+  </p>
+  {% endif %}
+
   {% if !elevated && base.can_hosts_elevate %}
   <form method="post" action="/arsenals/thanatos/{{ host_id }}/elevate" class="elevate-form">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
@@ -26,15 +34,28 @@
   <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
     <span style="color:var(--text-muted);">Respond:</span>
     <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ host_id }}">{% call macros::icon("warning") %} Response console</a>
+    {% if let Some(why) = isolate_refusal %}
+    <button type="button" class="btn-secondary btn-sm" disabled title="{{ why }}">{% call macros::icon("danger") %} Isolate host</button>
+    {% else %}
     <a class="btn btn-secondary btn-sm" href="/arsenals/inquest/{{ host_id }}/isolate/confirm">{% call macros::icon("danger") %} Isolate host</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if let Some(cp) = control_plane %}
+  <div class="info-banner" style="margin-top:10px;">
+    {% call macros::icon("shield") %} <strong>This is the control plane's own server.</strong>
+    Operations that would take the control plane down are refused here: {{ cp.summary }}.
+    Anything refused can still be done deliberately from a shell on the server
+    (<a href="https://github.com/AbyssalOath/abyssal-arsenal/blob/main/docs/control-plane-host.md">why</a>).
   </div>
   {% endif %}
 
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
-    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
-    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
-    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+    {% call macros::icon("warning") %} <strong>This host's agent is older than the control plane.</strong>
+    Anything it can't do yet is refused before it's sent, with a message saying so, so nothing breaks --
+    but those actions won't work until it's updated: use <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
   </div>
   {% endif %}
 

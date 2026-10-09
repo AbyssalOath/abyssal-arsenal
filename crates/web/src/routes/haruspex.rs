@@ -250,6 +250,7 @@ async fn render_host(
         host_id: host_id.to_string(),
         host_name: host.name,
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
+        control_plane: crate::control_plane::page_note(&state.hosts, host_id),
         domain,
         result_label,
         result_output,

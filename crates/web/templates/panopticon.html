@@ -7,15 +7,19 @@
 
 <div class="card">
   <p style="color:var(--text-muted); margin-top:0;">
-    Runs from the control plane itself, not a managed host's agent -- discovery
-    reaches whatever network this container (or process, if run directly) can
-    itself see. Behind Docker's default bridge network, that's the Docker
-    bridge, not your physical LAN; use host networking (or run the binary
-    directly) to scan your real network.
+    Scans run from the control plane itself and reach whatever its server can route to.
+    From inside Docker the scanner can't see MAC addresses, so MACs (and vendors) come
+    from agents' neighbor tables -- the agent on the control plane's own server sees its
+    whole segment -- and from NetBIOS; hostnames from reverse DNS, NetBIOS, agents and
+    imported DHCP leases.
   </p>
   <p style="color:var(--text-muted);">
     <a href="/arsenals/panopticon/switches">{% call macros::icon("network") %} Managed switches</a>
     -- SNMP-poll switches for which physical port a device sits behind.
+    &nbsp;<a href="/arsenals/panopticon/topology">{% call macros::icon("route") %} Topology</a>
+    -- what each switch port connects to (LLDP / CDP).
+    &nbsp;<a href="/arsenals/panopticon/dhcp">{% call macros::icon("database") %} DHCP leases</a>
+    -- hostnames for networks without reverse DNS.
   </p>
 
   {% if let Some(label) = result_label %}

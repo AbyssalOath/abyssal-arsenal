@@ -35,11 +35,19 @@ pub async fn run(
             exit_code: Some(0),
         }),
         AgentOperation::SystemInfo => system_info().await,
-        AgentOperation::SelfUpdate { version } => crate::selfupdate::self_update(version).await,
+        AgentOperation::SelfUpdate {
+            version,
+            from_control_plane,
+            sha256,
+        } => crate::selfupdate::self_update(version, from_control_plane, sha256).await,
         AgentOperation::UninstallAgent { purge } => {
             crate::self_uninstall::uninstall_agent(purge).await
         }
         AgentOperation::NeighborTable => crate::neighbors::neighbor_table().await,
+        AgentOperation::DhcpLeases => crate::dhcp::leases().await,
+        AgentOperation::ThanatosStream { enabled, c2_ports } => {
+            crate::thanatos_stream::set_stream(enabled, c2_ports).await
+        }
         AgentOperation::UpdateTrustedCa { bundle_pem } => {
             match crate::tls::update_trusted_ca(&bundle_pem) {
                 Ok(update) => CommandOutcome::Ok(OperationOutput {

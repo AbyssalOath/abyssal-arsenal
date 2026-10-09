@@ -144,6 +144,7 @@ async fn render_host_with_context(
         high_risk_ops_enabled,
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
+        control_plane: crate::control_plane::page_note(&state.hosts, host_id),
         base,
         host_id: host_id.to_string(),
         host_name: host.name,

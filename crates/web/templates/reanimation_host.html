@@ -25,11 +25,20 @@
   </form>
   {% endif %}
 
+  {% if let Some(cp) = control_plane %}
+  <div class="info-banner" style="margin-top:10px;">
+    {% call macros::icon("shield") %} <strong>This is the control plane's own server.</strong>
+    Operations that would take the control plane down are refused here: {{ cp.summary }}.
+    Anything refused can still be done deliberately from a shell on the server
+    (<a href="https://github.com/AbyssalOath/abyssal-arsenal/blob/main/docs/control-plane-host.md">why</a>).
+  </div>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
-    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
-    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
-    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+    {% call macros::icon("warning") %} <strong>This host's agent is older than the control plane.</strong>
+    Anything it can't do yet is refused before it's sent, with a message saying so, so nothing breaks --
+    but those actions won't work until it's updated: use <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
   </div>
   {% endif %}
 
@@ -91,6 +100,11 @@
                 <button type="submit" class="btn-secondary btn-sm">Detail</button>
               </form>
               {% if can_manage %}
+              {% if let Some(why) = p.signal_refused %}
+              <button type="button" class="btn-secondary btn-sm" disabled title="{{ why }}">Pause</button>
+              <button type="button" class="btn-secondary btn-sm" disabled title="{{ why }}">Resume</button>
+              <button type="button" class="btn-danger btn-sm" disabled title="{{ why }}">Signal&hellip;</button>
+              {% else %}
               <form method="post" action="/arsenals/reanimation/{{ host_id }}/signal?pid={{ p.pid }}&signal=STOP">
                 <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
                 <button type="submit" class="btn-secondary btn-sm" title="Suspend (SIGSTOP)">Pause</button>
@@ -100,6 +114,7 @@
                 <button type="submit" class="btn-secondary btn-sm" title="Resume (SIGCONT)">Resume</button>
               </form>
               <a class="btn btn-danger btn-sm" href="/arsenals/reanimation/{{ host_id }}/signal/confirm?pid={{ p.pid }}&signal=TERM">Signal&hellip;</a>
+              {% endif %}
               {% endif %}
             </div>
           </td>
@@ -185,6 +200,7 @@
 
 <div class="card kind-destructive">
   <h3>Destructive</h3>
+  {% if let Some(cp) = control_plane %}<p class="cp-hint" style="color:var(--text-muted); margin:0 0 8px;">{% call macros::icon("shield") %} On this server, the PID is looked up first: the control plane's own processes ({{ cp.processes }}) are refused.</p>{% endif %}
   <p style="color:var(--text-muted); margin-top:0;">
     Any signal is an intentional interruption of whatever the process is doing.
   </p>
@@ -211,6 +227,7 @@
 
 <div class="card kind-destructive">
   <h3>Signal by name</h3>
+  {% if let Some(cp) = control_plane %}<p class="cp-hint" style="color:var(--text-muted); margin:0 0 8px;">{% call macros::icon("shield") %} On this server, names matching {{ cp.processes }}, and any pattern, are refused (a dry run is fine).</p>{% endif %}
   <p style="color:var(--text-muted); margin-top:0;">
     Signals every process whose name matches (the agent excludes itself and PID&nbsp;1).
     You'll see the matched processes to confirm before anything is sent.

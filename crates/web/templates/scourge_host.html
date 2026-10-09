@@ -23,10 +23,26 @@
   </form>
   {% endif %}
 
-  {% if protocol_mismatch %}
+  {% if let Some(cp) = control_plane %}
+  <div class="info-banner" style="margin-top:10px;">
+    {% call macros::icon("shield") %} <strong>This is the control plane's own server.</strong>
+    Operations that would take the control plane down are refused here: {{ cp.summary }}.
+    Anything refused can still be done deliberately from a shell on the server
+    (<a href="https://github.com/AbyssalOath/abyssal-arsenal/blob/main/docs/control-plane-host.md">why</a>).
+  </div>
+  {% endif %}
+
+  {% if !scourge_supported %}
+  <div class="error-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>Scourge needs agent {{ scourge_needs }} or later.</strong>
+    This host's agent is older, so its actions are hidden until it's updated: use
+    <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
+  </div>
+  {% else if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
-    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
-    It may not recognize Scourge's operations. Rebuild and redeploy <code>abyssal-agent</code> on this host.
+    {% call macros::icon("warning") %} <strong>This host's agent is older than the control plane.</strong>
+    Anything it can't do yet is refused before it's sent, with a message saying so -- use
+    <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
   </div>
   {% endif %}
 
@@ -44,6 +60,7 @@
   </details>
 </div>
 
+{% if scourge_supported %}
 <div class="card kind-read">
   <h3>Read</h3>
   <div class="action-grid">
@@ -188,10 +205,17 @@
     SIDs to drop/reject after review; revert to passive IDS any time.
   </p>
   <div class="action-grid">
+    {% if let Some(why) = ips_refusal %}
+    <div>
+      <button type="button" class="btn-danger" disabled title="{{ why }}">{% call macros::icon("danger") %} Switch to inline IPS&hellip;</button>
+      <p style="color:var(--text-muted); margin:6px 0 0;">{{ why }}</p>
+    </div>
+    {% else %}
     <form method="get" action="/arsenals/scourge/{{ host_id }}/ips/mode/confirm">
       <input type="hidden" name="ips" value="true">
       <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Switch to inline IPS&hellip;</button>
     </form>
+    {% endif %}
     <form method="get" action="/arsenals/scourge/{{ host_id }}/ips/mode/confirm">
       <input type="hidden" name="ips" value="false">
       <button type="submit" class="btn-warning">{% call macros::icon("check") %} Revert to passive IDS&hellip;</button>
@@ -228,6 +252,8 @@
     </form>
   </div>
 </div>
+{% endif %}
+
 {% endif %}
 
 {% endblock %}

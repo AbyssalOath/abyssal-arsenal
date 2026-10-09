@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # Read CI's result for the tagged commit (the "CI passed" gate below).
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +37,34 @@ jobs:
       # Release only ever proceeds past a green test run -- tag pushes don't
       # otherwise trigger ci.yml (it's scoped to main and pull requests), so
       # this is the only gate a release actually has to pass.
+      # A tag only releases a commit CI has passed on main: clippy, fmt,
+      # shellcheck, the Docker build and the Windows agent + MSI, none of
+      # which this job repeats. Waits for a CI run still in progress, so
+      # pushing main and the tag together works.
+      - name: Require a green CI run for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          for _ in $(seq 1 90); do
+            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=1" \
+              --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"')"
+            case "$run" in
+              "completed success") echo "CI passed on ${sha}."; exit 0 ;;
+              completed*)
+                echo "::error::CI didn't pass on ${sha} (${run}). Fix it on main, then move the tag."
+                exit 1 ;;
+              "" | null*)
+                echo "::error::No CI run for ${sha}. Push the commit to main and let CI pass before tagging it."
+                exit 1 ;;
+            esac
+            echo "CI on ${sha} is ${run% *}; waiting..."
+            sleep 30
+          done
+          echo "::error::CI on ${sha} didn't finish within 45 minutes."
+          exit 1
+
       - name: Run tests
         run: cargo test --workspace
 

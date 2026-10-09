@@ -17,6 +17,7 @@ pub mod names {
     pub const HEALTH_SWEEP: &str = "health_sweep";
     pub const THANATOS_SWEEP: &str = "thanatos_sweep";
     pub const THANATOS_FAST_SWEEP: &str = "thanatos_fast_sweep";
+    pub const THANATOS_STREAM: &str = "thanatos_stream";
     pub const THANATOS_RETENTION: &str = "thanatos_retention";
     pub const MORTISCOPE_METRICS_SWEEP: &str = "mortiscope_metrics_sweep";
     pub const SELF_METRICS_SAMPLER: &str = "self_metrics_sampler";

@@ -106,6 +106,107 @@ pub async fn probe_docker_device(hosts: &HostConnectionRegistry, host_id: Uuid) 
     }
 }
 
+/// What a host page shows when the host is the control plane's own server:
+/// what's refused there (`control_plane_guard::summary`), and the specifics
+/// the free-text forms need (which ports, which services...).
+pub struct PageNote {
+    pub summary: String,
+    pub ports: String,
+    pub units: String,
+    pub processes: String,
+    pub docker_device: String,
+}
+
+pub fn page_note(hosts: &HostConnectionRegistry, host_id: Uuid) -> Option<PageNote> {
+    use abyssal_hosts::control_plane_guard as guard;
+    if !hosts.is_control_plane(host_id) {
+        return None;
+    }
+    let protection = hosts.protection();
+    Some(PageNote {
+        summary: guard::summary(&protection),
+        ports: protection
+            .ports
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        units: guard::PROTECTED_UNITS.join(", "),
+        processes: guard::PROTECTED_PROCESSES.join(", "),
+        docker_device: protection
+            .docker_device
+            .unwrap_or_else(|| "not reported yet".to_string()),
+    })
+}
+
+/// Why `operation` would be refused on `host_id`, for disabling a button
+/// before it's clicked (`dispatch` enforces it regardless).
+pub fn refusal(
+    hosts: &HostConnectionRegistry,
+    host_id: Uuid,
+    operation: &AgentOperation,
+) -> Option<String> {
+    hosts.guard(host_id, operation).err()
+}
+
+/// A signal by PID on the control plane's server: the PID is checked
+/// against the process it actually is (`ProcessDetail`), since the guard
+/// alone can't know. Fails closed -- if the process can't be identified,
+/// the signal isn't sent.
+pub async fn check_signal(
+    hosts: &HostConnectionRegistry,
+    host_id: Uuid,
+    pid: u32,
+) -> Result<(), String> {
+    use abyssal_hosts::control_plane_guard as guard;
+    if !hosts.is_control_plane(host_id) {
+        return Ok(());
+    }
+    let outcome = hosts
+        .dispatch(
+            host_id,
+            AgentOperation::ProcessDetail { pid },
+            Duration::from_secs(15),
+        )
+        .await;
+    let name = match outcome {
+        Ok(CommandOutcome::Ok(output)) => guard::process_name_from_ps(&output.stdout),
+        _ => None,
+    };
+    match name {
+        Some(name) => guard::check_process_name(pid, &name),
+        None => Err(format!(
+            "Refused on the control plane's own server: couldn't confirm which process PID {pid} \
+             is, so it might be part of the control plane. Check it with a dry run or from a shell."
+        )),
+    }
+}
+
+/// Records a refusal made before the executor (`check_signal`) the same way
+/// the executor records the guard's: a failed `SYSTEM_COMMAND_EXECUTED`.
+pub async fn audit_refusal(
+    pool: &DbPool,
+    ctx: &abyssal_rbac::AuthContext,
+    host_name: &str,
+    operation: &AgentOperation,
+    reason: &str,
+) {
+    use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
+    let event = AuditEvent::new(AuditAction::SystemCommandExecuted, AuditOutcome::Failure)
+        .actor(Actor {
+            user_id: ctx.user.id,
+            username: &ctx.user.username,
+        })
+        .resource(host_name)
+        .metadata(serde_json::json!({
+            "detail": reason,
+            "operation": operation.label(),
+        }));
+    if let Err(e) = abyssal_audit::record(pool, event).await {
+        tracing::error!(error = %e, "failed to record a control-plane refusal");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,9 @@ echo "=== Abyssal Arsenal Installer ==="
 # --no-agent: don't install an agent on this server itself (see "Agent on
 # this server" below). ABYSSAL_SELF_AGENT=no does the same.
 self_agent="${ABYSSAL_SELF_AGENT:-}"
+# Where an enrolled agent keeps its credentials (overridable for
+# tests/install-sh).
+agent_credentials="${ABYSSAL_AGENT_CREDENTIALS:-/etc/abyssal-agent/credentials.json}"
 for arg in "$@"; do
         case "$arg" in
         --no-agent) self_agent=no ;;
@@ -440,7 +443,7 @@ fi
 # which turns on guardrails: the operations that would take this server's
 # containers down are refused (docs/control-plane-host.md).
 install_self_agent() {
-        if [ -f /etc/abyssal-agent/credentials.json ]; then
+        if [ -f "$agent_credentials" ]; then
                 echo "This server already has an enrolled agent -- leaving it as it is."
                 echo "(If it isn't marked 'Control plane' on /admin/hosts, mark it there.)"
                 return 0
@@ -508,7 +511,7 @@ install_self_agent() {
 if [ -z "$self_agent" ]; then
         self_agent="$(grep -E '^CONTROL_PLANE_AGENT=' .env 2>/dev/null | tail -n 1 | cut -d '=' -f2- || true)"
 fi
-if [ -z "$self_agent" ] && [ ! -f /etc/abyssal-agent/credentials.json ]; then
+if [ -z "$self_agent" ] && [ ! -f "$agent_credentials" ]; then
         echo ""
         echo "Install an agent on this server too, so Abyssal Arsenal can monitor and"
         echo "manage the machine it runs on? Operations that would take the control"

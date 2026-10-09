@@ -10,6 +10,192 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-09
+
+### Added
+
+- **Panopticon topology from LLDP and CDP.**
+  - The SNMP poll also reads each switch's LLDP neighbors (LLDP-MIB
+    `lldpRemTable`, with management addresses and the switch's own port
+    descriptions) and Cisco's CDP cache. They're stored per switch
+    (migration 0045).
+  - The new **Topology** page lists every port's neighbor: name, port,
+    address and platform. It recognizes neighbors that are managed
+    switches, and lists switch-to-switch links at the top. It recognizes
+    neighbors that are inventory devices.
+  - A neighbor seen over both protocols is shown once, with CDP filling in
+    what LLDP left out.
+  - The walks are best-effort, and a failed walk keeps the last neighbors.
+- **DHCP lease import, for hostnames on networks without reverse DNS.**
+  Leases come in two ways:
+  - **From a managed DHCP server.** New `AgentOperation::DhcpLeases`;
+    protocol 45. On Windows DHCP Server it reads every scope, with ISO
+    times so locale doesn't matter. On Linux it reads the dnsmasq, ISC or
+    Kea lease file.
+  - **By pasting a lease file.** The format is auto-detected: ISC, dnsmasq,
+    Kea CSV, or a Windows `Get-DhcpServerv4Lease` CSV export.
+
+  Current leases are stored and fill in missing hostnames and MACs on
+  inventory devices; existing ones are never overwritten. Discovery scans
+  use them as a further hostname source. Imports are audited.
+
+- **Control-plane refusals show before the click.** On the control plane's
+  own server:
+  - Every arsenal host page shows what's refused there, generated from the
+    guard's own lists: ports, services, processes, and Docker's device.
+  - Isolate, Enable firewall, inline IPS and Bring interface down are
+    disabled, with the guard's reason as the tooltip and a note.
+  - The port, service, container, process, package, disk and quarantine
+    forms say what's protected.
+  - The Reanimation process list disables Pause, Resume and Signal for the
+    control plane's processes.
+- **Signals by PID are checked on the control plane's server.** Reanimation
+  and Inquest's Kill Process look the PID up first (`ProcessDetail`) and
+  refuse dockerd, containerd and its shims, MariaDB, Caddy and the abyssal
+  processes. That includes SIGSTOP, which freezes them just as surely. The
+  refusal is audited, and if the PID can't be identified the signal isn't
+  sent. This was a documented gap: the guard alone can't know what a PID
+  is.
+
+- **Real-time Windows security events for Thanatos.** While monitoring is
+  on, each connected 0.2.3+ Windows agent subscribes to the high-signal
+  Event Log channels and pushes matching events within seconds, instead of
+  at the next poll. New `AgentOperation::ThanatosStream`; protocol 44.
+  - **Channels:** Security (log cleared, audit policy, explicit-credential
+    logons, process creation, failed logons, lockouts, account, group,
+    service and task creation), Sysmon 1/8/25, and Defender.
+  - **How:** a supervised, long-lived PowerShell process holds an
+    `EventLogWatcher` per channel. That's .NET's wrapper over `EvtSubscribe`,
+    so this is real push, not polling. Each event is formatted by the same
+    PowerShell the scans use (now one shared `WINDOWS_EVENT_LINE`, verified
+    byte-identical to before), so a streamed event classifies exactly like a
+    polled one.
+  - **On the agent:** it classifies with the scans' rules and pushes only
+    matches, batched once a second. It holds up to 1000 matches while
+    disconnected, and restarts the subscriber with backoff if it exits.
+    Channels that don't exist (no Sysmon) are skipped and reported.
+  - **On the control plane:**
+    - It starts streaming once per connection, and again if the C2 port
+      list changes.
+    - It stops streaming when monitoring is turned off.
+    - A failed start isn't counted as streaming: that host keeps its fast
+      poll, and the start is retried after 5 minutes.
+    - A streaming host skips the fast poll; the full sweep keeps running as
+      the complete record.
+    - Pushed telemetry, which ingest already accepted but no agent sent, is
+      now rate limited per host (30 messages a minute).
+  - The Thanatos host page shows "Real-time" with the channels being
+    streamed, or why it's unavailable.
+
+- **"Update all out-of-date agents" on `/admin/hosts`.** It shows how many
+  connected hosts it would update, and starts a job with a progress page
+  that refreshes itself.
+  - Each host goes through the same steps as its own "Update agent": the
+    same permission check, audit record, version gate, no-downgrade rule,
+    and control-plane download for 0.2.3+ agents. Four run at a time.
+  - Each host is followed until its agent reconnects on a new connection.
+    The registry now counts connections (`connection_epoch`), so this works
+    even when an agent comes back on the same version number. The page
+    reports the version it came back on, and says so if its protocol still
+    doesn't match.
+  - These hosts are listed but skipped, with the reason:
+    - offline hosts;
+    - agents too old to update themselves (re-deploy those);
+    - GitHub-only agents already on the newest published release (nothing
+      newer to install). Without this, a control plane ahead of every
+      release offered the same reinstall forever.
+
+- **Operations are gated by agent version, in one place.**
+  `AgentOperation::min_protocol` records the protocol version each
+  operation needs, taken from the git history: the lowest version from which
+  every build has had it. Two operations need more depending on their
+  fields: a shredding delete needs 39, and a control-plane self-update
+  needs 43.
+  - `HostConnectionRegistry::dispatch` refuses anything newer than the
+    connected agent before sending it. The admin gets e.g. "this needs
+    protocol 40 (agent 0.2.2 or later)... Nothing was sent", and the audit
+    trail records it. Agents before 0.2.2 used to drop their connection over
+    an unknown message.
+  - The table has no catch-all, so a new operation doesn't compile until
+    it's given a version.
+  - The per-feature checks are gone: Scourge's sweep, Panopticon's neighbor
+    tables, uninstall-on-remove, control-plane self-update and the CA push
+    all use `supports()`.
+  - Shredding now needs only an agent that can shred (protocol 39). It used
+    to need an exact version match, so a 0.2.2 agent couldn't shred behind a
+    0.2.3 control plane.
+  - The Scourge host page says "Scourge needs agent 0.2.2 or later" and
+    hides its actions for an agent that's too old. Every host page's "out
+    of date" banner now says what actually happens: refused before sending,
+    and "Update agent" fixes it. The old text said the agent "may disconnect
+    unexpectedly" and to rebuild it from source.
+  - "Update agent" on an agent too old even for that says to re-deploy,
+    instead of sending it something it can't parse.
+
+- **Agents update from the control plane, not GitHub.** "Update agent" on a
+  0.2.3+ agent hands it exactly the build `/agent/<os>` serves:
+  - the build in the control plane's image, for Linux;
+  - for Windows, the release the control plane fetched once from GitHub,
+    or one placed in its agent folder.
+
+  So hosts without internet access can update. The control plane sends the
+  file's SHA-256 over the authenticated WebSocket; the agent downloads over
+  TLS pinned to the control plane's CA and refuses a mismatch. Before
+  swapping, the agent runs the new binary's `--version` from where it's
+  staged next to the installed one, which proves it runs on this host
+  (staging there also avoids `noexec` `/tmp`). The agent refuses a build
+  older than itself. Older agents keep updating from GitHub.
+  `SelfUpdate` gains `from_control_plane` and `sha256`; protocol 43.
+
+- **Agents run read-only work in parallel.** An agent used to handle one
+  command at a time, so a slow PowerShell call (a big Thanatos scan) made
+  every other action on that host wait or time out.
+  - Operations that only read run in parallel, up to 8 at a time.
+    `AgentOperation::runs_concurrently` is an explicit allowlist of 108.
+  - Everything else runs alone, one at a time, in arrival order, while no
+    read is running. That covers every write, and any operation not on the
+    list, including future ones. So package installs, disk changes and
+    firewall edits still never collide, and no read sees a half-applied
+    change.
+  - Pings are answered immediately, even mid-operation.
+  - If the connection drops, queued work that hasn't started is dropped
+    rather than run late, since the control plane has already reported the
+    host disconnected.
+  - The lock is shared across reconnects, so an old connection's write
+    can't overlap a new connection's work.
+
+  Needs agent 0.2.3. No protocol change, so older agents keep working,
+  one command at a time.
+
+- **CI and the release are stricter.**
+  - CI shellchecks `install.sh` and `scripts/*.sh`. The `/install.sh` and
+    Linux one-liners the control plane serves are shellchecked by the
+    bootstrap tests, which require shellcheck in CI. `sh -n` / `bash -n`
+    only parse, which is how 0.2.2's `install.sh` shipped a substitution
+    that broke at the end of a real install.
+  - The Windows CI job also lints test code and runs the protocol crate's
+    tests on Windows.
+  - The Release workflow refuses to build a tag unless CI passed on that
+    exact commit. It waits for a CI run still in progress.
+  - CI runs the real `install.sh` end to end (`tests/install-sh/run.sh`,
+    about a second). It uses a fake `docker`, `sudo` and agent, and covers
+    11 scenarios:
+    - every reverse-proxy choice;
+    - SMTP passwords that need quoting;
+    - re-runs that must not prompt or change `.env`;
+    - the legacy internal-TLS upgrade;
+    - the agent on this server (installed, unavailable, failing, opted
+      out);
+    - option parsing, and a missing Compose plugin.
+
+    It checks the generated `.env`, the Caddyfile, the exact agent
+    arguments and the printed install commands. The 0.2.2 bad
+    substitution only errored on some bash versions and silently dropped
+    the MSI line on others. A line can't vanish unnoticed now.
+  - `install.sh` reads the agent's credentials path from
+    `ABYSSAL_AGENT_CREDENTIALS` (default `/etc/abyssal-agent/credentials.json`),
+    for these tests.
+
 ## [0.2.2] - 2026-10-09
 
 ### Added

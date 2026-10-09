@@ -166,6 +166,9 @@ impl Executor {
                 "host disconnected before responding".into(),
             )),
             Err(DispatchError::Refused(reason)) => Err(ExecutionError::Refused(reason)),
+            Err(e @ DispatchError::AgentTooOld { .. }) => {
+                Err(ExecutionError::Refused(e.to_string()))
+            }
         };
 
         match &outcome {

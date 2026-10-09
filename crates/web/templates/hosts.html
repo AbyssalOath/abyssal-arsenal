@@ -270,6 +270,17 @@
 
 {% endif %}
 
+{% if can_manage && update_all_count > 0 %}
+<div class="card">
+  <form method="post" action="/admin/hosts/update-all" style="margin:0; display:flex; gap:12px; align-items:center; flex-wrap:wrap;"
+        data-confirm="Update the agent on {{ update_all_count }} connected host(s) that are out of date? Each downloads the new build, swaps it in and restarts its service (a few seconds offline each), a few hosts at a time.">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Update all out-of-date agents ({{ update_all_count }})</button>
+    <span style="color:var(--text-muted);">Offline hosts, and agents too old to update themselves, are listed but skipped.</span>
+  </form>
+</div>
+{% endif %}
+
 <div class="card">
   <table>
     <thead><tr><th>Name</th><th>Platform</th><th>Status</th><th>Enrolled</th><th>Last seen</th><th>Actions</th></tr></thead>
@@ -285,7 +296,7 @@
           {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
           {% if let Some(remaining) = h.elevation_remaining %}<span class="badge badge-elevated">Elevated ({{ remaining }})</span>
           {% endif %}
-          {% if h.protocol_mismatch %}<span class="badge badge-warning" title="This agent's protocol version doesn't match the control plane's. Use 'Update agent' to push the current build to it over its connection (works on agents new enough to self-update); otherwise re-deploy it with the bootstrap one-liner.">{% call macros::icon("warning") %} Agent out of date</span>
+          {% if h.protocol_mismatch %}<span class="badge badge-warning" title="This agent is older than the control plane. Anything it can't do yet is refused before it's sent. Use 'Update agent' to bring it up to date over its connection; an agent too old even for that needs a re-deploy (bootstrap one-liner or SSH quick-add).">{% call macros::icon("warning") %} Agent out of date</span>
           {% endif %}
         </td>
         <td>{{ h.enrolled_at }}</td>

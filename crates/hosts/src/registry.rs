@@ -22,11 +22,48 @@ pub enum DispatchError {
     /// `control_plane_guard`). The message says why, for the admin.
     #[error("{0}")]
     Refused(String),
+    /// Never sent: the host's agent is older than the operation
+    /// (`AgentOperation::min_protocol`).
+    #[error("{}", too_old_message(operation, *needed, *has))]
+    AgentTooOld {
+        operation: String,
+        needed: u32,
+        /// `None`: an agent too old to report its protocol at all.
+        has: Option<u32>,
+    },
+}
+
+fn too_old_message(operation: &str, needed: u32, has: Option<u32>) -> String {
+    let release = match abyssal_agent_protocol::agent_release_for_protocol(needed) {
+        Some(release) => format!("agent {release} or later"),
+        None => "a newer agent".to_string(),
+    };
+    let has = match has {
+        Some(v) => format!("protocol {v}"),
+        None => "an unreported protocol (a very old build)".to_string(),
+    };
+    format!(
+        "This host's agent is too old for {operation}: it speaks {has}, and this needs \
+         protocol {needed} ({release}). Update it with 'Update agent' on /admin/hosts (or \
+         re-deploy it), then try again. Nothing was sent to the host."
+    )
+}
+
+/// `ScourgeSensorStatus { .. }` -> `ScourgeSensorStatus`, for messages.
+fn operation_name(operation: &AgentOperation) -> String {
+    let debug = format!("{operation:?}");
+    debug
+        .split([' ', '{', '('])
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 struct Connection {
     sender: mpsc::Sender<ServerMessage>,
     protocol_version: Option<u32>,
+    /// Which connection this is (`connection_epoch`).
+    epoch: u64,
 }
 
 /// What's known about a connected agent's protocol compatibility, for the UI
@@ -54,6 +91,9 @@ pub struct HostConnectionRegistry {
     /// Hosts flagged as the control plane's own server; every dispatch to
     /// one goes through `control_plane_guard::check` first.
     control_plane: Mutex<HashSet<Uuid>>,
+    /// Bumped by every `register`, so "has this host reconnected since?"
+    /// can be answered even when it comes back on the same version.
+    next_epoch: std::sync::atomic::AtomicU64,
     protection: Mutex<ControlPlaneProtection>,
 }
 
@@ -68,13 +108,28 @@ impl HostConnectionRegistry {
         sender: mpsc::Sender<ServerMessage>,
         protocol_version: Option<u32>,
     ) {
+        let epoch = self
+            .next_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
         self.connections.lock().unwrap().insert(
             host_id,
             Connection {
                 sender,
                 protocol_version,
+                epoch,
             },
         );
+    }
+
+    /// Identifies the host's current connection: it changes whenever the
+    /// agent reconnects (after a restart, say). `None` while disconnected.
+    pub fn connection_epoch(&self, host_id: Uuid) -> Option<u64> {
+        self.connections
+            .lock()
+            .unwrap()
+            .get(&host_id)
+            .map(|c| c.epoch)
     }
 
     /// Also fails any dispatch still waiting on a response from this host
@@ -126,6 +181,13 @@ impl HostConnectionRegistry {
     /// agent on a timer would knock it offline over and over.
     pub fn agent_supports(&self, host_id: Uuid, min: u32) -> bool {
         matches!(self.agent_protocol_status(host_id), AgentProtocolStatus::Version(v) if v >= min)
+    }
+
+    /// Whether `host_id` is connected with an agent new enough for
+    /// `operation` -- for sweeps to skip hosts, and pages to explain a
+    /// missing feature, ahead of `dispatch` refusing it.
+    pub fn supports(&self, host_id: Uuid, operation: &AgentOperation) -> bool {
+        self.agent_supports(host_id, operation.min_protocol())
     }
 
     /// True only while connected -- an offline host already shows as
@@ -197,11 +259,21 @@ impl HostConnectionRegistry {
             tracing::warn!(%host_id, ?operation, "refused on the control plane's own server: {reason}");
             return Err(DispatchError::Refused(reason));
         }
-        let sender = {
+        let (sender, has) = {
             let connections = self.connections.lock().unwrap();
-            connections.get(&host_id).map(|c| c.sender.clone())
+            connections
+                .get(&host_id)
+                .map(|c| (c.sender.clone(), c.protocol_version))
         }
         .ok_or(DispatchError::NotConnected)?;
+        let needed = operation.min_protocol();
+        if has.unwrap_or(0) < needed {
+            return Err(DispatchError::AgentTooOld {
+                operation: operation_name(&operation),
+                needed,
+                has,
+            });
+        }
 
         let request_id = Uuid::new_v4();
         let (tx, rx) = oneshot::channel();
@@ -324,6 +396,73 @@ mod tests {
             Ok(CommandOutcome::Ok(output)) => assert_eq!(output.stdout, "pong"),
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_reconnect_gets_a_new_epoch() {
+        let registry = HostConnectionRegistry::new();
+        let host_id = Uuid::new_v4();
+        assert_eq!(registry.connection_epoch(host_id), None);
+        let (tx, _rx) = mpsc::channel(1);
+        registry.register(host_id, tx, Some(1));
+        let first = registry.connection_epoch(host_id).unwrap();
+        registry.unregister(host_id);
+        assert_eq!(registry.connection_epoch(host_id), None);
+        let (tx, _rx) = mpsc::channel(1);
+        registry.register(host_id, tx, Some(1));
+        assert!(registry.connection_epoch(host_id).unwrap() > first);
+    }
+
+    #[tokio::test]
+    async fn operations_newer_than_the_agent_are_never_sent() {
+        let registry = HostConnectionRegistry::new();
+        let host_id = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(4);
+        registry.register(host_id, tx, Some(39));
+
+        let result = registry
+            .dispatch(
+                host_id,
+                AgentOperation::ScourgeSensorStatus,
+                Duration::from_millis(20),
+            )
+            .await;
+        match result {
+            Err(DispatchError::AgentTooOld {
+                operation,
+                needed,
+                has,
+            }) => {
+                assert_eq!(operation, "ScourgeSensorStatus");
+                assert_eq!(needed, 40);
+                assert_eq!(has, Some(39));
+            }
+            other => panic!("expected AgentTooOld, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "nothing reached the agent");
+        assert!(!registry.supports(host_id, &AgentOperation::ScourgeSensorStatus));
+        assert!(registry.supports(host_id, &AgentOperation::Ping));
+
+        // Old enough operations still go out.
+        let _ = registry
+            .dispatch(host_id, AgentOperation::Ping, Duration::from_millis(20))
+            .await;
+        assert!(rx.try_recv().is_ok());
+
+        // An agent that reports no version is older than any versioned one.
+        let (tx, mut rx) = mpsc::channel(4);
+        registry.register(host_id, tx, None);
+        let err = registry
+            .dispatch(
+                host_id,
+                AgentOperation::NeighborTable,
+                Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unreported protocol"), "{err}");
+        assert!(err.to_string().contains("agent 0.2.2 or later"), "{err}");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

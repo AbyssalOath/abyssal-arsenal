@@ -97,6 +97,15 @@ async fn render_host(
         can_scan: ctx.has(Permission::NetworkScan),
         elevated: state.elevation.is_elevated(host_id),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
+        control_plane: crate::control_plane::page_note(&state.hosts, host_id),
+        interface_down_refusal: crate::control_plane::refusal(
+            &state.hosts,
+            host_id,
+            &AgentOperation::InterfaceSetState {
+                interface: String::new(),
+                up: false,
+            },
+        ),
         base,
         host_id: host_id.to_string(),
         host_name: host.name,

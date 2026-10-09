@@ -22,11 +22,20 @@
   </form>
   {% endif %}
 
+  {% if let Some(cp) = control_plane %}
+  <div class="info-banner" style="margin-top:10px;">
+    {% call macros::icon("shield") %} <strong>This is the control plane's own server.</strong>
+    Operations that would take the control plane down are refused here: {{ cp.summary }}.
+    Anything refused can still be done deliberately from a shell on the server
+    (<a href="https://github.com/AbyssalOath/abyssal-arsenal/blob/main/docs/control-plane-host.md">why</a>).
+  </div>
+  {% endif %}
+
   {% if protocol_mismatch %}
   <div class="warning-banner" style="margin-top:10px;">
-    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
-    It may disconnect and reconnect unexpectedly when sent an operation it doesn't recognize.
-    Rebuild and redeploy <code>abyssal-agent</code> on this host: see <code>crates/agent/README.md</code>.
+    {% call macros::icon("warning") %} <strong>This host's agent is older than the control plane.</strong>
+    Anything it can't do yet is refused before it's sent, with a message saying so, so nothing breaks --
+    but those actions won't work until it's updated: use <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
   </div>
   {% endif %}
 
@@ -160,6 +169,7 @@
 {% if can_manage %}
 <div class="card">
   <h3>Firewall</h3>
+  {% if let Some(cp) = control_plane %}<p class="cp-hint" style="color:var(--text-muted); margin:0 0 8px;">{% call macros::icon("shield") %} On this server, ports {{ cp.ports }} can't be closed or have their rule removed.</p>{% endif %}
   <div class="action-grid">
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/allow-port">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
@@ -200,7 +210,12 @@
       <p style="color:var(--text-muted); margin-top:0;">
         Enabling or removing a rule can cut off remote access if the current management port isn't allowed.
       </p>
+      {% if let Some(why) = firewall_enable_refusal %}
+      <button type="button" class="btn-danger" disabled title="{{ why }}">{% call macros::icon("firewall") %} Enable Firewall&hellip;</button>
+      <p style="color:var(--text-muted); margin:6px 0 0;">{{ why }}</p>
+      {% else %}
       <a class="btn btn-danger" href="/arsenals/cadavault/{{ host_id }}/firewall-enable/confirm">{% call macros::icon("firewall") %} Enable Firewall&hellip;</a>
+      {% endif %}
     </div>
   </div>
 </div>

@@ -277,9 +277,6 @@ async fn process_output(
 }
 
 /// The unattended Scourge collection sweep.
-/// The protocol version Scourge's operations arrived in.
-const SCOURGE_MIN_PROTOCOL: u32 = 40;
-
 pub fn spawn_scourge_sweep(state: AppState) {
     use crate::task_health::names;
     tokio::spawn(async move {
@@ -345,11 +342,15 @@ pub fn spawn_scourge_sweep(state: AppState) {
                 if host.os.as_deref().is_some_and(|os| os != "linux") {
                     continue;
                 }
-                // An agent from before Scourge can't parse the collect op;
-                // agents before 0.2.2 drop the connection over it, so
-                // sending it every sweep would keep them offline. The host
-                // already shows "Agent out of date" until it's updated.
-                if !state.hosts.agent_supports(host.id, SCOURGE_MIN_PROTOCOL) {
+                // An agent from before Scourge can't run it (dispatch would
+                // refuse it anyway); skip quietly rather than log a refusal
+                // every sweep. The host already shows "Agent out of date".
+                let probe = AgentOperation::ScourgeCollectEvents {
+                    eve_offset: 0,
+                    eve_inode: 0,
+                    max_events: 0,
+                };
+                if !state.hosts.supports(host.id, &probe) {
                     continue;
                 }
                 let (inode, offset) = match repo::scourge::get_cursor(&state.pool, host.id).await {

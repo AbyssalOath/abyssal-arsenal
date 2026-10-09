@@ -105,7 +105,40 @@ The hostname is whichever comes first of:
 - nmap's reverse DNS;
 - `getent hosts` (PTR or `/etc/hosts`);
 - the NetBIOS name;
-- the name of the managed host that owns the address.
+- the name of the managed host that owns the address;
+- a current imported DHCP lease.
+
+### DHCP leases
+
+On a network without reverse DNS, the DHCP server already knows every
+client's name. **Panopticon → DHCP leases** imports leases in two ways:
+
+- **From a managed host running the DHCP server.** This uses
+  `AgentOperation::DhcpLeases`, which needs agent 0.2.3. On Windows DHCP
+  Server it reads every IPv4 scope. On Linux it reads the first lease file
+  it finds for dnsmasq, ISC dhcpd or Kea.
+- **By pasting a lease file.** The format is detected: ISC `dhcpd.leases`,
+  `dnsmasq.leases`, a Kea leases CSV, or `Get-DhcpServerv4Scope |
+  Get-DhcpServerv4Lease | Export-Csv`.
+
+Only current leases are kept (active and unexpired), one per address, with
+the newest import winning. An import fills in hostnames and MACs on
+inventory devices that lack them; it never overwrites one that's already
+there. Later scans also use the stored leases for the devices they find.
+Imports are audited as `NETWORK_DHCP_LEASES_IMPORTED`.
+
+## Topology
+
+**Panopticon → Topology** shows what each managed switch's ports connect
+to. These are the neighbors the switch learned over LLDP (every vendor) and
+CDP (Cisco), read in each SNMP poll. A neighbor advertised over both is
+shown once. LLDP's entry is kept, with anything only CDP reported filled in
+(phones often give their address over CDP alone).
+
+A neighbor whose management address or name matches a managed switch is
+marked as one, and switch-to-switch links are listed at the top. One whose
+address is in the inventory shows that device. A switch with neither
+protocol enabled shows no links; enable LLDP on the ports you want mapped.
 
 On a network without reverse DNS, Windows machines are named by NetBIOS,
 and everything else needs an agent or a PTR record.

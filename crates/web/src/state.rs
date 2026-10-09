@@ -79,6 +79,10 @@ pub struct AppState {
     /// the capture self-terminates on the host (its hard `timeout`) and the pcap
     /// is discoverable via the capture listing regardless.
     pub scourge_capture_jobs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ScourgeCaptureJob>>>>>,
+    /// "Update all out-of-date agents" jobs -- same in-memory-only shape;
+    /// see `crate::agent_update`.
+    pub agent_update_jobs:
+        Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::agent_update::AgentUpdateJob>>>>>,
     /// Native (control-plane) backups -- GitHub issue #9. Job *records*
     /// live durably in `reliquary_backups` (unlike `deploy_jobs`/
     /// `scan_jobs` above); what's here is just the engine + destination

@@ -1060,6 +1060,29 @@ pub struct AatView {
     pub pending_count: usize,
 }
 
+/// Progress of an "Update all out-of-date agents" job.
+#[derive(Template)]
+#[template(path = "agent_update_status.html")]
+pub struct AgentUpdateStatusTemplate {
+    pub base: BaseCtx,
+    pub started_by: String,
+    pub started_at: String,
+    pub finished: bool,
+    pub updated: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub rows: Vec<AgentUpdateRow>,
+}
+
+pub struct AgentUpdateRow {
+    pub name: String,
+    pub os: String,
+    pub from_version: String,
+    pub state_label: &'static str,
+    pub badge_class: &'static str,
+    pub detail: String,
+}
+
 #[derive(Template)]
 #[template(path = "hosts.html")]
 pub struct HostsTemplate {
@@ -1075,6 +1098,8 @@ pub struct HostsTemplate {
     pub deployment: Option<DeploymentInstructions>,
     /// Active reusable deployment tokens, for review/revoke.
     pub deployment_tokens: Vec<DeploymentTokenView>,
+    /// Connected hosts "Update all out-of-date agents" would update now.
+    pub update_all_count: usize,
     pub uninstall_command: Option<String>,
     pub action_result: Option<String>,
     pub action_error: Option<String>,
@@ -1203,6 +1228,9 @@ pub struct HaruspexHostTemplate {
     /// True when connected but the agent's protocol version doesn't match --
     /// these ops were added in protocol v35, so an older agent can't run them.
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     /// The last-submitted domain, echoed back so a report run keeps the field
     /// populated.
     pub domain: String,
@@ -1239,6 +1267,9 @@ pub struct CystoolboxHostTemplate {
     pub elevated: bool,
     /// True when connected but the agent's protocol version doesn't match.
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -1271,6 +1302,12 @@ pub struct CadavaultHostTemplate {
     pub elevated: bool,
     /// True when connected but the agent's protocol version doesn't match.
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
+    /// Why this host's control-plane guard refuses it, if it does: the
+    /// button is disabled with this as the reason.
+    pub firewall_enable_refusal: Option<String>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -1302,6 +1339,9 @@ pub struct CadavaultPostureTemplate {
     pub host_name: String,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     /// Weighted score 0-100 (pass = 1, warn = 0.5, fail = 0; unavailable
     /// categories are excluded from the denominator).
     pub score_percent: u8,
@@ -1362,6 +1402,9 @@ pub struct PostmortemHostTemplate {
     pub host_name: String,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -1393,6 +1436,9 @@ pub struct MortiscopeHostTemplate {
     pub host_name: String,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -1507,6 +1553,9 @@ pub struct GrimoireHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     /// Every macro visible to this user (personal + their roles'),
     /// GitHub issue #7.
     pub macros: Vec<GrimoireMacroRow>,
@@ -1640,6 +1689,9 @@ pub struct OssuaryHostTemplate {
     pub high_risk_ops_enabled: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -1691,6 +1743,12 @@ pub struct InquestHostTemplate {
     pub host_isolation_enabled: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
+    /// Why this host's control-plane guard refuses it, if it does: the
+    /// button is disabled with this as the reason.
+    pub isolate_refusal: Option<String>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -1741,6 +1799,17 @@ pub struct ScourgeHostTemplate {
     pub ips_enabled: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
+    /// Why this host's control-plane guard refuses it, if it does: the
+    /// button is disabled with this as the reason.
+    pub ips_refusal: Option<String>,
+    /// The connected agent can run Scourge at all (`min_protocol`); when
+    /// it can't, the actions are hidden behind an explanation.
+    pub scourge_supported: bool,
+    /// The first agent release that can (`agent_release_for_protocol`).
+    pub scourge_needs: &'static str,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2020,6 +2089,51 @@ pub struct PanopticonSwitchRow {
 }
 
 /// Managed-switch list + add form -- see `routes/panopticon.rs::switches_*`.
+#[derive(Template)]
+#[template(path = "panopticon_topology.html")]
+pub struct PanopticonTopologyTemplate {
+    pub base: BaseCtx,
+    pub switches: Vec<TopologySwitch>,
+    /// Links between managed switches, each pair once.
+    pub backbone: Vec<(String, String)>,
+    pub neighbor_count: usize,
+}
+
+pub struct TopologySwitch {
+    pub name: String,
+    pub ip_address: String,
+    pub links: Vec<TopologyLink>,
+}
+
+pub struct TopologyLink {
+    pub local_port: String,
+    pub protocol: String,
+    pub remote_name: String,
+    pub remote_port: String,
+    pub remote_address: String,
+    pub remote_platform: String,
+    /// "Managed switch: core-sw1" / "In inventory: printer (HP)" / "".
+    pub identity: String,
+    pub seen_at: String,
+}
+
+#[derive(Template)]
+#[template(path = "panopticon_dhcp.html")]
+pub struct PanopticonDhcpTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    /// Connected hosts whose agent can read DHCP leases.
+    pub hosts: Vec<DhcpHostOption>,
+    pub lease_count: i64,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct DhcpHostOption {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Template)]
 #[template(path = "panopticon_switches.html")]
 pub struct PanopticonSwitchesTemplate {
@@ -2494,6 +2608,9 @@ pub struct CryptkeeperHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2681,6 +2798,10 @@ pub struct ThanatosIocsTemplate {
 pub struct ThanatosHostTemplate {
     pub base: BaseCtx,
     pub can_manage: bool,
+    /// The real-time event stream on this host's current connection
+    /// (`thanatos_stream::status`): whether it's running, and what the
+    /// agent reported.
+    pub realtime: Option<(bool, String)>,
     /// `incidents.respond` -- gates the host-level Respond toolbar.
     pub can_respond: bool,
     pub host_id: String,
@@ -2693,6 +2814,12 @@ pub struct ThanatosHostTemplate {
     pub detection_sources_note: &'static str,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
+    /// Why this host's control-plane guard refuses it, if it does: the
+    /// button is disabled with this as the reason.
+    pub isolate_refusal: Option<String>,
     pub events: Vec<SecurityEventRow>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
@@ -2728,6 +2855,9 @@ pub struct ApothecaryHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2758,6 +2888,9 @@ pub struct CatacombHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2795,6 +2928,9 @@ pub struct ParishHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2825,6 +2961,9 @@ pub struct VivisectionHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2856,6 +2995,9 @@ pub struct DefleshingHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2887,6 +3029,9 @@ pub struct ReanimationHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2929,6 +3074,9 @@ pub struct ProcessRow {
     pub mem: String,
     pub comm: String,
     pub is_zombie: bool,
+    /// On the control plane's own server: why signalling this process is
+    /// refused (`control_plane_guard::check_process_name`).
+    pub signal_refused: Option<String>,
 }
 
 pub struct NecropolisHostRow {
@@ -2957,6 +3105,9 @@ pub struct NecropolisHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -2986,6 +3137,9 @@ pub struct NecropsyHostTemplate {
     pub host_name: String,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -3020,6 +3174,9 @@ pub struct IncarnationHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -3051,6 +3208,9 @@ pub struct ResurrectionHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -3097,6 +3257,9 @@ pub struct ResurrectionTriageTemplate {
     pub host_id: String,
     pub host_name: String,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub score_percent: u8,
     pub score_label: String,
     pub score_badge_class: String,
@@ -3143,6 +3306,9 @@ pub struct ReliquaryHostTemplate {
     pub can_restore: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -3180,6 +3346,12 @@ pub struct NecrolinkHostTemplate {
     pub elevated: bool,
     /// True when connected but the agent's protocol version doesn't match.
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
+    /// Why this host's control-plane guard refuses it, if it does: the
+    /// button is disabled with this as the reason.
+    pub interface_down_refusal: Option<String>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
@@ -3210,6 +3382,9 @@ pub struct ObituaryHostTemplate {
     pub can_manage: bool,
     pub elevated: bool,
     pub protocol_mismatch: bool,
+    /// Set when the host is the control plane's own server: what's
+    /// refused there (`control_plane::page_note`).
+    pub control_plane: Option<crate::control_plane::PageNote>,
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,

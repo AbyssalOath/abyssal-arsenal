@@ -48,6 +48,9 @@ pub enum AuditAction {
     NetworkSwitchAdded,
     NetworkSwitchUpdated,
     NetworkSwitchRemoved,
+    /// DHCP leases imported into Panopticon (a pasted file or a managed
+    /// DHCP server).
+    NetworkDhcpLeasesImported,
     /// Panopticon NAC enforcement (phase 3): an SNMP SET actually written to
     /// a live switch to disable a port or move it to a quarantine VLAN.
     /// `metadata` always carries `{"kind": "disable" | "quarantine",
@@ -154,6 +157,7 @@ impl AuditAction {
             AuditAction::HostDeescalated => "HOST_DEESCALATED",
             AuditAction::HostElevationExpired => "HOST_ELEVATION_EXPIRED",
             AuditAction::NetworkDeviceRemoved => "NETWORK_DEVICE_REMOVED",
+            AuditAction::NetworkDhcpLeasesImported => "NETWORK_DHCP_LEASES_IMPORTED",
             AuditAction::NetworkSubnetRemoved => "NETWORK_SUBNET_REMOVED",
             AuditAction::NetworkSubnetsRederived => "NETWORK_SUBNETS_REDERIVED",
             AuditAction::NetworkDeviceClassified => "NETWORK_DEVICE_CLASSIFIED",
@@ -248,6 +252,7 @@ impl AuditAction {
         AuditAction::NetworkSwitchAdded,
         AuditAction::NetworkSwitchUpdated,
         AuditAction::NetworkSwitchRemoved,
+        AuditAction::NetworkDhcpLeasesImported,
         AuditAction::NetworkPortEnforced,
         AuditAction::NetworkPortReleased,
         AuditAction::UserProfileUpdated,

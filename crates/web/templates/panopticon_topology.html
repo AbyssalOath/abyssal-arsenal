@@ -1,0 +1,58 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Topology — Panopticon — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — Topology{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/panopticon">&larr; Back to Panopticon</a></p>
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    What each managed switch's ports connect to, from the neighbors the switch learned over
+    LLDP (every vendor) and CDP (Cisco), read in each SNMP poll. A switch that has neither
+    enabled shows no links; turn LLDP on for the ports you want mapped.
+    {{ neighbor_count }} neighbor(s) known.
+  </p>
+  {% if !backbone.is_empty() %}
+  <h3 style="margin-bottom:6px;">{% call macros::icon("route") %} Links between managed switches</h3>
+  <ul style="margin-top:0;">
+    {% for (a, b) in backbone %}
+    <li>{{ a }} &harr; {{ b }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+{% if switches.is_empty() %}
+<div class="card">
+  <p style="margin:0;">No managed switches yet -- add one under <a href="/arsenals/panopticon/switches">Managed switches</a>.</p>
+</div>
+{% endif %}
+
+{% for sw in switches %}
+<div class="card">
+  <h3 style="margin-top:0;">{% call macros::icon("network") %} {{ sw.name }} <span class="badge badge-muted">{{ sw.ip_address }}</span></h3>
+  {% if sw.links.is_empty() %}
+  <p style="color:var(--text-muted); margin:0;">No LLDP or CDP neighbors reported (yet). They appear after the next poll if the switch advertises them.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Port</th><th>Neighbor</th><th>Their port</th><th>Address</th><th>Platform</th><th>Known as</th><th>Seen</th></tr></thead>
+    <tbody>
+      {% for l in sw.links %}
+      <tr>
+        <td>{{ l.local_port }} <span class="badge badge-muted">{{ l.protocol }}</span></td>
+        <td>{{ l.remote_name }}</td>
+        <td>{{ l.remote_port }}</td>
+        <td>{{ l.remote_address }}</td>
+        <td style="color:var(--text-muted); font-size:0.9em;">{{ l.remote_platform }}</td>
+        <td>{{ l.identity }}</td>
+        <td style="color:var(--text-muted); font-size:0.9em;">{{ l.seen_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% endblock %}

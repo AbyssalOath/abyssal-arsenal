@@ -186,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         encryption_key: encryption_key.clone(),
         deploy_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         scan_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        agent_update_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         scourge_capture_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         reliquary_backup_provider: backup_provider.clone(),
         reliquary_backup_storage: backup_storage.clone(),
@@ -212,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
     );
     abyssal_web::spawn_thanatos_sweep(state.clone());
     abyssal_web::spawn_thanatos_fast_sweep(state.clone());
+    abyssal_web::spawn_thanatos_stream_manager(state.clone());
     abyssal_web::spawn_thanatos_retention(state.clone());
     abyssal_web::spawn_scourge_sweep(state.clone());
     abyssal_web::spawn_scourge_retention(state.clone());

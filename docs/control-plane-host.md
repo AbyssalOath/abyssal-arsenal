@@ -67,7 +67,7 @@ with unit tests.
 | Stop, restart or disable `docker`, `docker.socket`, `containerd` or `abyssal-agent` | Stopping Docker stops the control plane. |
 | Stop, restart or remove an `abyssal*` container, or any container named only by an ID | These are the control plane's own containers; an ID can't be checked here. |
 | Signal by name (not a dry run) matching `dockerd`, `containerd*`, `docker-proxy`, `mariadbd`, `mysqld`, `caddy` or `abyssal*`, or any pattern | The agent uses `pgrep`, which takes an unanchored regex, so short or wildcard names match far more than they look like. A dry run is allowed. |
-| Signal PID 1 | That's init. |
+| Signal PID 1, or a PID that is one of the processes above | The control plane looks the PID up first (`ProcessDetail`) and refuses the control plane's own processes. If it can't tell which process a PID is, it refuses. |
 | Upgrade or remove `docker*`, `containerd*`, `moby*`, `runc` or `crun` | It restarts every container. Do it in a maintenance window from a shell. |
 | Quarantine files under `/var/lib/docker`, `/var/lib/containerd`, Docker's binaries, or the agent's own files | These are files the control plane runs on. |
 | Unmount, mount over, or remove a mount unit for `/`, `/var`, `/var/lib`, `/var/lib/docker`, or the device Docker's data is on | That would hide or remove the database. |
@@ -94,6 +94,23 @@ mount point covers `/var/lib/docker`. The disk checks fail closed:
 Rebooting the server is allowed. Docker brings the containers back with
 `restart: unless-stopped`.
 
+## What you see before clicking
+
+Every arsenal page for this host carries a banner listing what's refused
+there. Actions the guard always refuses on this server are disabled, with
+the reason as a tooltip:
+
+- Isolate (Inquest, and the Thanatos shortcut);
+- Enable firewall;
+- inline IPS;
+- Bring interface down.
+
+Forms that take a name or a number carry a note naming what's protected.
+These are the port, service, container, process, package, disk and
+quarantine forms. The Reanimation process list disables Pause, Resume and
+Signal on the control plane's own processes. Everything is still enforced
+when it's sent, however the request arrives.
+
 ## What isn't covered
 
 The guardrails stop accidents and keep the UI from cutting its own branch.
@@ -101,9 +118,6 @@ They are not a security boundary against someone who has admin rights.
 Anything refused here can still be done from a shell on the server, on
 purpose. Some known gaps:
 
-- **Signals by PID.** The control plane can't tell which process a PID
-  belongs to, so only PID 1 is refused. Signalling the PID of `dockerd`
-  directly (after a dry run lists it) will still go through.
 - **`BlockRemoteIp`.** The control plane can't know which addresses its
   admins and agents use, so blocking an IP is allowed. Blocking the address
   you're browsing from will lock you out until you unblock it from a shell

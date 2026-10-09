@@ -669,42 +669,88 @@ fn serve_agent_bytes(bytes: Vec<u8>, asset: &AgentAsset) -> Response {
 /// install with "unexpected argument". Unauthenticated, like the install
 /// scripts -- the binary is non-secret; the enrollment token is the secret.
 pub async fn serve_agent(State(state): State<AppState>, Path(os): Path<String>) -> Response {
-    let current = crate::update_check::CURRENT_VERSION.trim().to_string();
-    let Some(asset) = agent_asset(&os, &current) else {
-        return (
+    match resolve_agent(&state, &os).await {
+        Ok(agent) => serve_agent_bytes(agent.bytes, &agent.asset),
+        Err(ResolveError::UnknownOs) => (
             StatusCode::NOT_FOUND,
             "unknown agent OS -- use /agent/linux, /agent/windows, /agent/windows-msi or \
              /agent/windows-exe",
         )
-            .into_response();
-    };
+            .into_response(),
+        Err(ResolveError::Unavailable(message)) => {
+            (StatusCode::SERVICE_UNAVAILABLE, message).into_response()
+        }
+    }
+}
+
+/// The agent build `/agent/{os}` serves, and which version it is.
+pub(crate) struct ResolvedAgent {
+    pub bytes: Vec<u8>,
+    asset: AgentAsset,
+    /// `None` for an operator-placed build under a version-agnostic name.
+    pub version: Option<String>,
+}
+
+pub(crate) enum ResolveError {
+    UnknownOs,
+    Unavailable(String),
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveError::UnknownOs => write!(f, "no agent build for that OS"),
+            ResolveError::Unavailable(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+/// What `/agent/{os}` serves -- also what "Update agent" hashes and tells
+/// a 0.2.3+ agent to download, so the two can't disagree. Resolution order
+/// as documented on `serve_agent`.
+pub(crate) async fn resolve_agent(
+    state: &AppState,
+    os: &str,
+) -> Result<ResolvedAgent, ResolveError> {
+    let current = crate::update_check::CURRENT_VERSION.trim().to_string();
+    let asset = agent_asset(os, &current).ok_or(ResolveError::UnknownOs)?;
 
     let dir = agent_dist_dir();
-    for path in [
-        dir.join(asset.generic),
-        agent_bundle_dir().join(asset.generic),
-    ] {
-        if let Ok(bytes) = tokio::fs::read(&path).await {
-            return serve_agent_bytes(bytes, &asset);
-        }
+    if let Ok(bytes) = tokio::fs::read(dir.join(asset.generic)).await {
+        return Ok(ResolvedAgent {
+            bytes,
+            asset,
+            version: None,
+        });
+    }
+    if let Ok(bytes) = tokio::fs::read(agent_bundle_dir().join(asset.generic)).await {
+        return Ok(ResolvedAgent {
+            bytes,
+            asset,
+            version: Some(current),
+        });
     }
 
     // A release archive: this build's own version first, then -- when this
     // build is ahead of anything published (built from main after a version
     // bump) -- the newest release, rather than failing every Windows
     // install until the release exists.
-    let release = crate::update_check::agent_release_version(&state).await;
+    let release = crate::update_check::agent_release_version(state).await;
     let mut versions = vec![current.clone()];
     if release != current {
         versions.push(release);
     }
     for version in &versions {
-        let Some(asset) = agent_asset(&os, version) else {
+        let Some(asset) = agent_asset(os, version) else {
             continue;
         };
         if let Ok(bytes) = tokio::fs::read(dir.join(&asset.versioned)).await {
-            note_fallback(&os, version, &current);
-            return serve_agent_bytes(bytes, &asset);
+            note_fallback(os, version, &current);
+            return Ok(ResolvedAgent {
+                bytes,
+                asset,
+                version: Some(version.clone()),
+            });
         }
         // Not cached: fetch from GitHub and cache it. Fails cleanly (not a
         // panic) when the control plane itself can't reach GitHub.
@@ -722,28 +768,28 @@ pub async fn serve_agent(State(state): State<AppState>, Path(os): Path<String>) 
         {
             let _ = tokio::fs::create_dir_all(&dir).await;
             let _ = tokio::fs::write(dir.join(&asset.versioned), &bytes).await;
-            note_fallback(&os, version, &current);
-            return serve_agent_bytes(bytes.to_vec(), &asset);
+            note_fallback(os, version, &current);
+            return Ok(ResolvedAgent {
+                bytes: bytes.to_vec(),
+                asset,
+                version: Some(version.clone()),
+            });
         }
     }
 
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        format!(
-            "agent binary unavailable (tried release{} {}). Place a build at {}/{} (or {}), or \
-             give this control plane outbound access to GitHub.",
-            if versions.len() > 1 { "s" } else { "" },
-            versions
-                .iter()
-                .map(|v| format!("v{v}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-            dir.display(),
-            asset.generic,
-            asset.versioned
-        ),
-    )
-        .into_response()
+    Err(ResolveError::Unavailable(format!(
+        "agent binary unavailable (tried release{} {}). Place a build at {}/{} (or {}), or \
+         give this control plane outbound access to GitHub.",
+        if versions.len() > 1 { "s" } else { "" },
+        versions
+            .iter()
+            .map(|v| format!("v{v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        dir.display(),
+        asset.generic,
+        asset.versioned
+    )))
 }
 
 /// Logged when an agent older than this control plane is served, so a
@@ -826,6 +872,25 @@ mod tests {
                 "{name}: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
+            // `sh -n` only parses; shellcheck also catches what fails when a
+            // line runs (a bad `${...}` substitution, unquoted expansions).
+            // Skipped without it locally, required in CI (ubuntu-latest has
+            // it).
+            match Command::new("shellcheck")
+                .args(["-S", "warning", "-s", "sh"])
+                .arg(&path)
+                .output()
+            {
+                Ok(out) => assert!(
+                    out.status.success(),
+                    "{name}: shellcheck:\n{}",
+                    String::from_utf8_lossy(&out.stdout)
+                ),
+                Err(_) => assert!(
+                    std::env::var_os("CI").is_none(),
+                    "shellcheck is required for this test in CI"
+                ),
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
