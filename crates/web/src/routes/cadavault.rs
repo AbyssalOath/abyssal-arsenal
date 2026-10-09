@@ -763,6 +763,7 @@ pub async fn remove_port_confirm(
             ("port".to_string(), query.port.to_string()),
             ("protocol".to_string(), query.protocol.clone()),
         ],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -906,6 +907,7 @@ pub async fn enable_firewall_confirm(
             expected: host.name.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -1057,6 +1059,7 @@ pub async fn harden_sshd_confirm(
             expected: host.name.clone(),
         }),
         extra_hidden_fields: vec![("setting".to_string(), setting.as_str().to_string())],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -1193,6 +1196,7 @@ pub async fn clear_ssh_hardening_confirm(
             expected: host.name.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

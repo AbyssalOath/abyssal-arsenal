@@ -129,11 +129,7 @@
           <a class="btn btn-warning" href="/arsenals/reliquary/backups/{{ j.id }}/restore">Restore&hellip;</a>
           {% endif %}
           {% if can_manage %}
-          <form method="post" action="/arsenals/reliquary/backups/{{ j.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete this backup permanently?');">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <input type="hidden" name="confirm" value="true">
-            <button type="submit" class="btn btn-danger">{% call macros::icon("danger") %} Delete</button>
-          </form>
+          <a class="btn btn-danger" href="/arsenals/reliquary/backups/{{ j.id }}/delete/confirm">{% call macros::icon("danger") %} Delete&hellip;</a>
           {% endif %}
         </td>
       </tr>

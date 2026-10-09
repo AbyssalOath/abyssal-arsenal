@@ -490,6 +490,7 @@ pub async fn remove_package_confirm(
             expected: package.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

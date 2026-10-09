@@ -442,6 +442,7 @@ pub async fn interface_down_confirm(
             expected: interface.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -620,6 +621,7 @@ pub async fn scan_confirm(
             expected: target.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

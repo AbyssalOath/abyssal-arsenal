@@ -12,12 +12,48 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **Shred instead of delete.** Deleting a Reliquary backup, a quarantined
+  file (Inquest/Thanatos) or an SSH keypair (Cryptkeeper) now takes a
+  "shred passes" count, defaulting to 3 (the minimum CJIS Security Policy
+  v6.0 asks for when sanitizing magnetic media by overwriting): 0 is an
+  ordinary delete, 1-35 overwrites the file with random data that many times
+  first. On a host whose agent can't shred yet, the field starts at 0 and
+  says why. Linux hosts and the control plane
+  run GNU `shred -f -n <passes> -u`; Windows (no `shred`) gets an equivalent
+  overwrite-and-flush loop. A shred is all-or-nothing -- if it can't run,
+  nothing is deleted -- and is never sent to an out-of-date agent, which
+  would ignore it and plain-delete (agent protocol 39). Backups on a remote
+  Sepulchre connection (SFTP/SMB) can't be shredded and say so. The pass
+  count is in the audit trail. As with any overwrite, SSDs, copy-on-write
+  filesystems and snapshots can retain older copies.
+  - **Witness sign-off**, for sanitization that must be witnessed or
+    performed by authorized personnel (e.g. CJIS): every shred has a
+    clearly marked "Witness sign-off" box -- the witness signs in with their
+    own username and password (verified; a different, active user who holds
+    the permission that deletion needs; rate-limited like the login page)
+    -- plus an optional sign-off note. Optional by default; **Settings >
+    Data Sanitization > Require witness sign-off** (`security.manage`)
+    makes it mandatory for every shred. Each shred is recorded as
+    `SANITIZATION_SIGNED_OFF` with the requester, witness, passes, target
+    and note. Reliquary backup deletion moved to its own confirm page to
+    hold it.
+
 - **Something stirs after dark.** The old codes still work, some words are
   better left unsaid, and the logo doesn't like being poked. When the dead
   rise -- or are laid to rest -- you may not be alone. (`static/bats.js`, for
   the impatient; it honors `prefers-reduced-motion`.)
 
 ### Changed
+
+- **Changing your password now confirms it.** You land on the dashboard with
+  a "Password changed successfully." banner instead of back on the Account
+  page with no feedback (including after the forced first-login change).
+- **Panopticon's sweep target and ARP interface take comma-separated
+  lists.** The active sweep scans each IP, CIDR range or hostname in turn
+  (`10.0.10.0/24, 10.0.20.0/24, printer.corp.lan`; one failing doesn't stop
+  the rest), and the ARP listener captures on each interface listed
+  (`eth0, eth1`). Each entry is validated, and the stored value is
+  normalized and de-duplicated.
 
 - **`/admin/settings` is now per-role instead of Super Admin only.** Each
   setting is owned by the role that runs what it controls, gated by the same
@@ -34,6 +70,15 @@ for what that means for cloning and updating.
   or its nav link; `/admin/health` is unchanged (`settings.manage`).
 
 ### Fixed
+
+- **Confirmation dialogs and the AAT approval toggle silently did nothing.**
+  The Content-Security-Policy (`script-src 'self'`) blocks inline `onsubmit=`/
+  `onchange=` handlers, so "Delete this backup permanently?" never appeared
+  (one click deleted a backup), neither did the confirmations for updating an
+  agent or rotating the install token, and ticking "Require approval" didn't
+  save. They're now `data-confirm` / `data-autosubmit` attributes handled by
+  `static/confirm.js`, and a test fails the build if any template uses inline
+  JavaScript again.
 
 - **Saved SNMP community-string macros weren't offered when adding a
   switch.** The add-switch and edit-switch forms now have a "Saved macro"

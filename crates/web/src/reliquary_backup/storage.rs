@@ -34,6 +34,24 @@ pub trait StorageDestination: Send + Sync {
 
     async fn delete(&self, file_name: &str) -> Result<(), BackupError>;
 
+    /// Whether [`Self::shred`] works here: only a destination on this
+    /// control plane's own disk. A file on someone else's server (SFTP,
+    /// SMB) can't be meaningfully overwritten in place through the
+    /// protocol, so remote destinations say no rather than pretend.
+    fn can_shred(&self) -> bool {
+        false
+    }
+
+    /// Overwrites the archive with random data `passes` times (GNU
+    /// `shred`), then removes it.
+    async fn shred(&self, _file_name: &str, _passes: u8) -> Result<(), BackupError> {
+        Err(BackupError::Config(
+            "this backup's destination can't be shredded -- only backups on this control \
+             plane's own disk can"
+                .into(),
+        ))
+    }
+
     fn exists(&self, file_name: &str) -> bool {
         self.resolve(file_name).is_file()
     }
@@ -113,6 +131,32 @@ impl StorageDestination for LocalFs {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn can_shred(&self) -> bool {
+        true
+    }
+
+    async fn shred(&self, file_name: &str, passes: u8) -> Result<(), BackupError> {
+        let path = self.resolve(file_name);
+        if !path.is_file() {
+            // Already gone (deleted out-of-band): nothing left to shred.
+            return Ok(());
+        }
+        let passes = passes.to_string();
+        let output = tokio::process::Command::new("shred")
+            .args(["-f", "-n", &passes, "-u", "--"])
+            .arg(&path)
+            .output()
+            .await
+            .map_err(|e| BackupError::Config(format!("couldn't run shred: {e}")))?;
+        if !output.status.success() {
+            return Err(BackupError::Config(format!(
+                "shred failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
     }
 
     async fn open_write(

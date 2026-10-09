@@ -45,6 +45,7 @@ pub use panopticon_arp::spawn_panopticon_arp_listener;
 pub use panopticon_enforcement::spawn_panopticon_enforcement_revert;
 pub use panopticon_mdns::spawn_panopticon_mdns_listener;
 pub use panopticon_ops::spawn_panopticon_sweep;
+pub use panopticon_ops::split_list as split_settings_list;
 pub use panopticon_policy::spawn_panopticon_policy_sweep;
 pub use panopticon_radius::spawn_panopticon_radius;
 pub use panopticon_snmp::spawn_panopticon_snmp_sweep;

@@ -578,6 +578,182 @@ pub fn email_base_url(state: &AppState, headers: &axum::http::HeaderMap) -> Stri
         .unwrap_or_else(|| request_base_url(state, headers))
 }
 
+/// Parses a "shred passes" form field (blank = 0 = an ordinary delete)
+/// and bounds it.
+pub fn parse_shred_passes(raw: &str) -> Result<u8, WebError> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(0);
+    }
+    raw.parse::<u8>()
+        .ok()
+        .filter(|n| *n <= abyssal_agent_protocol::MAX_SHRED_PASSES)
+        .ok_or_else(|| {
+            WebError(AppError::Validation(format!(
+                "Shred passes must be a number from 0 to {}.",
+                abyssal_agent_protocol::MAX_SHRED_PASSES
+            )))
+        })
+}
+
+/// [`parse_shred_passes`] for a deletion on a managed host. A shred is only
+/// sent to an agent on the current protocol version: an older agent would
+/// silently ignore the field and do an ordinary delete, which is exactly
+/// what the admin asked not to happen.
+pub fn shred_passes_for_host(state: &AppState, host_id: Uuid, raw: &str) -> Result<u8, WebError> {
+    let passes = parse_shred_passes(raw)?;
+    if passes > 0 && state.hosts.agent_protocol_mismatch(host_id) {
+        return Err(WebError(AppError::Validation(
+            "This host's agent is out of date and doesn't support shredding -- it would just \
+             delete the file. Update the agent (Hosts > Update agent), then try again."
+                .into(),
+        )));
+    }
+    Ok(passes)
+}
+
+/// Settings key: when true, every shred deletion needs a verified witness
+/// (`sanitization_sign_off`). Off by default.
+pub const SANITIZATION_REQUIRE_WITNESS: &str = "sanitization.require_witness";
+
+/// The witness / sign-off fields a shred deletion's form carries (see
+/// `confirm.html`). Each route's own form struct holds them and builds one
+/// of these -- `#[serde(flatten)]` doesn't mix with urlencoded booleans.
+#[derive(Default)]
+pub struct SignOffFields {
+    /// The "This sanitization was witnessed" checkbox.
+    pub witnessed: bool,
+    pub witness_username: String,
+    pub witness_password: String,
+    pub note: String,
+}
+
+/// A shred's sign-off, verified, ready to record.
+pub struct SanitizationSignOff {
+    /// The second person, verified by their own password: (id, username).
+    pub witness: Option<(Uuid, String)>,
+    pub note: String,
+}
+
+/// Checks a shred deletion's sign-off: when witnessed (or the
+/// `SANITIZATION_REQUIRE_WITNESS` setting is on), the witness must be a
+/// *different*, active user who signs in with their own password here and
+/// holds `permission` -- the one the deletion itself needs -- so a name
+/// can't just be typed in. Failed witness passwords go through the login
+/// rate limiter, so this can't be used to guess someone's password.
+/// `Ok(None)` for an ordinary delete (0 passes): nothing to sign off.
+pub async fn sanitization_sign_off(
+    state: &AppState,
+    ctx: &AuthContext,
+    passes: u8,
+    fields: SignOffFields,
+    permission: Permission,
+) -> Result<Option<SanitizationSignOff>, WebError> {
+    if passes == 0 {
+        return Ok(None);
+    }
+    let invalid = |msg: String| WebError(AppError::Validation(msg));
+    let note = fields.note.trim().to_string();
+    if note.chars().count() > 1000 {
+        return Err(invalid(
+            "The sign-off note is limited to 1000 characters.".into(),
+        ));
+    }
+    let required =
+        repo::settings::get_bool(&state.pool, SANITIZATION_REQUIRE_WITNESS, false).await?;
+    if !fields.witnessed && !required {
+        return Ok(Some(SanitizationSignOff {
+            witness: None,
+            note,
+        }));
+    }
+
+    let username = fields.witness_username.trim();
+    if username.is_empty() || fields.witness_password.is_empty() {
+        return Err(invalid(if required {
+            "A witness is required for shredding: the witness enters their own username and \
+             password in the Witness sign-off box."
+                .into()
+        } else {
+            "\"Witnessed\" is ticked -- the witness must enter their own username and password."
+                .into()
+        }));
+    }
+    if username.eq_ignore_ascii_case(&ctx.user.username) {
+        return Err(invalid(
+            "The witness must be someone other than the person doing the deletion.".into(),
+        ));
+    }
+    let limiter_key = format!("witness:{}", username.to_ascii_lowercase());
+    if state.login_limiter.is_locked(&limiter_key) {
+        return Err(invalid(
+            "Too many failed witness sign-ins for that user -- try again later.".into(),
+        ));
+    }
+    use abyssal_auth::AuthProvider as _;
+    let witness = match abyssal_auth::LocalAuthProvider
+        .authenticate(&state.pool, username, &fields.witness_password)
+        .await
+    {
+        Ok(user) => user,
+        Err(_) => {
+            state.login_limiter.record_failure(&limiter_key);
+            return Err(invalid(
+                "Witness sign-in failed: wrong username or password, or that account is \
+                 disabled."
+                    .into(),
+            ));
+        }
+    };
+    state.login_limiter.clear(&limiter_key);
+    let witness_permissions = repo::roles::effective_permissions(&state.pool, witness.id).await?;
+    if !witness_permissions.contains(&permission) {
+        return Err(invalid(format!(
+            "{} isn't authorized to witness this: they'd need the {} permission themselves.",
+            witness.username,
+            permission.as_key()
+        )));
+    }
+    Ok(Some(SanitizationSignOff {
+        witness: Some((witness.id, witness.username)),
+        note,
+    }))
+}
+
+/// Records a shred's sign-off in the audit trail -- who asked for it, the
+/// witness (if any), the pass count, what's being destroyed, and the note --
+/// just before it's carried out; the execution's own audit event records
+/// how it went.
+pub async fn record_sign_off(
+    state: &AppState,
+    ctx: &AuthContext,
+    sign_off: &SanitizationSignOff,
+    target: &str,
+    passes: u8,
+) -> Result<(), WebError> {
+    abyssal_audit::record(
+        &state.pool,
+        abyssal_audit::AuditEvent::new(
+            abyssal_audit::AuditAction::SanitizationSignedOff,
+            abyssal_audit::AuditOutcome::Success,
+        )
+        .actor(abyssal_audit::Actor {
+            user_id: ctx.user.id,
+            username: &ctx.user.username,
+        })
+        .resource(target)
+        .metadata(serde_json::json!({
+            "shred_passes": passes,
+            "witnessed": sign_off.witness.is_some(),
+            "witness": sign_off.witness.as_ref().map(|(_, name)| name),
+            "witness_user_id": sign_off.witness.as_ref().map(|(id, _)| id.to_string()),
+            "note": sign_off.note,
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

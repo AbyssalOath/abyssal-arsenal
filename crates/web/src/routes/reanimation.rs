@@ -668,6 +668,7 @@ pub async fn signal_confirm(
             expected: pid.to_string(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -1167,6 +1168,7 @@ pub async fn signal_by_name_confirm(
         escalate_host_id,
         type_to_confirm,
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

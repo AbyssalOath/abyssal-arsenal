@@ -27,6 +27,7 @@ mod reliquary;
 mod resurrection;
 mod selfupdate;
 mod sepulchre;
+mod shred;
 mod thanatos;
 mod tls;
 #[cfg(test)]

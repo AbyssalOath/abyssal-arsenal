@@ -590,6 +590,80 @@ pub struct DeleteBackupForm {
     csrf_token: String,
     #[serde(default)]
     confirm: bool,
+    /// Blank or 0 = an ordinary delete; 1-35 = shred the archive first.
+    #[serde(default)]
+    shred_passes: String,
+    /// Witness sign-off for a shred (see `common::sanitization_sign_off`).
+    #[serde(default)]
+    witnessed: Option<String>,
+    #[serde(default)]
+    witness_username: String,
+    #[serde(default)]
+    witness_password: String,
+    #[serde(default)]
+    sanitization_note: String,
+}
+
+/// `GET .../backups/:id/delete/confirm` -- the delete page: shred passes and
+/// the witness sign-off box (shared `confirm.html`) when the archive is on
+/// this control plane's own disk, a plain confirmation otherwise.
+pub async fn delete_confirm(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::BackupsCreate)?;
+    let job = repo::reliquary_backups::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let can_shred = match (
+        &job.file_name,
+        orchestrator::resolve_destination(&state, job.destination_connection_id).await,
+    ) {
+        (Some(_), Ok((storage, _))) => storage.can_shred(),
+        _ => false,
+    };
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::ConfirmTemplate {
+        base,
+        title: "Delete backup".to_string(),
+        message: format!(
+            "This permanently deletes backup {} ({}). It can't be restored afterward.{}",
+            job.file_name.as_deref().unwrap_or("(no archive file)"),
+            crate::common::format_in_tz(job.created_at, &ctx.user.timezone),
+            if can_shred {
+                ""
+            } else {
+                " It's on a remote storage connection, so it can only be deleted, not shredded."
+            }
+        ),
+        action_url: format!("/arsenals/reliquary/backups/{id}/delete"),
+        cancel_url: "/arsenals/reliquary/backups".to_string(),
+        escalate_host_id: None,
+        type_to_confirm: None,
+        extra_hidden_fields: vec![],
+        shred_option: if can_shred {
+            Some(crate::templates::ShredOption::for_control_plane(&state).await?)
+        } else {
+            None
+        },
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
 }
 
 pub async fn delete(
@@ -607,10 +681,63 @@ pub async fn delete(
         )));
     }
 
+    let shred_passes = crate::common::parse_shred_passes(&form.shred_passes)?;
     let job = repo::reliquary_backups::find_by_id(&state.pool, id)
         .await?
         .ok_or(AppError::NotFound)?;
-    if let Some(file_name) = &job.file_name {
+    let sign_off = crate::common::sanitization_sign_off(
+        &state,
+        &ctx,
+        shred_passes,
+        crate::common::SignOffFields {
+            witnessed: form.witnessed.is_some(),
+            witness_username: form.witness_username.clone(),
+            witness_password: form.witness_password.clone(),
+            note: form.sanitization_note.clone(),
+        },
+        Permission::BackupsCreate,
+    )
+    .await?;
+    if let Some(sign_off) = &sign_off {
+        crate::common::record_sign_off(
+            &state,
+            &ctx,
+            sign_off,
+            &format!(
+                "backup {}",
+                job.file_name.as_deref().unwrap_or("(no archive file)")
+            ),
+            shred_passes,
+        )
+        .await?;
+    }
+    // A shred is all-or-nothing: if the archive can't be shredded, nothing
+    // is deleted -- never a silent fallback to an ordinary delete.
+    if shred_passes > 0
+        && let Some(file_name) = &job.file_name
+    {
+        let (storage, _label) =
+            orchestrator::resolve_destination(&state, job.destination_connection_id)
+                .await
+                .map_err(|e| {
+                    WebError(AppError::Validation(format!(
+                        "Can't reach this backup's destination to shred it: {e}"
+                    )))
+                })?;
+        if !storage.can_shred() {
+            return Err(WebError(AppError::Validation(
+                "This backup is on a remote storage connection, which can't be shredded -- \
+                 only backups on this control plane's own disk can. Delete it normally, or \
+                 securely erase it on that server."
+                    .into(),
+            )));
+        }
+        storage.shred(file_name, shred_passes).await.map_err(|e| {
+            WebError(AppError::Validation(format!(
+                "Shredding the backup failed, so it wasn't deleted: {e}"
+            )))
+        })?;
+    } else if let Some(file_name) = &job.file_name {
         // Best-effort: the connection this job used may since have been
         // disabled or deleted entirely (the FK is `ON DELETE SET NULL`
         // specifically so that's never blocked) -- an admin explicitly
@@ -638,7 +765,8 @@ pub async fn delete(
                 user_id: ctx.user.id,
                 username: &ctx.user.username,
             })
-            .resource(&id.to_string()),
+            .resource(&id.to_string())
+            .metadata(serde_json::json!({ "shred_passes": shred_passes })),
     )
     .await?;
 

@@ -28,7 +28,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 38;
+pub const PROTOCOL_VERSION: u32 = 39;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1011,6 +1011,14 @@ pub enum AgentOperation {
     /// longer needed as evidence). Destructive and irreversible.
     DeleteQuarantinedFile {
         filename: String,
+        /// 0 = an ordinary delete. 1..=`MAX_SHRED_PASSES` = overwrite the
+        /// file with random data that many times first (GNU `shred` on
+        /// Linux, an equivalent overwrite on Windows). An agent from before
+        /// this field would ignore it and plain-delete, so the control
+        /// plane only ever sends a non-zero value to an agent on this
+        /// protocol version.
+        #[serde(default)]
+        shred_passes: u8,
     },
     /// Reverses `IsolateHost` -- removes whichever isolation mechanism
     /// (nftables table or iptables policy/tagged rules) is currently
@@ -1122,6 +1130,10 @@ pub enum AgentOperation {
     /// path allow-list.
     DeleteSshKeypair {
         path: String,
+        /// As `DeleteQuarantinedFile::shred_passes`, for the private key
+        /// (the `.pub` half isn't secret and is just removed).
+        #[serde(default)]
+        shred_passes: u8,
     },
     /// Security telemetry collection and threat detection ("Thanatos"):
     /// tails this host's security-relevant logs (`/var/log/auth.log` or
@@ -1809,9 +1821,10 @@ impl AgentOperation {
             AgentOperation::RestoreQuarantinedFile {
                 quarantine_filename,
             } => format!("Restored quarantined file {quarantine_filename}"),
-            AgentOperation::DeleteQuarantinedFile { filename } => {
-                format!("Deleted quarantined file {filename}")
-            }
+            AgentOperation::DeleteQuarantinedFile {
+                filename,
+                shred_passes,
+            } => format!("{} quarantined file {filename}", shred_verb(*shred_passes)),
             AgentOperation::DeisolateHost => "Removed host isolation".to_string(),
             AgentOperation::IsolateHost => "Isolated host".to_string(),
             AgentOperation::GenerateSshKeypair { key_type, path, .. } => {
@@ -1823,7 +1836,9 @@ impl AgentOperation {
             AgentOperation::RemoveAuthorizedKey { username, .. } => {
                 format!("Removed authorized key for {username}")
             }
-            AgentOperation::DeleteSshKeypair { path } => format!("Deleted SSH keypair {path}"),
+            AgentOperation::DeleteSshKeypair { path, shred_passes } => {
+                format!("{} SSH keypair {path}", shred_verb(*shred_passes))
+            }
             AgentOperation::RenderSepulchreConfig { target, .. } => {
                 format!("Updated Sepulchre {target:?} configuration")
             }
@@ -2393,9 +2408,13 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("RestoreQuarantinedFile")
                 .field("quarantine_filename", quarantine_filename)
                 .finish(),
-            AgentOperation::DeleteQuarantinedFile { filename } => f
+            AgentOperation::DeleteQuarantinedFile {
+                filename,
+                shred_passes,
+            } => f
                 .debug_struct("DeleteQuarantinedFile")
                 .field("filename", filename)
+                .field("shred_passes", shred_passes)
                 .finish(),
             AgentOperation::DeisolateHost => write!(f, "DeisolateHost"),
             AgentOperation::IsolateHost => write!(f, "IsolateHost"),
@@ -2439,9 +2458,10 @@ impl fmt::Debug for AgentOperation {
                 .field("username", username)
                 .field("fingerprint", fingerprint)
                 .finish(),
-            AgentOperation::DeleteSshKeypair { path } => f
+            AgentOperation::DeleteSshKeypair { path, shred_passes } => f
                 .debug_struct("DeleteSshKeypair")
                 .field("path", path)
+                .field("shred_passes", shred_passes)
                 .finish(),
             AgentOperation::ScanSecurityEvents { .. } => write!(f, "ScanSecurityEvents"),
             AgentOperation::AdDnsReport { .. } => write!(f, "AdDnsReport"),
@@ -3130,6 +3150,19 @@ pub fn is_valid_ip_address(ip: &str) -> bool {
 /// filename should never contain a raw `\` anyway -- `percent_encode`
 /// always escapes it -- but this doesn't rely on that being true by
 /// construction alone.
+/// The most overwrite passes a shred may ask for -- 35, the Gutmann method's
+/// count; more buys nothing on any disk made this century.
+pub const MAX_SHRED_PASSES: u8 = 35;
+
+/// "Shredded (N passes)" or "Deleted", for result and audit text.
+pub fn shred_verb(passes: u8) -> String {
+    match passes {
+        0 => "Deleted".to_string(),
+        1 => "Shredded (1 pass)".to_string(),
+        n => format!("Shredded ({n} passes)"),
+    }
+}
+
 pub fn is_valid_quarantine_filename(filename: &str) -> bool {
     !filename.is_empty()
         && filename.len() <= 4096

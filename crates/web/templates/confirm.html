@@ -17,6 +17,57 @@
       <input type="text" id="confirm-text" name="confirm_text" autocomplete="off" required>
     </div>
     {% endif %}
+    {% if let Some(shred) = shred_option %}
+    <div style="max-width:520px;">
+      <label for="shred-passes">Shred passes</label>
+      <input type="number" id="shred-passes" name="shred_passes" min="0" max="35" value="{{ shred.default_passes }}" style="max-width:100px;">
+      {% if let Some(reason) = shred.unavailable_reason %}
+      <p class="warning-banner" style="margin:4px 0 8px;">{{ reason }}</p>
+      {% endif %}
+      <p class="text-muted" style="font-size:0.85rem; margin:4px 0 12px;">
+        0 = an ordinary delete. 1&ndash;35 = overwrite the file with random data that many
+        times before deleting it (GNU <code>shred</code> on Linux, an equivalent overwrite on
+        Windows). Defaults to 3, the minimum CJIS Security Policy v6.0 asks for when
+        sanitizing magnetic media by overwriting -- check the policy version your agency has
+        adopted. On SSDs/flash, copy-on-write filesystems (btrfs, ZFS) or snapshots, older
+        copies of the data can survive any number of passes; use the device's own sanitize
+        command or physical destruction where that matters (NIST SP 800-88).
+      </p>
+    </div>
+
+    <fieldset class="witness-box">
+      <legend>
+        Witness sign-off
+        {% if shred.witness_required %}<span class="badge badge-warning">Required</span>{% else %}<span class="badge badge-muted">Optional</span>{% endif %}
+      </legend>
+      <p class="text-muted" style="font-size:0.85rem; margin:0 0 10px;">
+        For sanitization that must be witnessed or performed by authorized personnel (e.g.
+        CJIS). The witness signs in here with their <strong>own</strong> username and password;
+        they must be a different person who holds the permission this deletion needs. Applies
+        only when shredding (passes above 0). Who, when, the witness, the passes and the note
+        go into the audit log.
+      </p>
+      {% if shred.witness_required %}
+      <input type="hidden" name="witnessed" value="on">
+      {% else %}
+      <label class="inline-radio" style="margin-bottom:10px;">
+        <input type="checkbox" name="witnessed"> This sanitization was witnessed
+      </label>
+      {% endif %}
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:180px;">
+          <label for="witness-username">Witness username</label>
+          <input type="text" id="witness-username" name="witness_username" autocomplete="off">
+        </div>
+        <div style="flex:1; min-width:180px;">
+          <label for="witness-password">Witness password</label>
+          <input type="password" id="witness-password" name="witness_password" autocomplete="new-password">
+        </div>
+      </div>
+      <label for="sanitization-note">Sign-off note (optional)</label>
+      <textarea id="sanitization-note" name="sanitization_note" rows="2" maxlength="1000" placeholder="e.g. Case 2026-0412, evidence released by Det. Smith; drive is an HDD"></textarea>
+    </fieldset>
+    {% endif %}
     {% if let Some(host_id) = escalate_host_id %}
     <div style="max-width:360px;">
       <label for="sudo-password-{{ host_id }}">Apotheosis -- sudo password (only needed if this host isn't already elevated)</label>

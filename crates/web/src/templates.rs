@@ -530,6 +530,8 @@ pub struct FleetHostsTemplate {
 #[template(path = "dashboard.html")]
 pub struct DashboardTemplate {
     pub base: BaseCtx,
+    /// A one-off success banner (e.g. after a password change).
+    pub notice: Option<String>,
     pub search_query: String,
     pub pinned: Vec<ModuleTile>,
     pub groups: Vec<ModuleGroup>,
@@ -857,6 +859,8 @@ pub struct SettingsTemplate {
     pub apotheosis_elevation_window_minutes: u32,
     pub high_risk_storage_ops_enabled: bool,
     pub host_isolation_enabled: bool,
+    /// Settings > Data Sanitization: witness sign-off mandatory for shreds.
+    pub sanitization_require_witness: bool,
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
     pub thanatos_extra_fim_paths: String,
@@ -1094,6 +1098,62 @@ pub struct ConfirmTemplate {
     /// unchanged. Empty for confirms that need nothing beyond the standard
     /// `csrf_token`/`confirm`.
     pub extra_hidden_fields: Vec<(String, String)>,
+    /// Offers a "shred passes" field (0 = ordinary delete) -- only on
+    /// confirms for deleting a sensitive file.
+    pub shred_option: Option<ShredOption>,
+}
+
+/// The default passes CJIS Security Policy v6.0 asks for when sanitizing
+/// magnetic media by overwriting (at least three); later versions and
+/// NIST SP 800-88 put less weight on pass counts, but three is a sound
+/// default either way.
+pub const DEFAULT_SHRED_PASSES: u8 = 3;
+
+/// The shred field on a delete confirm page.
+pub struct ShredOption {
+    /// Prefilled passes: [`DEFAULT_SHRED_PASSES`], or 0 where shredding
+    /// isn't available (see `unavailable_reason`).
+    pub default_passes: u8,
+    /// Why this host can't shred right now (an out-of-date agent), shown
+    /// next to the field.
+    pub unavailable_reason: Option<String>,
+    /// Settings > Data sanitization: a verified witness is mandatory.
+    pub witness_required: bool,
+}
+
+impl ShredOption {
+    /// For a deletion on `host_id`: the default unless its agent is too old
+    /// to shred (it would ignore the request -- see
+    /// `common::shred_passes_for_host`).
+    pub async fn for_host(
+        state: &crate::state::AppState,
+        host_id: uuid::Uuid,
+    ) -> anyhow::Result<Self> {
+        let mut option = Self::for_control_plane(state).await?;
+        if state.hosts.agent_protocol_mismatch(host_id) {
+            option.default_passes = 0;
+            option.unavailable_reason = Some(
+                "This host's agent is out of date and can't shred yet -- update it (Hosts > \
+                 Update agent) to shred here."
+                    .to_string(),
+            );
+        }
+        Ok(option)
+    }
+
+    /// For a file on the control plane's own disk (a Reliquary backup).
+    pub async fn for_control_plane(state: &crate::state::AppState) -> anyhow::Result<Self> {
+        Ok(Self {
+            default_passes: DEFAULT_SHRED_PASSES,
+            unavailable_reason: None,
+            witness_required: abyssal_database::repo::settings::get_bool(
+                &state.pool,
+                crate::common::SANITIZATION_REQUIRE_WITNESS,
+                false,
+            )
+            .await?,
+        })
+    }
 }
 
 pub struct CystoolboxHostRow {
@@ -3206,4 +3266,45 @@ pub struct SepulchreNewMountTemplate {
     pub host_name: String,
     pub connections: Vec<MountableConnectionOption>,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod csp_tests {
+    /// The Content-Security-Policy is `script-src 'self'`
+    /// (`middleware/security_headers.rs`): inline `<script>` blocks and
+    /// `on*=` event-handler attributes are refused by the browser, so they
+    /// fail silently -- a confirm dialog that never shows, a checkbox that
+    /// never submits. Behavior belongs in `static/*.js` (see
+    /// `static/confirm.js`'s `data-confirm` / `data-autosubmit`).
+    #[test]
+    fn templates_have_no_inline_javascript() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("html") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let lower = text.to_ascii_lowercase();
+            for (i, _) in lower.match_indices("<script") {
+                let tag_end = lower[i..].find('>').map(|e| i + e).unwrap_or(lower.len());
+                if !lower[i..tag_end].contains("src=") {
+                    offenders.push(format!("{}: inline <script>", path.display()));
+                }
+            }
+            for (i, _) in lower.match_indices(" on") {
+                let rest = &lower[i + 3..];
+                let name_len = rest.chars().take_while(|c| c.is_ascii_lowercase()).count();
+                if name_len > 0 && rest[name_len..].starts_with("=\"") {
+                    offenders.push(format!(
+                        "{}: inline on{}= handler",
+                        path.display(),
+                        &rest[..name_len]
+                    ));
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:#?}");
+    }
 }

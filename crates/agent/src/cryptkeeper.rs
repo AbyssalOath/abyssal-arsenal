@@ -263,15 +263,45 @@ pub async fn remove_authorized_key(
     }
 }
 
-pub async fn delete_ssh_keypair(path: String, elevation: &ElevationState) -> CommandOutcome {
+pub async fn delete_ssh_keypair(
+    path: String,
+    shred_passes: u8,
+    elevation: &ElevationState,
+) -> CommandOutcome {
     if !abyssal_agent_protocol::is_valid_absolute_path(&path) {
         return CommandOutcome::Err(format!("refusing invalid path: {path}"));
     }
+    if let Err(e) = crate::shred::validate_passes(shred_passes) {
+        return CommandOutcome::Err(e);
+    }
     let pub_path = format!("{path}.pub");
-    match elevation.run("rm", &["-f", &path, &pub_path]).await {
+    // The private key is what's worth shredding; the .pub half isn't
+    // secret, so it's just removed either way.
+    let result = if shred_passes == 0 {
+        elevation.run("rm", &["-f", &path, &pub_path]).await
+    } else {
+        #[cfg(unix)]
+        let shredded = {
+            let args = crate::shred::shred_args(&path, shred_passes);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            elevation.run("shred", &args).await
+        };
+        #[cfg(not(unix))]
+        let shredded: Result<OperationOutput, String> =
+            Err("shredding an SSH key is only supported on Linux hosts".to_string());
+        match shredded {
+            Ok(out) => match elevation.run("rm", &["-f", &pub_path]).await {
+                Ok(_) => Ok(out),
+                Err(e) => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    };
+    match result {
         Ok(output) => CommandOutcome::Ok(OperationOutput {
             stdout: format!(
-                "Deleted keypair at {path} (and its .pub counterpart, if present).\n{}",
+                "{} keypair at {path} (and removed its .pub counterpart, if present).\n{}",
+                abyssal_agent_protocol::shred_verb(shred_passes),
                 output.stdout
             ),
             ..output

@@ -783,35 +783,55 @@ pub fn spawn_panopticon_sweep(
                     continue;
                 }
             };
-            let target = target.trim();
-            if target.is_empty() {
-                continue;
-            }
-
-            // The background sweep has no admin watching a progress bar --
-            // this counter is written to but never read.
-            let hosts_scanned = Arc::new(AtomicUsize::new(0));
-            match run_discovery_scan(&pool, Some(&notifications), target, None, &hosts_scanned)
-                .await
-            {
-                Ok(outcome) => {
-                    tracing::info!(
-                        target = %target,
-                        upserted = outcome.upserted,
-                        "Panopticon active sweep completed"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(target = %target, error = %e, "Panopticon active sweep failed");
+            // Comma-separated: each IP/CIDR/hostname is scanned in turn, and
+            // one failing doesn't stop the rest.
+            for target in split_list(&target) {
+                // The background sweep has no admin watching a progress bar
+                // -- this counter is written to but never read.
+                let hosts_scanned = Arc::new(AtomicUsize::new(0));
+                match run_discovery_scan(&pool, Some(&notifications), &target, None, &hosts_scanned)
+                    .await
+                {
+                    Ok(outcome) => {
+                        tracing::info!(
+                            target = %target,
+                            upserted = outcome.upserted,
+                            "Panopticon active sweep completed"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(target = %target, error = %e, "Panopticon active sweep failed");
+                    }
                 }
             }
         }
     });
 }
 
+/// A comma-separated settings list (sweep targets, ARP interfaces): split,
+/// trimmed, empties and duplicates dropped, order kept.
+pub fn split_list(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if !out.iter().any(|existing| existing == item) {
+            out.push(item.to_string());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_list_trims_drops_empties_and_duplicates() {
+        assert_eq!(
+            split_list(" 10.0.0.0/24, printer.lan,,10.0.0.0/24 ,192.168.1.5 "),
+            vec!["10.0.0.0/24", "printer.lan", "192.168.1.5"]
+        );
+        assert!(split_list(" , ").is_empty());
+    }
 
     #[test]
     fn parse_recipients_splits_trims_and_drops_empty() {

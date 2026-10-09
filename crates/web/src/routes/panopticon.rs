@@ -701,6 +701,7 @@ pub async fn scan_confirm(
         escalate_host_id: None,
         type_to_confirm,
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -813,6 +814,7 @@ pub async fn remove_device_confirm(
             expected: device.ip_address.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -942,6 +944,7 @@ pub async fn subnet_remove_confirm(
             expected: subnet.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -2062,6 +2065,7 @@ pub async fn switch_remove_confirm(
             expected: switch.name.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

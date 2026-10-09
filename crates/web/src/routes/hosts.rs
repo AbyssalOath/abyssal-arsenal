@@ -759,6 +759,7 @@ pub async fn revoke_confirm(
         escalate_host_id: None,
         type_to_confirm: None,
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -850,6 +851,7 @@ pub async fn remove_confirm(
             expected: host.name.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

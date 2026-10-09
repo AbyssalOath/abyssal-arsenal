@@ -810,6 +810,7 @@ pub async fn remount_confirm(
             expected: target.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

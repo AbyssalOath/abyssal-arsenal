@@ -680,6 +680,7 @@ pub async fn delete_role_confirm(
             expected: role.name,
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -860,6 +861,7 @@ pub async fn update_permissions(
         escalate_host_id: None,
         type_to_confirm: None,
         extra_hidden_fields: vec![("permissions_json".to_string(), permissions_json)],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

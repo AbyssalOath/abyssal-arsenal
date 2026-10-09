@@ -316,12 +316,15 @@ async fn spawn_panopticon_listeners(
     let arp_interface = repo::settings::get_string(&pool, PANOPTICON_ARP_INTERFACE, "")
         .await
         .unwrap_or_default();
-    if arp_enabled && !arp_interface.trim().is_empty() {
-        abyssal_web::spawn_panopticon_arp_listener(
-            pool,
-            arp_interface.trim().to_string(),
-            notifications,
-        );
+    if arp_enabled {
+        // Comma-separated: one listener per interface.
+        for interface in abyssal_web::split_settings_list(&arp_interface) {
+            abyssal_web::spawn_panopticon_arp_listener(
+                pool.clone(),
+                interface,
+                notifications.clone(),
+            );
+        }
     }
 }
 

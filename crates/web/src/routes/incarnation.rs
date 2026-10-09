@@ -508,6 +508,7 @@ async fn lifecycle_confirm(
             expected: unit.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

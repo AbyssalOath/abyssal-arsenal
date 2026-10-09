@@ -156,7 +156,7 @@
   <form method="post" action="/admin/hosts/aat/approval" style="margin:16px 0 0;">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label style="display:flex; gap:8px; align-items:center;">
-      <input type="checkbox" name="require_approval"{% if aat.require_approval %} checked{% endif %} onchange="this.form.submit()">
+      <input type="checkbox" name="require_approval"{% if aat.require_approval %} checked{% endif %} data-autosubmit>
       Require approval for hosts that enroll with this token
     </label>
     <noscript><button type="submit" class="btn-secondary btn-sm">Save</button></noscript>
@@ -171,7 +171,7 @@
   </form>
 
   <form method="post" action="/admin/hosts/aat/rotate" style="margin:12px 0 0;"
-        onsubmit="return confirm('Rotate the install token? The current one stops enrolling new hosts immediately, so every deploy package using it must be updated. Enrolled hosts are unaffected.');">
+        data-confirm="Rotate the install token? The current one stops enrolling new hosts immediately, so every deploy package using it must be updated. Enrolled hosts are unaffected.">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <button type="submit" class="btn-danger btn-sm">{% call macros::icon("danger") %} Rotate token</button>
   </form>
@@ -300,7 +300,7 @@
             <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>{% call macros::icon("host") %} Run System Info</button>
           </form>
           {% if !h.revoked %}
-          <form method="post" action="/admin/hosts/{{ h.id }}/update" onsubmit="return confirm('Update this host\'s agent to the control plane\'s current version? It will download the new build, swap the binary, and briefly restart its service.');">
+          <form method="post" action="/admin/hosts/{{ h.id }}/update" data-confirm="Update this host's agent to the latest published version? It will download the new build, swap the binary, and briefly restart its service.">
             <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
             <button type="submit" class="{% if h.protocol_mismatch %}btn-warning{% else %}btn-secondary{% endif %}"{% if !h.online %} disabled title="The host must be connected to update it over its connection."{% endif %}>{% call macros::icon("generate") %} Update agent</button>
           </form>

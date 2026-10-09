@@ -206,7 +206,7 @@ pub async fn change_password(
     )
     .await?;
 
-    Ok(Redirect::to("/account").into_response())
+    Ok(Redirect::to("/?notice=password_changed").into_response())
 }
 
 // ---------------------------------------------------------------------
@@ -585,6 +585,7 @@ pub async fn community_macro_remove_confirm(
             expected: m.name,
         }),
         extra_hidden_fields: vec![("return_to".to_string(), return_to)],
+        shred_option: None,
     };
     let jar = jar.clone();
     let jar = match new_cookie {

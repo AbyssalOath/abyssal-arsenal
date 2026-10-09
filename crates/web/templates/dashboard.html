@@ -5,6 +5,10 @@
 {% block head_extra %}{% call macros::refresh_head(refresh_seconds, live_htmx) %}{% endblock %}
 {% block content %}
 
+{% if let Some(n) = notice %}
+<div class="info-banner" role="status">{{ n }}</div>
+{% endif %}
+
 <div class="dashboard-topline">
   {% if update_notice.update_available %}
   <a href="{{ update_notice.release_url }}" class="update-notice update-notice-alert" target="_blank" rel="noopener noreferrer">

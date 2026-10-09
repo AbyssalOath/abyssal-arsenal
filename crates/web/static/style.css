@@ -1283,3 +1283,19 @@ a.stat-tile:hover { border-color: var(--accent); }
   .bat-eye { animation: none; }
   .bat-caption { animation: none; opacity: 1; }
 }
+
+/* Witness sign-off on shred deletions (confirm.html) -- deliberately
+   prominent: it's a compliance control, not a footnote. */
+.witness-box {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 16px 14px;
+  margin: 4px 0 16px;
+  max-width: 620px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.witness-box legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+.witness-box textarea { width: 100%; }

@@ -566,6 +566,7 @@ async fn destructive_confirm(
             expected: type_to_confirm_expected.to_string(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),

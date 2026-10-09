@@ -253,6 +253,7 @@ mod unix {
 
     pub async fn delete_quarantined_file(
         filename: String,
+        shred_passes: u8,
         elevation: &ElevationState,
     ) -> CommandOutcome {
         if !abyssal_agent_protocol::is_valid_quarantine_filename(&filename) {
@@ -260,10 +261,24 @@ mod unix {
                 "refusing invalid quarantine filename: {filename}"
             ));
         }
+        if let Err(e) = crate::shred::validate_passes(shred_passes) {
+            return CommandOutcome::Err(e);
+        }
         let path = format!("{QUARANTINE_DIR}/{filename}");
-        match elevation.run("rm", &["-f", path.as_str()]).await {
+        let result = if shred_passes == 0 {
+            elevation.run("rm", &["-f", path.as_str()]).await
+        } else {
+            let args = crate::shred::shred_args(&path, shred_passes);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            elevation.run("shred", &args).await
+        };
+        match result {
             Ok(output) => CommandOutcome::Ok(OperationOutput {
-                stdout: format!("Deleted quarantined file {filename}.\n{}", output.stdout),
+                stdout: format!(
+                    "{} quarantined file {filename}.\n{}",
+                    abyssal_agent_protocol::shred_verb(shred_passes),
+                    output.stdout
+                ),
                 ..output
             }),
             Err(e) => CommandOutcome::Err(e),
@@ -1006,6 +1021,7 @@ mod windows {
 
     pub async fn delete_quarantined_file(
         filename: String,
+        shred_passes: u8,
         _elevation: &ElevationState,
     ) -> CommandOutcome {
         if !abyssal_agent_protocol::is_valid_quarantine_filename(&filename) {
@@ -1013,11 +1029,22 @@ mod windows {
                 "refusing invalid quarantine filename: {filename}"
             ));
         }
+        if let Err(e) = crate::shred::validate_passes(shred_passes) {
+            return CommandOutcome::Err(e);
+        }
         let path = format!("{QUARANTINE_DIR}\\{filename}");
-        let script = ps_checked(&format!("Remove-Item -Path {} -Force", ps_quote(&path)));
+        let script = if shred_passes == 0 {
+            ps_checked(&format!("Remove-Item -Path {} -Force", ps_quote(&path)))
+        } else {
+            ps_checked(&crate::shred::shred_script(&path, shred_passes))
+        };
         match run_ps(&script).await {
             Ok(output) => CommandOutcome::Ok(OperationOutput {
-                stdout: format!("Deleted quarantined file {filename}.\n{}", output.stdout),
+                stdout: format!(
+                    "{} quarantined file {filename}.\n{}",
+                    abyssal_agent_protocol::shred_verb(shred_passes),
+                    output.stdout
+                ),
                 ..output
             }),
             Err(e) => CommandOutcome::Err(e),

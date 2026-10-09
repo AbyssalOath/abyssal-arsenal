@@ -1125,6 +1125,7 @@ pub async fn delete_connection_confirm(
             expected: connection.name,
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -2148,6 +2149,7 @@ pub async fn delete_share_confirm(
             expected: label,
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -2624,6 +2626,7 @@ pub async fn delete_mount_confirm(
             expected: mount.mount_point,
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = jar.clone();
     let jar = match new_cookie {

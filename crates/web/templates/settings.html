@@ -186,6 +186,46 @@
 </div>
 {% endif %}
 
+{% if access.sanitization %}
+<div class="settings-section" id="sanitization">
+  <h2 class="settings-section-title">Data Sanitization</h2>
+  <div class="card settings-list">
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("role") %} Require witness sign-off for shredding</div>
+        <p class="settings-row-desc">Every shred (backups, quarantined files, SSH keys) must be witnessed by a second authorized user.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            For policies that require media sanitization to be witnessed or performed by
+            authorized personnel (e.g. CJIS). When on, a shred deletion only goes ahead once a
+            second, different user signs in with their own password in its "Witness sign-off"
+            box -- and they must hold the permission that deletion needs. When off, the box is
+            still there and optional. Either way, every shred is recorded in the audit log with
+            who asked for it, the witness (if any), the pass count, what was destroyed, and the
+            sign-off note. Ordinary deletes (0 passes) aren't affected.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if sanitization_require_witness %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if sanitization_require_witness %}Required{% else %}Optional{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/sanitization-require-witness">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if sanitization_require_witness %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if sanitization_require_witness %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if sanitization_require_witness %}Make optional{% else %}Require{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endif %}
+
 {% if access.thanatos %}
 <div class="settings-section">
   <h2 class="settings-section-title">Security Monitoring (Thanatos)</h2>
@@ -547,13 +587,15 @@
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("scan") %} Panopticon sweep target</div>
-        <p class="settings-row-desc">IP, CIDR range, or hostname the active sweep scans on each run.</p>
+        <p class="settings-row-desc">IPs, CIDR ranges and/or hostnames the active sweep scans on each run -- comma-separated for more than one.</p>
         <details class="settings-row-more">
           <summary>Learn more</summary>
           <p>
             The active sweep does nothing on a tick where this is empty, even if the toggle
-            above is on -- there's no default target to guess. Scans every port nmap checks
-            by default, same as leaving the port field blank on a manual scan.
+            above is on -- there's no default target to guess. With several targets (e.g.
+            <code>10.0.10.0/24, 10.0.20.0/24, printer.corp.lan</code>) each is scanned in turn,
+            and one failing doesn't stop the rest. Scans every port nmap checks by default,
+            same as leaving the port field blank on a manual scan.
           </p>
         </details>
       </div>
@@ -561,7 +603,7 @@
         <form method="post" action="/admin/settings/panopticon-sweep-target" class="settings-inline-form">
           <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
           <label for="panopticon-sweep-target" class="sr-only">Sweep target</label>
-          <input type="text" id="panopticon-sweep-target" name="target" value="{{ panopticon_sweep_target }}" placeholder="e.g. 192.168.1.0/24">
+          <input type="text" id="panopticon-sweep-target" name="target" value="{{ panopticon_sweep_target }}" placeholder="e.g. 192.168.1.0/24, 10.0.0.5, nas.lan" style="width:340px;">
           <button type="submit" class="btn-warning">Save</button>
         </form>
       </div>
@@ -636,12 +678,14 @@
     <div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("network") %} Panopticon ARP interface</div>
-        <p class="settings-row-desc">Network interface the ARP listener captures on, e.g. <code>eth0</code>.</p>
+        <p class="settings-row-desc">Network interface(s) the ARP listener captures on, e.g. <code>eth0</code> -- comma-separated for more than one.</p>
         <details class="settings-row-more">
           <summary>Learn more</summary>
           <p>
             The ARP listener doesn't start at all if this is empty, even if the toggle
-            above is on -- there's no default interface to guess.
+            above is on -- there's no default interface to guess. With several (e.g.
+            <code>eth0, eth1</code>), it captures on each -- useful when the control plane
+            sits on more than one VLAN. Changes take effect when the app restarts.
           </p>
         </details>
       </div>
@@ -649,7 +693,7 @@
         <form method="post" action="/admin/settings/panopticon-arp-interface" class="settings-inline-form">
           <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
           <label for="panopticon-arp-interface" class="sr-only">ARP interface</label>
-          <input type="text" id="panopticon-arp-interface" name="interface" value="{{ panopticon_arp_interface }}" placeholder="e.g. eth0">
+          <input type="text" id="panopticon-arp-interface" name="interface" value="{{ panopticon_arp_interface }}" placeholder="e.g. eth0, eth1">
           <button type="submit" class="btn-warning">Save</button>
         </form>
       </div>

@@ -389,9 +389,10 @@ pub async fn run(
         AgentOperation::RestoreQuarantinedFile {
             quarantine_filename,
         } => inquest::restore_quarantined_file(quarantine_filename, elevation).await,
-        AgentOperation::DeleteQuarantinedFile { filename } => {
-            inquest::delete_quarantined_file(filename, elevation).await
-        }
+        AgentOperation::DeleteQuarantinedFile {
+            filename,
+            shred_passes,
+        } => inquest::delete_quarantined_file(filename, shred_passes, elevation).await,
         AgentOperation::DeisolateHost => inquest::deisolate_host(elevation).await,
         AgentOperation::IsolateHost => inquest::isolate_host(control_plane_host, elevation).await,
         AgentOperation::ListSshHostKeys => cryptkeeper::list_ssh_host_keys(elevation).await,
@@ -420,8 +421,8 @@ pub async fn run(
             username,
             fingerprint,
         } => cryptkeeper::remove_authorized_key(username, fingerprint, elevation).await,
-        AgentOperation::DeleteSshKeypair { path } => {
-            cryptkeeper::delete_ssh_keypair(path, elevation).await
+        AgentOperation::DeleteSshKeypair { path, shred_passes } => {
+            cryptkeeper::delete_ssh_keypair(path, shred_passes, elevation).await
         }
         AgentOperation::ScanSecurityEvents {
             extra_fim_paths,

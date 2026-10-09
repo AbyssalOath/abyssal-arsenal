@@ -804,6 +804,7 @@ async fn destructive_confirm(
     action_url: String,
     type_to_confirm_label: &str,
     type_to_confirm_expected: &str,
+    shred_option: bool,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::IncidentsRespond)?;
 
@@ -843,6 +844,11 @@ async fn destructive_confirm(
             expected: type_to_confirm_expected.to_string(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: if shred_option {
+            Some(crate::templates::ShredOption::for_host(state, host_id).await?)
+        } else {
+            None
+        },
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -858,6 +864,29 @@ pub struct ConfirmForm {
     confirm: bool,
     #[serde(default)]
     confirm_text: String,
+    /// Deletions that offer shredding; blank or 0 = an ordinary delete.
+    #[serde(default)]
+    shred_passes: String,
+    /// Witness sign-off for a shred (see `common::sanitization_sign_off`).
+    #[serde(default)]
+    witnessed: Option<String>,
+    #[serde(default)]
+    witness_username: String,
+    #[serde(default)]
+    witness_password: String,
+    #[serde(default)]
+    sanitization_note: String,
+}
+
+impl ConfirmForm {
+    fn sign_off_fields(&self) -> crate::common::SignOffFields {
+        crate::common::SignOffFields {
+            witnessed: self.witnessed.is_some(),
+            witness_username: self.witness_username.clone(),
+            witness_password: self.witness_password.clone(),
+            note: self.sanitization_note.clone(),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -982,6 +1011,7 @@ pub async fn delete_quarantined_file_confirm(
         action_url,
         "quarantine filename",
         &filename,
+        true,
     )
     .await
 }
@@ -995,6 +1025,46 @@ pub async fn delete_quarantined_file(
     Form(form): Form<ConfirmForm>,
 ) -> Result<Response, WebError> {
     let filename = validate_quarantine_filename(&q.value)?;
+    let shred_passes = crate::common::shred_passes_for_host(&state, host_id, &form.shred_passes)?;
+    // Everything `run_destructive_op` checks, checked here first too: the
+    // witness is verified (and the sign-off recorded) only for a deletion
+    // that's otherwise allowed and confirmed -- and a failed sign-off
+    // destroys nothing.
+    abyssal_rbac::ensure(&ctx, Permission::IncidentsRespond)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    if !form.confirm {
+        return Err(WebError(AppError::Validation(
+            "The deletion was not confirmed.".into(),
+        )));
+    }
+    crate::common::require_typed_confirmation(&form.confirm_text, &filename)?;
+    let sign_off = crate::common::sanitization_sign_off(
+        &state,
+        &ctx,
+        shred_passes,
+        form.sign_off_fields(),
+        Permission::IncidentsRespond,
+    )
+    .await?;
+    if let Some(sign_off) = &sign_off {
+        let host_name = repo::hosts::find_by_id(&state.pool, host_id)
+            .await?
+            .map(|h| h.name)
+            .unwrap_or_default();
+        crate::common::record_sign_off(
+            &state,
+            &ctx,
+            sign_off,
+            &format!("quarantined file {filename} on {host_name}"),
+            shred_passes,
+        )
+        .await?;
+    }
+    let label = if shred_passes == 0 {
+        "Delete Quarantined File".to_string()
+    } else {
+        format!("Shred Quarantined File ({shred_passes} passes)")
+    };
     run_destructive_op(
         &state,
         jar,
@@ -1003,8 +1073,9 @@ pub async fn delete_quarantined_file(
         &filename,
         AgentOperation::DeleteQuarantinedFile {
             filename: filename.clone(),
+            shred_passes,
         },
-        "Delete Quarantined File",
+        &label,
         form,
         None,
     )
@@ -1060,6 +1131,7 @@ pub async fn kill_process_confirm(
         action_url,
         "process ID",
         &pid.to_string(),
+        false,
     )
     .await
 }
@@ -1124,6 +1196,7 @@ pub async fn isolate_host_confirm(
         action_url,
         "hostname",
         &host.name,
+        false,
     )
     .await
 }

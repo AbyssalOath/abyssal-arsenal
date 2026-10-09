@@ -53,6 +53,8 @@ pub struct SettingsAccess {
     pub storage_ops: bool,
     /// Inquest's host network isolation.
     pub host_isolation: bool,
+    /// Data sanitization policy (witness sign-off for shreds).
+    pub sanitization: bool,
     pub thanatos: bool,
     /// Panopticon's sweep, alerts, passive discovery and bandwidth history.
     pub panopticon: bool,
@@ -72,6 +74,7 @@ impl SettingsAccess {
             elevation: ctx.has(Permission::HostsManage),
             storage_ops: ctx.has(Permission::StorageManage),
             host_isolation: ctx.has(Permission::IncidentsRespond),
+            sanitization: ctx.has(Permission::SecurityManage),
             thanatos: ctx.has(Permission::SecurityManage),
             panopticon: ctx.has(Permission::NetworkManage),
             nac: ctx.has(Permission::NetworkNac),
@@ -135,6 +138,12 @@ async fn render(
     .await?;
     let high_risk_storage_ops_enabled =
         repo::settings::get_bool(&state.pool, HIGH_RISK_STORAGE_OPS_ENABLED, false).await?;
+    let sanitization_require_witness = repo::settings::get_bool(
+        &state.pool,
+        crate::common::SANITIZATION_REQUIRE_WITNESS,
+        false,
+    )
+    .await?;
     let host_isolation_enabled =
         repo::settings::get_bool(&state.pool, HOST_ISOLATION_ENABLED, false).await?;
     let thanatos_monitoring_enabled =
@@ -240,6 +249,7 @@ async fn render(
         apotheosis_elevation_window_minutes,
         high_risk_storage_ops_enabled,
         host_isolation_enabled,
+        sanitization_require_witness,
         thanatos_monitoring_enabled,
         thanatos_alert_recipients,
         thanatos_extra_fim_paths,
@@ -1046,12 +1056,19 @@ pub async fn set_panopticon_sweep_target(
     abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
-    let target = form.target.trim();
-    if !target.is_empty() && !abyssal_agent_protocol::is_valid_network_target(target) {
-        return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid IP address, CIDR range, or hostname.".into(),
-        )));
+    // Comma-separated IPs, CIDR ranges and/or hostnames; each one checked,
+    // stored normalized ("a, b, c").
+    let targets = crate::panopticon_ops::split_list(&form.target);
+    if let Some(bad) = targets
+        .iter()
+        .find(|t| !abyssal_agent_protocol::is_valid_network_target(t))
+    {
+        return Err(WebError(AppError::Validation(format!(
+            "\"{bad}\" doesn't look like a valid IP address, CIDR range, or hostname."
+        ))));
     }
+    let target = targets.join(", ");
+    let target = target.as_str();
 
     repo::settings::set(
         &state.pool,
@@ -1211,12 +1228,18 @@ pub async fn set_panopticon_arp_interface(
     abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
-    let interface = form.interface.trim();
-    if interface.len() > 64 || interface.chars().any(char::is_whitespace) {
-        return Err(WebError(AppError::Validation(
-            "That doesn't look like a valid interface name.".into(),
-        )));
+    // Comma-separated: the listener captures on each one.
+    let interfaces = crate::panopticon_ops::split_list(&form.interface);
+    if let Some(bad) = interfaces
+        .iter()
+        .find(|i| i.len() > 64 || i.chars().any(char::is_whitespace))
+    {
+        return Err(WebError(AppError::Validation(format!(
+            "\"{bad}\" doesn't look like a valid interface name."
+        ))));
     }
+    let interface = interfaces.join(", ");
+    let interface = interface.as_str();
 
     repo::settings::set(
         &state.pool,
@@ -1385,4 +1408,44 @@ pub async fn send_test_email(
     )
     .await?;
     render(&state, jar, &ctx, Some(result)).await
+}
+
+#[derive(Deserialize)]
+pub struct SanitizationWitnessForm {
+    csrf_token: String,
+    enabled: bool,
+}
+
+/// Settings > Data Sanitization: whether every shred deletion needs a
+/// verified witness (`common::sanitization_sign_off`).
+pub async fn set_sanitization_require_witness(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<SanitizationWitnessForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    repo::settings::set(
+        &state.pool,
+        crate::common::SANITIZATION_REQUIRE_WITNESS,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(crate::common::SANITIZATION_REQUIRE_WITNESS)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+
+    Ok(Redirect::to("/admin/settings#sanitization").into_response())
 }

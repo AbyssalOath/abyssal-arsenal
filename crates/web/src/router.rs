@@ -198,6 +198,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_high_risk_storage_ops),
         )
         .route(
+            "/admin/settings/sanitization-require-witness",
+            post(routes::settings::set_sanitization_require_witness),
+        )
+        .route(
             "/admin/settings/host-isolation",
             post(routes::settings::set_host_isolation),
         )
@@ -590,6 +594,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/reliquary/backups/:id/delete",
             post(routes::reliquary_backup::delete),
+        )
+        .route(
+            "/arsenals/reliquary/backups/:id/delete/confirm",
+            get(routes::reliquary_backup::delete_confirm),
         )
         .route(
             "/arsenals/reliquary/backups/:id/restore",

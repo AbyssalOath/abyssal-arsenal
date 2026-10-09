@@ -67,6 +67,18 @@ const CATEGORY_ORDER: [ModuleCategory; 4] = [
 pub struct DashboardQuery {
     #[serde(default)]
     q: String,
+    /// A fixed code, never free text -- so nobody can craft a dashboard link
+    /// that shows a message of their choosing.
+    #[serde(default)]
+    notice: String,
+}
+
+/// The banner text for a `?notice=` code; unknown codes show nothing.
+fn notice_text(code: &str) -> Option<&'static str> {
+    match code {
+        "password_changed" => Some("Password changed successfully."),
+        _ => None,
+    }
 }
 
 pub async fn show(
@@ -230,6 +242,7 @@ pub async fn show(
     let htmx_pref = crate::dashboard_prefs::htmx_enabled(&jar);
     let self_url = redirect_target(&q.q);
     let tpl = DashboardTemplate {
+        notice: notice_text(&q.notice).map(str::to_string),
         base,
         search_query: q.q,
         pinned,

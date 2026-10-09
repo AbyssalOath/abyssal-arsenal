@@ -1051,6 +1051,7 @@ pub async fn macro_remove_confirm(
             expected: m.name,
         }),
         extra_hidden_fields: vec![("host_id".to_string(), q.host_id.to_string())],
+        shred_option: None,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -1155,6 +1156,7 @@ async fn destructive_confirm(
         escalate_host_id,
         type_to_confirm,
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -2354,6 +2356,7 @@ pub async fn apply_profile_fleet_confirm(
             expected: profile.name.clone(),
         }),
         extra_hidden_fields: vec![],
+        shred_option: None,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
