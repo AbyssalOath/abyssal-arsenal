@@ -2085,7 +2085,11 @@ pub struct PanopticonSwitchEditTemplate {
 
 pub struct PanopticonPortRow {
     pub if_index: u32,
+    /// The port's name on the switch, else its `ifDescr`.
     pub label: String,
+    /// The hardware port ("Slot: 0 Port: 3 Gigabit - Level") under a named
+    /// port's name; `None` when the label already is that.
+    pub hw_label: Option<String>,
     /// Operational link state (`ifOperStatus`) -- M2. `oper_known` is false
     /// when no poll has read status for this port yet (pre-M2 rows, or a
     /// switch that doesn't expose IF-MIB status); the template then shows a

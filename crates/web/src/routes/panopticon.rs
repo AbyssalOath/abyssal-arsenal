@@ -762,6 +762,7 @@ pub async fn scan(
     tokio::spawn(crate::panopticon_ops::run_scan_job(
         state.executor.clone(),
         state.pool.clone(),
+        state.hosts.clone(),
         ctx,
         job,
         target,
@@ -2312,6 +2313,10 @@ pub async fn switch_traffic(
             admin_known: port.admin_status.is_some(),
             speed: format_port_speed(port.speed_mbps),
             devices,
+            hw_label: port
+                .hw_descr
+                .clone()
+                .filter(|hw| !label.contains(hw.as_str())),
             label,
             last_seen_at: crate::common::format_in_tz(port.last_seen_at, &ctx.user.timezone),
             current_in,

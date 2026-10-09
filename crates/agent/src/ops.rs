@@ -36,6 +36,10 @@ pub async fn run(
         }),
         AgentOperation::SystemInfo => system_info().await,
         AgentOperation::SelfUpdate { version } => crate::selfupdate::self_update(version).await,
+        AgentOperation::UninstallAgent { purge } => {
+            crate::self_uninstall::uninstall_agent(purge).await
+        }
+        AgentOperation::NeighborTable => crate::neighbors::neighbor_table().await,
         AgentOperation::UpdateTrustedCa { bundle_pem } => {
             match crate::tls::update_trusted_ca(&bundle_pem) {
                 Ok(update) => CommandOutcome::Ok(OperationOutput {

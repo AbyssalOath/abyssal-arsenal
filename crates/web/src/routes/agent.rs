@@ -314,6 +314,15 @@ async fn handle_socket(
             crate::control_plane::probe_docker_device(&hosts, host_id).await;
         });
     }
+    {
+        // Its own MAC for Panopticon's inventory (see panopticon_neighbors).
+        let hosts = state.hosts.clone();
+        let pool = state.pool.clone();
+        let (host_id, name) = (host.id, host.name.clone());
+        tokio::spawn(async move {
+            crate::panopticon_neighbors::enrich_from_host(&pool, &hosts, host_id, &name).await;
+        });
+    }
     // Keep the agent's trusted control-plane CA current (a rotation may have
     // started or finished while it was away). Off the connection's own task:
     // the response arrives through the read loop below.

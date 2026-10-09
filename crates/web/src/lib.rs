@@ -17,6 +17,7 @@ pub mod pagination;
 mod panopticon_arp;
 mod panopticon_enforcement;
 mod panopticon_mdns;
+pub mod panopticon_neighbors;
 mod panopticon_ops;
 mod panopticon_policy;
 mod panopticon_radius;

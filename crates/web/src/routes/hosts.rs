@@ -585,6 +585,33 @@ pub async fn update_agent(
     // The newest *published* release, never an unreleased version the agent
     // couldn't download (a control plane built from main after a bump).
     let version = crate::update_check::agent_release_version(&state).await;
+    // Never offer a downgrade: an agent from this control plane's own
+    // bundle (SSH quick-add, /agent/linux) can be newer than the newest
+    // release the hourly check has seen.
+    use crate::update_check::parse_version;
+    if let (Some(running), Some(target)) = (
+        host.agent_version.as_deref().and_then(parse_version),
+        parse_version(&version),
+    ) && target < running
+    {
+        let running = host.agent_version.clone().unwrap_or_default();
+        return render(
+            &state,
+            &jar,
+            &ctx,
+            None,
+            None,
+            None,
+            None,
+            Some(format!(
+                "{} is already on v{running}, newer than the newest release this control plane \
+                 knows of (v{version}), so there's nothing to update to. If v{running} has just \
+                 been released, use 'Check now' on the dashboard and try again.",
+                host.name
+            )),
+        )
+        .await;
+    }
     let elevated = state.elevation.is_elevated(id);
     let result = state
         .executor
@@ -884,9 +911,9 @@ pub async fn remove_confirm(
         title: "Remove host".to_string(),
         message: format!(
             "This will permanently delete \"{}\" and its credential from Abyssal Arsenal -- \
-             this cannot be undone. Its audit history is kept. The agent itself keeps running \
-             on the remote machine until you uninstall it there; you'll be given the command to \
-             do that after confirming.",
+             this cannot be undone. Its audit history is kept. If its agent is connected (and \
+             0.2.2 or later), it uninstalls itself from the machine too: service, binary and \
+             credentials. Otherwise you'll be given the command to run there.",
             host.name
         ),
         action_url: format!("/admin/hosts/{id}/remove"),
@@ -936,12 +963,19 @@ pub async fn remove(
         .ok_or(AppError::NotFound)?;
     crate::common::require_typed_confirmation(&form.confirm_text, &host.name)?;
 
+    // Uninstall the agent while it's still connected (it replies, then
+    // uninstalls itself from a detached process), then delete. Any failure
+    // here still removes the host: the admin asked for that, and the
+    // credential stops working either way.
+    let (uninstalled, why_not) = uninstall_agent_for_removal(&state, &ctx, &host).await;
+
     // Delete first, then drop any live connection -- a connection that
     // outlives the DB row can no longer be dispatched to via `/admin/hosts`
     // (its row is gone), and if it ever disconnects and tries to
     // reconnect, its credential no longer resolves to a host either.
     repo::hosts::delete(&state.pool, id).await?;
     state.hosts.unregister(id);
+    state.hosts.set_control_plane(id, false);
 
     abyssal_audit::record(
         &state.pool,
@@ -950,17 +984,25 @@ pub async fn remove(
                 user_id: ctx.user.id,
                 username: &ctx.user.username,
             })
-            .resource(&host.name),
+            .resource(&host.name)
+            .metadata(serde_json::json!({ "agent_uninstalled": uninstalled })),
     )
     .await?;
 
-    let uninstall_command = "sudo systemctl disable --now abyssal-agent\n\
-         sudo rm -f /usr/local/bin/abyssal-agent\n\
-         sudo rm -rf /etc/abyssal-agent\n\
-         sudo rm -f /etc/systemd/system/abyssal-agent.service\n\n\
-         (If you installed it with `cargo install` instead, remove \
-         ~/.cargo/bin/abyssal-agent and whatever --credentials-file path you gave it.)"
-        .to_string();
+    if uninstalled {
+        let mut message = format!(
+            "Removed {}. Its agent is uninstalling itself (service, binary, credentials) and \
+             will disconnect in a few seconds.",
+            host.name
+        );
+        if host.is_control_plane {
+            message.push_str(
+                " This was the control plane's own server: set CONTROL_PLANE_AGENT=no in .env \
+                 so a later ./install.sh doesn't install it again.",
+            );
+        }
+        return render(&state, &jar, &ctx, None, None, None, Some(message), None).await;
+    }
 
     render(
         &state,
@@ -968,11 +1010,87 @@ pub async fn remove(
         &ctx,
         None,
         None,
-        Some(uninstall_command),
+        Some(manual_uninstall_command(host.os.as_deref()).to_string()),
         None,
-        None,
+        why_not,
     )
     .await
+}
+
+/// Agents from protocol 42 (0.2.2) uninstall themselves.
+const UNINSTALL_MIN_PROTOCOL: u32 = 42;
+
+/// Asks the host's agent to uninstall itself. `(true, None)` when it
+/// accepted; otherwise `(false, Some(why))` for the admin, who then gets the
+/// command to run on the host.
+async fn uninstall_agent_for_removal(
+    state: &AppState,
+    ctx: &abyssal_rbac::AuthContext,
+    host: &abyssal_core::Host,
+) -> (bool, Option<String>) {
+    if !state.hosts.is_connected(host.id) {
+        return (
+            false,
+            Some(format!(
+                "{} is offline, so its agent couldn't be uninstalled automatically.",
+                host.name
+            )),
+        );
+    }
+    if !state.hosts.agent_supports(host.id, UNINSTALL_MIN_PROTOCOL) {
+        return (
+            false,
+            Some(format!(
+                "{}'s agent (v{}) is too old to uninstall itself (0.2.2 or later can).",
+                host.name,
+                host.agent_version.as_deref().unwrap_or("unknown")
+            )),
+        );
+    }
+    let result = state
+        .executor
+        .execute_on_host(
+            ctx,
+            &state.hosts,
+            host.id,
+            &host.name,
+            AgentOperation::UninstallAgent { purge: true },
+            Permission::HostsManage,
+            OperationKind::Destructive,
+            true,
+            Duration::from_secs(30),
+            None,
+            state.elevation.is_elevated(host.id),
+        )
+        .await;
+    match result {
+        Ok(_) => (true, None),
+        Err(e) => (
+            false,
+            Some(format!(
+                "{}'s agent couldn't uninstall itself ({e}).",
+                host.name
+            )),
+        ),
+    }
+}
+
+/// What to run on a removed host whose agent couldn't uninstall itself.
+fn manual_uninstall_command(os: Option<&str>) -> &'static str {
+    match os {
+        Some("windows") => {
+            "In an elevated PowerShell or Command Prompt:\n\
+             \"C:\\Program Files\\AbyssalAgent\\abyssal-agent.exe\" /uninstall /quiet PURGE=1\n\n\
+             (Installed with the MSI? Uninstall \"Abyssal Arsenal Agent\" from Apps & features \
+             instead.)"
+        }
+        _ => {
+            "sudo abyssal-agent uninstall --purge\n\n\
+             (Agents before 0.2.1 don't have that command: sudo systemctl disable --now \
+             abyssal-agent && sudo rm -f /usr/local/bin/abyssal-agent \
+             /etc/systemd/system/abyssal-agent.service && sudo rm -rf /etc/abyssal-agent)"
+        }
+    }
 }
 
 #[cfg(test)]

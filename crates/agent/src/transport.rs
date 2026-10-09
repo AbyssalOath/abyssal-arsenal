@@ -71,7 +71,22 @@ pub async fn connect_and_serve(
     while let Some(message) = stream.next().await {
         match message? {
             Message::Text(text) => {
-                let server_msg: ServerMessage = serde_json::from_str(&text)?;
+                let server_msg: ServerMessage = match serde_json::from_str(&text) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        // A newer control plane sent something this build
+                        // doesn't know. Answer a command with an error rather
+                        // than dropping the connection: an agent that
+                        // disconnects over it is knocked offline every time a
+                        // sweep sends it.
+                        tracing::warn!(error = %e, "unrecognized message from the control plane");
+                        if let Some(response) = unsupported_command(&text) {
+                            sink.send(Message::Text(serde_json::to_string(&response)?))
+                                .await?;
+                        }
+                        continue;
+                    }
+                };
                 let response = handle(server_msg, elevation, &control_plane_host).await;
                 let payload = serde_json::to_string(&response)?;
                 sink.send(Message::Text(payload)).await?;
@@ -85,6 +100,22 @@ pub async fn connect_and_serve(
     }
 
     Ok(())
+}
+
+/// The reply to a command this build can't parse (an operation added after
+/// it, most likely), if `text` is a command at all.
+fn unsupported_command(text: &str) -> Option<AgentMessage> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let request_id = value.get("Command")?.get("request_id")?.clone();
+    let request_id: uuid::Uuid = serde_json::from_value(request_id).ok()?;
+    Some(AgentMessage::Response {
+        request_id,
+        outcome: abyssal_agent_protocol::CommandOutcome::Err(format!(
+            "this agent (v{}, protocol {PROTOCOL_VERSION}) doesn't support this operation -- \
+             update it with 'Update agent' on /admin/hosts",
+            env!("CARGO_PKG_VERSION")
+        )),
+    })
 }
 
 async fn handle(
@@ -104,5 +135,43 @@ async fn handle(
                 outcome,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unknown_operation_gets_an_error_reply() {
+        let id = "4f0c5a0e-8a51-4a59-9d55-6e1b3c1f2a77";
+        let text = format!(
+            r#"{{"Command":{{"request_id":"{id}","operation":{{"SomeFutureOp":{{"x":1}}}}}}}}"#
+        );
+        assert!(serde_json::from_str::<ServerMessage>(&text).is_err());
+        match unsupported_command(&text) {
+            Some(AgentMessage::Response {
+                request_id,
+                outcome: abyssal_agent_protocol::CommandOutcome::Err(message),
+            }) => {
+                assert_eq!(request_id.to_string(), id);
+                assert!(message.contains("update it"), "{message}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_commands_and_garbage_get_no_reply() {
+        assert!(unsupported_command(r#""SomeFutureMessage""#).is_none());
+        assert!(unsupported_command(r#"{"Command":{"operation":"Ping"}}"#).is_none());
+        assert!(unsupported_command("not json").is_none());
+    }
+
+    #[test]
+    fn a_reply_round_trips_through_the_protocol() {
+        let text = r#"{"Command":{"request_id":"4f0c5a0e-8a51-4a59-9d55-6e1b3c1f2a77","operation":"NoSuchOp"}}"#;
+        let reply = serde_json::to_string(&unsupported_command(text).unwrap()).unwrap();
+        assert!(serde_json::from_str::<AgentMessage>(&reply).is_ok());
     }
 }

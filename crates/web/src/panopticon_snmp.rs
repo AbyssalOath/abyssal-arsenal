@@ -40,6 +40,8 @@ const MAX_WALK_ENTRIES: usize = 20_000;
 const DOT1D_TP_FDB_PORT: &[u64] = &[1, 3, 6, 1, 2, 1, 17, 4, 3, 1, 2];
 const DOT1D_BASE_PORT_IF_INDEX: &[u64] = &[1, 3, 6, 1, 2, 1, 17, 1, 4, 1, 2];
 const IF_DESCR: &[u64] = &[1, 3, 6, 1, 2, 1, 2, 2, 1, 2];
+/// IF-MIB `ifAlias`: the name an admin gave the port on the switch.
+const IF_ALIAS: &[u64] = &[1, 3, 6, 1, 2, 1, 31, 1, 1, 1, 18];
 /// IF-MIB port-state columns (M2, read-only). `ifAdminStatus`/`ifOperStatus`
 /// are INTEGER (decode to `OwnedValue::Integer`); `ifHighSpeed` (Mbps) and
 /// the legacy `ifSpeed` (bps) are Gauge32, which shares SNMP's `Unsigned32`
@@ -221,6 +223,52 @@ async fn walk_table(
     Ok(results)
 }
 
+/// `ifIndex -> string` from a walked table of OCTET STRINGs.
+fn octet_strings_by_index(rows: &[(Vec<u64>, OwnedValue)]) -> HashMap<i64, String> {
+    let mut out = HashMap::new();
+    for (suffix, value) in rows {
+        if let (Some(&if_index), OwnedValue::OctetString(bytes)) = (suffix.first(), value) {
+            out.insert(
+                if_index as i64,
+                String::from_utf8_lossy(bytes).trim().to_string(),
+            );
+        }
+    }
+    out
+}
+
+/// Each port's label: its name on the switch (`ifAlias`) when it has one,
+/// else `ifDescr`. A name more than one port shares gets the `ifDescr`
+/// appended ("Printer (Slot: 0 Port: 3 Gigabit - Level)"), because the
+/// label is also the key devices and NAC enforcement find a port by.
+fn port_labels(
+    hw_descr: &HashMap<i64, String>,
+    aliases: &HashMap<i64, String>,
+) -> HashMap<i64, String> {
+    let mut alias_count: HashMap<&str, usize> = HashMap::new();
+    for alias in aliases.values().filter(|a| !a.is_empty()) {
+        *alias_count.entry(alias.as_str()).or_default() += 1;
+    }
+    hw_descr
+        .iter()
+        .map(|(if_index, hw)| {
+            let label = match aliases.get(if_index).filter(|a| !a.is_empty()) {
+                Some(alias) if alias_count.get(alias.as_str()).copied().unwrap_or(0) > 1 => {
+                    if hw.is_empty() {
+                        format!("{alias} (if{if_index})")
+                    } else {
+                        format!("{alias} ({hw})")
+                    }
+                }
+                Some(alias) => alias.clone(),
+                None if hw.is_empty() => format!("if{if_index}"),
+                None => hw.clone(),
+            };
+            (*if_index, label)
+        })
+        .collect()
+}
+
 /// Polls one switch: BRIDGE-MIB's `dot1dTpFdbPort` (MAC -> bridge port
 /// number) joined through `dot1dBasePortIfIndex` (bridge port -> ifIndex)
 /// and IF-MIB's `ifDescr` (ifIndex -> human-readable port label), then
@@ -245,11 +293,26 @@ async fn poll_switch(
             port_to_if.insert(bridge_port as i64, *if_index);
         }
     }
-    // ifIndex -> ifDescr
-    let mut if_to_descr: HashMap<i64, String> = HashMap::new();
-    for (suffix, value) in &if_descr_map {
-        if let (Some(&if_index), OwnedValue::OctetString(bytes)) = (suffix.first(), value) {
-            if_to_descr.insert(if_index as i64, String::from_utf8_lossy(bytes).into_owned());
+    // ifIndex -> ifDescr, and -> ifAlias (best-effort: a switch without
+    // ifXTable just keeps the ifDescr labels).
+    let hw_descr = octet_strings_by_index(&if_descr_map);
+    let aliases = match walk_table(&mut sess, IF_ALIAS, &addr).await {
+        Ok(rows) => octet_strings_by_index(&rows),
+        Err(e) => {
+            tracing::debug!(error = %e, switch = %switch.name, "no ifAlias; using ifDescr for port labels");
+            HashMap::new()
+        }
+    };
+    // The label everything below keys on: the port's name, else ifDescr.
+    let if_to_descr = port_labels(&hw_descr, &aliases);
+    for (if_index, hw) in &hw_descr {
+        let (Ok(idx), Some(label)) = (u32::try_from(*if_index), if_to_descr.get(if_index)) else {
+            continue;
+        };
+        if let Err(e) =
+            repo::panopticon_traffic::record_port_names(pool, switch.id, idx, label, hw).await
+        {
+            tracing::warn!(error = %e, switch = %switch.name, if_index, "failed to record port name");
         }
     }
 
@@ -1033,6 +1096,39 @@ pub fn spawn_panopticon_snmp_sweep(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_ports_use_their_name_and_unnamed_ones_ifdescr() {
+        let hw: HashMap<i64, String> = [
+            (1, "Slot: 0 Port: 1 Gigabit - Level"),
+            (2, "Slot: 0 Port: 2 Gigabit - Level"),
+            (3, "Slot: 0 Port: 3 Gigabit - Level"),
+            (4, "Slot: 0 Port: 4 Gigabit - Level"),
+            (5, ""),
+        ]
+        .into_iter()
+        .map(|(i, s)| (i, s.to_string()))
+        .collect();
+        let aliases: HashMap<i64, String> =
+            [(1, "Uplink-Core"), (2, ""), (3, "Printer"), (4, "Printer")]
+                .into_iter()
+                .map(|(i, s)| (i, s.to_string()))
+                .collect();
+        let labels = port_labels(&hw, &aliases);
+        assert_eq!(labels[&1], "Uplink-Core");
+        assert_eq!(
+            labels[&2], "Slot: 0 Port: 2 Gigabit - Level",
+            "blank alias = unnamed"
+        );
+        assert_eq!(labels[&3], "Printer (Slot: 0 Port: 3 Gigabit - Level)");
+        assert_eq!(labels[&4], "Printer (Slot: 0 Port: 4 Gigabit - Level)");
+        assert_eq!(labels[&5], "if5");
+        // No ifXTable at all: plain ifDescr everywhere.
+        assert_eq!(
+            port_labels(&hw, &HashMap::new())[&1],
+            "Slot: 0 Port: 1 Gigabit - Level"
+        );
+    }
 
     #[test]
     fn portlist_sets_the_right_bit_msb_first() {

@@ -62,7 +62,7 @@
     <tbody>
       {% for p in ports %}
       <tr>
-        <td>{{ p.label }}</td>
+        <td>{{ p.label }}{% if let Some(hw) = p.hw_label %}<br><span style="color:var(--text-muted); font-size:0.85em;">{{ hw }}</span>{% endif %}</td>
         <td>
           {% if !p.oper_known %}<span class="badge badge-muted">—</span>
           {% else if p.oper_up %}<span class="badge badge-success">{{ p.oper_label }}</span>

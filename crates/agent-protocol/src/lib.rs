@@ -28,7 +28,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1380,6 +1380,22 @@ pub enum AgentOperation {
     SelfUpdate {
         version: String,
     },
+    /// Uninstalls this agent from its host -- what removing a host on
+    /// /admin/hosts does while the agent is connected. The agent replies
+    /// first, then a detached process (outside the service, which it
+    /// stops) runs the same `uninstall` an admin would, or `msiexec /x`
+    /// for an MSI install. `purge` also deletes the credentials and CA.
+    /// Destructive.
+    UninstallAgent {
+        #[serde(default)]
+        purge: bool,
+    },
+    /// This host's IPv4 neighbor (ARP) table and its own interfaces'
+    /// addresses, one tab-separated line each: `neighbor\t<ip>\t<mac>\t<interface>` and
+    /// `self\t<ip>\t<mac>\t<interface>`. Panopticon fills in the MAC (and
+    /// so the vendor) of devices its scans find from these: its scanner
+    /// runs inside a container that never sees the LAN's MACs. Read.
+    NeighborTable,
     /// Replaces the CA bundle the agent trusts for the control plane (the
     /// file it was installed with via `--ca-cert`) -- how the control plane
     /// rotates or re-addresses its internal CA without stranding agents: it
@@ -2016,6 +2032,10 @@ impl AgentOperation {
             AgentOperation::SelfUpdate { version } => {
                 format!("Updated agent to v{version}")
             }
+            AgentOperation::UninstallAgent { purge: true } => {
+                "Uninstalled the agent and removed its enrollment".to_string()
+            }
+            AgentOperation::UninstallAgent { purge: false } => "Uninstalled the agent".to_string(),
             AgentOperation::UpdateTrustedCa { .. } => {
                 "Updated the agent's trusted control-plane CA".to_string()
             }
@@ -2686,6 +2706,11 @@ impl fmt::Debug for AgentOperation {
                 .debug_struct("SelfUpdate")
                 .field("version", version)
                 .finish(),
+            AgentOperation::UninstallAgent { purge } => f
+                .debug_struct("UninstallAgent")
+                .field("purge", purge)
+                .finish(),
+            AgentOperation::NeighborTable => write!(f, "NeighborTable"),
             AgentOperation::UpdateTrustedCa { bundle_pem } => f
                 .debug_struct("UpdateTrustedCa")
                 .field(

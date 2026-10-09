@@ -69,6 +69,50 @@ never a `LIKE '10.0.1.%'` prefix match, without any schema/type change,
 CAST, or driver-mapping complexity. This is the "least invasive"
 implementation of the range-query requirement.
 
+## Where MAC, vendor and hostname come from
+
+Discovery's nmap runs inside the control plane's container. That container
+sits on a Docker bridge behind NAT, so it can't see a device's MAC directly:
+its own neighbor table only ever holds the bridge. The control plane gets
+MACs from other places instead, in this order:
+
+1. **nmap's `nbstat` script.** It asks hosts with 135, 139 or 445 open
+   (Windows, Samba) for their NetBIOS name and MAC over UDP 137. This works
+   across subnets, with no agent needed.
+2. **Agents' neighbor tables.** After every scan, each connected agent
+   (0.2.2 or later) reports its ARP table and its own interfaces
+   (`AgentOperation::NeighborTable`; on Windows, `Get-NetNeighbor`). The
+   agent `install.sh` puts on the control plane's own server matters most
+   here, because the scan's traffic leaves through that server, so its ARP
+   cache sees every device on the segment. A host's own interface beats
+   another host's ARP entry for the same address. Neighbors on bridges,
+   veths and tunnels (`docker0`, `br-*`, `virbr*`...) are ignored, so
+   containers and VMs on a host don't show up as devices.
+3. **The passive refresh** (every 60 seconds) reads the control plane's own
+   server's ARP table through its agent, as well as the container's own
+   table.
+4. **When an agent connects**, the control plane fills in the MAC (and, if
+   missing, the hostname) of the inventory device with that host's own
+   addresses.
+
+The vendor comes from the MAC's prefix. The control plane checks a short
+curated table first, then the full IEEE registry that nmap ships
+(`/usr/share/nmap/nmap-mac-prefixes`, about 30k prefixes). A randomized
+("private") MAC, which phones and newer Windows use, has no vendor.
+
+The hostname is whichever comes first of:
+
+- nmap's reverse DNS;
+- `getent hosts` (PTR or `/etc/hosts`);
+- the NetBIOS name;
+- the name of the managed host that owns the address.
+
+On a network without reverse DNS, Windows machines are named by NetBIOS,
+and everything else needs an agent or a PTR record.
+
+Devices on a routed subnet with no agent and no SMB ports open still show
+no MAC. That's the limit of what's visible from the control plane.
+
 ## Query-string params (`/arsenals/panopticon`)
 
 All parsed by `routes::panopticon::parse_inventory_query` (hand-parsed via

@@ -119,6 +119,15 @@ impl HostConnectionRegistry {
         }
     }
 
+    /// True when the host is connected with an agent speaking at least
+    /// protocol `min` -- for background sweeps that send operations newer
+    /// agents added. An agent that can't parse a message drops its
+    /// connection (agents before 0.2.2 do), so sending one to an older
+    /// agent on a timer would knock it offline over and over.
+    pub fn agent_supports(&self, host_id: Uuid, min: u32) -> bool {
+        matches!(self.agent_protocol_status(host_id), AgentProtocolStatus::Version(v) if v >= min)
+    }
+
     /// True only while connected -- an offline host already shows as
     /// offline, so there's nothing extra to flag until it reconnects.
     pub fn agent_protocol_mismatch(&self, host_id: Uuid) -> bool {
@@ -315,6 +324,21 @@ mod tests {
             Ok(CommandOutcome::Ok(output)) => assert_eq!(output.stdout, "pong"),
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn agent_supports_needs_a_new_enough_reported_version() {
+        let registry = HostConnectionRegistry::new();
+        let host_id = Uuid::new_v4();
+        assert!(!registry.agent_supports(host_id, 1), "not connected");
+        let (tx, _rx) = mpsc::channel(1);
+        registry.register(host_id, tx, None);
+        assert!(!registry.agent_supports(host_id, 1), "unreported version");
+        let (tx, _rx) = mpsc::channel(1);
+        registry.register(host_id, tx, Some(40));
+        assert!(registry.agent_supports(host_id, 40));
+        assert!(registry.agent_supports(host_id, 39));
+        assert!(!registry.agent_supports(host_id, 41));
     }
 
     #[tokio::test]

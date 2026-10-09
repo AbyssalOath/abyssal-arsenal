@@ -27,6 +27,7 @@ use abyssal_execution::{
     ExecutionError, Executor, Operation, OperationKind, OperationOutput, OperationParams,
     run_command,
 };
+use abyssal_hosts::HostConnectionRegistry;
 use abyssal_notifications::{NotificationDispatcher, NotificationMessage};
 use abyssal_rbac::AuthContext;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -52,6 +53,12 @@ struct ParsedHost {
     ip: String,
     hostname: Option<String>,
     ports: Vec<NetworkDevicePort>,
+    /// From the `nbstat` script (Windows and Samba hosts, any subnet).
+    netbios_name: Option<String>,
+    /// From `nbstat`, or nmap's own `MAC Address:` line (only printed when
+    /// nmap can see the target's L2, which it can't from inside Docker's
+    /// NAT).
+    mac: Option<String>,
 }
 
 /// Hand-rolled parser for nmap's normal (non-XML) text output -- consistent
@@ -79,6 +86,8 @@ fn parse_nmap_output(output: &str) -> Vec<ParsedHost> {
                     ip,
                     hostname,
                     ports: Vec::new(),
+                    netbios_name: None,
+                    mac: None,
                 });
             }
             continue;
@@ -87,6 +96,27 @@ fn parse_nmap_output(output: &str) -> Vec<ParsedHost> {
         let Some(host) = current.as_mut() else {
             continue;
         };
+        if let Some(rest) = line.strip_prefix("MAC Address: ") {
+            host.mac = rest
+                .split_whitespace()
+                .next()
+                .and_then(crate::panopticon_neighbors::normalize_mac);
+            continue;
+        }
+        if let Some((_, rest)) = line.split_once("nbstat: NetBIOS name: ") {
+            let name = rest.split(',').next().unwrap_or("").trim();
+            if !name.is_empty() && name != "<unknown>" {
+                host.netbios_name = Some(name.to_string());
+            }
+            if let Some((_, mac)) = rest.split_once("NetBIOS MAC: ") {
+                let mac = mac.split_whitespace().next().unwrap_or("");
+                host.mac = host
+                    .mac
+                    .take()
+                    .or_else(|| crate::panopticon_neighbors::normalize_mac(mac));
+            }
+            continue;
+        }
         let mut tokens = line.split_whitespace();
         let (Some(port_proto), Some(state)) = (tokens.next(), tokens.next()) else {
             continue;
@@ -126,6 +156,15 @@ pub(crate) async fn neighbor_mac_table() -> HashMap<String, String> {
     for line in output.stdout.lines() {
         let tokens: Vec<&str> = line.split_whitespace().collect();
         let Some(ip) = tokens.first() else { continue };
+        // Containers and VMs behind a local bridge aren't network devices.
+        if let Some(dev) = tokens
+            .iter()
+            .position(|&t| t == "dev")
+            .and_then(|p| tokens.get(p + 1))
+            && crate::panopticon_neighbors::is_virtual_interface(dev)
+        {
+            continue;
+        }
         if let Some(pos) = tokens.iter().position(|&t| t == "lladdr")
             && let Some(mac) = tokens.get(pos + 1)
         {
@@ -406,6 +445,7 @@ async fn run_nmap_streaming(
 /// is *how* this gets invoked, not what it does.
 async fn run_discovery_scan(
     pool: &DbPool,
+    agents: Option<&Arc<HostConnectionRegistry>>,
     notifications: Option<&NotificationDispatcher>,
     target: &str,
     ports: Option<&str>,
@@ -424,7 +464,11 @@ async fn run_discovery_scan(
     // hosts that were never going to answer, which is what makes the
     // progress bar sit still for a long stretch rather than moving
     // steadily -- confirmed against a real deploy, not just a guess.
-    let mut args: Vec<&str> = vec!["-sT", "-T4"];
+    // `nbstat` asks Windows and Samba hosts (only those with 135, 139 or
+    // 445 open) for their NetBIOS name and MAC over UDP 137 -- the one way
+    // to get a MAC from inside Docker's NAT without an agent, and it works
+    // across subnets.
+    let mut args: Vec<&str> = vec!["-sT", "-T4", "--script", "nbstat"];
     if let Some(spec) = ports {
         args.push("-p");
         args.push(spec);
@@ -434,11 +478,21 @@ async fn run_discovery_scan(
     let output = run_nmap_streaming(&args, hosts_scanned).await?;
     let discovered = parse_nmap_output(&output.stdout);
     let neighbors = neighbor_mac_table().await;
+    // The scan's traffic just went out through the server, so its ARP cache
+    // (and every agent's, for its own subnet) now has these devices' MACs.
+    let agent_neighbors = match agents {
+        Some(agents) => crate::panopticon_neighbors::collect(pool, agents, false).await,
+        None => Default::default(),
+    };
 
     let mut upserted = 0usize;
     let mut discovered_hosts = Vec::with_capacity(discovered.len());
     for host in &discovered {
-        let mac = neighbors.get(&host.ip).map(String::as_str);
+        let mac = host
+            .mac
+            .as_deref()
+            .or_else(|| agent_neighbors.macs.get(&host.ip).map(String::as_str))
+            .or_else(|| neighbors.get(&host.ip).map(String::as_str));
         let prior = match repo::network_devices::find_by_ip(pool, &host.ip).await {
             Ok(prior) => prior,
             Err(e) => {
@@ -455,7 +509,9 @@ async fn run_discovery_scan(
         let hostname = match &host.hostname {
             Some(h) => Some(h.clone()),
             None => reverse_dns_lookup(&host.ip).await,
-        };
+        }
+        .or_else(|| host.netbios_name.clone())
+        .or_else(|| agent_neighbors.own.get(&host.ip).cloned());
 
         match repo::network_devices::upsert(pool, &host.ip, mac, hostname.as_deref()).await {
             Ok(device_id) => {
@@ -496,6 +552,8 @@ async fn run_discovery_scan(
 /// before this is ever constructed.
 pub struct DiscoveryScanOperation {
     pub pool: DbPool,
+    /// Connected agents, asked for their neighbor tables after the scan.
+    pub agents: Option<Arc<HostConnectionRegistry>>,
     pub target: String,
     pub ports: Option<String>,
     /// Side channel for the structured per-device results -- `Operation`'s
@@ -537,6 +595,7 @@ impl Operation for DiscoveryScanOperation {
         // watching the scan). The audit events still fire.
         let outcome = run_discovery_scan(
             &self.pool,
+            self.agents.as_ref(),
             None,
             &self.target,
             self.ports.as_deref(),
@@ -633,6 +692,7 @@ impl ScanJob {
 pub async fn run_scan_job(
     executor: Arc<Executor>,
     pool: DbPool,
+    agents: Arc<HostConnectionRegistry>,
     ctx: AuthContext,
     job: Arc<RwLock<ScanJob>>,
     target: String,
@@ -642,6 +702,7 @@ pub async fn run_scan_job(
     let discovered_sink = Arc::new(std::sync::Mutex::new(Vec::new()));
     let op = DiscoveryScanOperation {
         pool,
+        agents: Some(agents),
         target: target.clone(),
         ports,
         discovered_sink: discovered_sink.clone(),
@@ -696,8 +757,20 @@ pub async fn run_scan_job(
 /// `PANOPTICON_SWEEP_ENABLED`, and is how a device that never responds to
 /// an active scan (firewalled, but still talking to something on this
 /// subnet) can still show up in the inventory.
-async fn run_passive_refresh(pool: &DbPool, notifications: Option<&NotificationDispatcher>) {
-    let neighbors = neighbor_mac_table().await;
+async fn run_passive_refresh(
+    pool: &DbPool,
+    agents: &Arc<HostConnectionRegistry>,
+    notifications: Option<&NotificationDispatcher>,
+) {
+    let mut neighbors = neighbor_mac_table().await;
+    // In Docker the container's own table holds only its bridge; the
+    // control plane's own server (its agent, if install.sh put one there)
+    // has the real one.
+    neighbors.extend(
+        crate::panopticon_neighbors::collect(pool, agents, true)
+            .await
+            .macs,
+    );
     for (ip, mac) in neighbors {
         let prior = match repo::network_devices::find_by_ip(pool, &ip).await {
             Ok(prior) => prior,
@@ -737,6 +810,7 @@ const ACTIVE_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(30 * 60);
 ///   Settings takes effect on the next tick, not after a restart.
 pub fn spawn_panopticon_sweep(
     pool: DbPool,
+    agents: Arc<HostConnectionRegistry>,
     heartbeats: crate::task_health::TaskHeartbeats,
     notifications: Arc<NotificationDispatcher>,
 ) {
@@ -744,6 +818,7 @@ pub fn spawn_panopticon_sweep(
     const PASSIVE_INTERVAL_SECS: u64 = 60;
     let passive_pool = pool.clone();
     let passive_notifications = notifications.clone();
+    let passive_agents = agents.clone();
     tokio::spawn(async move {
         heartbeats
             .register(names::PANOPTICON_SWEEP, PASSIVE_INTERVAL_SECS)
@@ -751,7 +826,7 @@ pub fn spawn_panopticon_sweep(
         let mut interval = tokio::time::interval(PASSIVE_REFRESH_INTERVAL);
         loop {
             interval.tick().await;
-            run_passive_refresh(&passive_pool, Some(&passive_notifications)).await;
+            run_passive_refresh(&passive_pool, &passive_agents, Some(&passive_notifications)).await;
             heartbeats
                 .ok(names::PANOPTICON_SWEEP, PASSIVE_INTERVAL_SECS)
                 .await;
@@ -789,8 +864,15 @@ pub fn spawn_panopticon_sweep(
                 // The background sweep has no admin watching a progress bar
                 // -- this counter is written to but never read.
                 let hosts_scanned = Arc::new(AtomicUsize::new(0));
-                match run_discovery_scan(&pool, Some(&notifications), &target, None, &hosts_scanned)
-                    .await
+                match run_discovery_scan(
+                    &pool,
+                    Some(&agents),
+                    Some(&notifications),
+                    &target,
+                    None,
+                    &hosts_scanned,
+                )
+                .await
                 {
                     Ok(outcome) => {
                         tracing::info!(
@@ -882,6 +964,40 @@ Nmap done: 2 IP addresses (2 hosts up) scanned in 3.21 seconds
         assert_eq!(hosts[0].ports[0].port, 22);
         assert_eq!(hosts[0].ports[0].protocol, "tcp");
         assert_eq!(hosts[0].ports[0].service.as_deref(), Some("ssh"));
+    }
+
+    #[test]
+    fn picks_up_netbios_names_and_macs() {
+        let output = "Nmap scan report for 10.0.0.20\n\
+             Host is up (0.0010s latency).\n\
+             PORT    STATE SERVICE\n\
+             135/tcp open  msrpc\n\
+             445/tcp open  microsoft-ds\n\
+             \n\
+             Host script results:\n\
+             |_nbstat: NetBIOS name: DESKTOP-AB12, NetBIOS user: <unknown>, NetBIOS MAC: 00:21:9b:01:02:03 (Dell)\n\
+             \n\
+             Nmap scan report for 10.0.0.21\n\
+             PORT    STATE SERVICE\n\
+             445/tcp open  microsoft-ds\n\
+             Host script results:\n\
+             |  nbstat: NetBIOS name: FILESRV, NetBIOS user: <unknown>, NetBIOS MAC: <unknown>\n\
+             |  Names:\n\
+             |_    FILESRV<00>          Flags: <unique><active>\n\
+             \n\
+             Nmap scan report for 10.0.0.22\n\
+             PORT   STATE SERVICE\n\
+             22/tcp open  ssh\n\
+             MAC Address: AA:BB:CC:00:11:22 (Some Vendor)\n";
+        let hosts = parse_nmap_output(output);
+        assert_eq!(hosts.len(), 3);
+        assert_eq!(hosts[0].netbios_name.as_deref(), Some("DESKTOP-AB12"));
+        assert_eq!(hosts[0].mac.as_deref(), Some("00:21:9b:01:02:03"));
+        assert_eq!(hosts[0].ports.len(), 2, "script lines aren't ports");
+        assert_eq!(hosts[1].netbios_name.as_deref(), Some("FILESRV"));
+        assert_eq!(hosts[1].mac, None);
+        assert_eq!(hosts[2].mac.as_deref(), Some("aa:bb:cc:00:11:22"));
+        assert_eq!(hosts[2].netbios_name, None);
     }
 
     #[test]

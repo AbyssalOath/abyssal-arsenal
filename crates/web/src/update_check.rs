@@ -68,7 +68,7 @@ impl UpdateStatus {
 /// Parses `"v1.2.3"` or `"1.2.3"` into a comparable `(major, minor, patch)`
 /// tuple. Anything else (a pre-release suffix, a malformed tag) is treated
 /// as unparseable rather than guessed at.
-fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let s = s.trim().trim_start_matches('v');
     let mut parts = s.split('.');
     let major = parts.next()?.parse().ok()?;

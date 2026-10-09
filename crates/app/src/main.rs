@@ -227,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
     abyssal_web::spawn_internal_tls_sweep(state.clone());
     abyssal_web::spawn_panopticon_sweep(
         state.pool.clone(),
+        state.hosts.clone(),
         state.task_health.clone(),
         state.notifications.clone(),
     );

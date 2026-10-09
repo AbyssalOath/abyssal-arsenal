@@ -224,6 +224,25 @@ pub fn is_msi_managed() -> bool {
         .is_ok_and(|v| v == 1)
 }
 
+/// The installed MSI's ProductCode (`{GUID}`), found by its Apps & features
+/// entry, so the agent can have Windows Installer remove it. The MSI
+/// generates a new ProductCode per build, so it can't be a constant.
+pub fn msi_product_code() -> Option<String> {
+    let uninstall = hklm()
+        .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+        .ok()?;
+    uninstall.enum_keys().flatten().find(|name| {
+        name.starts_with('{')
+            && uninstall.open_subkey(name).is_ok_and(|key| {
+                key.get_value::<String, _>("DisplayName")
+                    .is_ok_and(|n| n == "Abyssal Arsenal Agent")
+                    && key
+                        .get_value::<u32, _>("WindowsInstaller")
+                        .is_ok_and(|v| v == 1)
+            })
+    })
+}
+
 /// Stops the service (waiting up to 30s for it to exit) and deletes it.
 /// Nothing to do if it isn't registered.
 pub fn uninstall_service() -> anyhow::Result<()> {

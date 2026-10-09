@@ -10,7 +10,39 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-09
+
 ### Added
+
+- **Removing a host uninstalls its agent.** If the agent is connected and on
+  0.2.2 or later, Remove on `/admin/hosts` has it uninstall itself, purging
+  its service, binary and credentials. It replies first and then
+  uninstalls from a detached process: `systemd-run` on Linux, or a
+  detached `cmd` on Windows that runs `msiexec /x` for an MSI install.
+  Otherwise the host is still removed, and the page says why and gives the
+  right command for its OS. New `AgentOperation::UninstallAgent`; protocol
+  42.
+- **Panopticon finds MACs, vendors and more hostnames.** Discovery's nmap
+  runs inside Docker's NAT and never saw a MAC, so MAC and vendor were
+  almost always blank. Now:
+  - Every scan asks connected 0.2.2+ agents for their neighbor tables
+    (new `AgentOperation::NeighborTable`). The control plane's own server
+    sees every device the scan touched on its segment.
+  - The 60-second passive refresh reads that server's table.
+  - A connecting agent fills in its own device's MAC and hostname.
+  - nmap's `nbstat` script adds NetBIOS names and MACs for Windows and
+    Samba hosts on any subnet.
+  - Vendor lookup falls back from the curated table to nmap's full IEEE
+    registry (about 30k prefixes).
+
+  See `docs/device-inventory.md`.
+- **Switch ports show their names.** The SNMP poll reads `ifAlias`, the name
+  given to the port on the switch, and uses it as the port's label. It
+  falls back to `ifDescr` ("Slot: 0 Port: 3 Gigabit - Level") for an
+  unnamed port. On the Ports page a named port shows its hardware port
+  underneath. A name used on several ports gets the hardware port
+  appended, so each label stays unique for device matching and NAC
+  enforcement. Migration 0044.
 
 - **The control plane monitors itself.** `install.sh` now also installs
   and enrolls an agent on the server it runs on, the way Puppet, Salt and
@@ -153,6 +185,24 @@ for what that means for cloning and updating.
 
 ### Fixed
 
+- **Agents no longer disconnect over a message they don't understand.**
+  Before, an agent that got an operation newer than its build dropped its
+  WebSocket and reconnected. From 0.2.2 it answers with "this agent doesn't
+  support this operation -- update it" and stays connected, so a future
+  control plane can't knock 0.2.2+ agents offline.
+- **Scourge monitoring kept pre-0.2.2 Linux agents offline.** Its sweep sent
+  the new collect operation to every Linux host every few seconds. Agents
+  older than Scourge dropped their connection over it, again and again. It
+  now skips agents older than protocol 40; they keep their "Agent out of
+  date" badge until updated.
+- **"Update agent" could downgrade an agent.** An agent from the control
+  plane's own bundle (SSH quick-add, `/agent/linux`, the control plane's own
+  agent) is newer than the newest release until that release is published.
+  Before the hourly check noticed the release, "Update agent" would have
+  sent such an agent back to the older version. The control plane now
+  refuses to offer an older version. From 0.2.2, the agent itself also
+  refuses a self-update to an older version (the same version is still
+  allowed).
 - **The "Saved macro" dropdown disappeared when you had no macros, and the
   Account page never had one.** It's now always shown wherever the macro
   name / community string boxes are: Panopticon's add and edit switch forms

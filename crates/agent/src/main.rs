@@ -15,6 +15,7 @@ mod installer_args;
 mod mortiscope;
 mod necropolis;
 mod necropsy;
+mod neighbors;
 mod network;
 mod obituary;
 mod ops;
@@ -26,6 +27,7 @@ mod reanimation;
 mod reliquary;
 mod resurrection;
 mod scourge;
+mod self_uninstall;
 mod selfupdate;
 mod sepulchre;
 mod shred;
@@ -345,6 +347,7 @@ async fn run(
         tracing::info!(path = %path.display(), "trusting additional CA for the control plane");
     }
     tls::set_process_trust(trust.clone(), ca_cert.clone());
+    self_uninstall::set_credentials_file(credentials_file.clone());
 
     let enrollment_token = resolve_enrollment_token(enrollment_token, None)?;
     let credentials = enroll::load_or_enroll(

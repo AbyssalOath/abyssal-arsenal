@@ -13,7 +13,12 @@ fn utc(naive: NaiveDateTime) -> DateTime<Utc> {
 #[derive(Debug, Clone)]
 pub struct SwitchPort {
     pub if_index: u32,
+    /// The port's label: its name on the switch (`ifAlias`) if it has one,
+    /// else `ifDescr` (migration 0044).
     pub if_descr: Option<String>,
+    /// The raw `ifDescr` ("Slot: 0 Port: 3 Gigabit - Level"), from polls
+    /// since migration 0044.
+    pub hw_descr: Option<String>,
     /// IF-MIB `ifAdminStatus`/`ifOperStatus` raw integer codes from the
     /// last poll that read them (M2), or `None` for a port only ever seen
     /// before port-status polling existed, or on a switch that doesn't
@@ -35,6 +40,7 @@ pub struct SwitchPort {
 struct SwitchPortRow {
     if_index: u32,
     if_descr: Option<String>,
+    hw_descr: Option<String>,
     // TINYINT UNSIGNED (migration 0037): sqlx won't decode an unsigned
     // column into a signed type, so read as u8 and widen below.
     admin_status: Option<u8>,
@@ -49,6 +55,7 @@ impl From<SwitchPortRow> for SwitchPort {
         SwitchPort {
             if_index: row.if_index,
             if_descr: row.if_descr,
+            hw_descr: row.hw_descr,
             admin_status: row.admin_status.map(i64::from),
             oper_status: row.oper_status.map(i64::from),
             speed_mbps: row.speed_mbps,
@@ -79,11 +86,40 @@ pub async fn upsert_port(
     Ok(())
 }
 
+/// Records a port's label (its name, else `ifDescr`) and raw `ifDescr`,
+/// creating the port row if needed. Unlike [`upsert_port`] the label is
+/// overwritten, so renaming or un-naming a port on the switch shows up on
+/// the next poll.
+pub async fn record_port_names(
+    pool: &DbPool,
+    switch_id: Uuid,
+    if_index: u32,
+    label: &str,
+    hw_descr: &str,
+) -> anyhow::Result<()> {
+    let hw_descr = (!hw_descr.is_empty()).then_some(hw_descr);
+    sqlx::query(
+        "INSERT INTO panopticon_switch_ports (switch_id, if_index, if_descr, hw_descr, last_seen_at) \
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(6)) \
+         ON DUPLICATE KEY UPDATE \
+             if_descr = VALUES(if_descr), \
+             hw_descr = COALESCE(VALUES(hw_descr), hw_descr), \
+             last_seen_at = CURRENT_TIMESTAMP(6)",
+    )
+    .bind(switch_id.to_string())
+    .bind(if_index)
+    .bind(label)
+    .bind(hw_descr)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Every port this switch has ever had a poll observe, ordered by
 /// `if_index` -- what the traffic page lists.
 pub async fn list_ports(pool: &DbPool, switch_id: Uuid) -> anyhow::Result<Vec<SwitchPort>> {
     let rows: Vec<SwitchPortRow> = sqlx::query_as(
-        "SELECT if_index, if_descr, admin_status, oper_status, speed_mbps, status_seen_at, \
+        "SELECT if_index, if_descr, hw_descr, admin_status, oper_status, speed_mbps, status_seen_at, \
                 last_seen_at \
          FROM panopticon_switch_ports \
          WHERE switch_id = ? ORDER BY if_index ASC",

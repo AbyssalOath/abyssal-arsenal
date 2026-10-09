@@ -65,6 +65,15 @@ async fn run_self_update(version: &str) -> anyhow::Result<String> {
         );
     }
 
+    if is_downgrade(env!("CARGO_PKG_VERSION"), version) {
+        bail!(
+            "this agent is already v{}, newer than v{version} -- refusing to downgrade. (The \
+             control plane may not have seen the newest release yet: 'Check now' on the \
+             dashboard refreshes it.) To really go back, reinstall the older version.",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
     let asset = PlatformAsset::for_this_host(version)?;
     let url = format!("{GITHUB_DOWNLOAD_BASE}/v{version}/{}", asset.archive_name());
 
@@ -105,6 +114,29 @@ fn is_plausible_version(version: &str) -> bool {
         && version
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+}
+
+/// `x.y.z` (an optional `v`, and anything after a `-`/`+` ignored).
+fn parse_version(version: &str) -> Option<(u64, u64, u64)> {
+    let core = version.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let parsed = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(parsed)
+}
+
+/// True only when both parse and `target` is strictly older than `running`.
+/// The same version is allowed: it's how an agent built from `main` before
+/// a release is replaced by the released build.
+fn is_downgrade(running: &str, target: &str) -> bool {
+    matches!(
+        (parse_version(running), parse_version(target)),
+        (Some(running), Some(target)) if target < running
+    )
 }
 
 struct PlatformAsset {
@@ -437,6 +469,19 @@ mod tests {
         assert!(!is_plausible_version("1.0 && rm -rf"));
         assert!(!is_plausible_version("v1.0\nreboot"));
         assert!(!is_plausible_version(&"9".repeat(65)));
+    }
+
+    #[test]
+    fn downgrades_are_refused_and_same_or_newer_allowed() {
+        assert!(is_downgrade("0.2.2", "0.2.1"));
+        assert!(is_downgrade("1.0.0", "0.9.9"));
+        assert!(!is_downgrade("0.2.2", "0.2.2"));
+        assert!(!is_downgrade("0.2.2", "0.2.3"));
+        assert!(!is_downgrade("0.2.2", "0.10.0"));
+        assert!(
+            !is_downgrade("0.2.2", "garbage"),
+            "unparseable: not provably older"
+        );
     }
 
     #[test]

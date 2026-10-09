@@ -111,9 +111,45 @@ const OUI_TABLE: &[(&str, &str)] = &[
     ("184A53", "Apple"),
 ];
 
+/// Where nmap keeps its copy of the full IEEE registry (~30k prefixes). The
+/// Docker image installs nmap, so the control plane always has one; the
+/// curated table above is checked first for its friendlier names.
+const NMAP_MAC_PREFIXES: &[&str] = &[
+    "/usr/share/nmap/nmap-mac-prefixes",
+    "/usr/local/share/nmap/nmap-mac-prefixes",
+];
+
+static REGISTRY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+    std::sync::OnceLock::new();
+
+/// `nmap-mac-prefixes`: `0050F2 Microsoft`, `#` comments. 24-bit prefixes
+/// only; nmap's longer MA-M/MA-S entries are skipped.
+fn parse_registry(contents: &str) -> std::collections::HashMap<String, String> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let (prefix, vendor) = line.trim().split_once(char::is_whitespace)?;
+            (prefix.len() == 6 && prefix.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| (prefix.to_ascii_uppercase(), vendor.trim().to_string()))
+        })
+        .filter(|(_, vendor)| !vendor.is_empty())
+        .collect()
+}
+
+fn registry() -> &'static std::collections::HashMap<String, String> {
+    REGISTRY.get_or_init(|| {
+        NMAP_MAC_PREFIXES
+            .iter()
+            .find_map(|path| std::fs::read_to_string(path).ok())
+            .map(|contents| parse_registry(&contents))
+            .unwrap_or_default()
+    })
+}
+
 /// Normalizes to bare uppercase hex (strips `:`/`-` separators) and matches
-/// the first 6 hex digits (3 octets) against the OUI table. Returns `None`
-/// for a malformed address or a prefix outside this curated subset.
+/// the first 6 hex digits (3 octets) against the curated table, then nmap's
+/// full registry. Returns `None` for a malformed address, a randomized
+/// (locally administered) one, or an unknown prefix.
 pub fn lookup_vendor(mac: &str) -> Option<&'static str> {
     let normalized: String = mac
         .chars()
@@ -124,10 +160,15 @@ pub fn lookup_vendor(mac: &str) -> Option<&'static str> {
         return None;
     }
     let prefix = &normalized[..6];
-    OUI_TABLE
-        .iter()
-        .find(|(p, _)| *p == prefix)
-        .map(|(_, vendor)| *vendor)
+    if let Some((_, vendor)) = OUI_TABLE.iter().find(|(p, _)| *p == prefix) {
+        return Some(vendor);
+    }
+    // Locally administered: never an IEEE assignment.
+    let first = u8::from_str_radix(&prefix[..2], 16).ok()?;
+    if first & 0x02 != 0 {
+        return None;
+    }
+    registry().get(prefix).map(String::as_str)
 }
 
 #[cfg(test)]
@@ -148,8 +189,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_nmaps_registry_format() {
+        let reg = parse_registry(
+            "# comment\n002272 American Micro-Fuel Device\n00d0ef IGT\n\
+             8C1F64F Some MA-M entry\nbad line\nABCDEF\n",
+        );
+        assert_eq!(
+            reg.get("002272").map(String::as_str),
+            Some("American Micro-Fuel Device")
+        );
+        assert_eq!(reg.get("00D0EF").map(String::as_str), Some("IGT"));
+        assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn falls_back_to_nmaps_registry_when_installed() {
+        // 00:21:9b is Dell in the IEEE registry but not the curated table.
+        if NMAP_MAC_PREFIXES
+            .iter()
+            .any(|p| std::path::Path::new(p).exists())
+        {
+            assert_eq!(lookup_vendor("00:21:9b:00:00:01"), Some("Dell"));
+        }
+    }
+
+    #[test]
     fn unrecognized_prefix_returns_none_not_an_error() {
-        assert_eq!(lookup_vendor("00:00:00:00:00:00"), None);
+        assert_eq!(lookup_vendor("0c:ff:fe:00:00:00"), None);
     }
 
     #[test]

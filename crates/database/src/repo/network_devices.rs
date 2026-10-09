@@ -136,6 +136,29 @@ pub async fn upsert(
     Ok(Uuid::parse_str(&id)?)
 }
 
+/// Fills in what a managed host's agent says about one of its own
+/// addresses, on a device already in the inventory: its MAC always (the
+/// host's own interface is authoritative), its hostname only if there's
+/// none yet. Never creates a device. Returns whether one matched.
+pub async fn enrich_from_agent(
+    pool: &DbPool,
+    ip_address: &str,
+    mac_address: &str,
+    hostname: &str,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE panopticon_devices \
+         SET mac_address = ?, hostname = COALESCE(hostname, ?) \
+         WHERE ip_address = ?",
+    )
+    .bind(mac_address)
+    .bind(hostname)
+    .bind(ip_address)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Records a passive sighting from the control plane's own kernel neighbor
 /// table (`ip neigh` -- see `panopticon_ops.rs`'s background sweep) --
 /// unlike `upsert`, never touches `hostname` (passive sightings have none
