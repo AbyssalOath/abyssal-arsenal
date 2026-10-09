@@ -91,6 +91,42 @@ pub async fn run_aat(command: AatCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Subcommand)]
+pub enum ControlPlaneCommand {
+    /// Prints a single-use, 15-minute enrollment token that flags the host
+    /// enrolling with it as this server, turning on its guardrails.
+    EnrollmentToken,
+    /// Prints the CA certificate(s) agents should trust (PEM), or nothing
+    /// when the server's certificate is publicly trusted.
+    CaBundle,
+}
+
+/// What install.sh uses to enroll an agent on this server. Like the AAT
+/// commands, not in the audit trail (no user session); the enrollment itself
+/// is.
+pub async fn run_control_plane(command: ControlPlaneCommand) -> anyhow::Result<()> {
+    match command {
+        ControlPlaneCommand::EnrollmentToken => {
+            let database_url = std::env::var("DATABASE_URL")
+                .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
+            let pool = abyssal_database::connect(&database_url).await?;
+            println!(
+                "{}",
+                abyssal_web::control_plane::mint_enrollment_token(&pool).await?
+            );
+        }
+        ControlPlaneCommand::CaBundle => {
+            let pem = abyssal_web::internal_tls::trust_bundle()
+                .or_else(|| abyssal_web::public_ca::load().map(|ca| ca.pem));
+            if let Some(pem) = pem {
+                print!("{}", pem.trim_end());
+                println!();
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Break-glass internal TLS management. Changes made here are not in the
 /// audit trail (there's no user session); the web UI is the normal path.
 pub async fn run_tls(command: TlsCommand) -> anyhow::Result<()> {

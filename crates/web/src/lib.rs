@@ -1,6 +1,7 @@
 pub mod aat;
 mod audit_export;
 pub mod common;
+pub mod control_plane;
 pub mod csrf;
 pub mod dashboard_prefs;
 pub mod deploy_commands;

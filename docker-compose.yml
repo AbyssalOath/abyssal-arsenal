@@ -94,6 +94,12 @@ services:
       # unset, the reset email still works, just with the raw token instead of
       # a link. Set by ./install.sh from your reverse-proxy answer.
       PUBLIC_URL: ${PUBLIC_URL:-}
+      # The ports the control plane's own agent (install.sh enrolls one) must
+      # never close: SSH, 80, 443, HTTP_PORT, the PUBLIC_URL port and RADIUS
+      # are always protected; add others (a non-standard SSH port, say) as a
+      # comma-separated list. See docs/control-plane-host.md.
+      HTTP_PORT: ${HTTP_PORT:-8080}
+      CONTROL_PLANE_PORTS: ${CONTROL_PLANE_PORTS:-}
       # External syslog/SIEM export (RFC 5424 over UDP). Leave SYSLOG_HOST
       # empty to disable. Whether the audit trail streams here is a separate
       # runtime toggle in /admin/settings; Thanatos findings always do once a

@@ -314,6 +314,10 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/admin/hosts/:id/approve", post(routes::hosts::approve))
         .route(
+            "/admin/hosts/:id/control-plane",
+            post(routes::hosts::set_control_plane),
+        )
+        .route(
             "/admin/hosts/:id/system-info",
             post(routes::hosts::run_system_info),
         )

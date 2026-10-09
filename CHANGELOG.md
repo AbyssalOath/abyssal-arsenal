@@ -12,6 +12,44 @@ for what that means for cloning and updating.
 
 ### Added
 
+- **The control plane monitors itself.** `install.sh` now also installs
+  and enrolls an agent on the server it runs on, the way Puppet, Salt and
+  Wazuh manage their own server. To skip it, pass `--no-agent`, answer
+  **n**, or set `CONTROL_PLANE_AGENT=no`. The agent comes from the app
+  image, so its version matches. It enrolls with a single-use token from
+  the new `abyssal-arsenal control-plane enrollment-token`, trusts the CA
+  from `control-plane ca-bundle`, and connects through `PUBLIC_URL` like
+  every other agent, not through loopback.
+  - The host is flagged `is_control_plane` (migration 0043). It gets a
+    **Control plane** badge and is listed first on `/admin/hosts`, in the
+    top-nav host switcher, and in every arsenal's host picker.
+  - On `/admin/hosts`, **Mark as control plane** and **Not the control
+    plane** (`hosts.manage`, audited as `HOST_CONTROL_PLANE_CHANGED`) set
+    or clear the flag by hand.
+  - **Guardrails.** `HostConnectionRegistry::dispatch` refuses operations
+    that would take the control plane down, so they're never sent. Because
+    it sits in `dispatch`, sweeps and Thanatos inline responses are covered
+    too. The refused operations are:
+    - host isolation and Scourge inline IPS;
+    - closing its ports (SSH, 80, 443, `HTTP_PORT`, the `PUBLIC_URL` port,
+      RADIUS, `CONTROL_PLANE_PORTS`), or turning the firewall on;
+    - downing an interface;
+    - stopping, restarting or disabling Docker, containerd or the agent;
+    - stopping, restarting or removing `abyssal*` containers, or containers
+      named only by ID;
+    - signalling them by name or pattern;
+    - upgrading or removing the container runtime;
+    - quarantining Docker's files;
+    - unmounting or reformatting the disk holding `/var/lib/docker`. That
+      device is probed from the agent's `df` on each connect. If it's
+      unknown, LVM or RAID, every destructive disk operation on the server
+      is refused.
+
+    The admin sees why, and the audit trail records the attempt. IDS mode
+    and packet captures stay allowed. See `docs/control-plane-host.md`.
+  - `docs/scourge.md` covers using that host as a network sensor with a
+    switch mirror (SPAN) port.
+
 - **Scourge (network IDS/IPS): a Suricata sensor for the Defend lifecycle.**
   A new host-agent Arsenal that answers *"what is actually happening on my
   network?"* -- the inspection point between Cadavault (harden) and Inquest

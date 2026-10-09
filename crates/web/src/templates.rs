@@ -29,6 +29,8 @@ pub struct TimezoneOption {
 /// top nav.
 #[derive(Clone)]
 pub struct HostOption {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
     pub selected: bool,
@@ -110,6 +112,7 @@ impl BaseCtx {
                 selected_host_name = Some(host.name.clone());
             }
             available_hosts.push(HostOption {
+                is_control_plane: host.is_control_plane,
                 id: host.id.to_string(),
                 name: host.name,
                 selected,
@@ -968,6 +971,8 @@ pub struct ArsenalDetailTemplate {
 }
 
 pub struct HostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
     pub enrolled_at: String,
@@ -1169,11 +1174,15 @@ impl ShredOption {
 }
 
 pub struct CystoolboxHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
 
 pub struct HaruspexHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -1239,6 +1248,8 @@ pub struct CystoolboxHostTemplate {
 }
 
 pub struct CadavaultHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -1359,6 +1370,8 @@ pub struct PostmortemHostTemplate {
 }
 
 pub struct MortiscopeHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -1455,6 +1468,8 @@ pub struct MortiscopeThresholdsTemplate {
 }
 
 pub struct GrimoireHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -1596,6 +1611,8 @@ pub struct GrimoireMacroEditTemplate {
 }
 
 pub struct OssuaryHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2449,6 +2466,8 @@ pub struct PanopticonDeployStatusTemplate {
 }
 
 pub struct CryptkeeperHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2681,6 +2700,8 @@ pub struct ThanatosHostTemplate {
 }
 
 pub struct ApothecaryHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2709,6 +2730,8 @@ pub struct ApothecaryHostTemplate {
 }
 
 pub struct CatacombHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2744,6 +2767,8 @@ pub struct CatacombHostTemplate {
 }
 
 pub struct ParishHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2772,6 +2797,8 @@ pub struct ParishHostTemplate {
 }
 
 pub struct VivisectionHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2801,6 +2828,8 @@ pub struct VivisectionHostTemplate {
 }
 
 pub struct DefleshingHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2830,6 +2859,8 @@ pub struct DefleshingHostTemplate {
 }
 
 pub struct ReanimationHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2897,6 +2928,8 @@ pub struct ProcessRow {
 }
 
 pub struct NecropolisHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2926,6 +2959,8 @@ pub struct NecropolisHostTemplate {
 }
 
 pub struct NecropsyHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2957,6 +2992,8 @@ pub struct NecropsyHostTemplate {
 }
 
 pub struct IncarnationHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -2986,6 +3023,8 @@ pub struct IncarnationHostTemplate {
 }
 
 pub struct ResurrectionHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -3074,6 +3113,8 @@ pub struct FailedUnitRow {
 }
 
 pub struct ReliquaryHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -3109,6 +3150,8 @@ pub struct ReliquaryHostTemplate {
 }
 
 pub struct NecrolinkHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }
@@ -3139,6 +3182,8 @@ pub struct NecrolinkHostTemplate {
 }
 
 pub struct ObituaryHostRow {
+    /// The control plane's own server: shown with a badge.
+    pub is_control_plane: bool,
     pub id: String,
     pub name: String,
 }

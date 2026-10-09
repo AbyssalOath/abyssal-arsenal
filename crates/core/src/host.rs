@@ -34,6 +34,9 @@ pub struct Host {
     /// Enrolled with the AAT while approval was required, and not yet
     /// approved: holds a credential, but the agent connection is refused.
     pub pending_approval: bool,
+    /// The control plane's own server: the operations that would take the
+    /// control plane down are refused for it (`abyssal_hosts::control_plane_guard`).
+    pub is_control_plane: bool,
     pub revoked_at: Option<DateTime<Utc>>,
 }
 

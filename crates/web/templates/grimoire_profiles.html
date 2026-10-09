@@ -30,7 +30,7 @@
           <input type="hidden" name="profile_id" value="{{ p.id }}">
           <select name="host_id" required>
             <option value="" disabled selected>Apply to host…</option>
-            {% for h in hosts %}<option value="{{ h.id }}">{{ h.name }}</option>{% endfor %}
+            {% for h in hosts %}<option value="{{ h.id }}">{{ h.name }}{% if h.is_control_plane %} (control plane){% endif %}</option>{% endfor %}
           </select>
           <button type="submit" class="btn-warning btn-sm">Apply</button>
         </form>

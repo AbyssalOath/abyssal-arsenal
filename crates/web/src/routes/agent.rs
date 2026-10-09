@@ -39,6 +39,7 @@ pub struct EnrollResponse {
 pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -> Response {
     let via_aat = abyssal_agent_protocol::aat::is_aat(&req.token);
     let mut pending_approval = false;
+    let mut is_control_plane = false;
     if via_aat {
         match crate::aat::matches(&state.pool, state.encryption_key.as_deref(), &req.token).await {
             Ok(true) => {}
@@ -65,7 +66,16 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
     } else {
         let token_hash = hash_token(&req.token);
         match repo::host_enrollment_tokens::consume(&state.pool, &token_hash).await {
-            Ok(true) => {}
+            Ok(true) => {
+                // Minted by `install.sh` for the server's own agent.
+                is_control_plane =
+                    repo::host_enrollment_tokens::is_control_plane(&state.pool, &token_hash)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::error!(error = %e, "failed to read the enrollment token's control-plane flag");
+                            false
+                        });
+            }
             Ok(false) => {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -171,6 +181,18 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
+    if is_control_plane {
+        // Flag it before its agent can connect, so the guardrails are on
+        // from its first command. Failing to is failing the enrollment:
+        // an unguarded control-plane agent is what the flag exists to
+        // prevent.
+        if let Err(e) = repo::hosts::set_control_plane(&state.pool, host.id, true).await {
+            tracing::error!(error = %e, "failed to flag the control plane's own host");
+            let _ = repo::hosts::delete(&state.pool, host.id).await;
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        state.hosts.set_control_plane(host.id, true);
+    }
 
     if let Err(e) = abyssal_audit::record(
         &state.pool,
@@ -179,6 +201,7 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
             .metadata(serde_json::json!({
                 "via": if via_aat { "aat" } else { "enrollment_token" },
                 "pending_approval": pending_approval,
+                "control_plane": is_control_plane,
             })),
     )
     .await
@@ -279,7 +302,18 @@ async fn handle_socket(
     addr: SocketAddr,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(16);
+    // Before `register`, so no command can reach it unguarded.
+    state
+        .hosts
+        .set_control_plane(host.id, host.is_control_plane);
     state.hosts.register(host.id, tx, protocol_version);
+    if host.is_control_plane {
+        let hosts = state.hosts.clone();
+        let host_id = host.id;
+        tokio::spawn(async move {
+            crate::control_plane::probe_docker_device(&hosts, host_id).await;
+        });
+    }
     // Keep the agent's trusted control-plane CA current (a rotation may have
     // started or finished while it was away). Off the connection's own task:
     // the response arrives through the read loop below.

@@ -21,7 +21,7 @@
   <p style="color:var(--text-muted); margin-top:0;">Pick a host to triage and recover.</p>
   <div class="actions">
     {% for h in hosts %}
-    <a class="btn btn-secondary" href="/arsenals/resurrection/{{ h.id }}">{{ h.name }}</a>
+    <a class="btn btn-secondary" href="/arsenals/resurrection/{{ h.id }}">{{ h.name }}{% if h.is_control_plane %} <span class="badge badge-control-plane" title="The control plane's own server: operations that would take it down are refused">Control plane</span>{% endif %}</a>
     {% endfor %}
   </div>
 </div>

@@ -58,6 +58,11 @@ enum Command {
         #[command(subcommand)]
         action: cli::AatCommand,
     },
+    /// Enrolling an agent on this server itself -- what install.sh runs.
+    ControlPlane {
+        #[command(subcommand)]
+        action: cli::ControlPlaneCommand,
+    },
 }
 
 #[tokio::main]
@@ -71,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Reliquary { action }) => return cli::run(action).await,
         Some(Command::Tls { action }) => return cli::run_tls(action).await,
         Some(Command::Aat { action }) => return cli::run_aat(action).await,
+        Some(Command::ControlPlane { action }) => return cli::run_control_plane(action).await,
         None => {}
     }
 
@@ -187,6 +193,12 @@ async fn main() -> anyhow::Result<()> {
         self_metrics: Arc::new(tokio::sync::RwLock::new(None)),
         task_health: abyssal_web::task_health::TaskHeartbeats::new(),
     };
+
+    if let Err(e) = abyssal_web::control_plane::load(&state.pool, &state.hosts).await {
+        // Fatal: starting without knowing which host is this server would
+        // leave its agent unguarded.
+        return Err(e.context("failed to load the control plane's own host"));
+    }
 
     abyssal_web::reliquary_backup::orchestrator::spawn_scheduled_backup_loop(
         state.clone(),

@@ -296,10 +296,75 @@ fat-fingered into cutting the agent off. Because IPS cannot sever the
 control plane and is type-to-confirm + second-gated, it does not additionally
 require the witness/shred sign-off that irreversible data destruction does.
 
+Inline IPS is **refused on the control plane's own server** (see
+[control-plane-host.md](control-plane-host.md)). IDS mode and captures are
+allowed there, but inline mode puts every packet, including the agents' and
+browsers' connections, behind Suricata. For inline protection in front of
+the control plane, use a separate sensor host.
+
 Inline NFQUEUE hookup is vendor- and kernel-dependent; validate in a lab
 before enabling in production. Safety rests on the mandatory always-allow
 bypass at both layers, `--queue-bypass` fail-open, validate-before-reload,
 and full rollback to passive.
+
+## Watching the network from the control plane's server
+
+The control-plane container can't see network traffic. It sits on a Docker
+bridge, as an unprivileged user, with only `NET_RAW`. Scourge always runs
+through an agent. To use the control plane's server as a sensor, use the
+agent `install.sh` puts on it (the **Control plane** host, see
+[control-plane-host.md](control-plane-host.md)), and deploy Suricata there
+in IDS mode, as on any other host.
+
+On its own, that sensor sees only the server's own traffic. To watch a
+network segment from it, mirror the segment's traffic to a spare NIC on the
+server:
+
+1. **Add a dedicated capture NIC.** Leave it unaddressed so the server
+   doesn't route or answer on it:
+
+   ```bash
+   sudo ip link set eth1 up
+   sudo ip link set eth1 promisc on
+   # Keep it unconfigured: no DHCP or NetworkManager profile, no IP.
+   nmcli device set eth1 managed no   # if NetworkManager is in use
+   ```
+
+   Don't mirror into the NIC that carries the control plane's own traffic.
+   Mirrored packets would compete with the agents' and browsers'
+   connections, and a busy span can saturate the link.
+
+2. **Configure the switch's mirror (SPAN) port.** Choose the source ports
+   or VLANs, and set the destination to the port `eth1` is plugged into.
+   Some examples:
+
+   - Cisco IOS:
+
+     ```
+     monitor session 1 source vlan 10 both
+     monitor session 1 destination interface Gi1/0/48
+     ```
+
+   - Aruba/HPE: `mirror-port 48` plus `monitor` on the sources.
+   - UniFi: port profile, then **Port Mirroring**.
+   - Juniper: `set forwarding-options analyzer`.
+
+   For a remote switch, use RSPAN or ERSPAN. A passive network TAP is
+   better still for a busy link, since a switch drops mirrored frames under
+   load.
+
+3. **Point Suricata at it.** On the host's Scourge page, set **Monitored
+   interface(s)** to `eth1` (or `eth0, eth1` to keep watching the server's
+   own traffic as well), then validate and apply. Mirrored traffic needs no checksum validation or offload
+   handling, because Suricata only reads it.
+
+4. **Check it's seeing traffic.** Start a short capture on `eth1` from the
+   Scourge page, or run `sudo tcpdump -ni eth1 -c 20`. The alert feed
+   should begin to fill.
+
+Captures from a span can be large. The stop-at-N-MB limit and pcap shred
+apply as usual. Inline IPS stays refused on this host whatever interface it
+uses. A span is receive-only anyway, so it couldn't block anything.
 
 ## Workflow registry entries
 
@@ -333,6 +398,8 @@ workflow button.
 - Inline IPS is Linux/NFQUEUE-specific and kernel/vendor-dependent; it ships
   conservatively and must be lab-validated before production use.
 - Panopticon enrichment is read-only; Scourge does not write inventory.
+- On the control plane's own server, inline IPS is refused (IDS and
+  captures work); see [control-plane-host.md](control-plane-host.md).
 - Windows is unsupported; every operation returns
   `process::platform_unsupported()` there.
 

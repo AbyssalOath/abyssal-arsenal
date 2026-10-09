@@ -20,4 +20,8 @@ pub enum ExecutionError {
     Forbidden,
     #[error("execution failed: {0}")]
     Failed(String),
+    /// The target is the control plane's own server and the operation would
+    /// take the control plane down; nothing was sent to it.
+    #[error("{0}")]
+    Refused(String),
 }

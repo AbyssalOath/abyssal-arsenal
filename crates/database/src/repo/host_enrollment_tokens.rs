@@ -24,6 +24,39 @@ pub async fn create(
     Ok(())
 }
 
+/// A single-use token that flags the host enrolling with it as the control
+/// plane's own server -- what `install.sh` uses to enroll the server's own
+/// agent. Short-lived: it's used within seconds of being minted.
+pub async fn create_control_plane(
+    pool: &DbPool,
+    token_hash: &str,
+    ttl: Duration,
+) -> anyhow::Result<()> {
+    let id = Uuid::new_v4();
+    let expires_at = chrono::Utc::now() + ttl;
+    sqlx::query(
+        "INSERT INTO host_enrollment_tokens (id, token_hash, expires_at, control_plane) \
+         VALUES (?, ?, ?, 1)",
+    )
+    .bind(id.to_string())
+    .bind(token_hash)
+    .bind(expires_at.naive_utc())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Whether a token (already [`consume`]d) was minted for the control
+/// plane's own server.
+pub async fn is_control_plane(pool: &DbPool, token_hash: &str) -> anyhow::Result<bool> {
+    let flag: Option<(bool,)> =
+        sqlx::query_as("SELECT control_plane FROM host_enrollment_tokens WHERE token_hash = ?")
+            .bind(token_hash)
+            .fetch_optional(pool)
+            .await?;
+    Ok(flag.is_some_and(|(f,)| f))
+}
+
 /// Creates a reusable deployment token (Wazuh-style registration key): it can
 /// enroll many hosts until it expires or is revoked, with an optional label to
 /// identify it. Returns its id so the UI can offer a revoke button immediately.

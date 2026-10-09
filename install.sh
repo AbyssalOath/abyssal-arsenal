@@ -3,6 +3,25 @@ set -e # exit immediately if any command fails, rather than plowing ahead
 
 echo "=== Abyssal Arsenal Installer ==="
 
+# --- Options ---
+# --no-agent: don't install an agent on this server itself (see "Agent on
+# this server" below). ABYSSAL_SELF_AGENT=no does the same.
+self_agent="${ABYSSAL_SELF_AGENT:-}"
+for arg in "$@"; do
+        case "$arg" in
+        --no-agent) self_agent=no ;;
+        -h|--help)
+                echo "Usage: ./install.sh [--no-agent]"
+                echo "  --no-agent   don't install an agent on this server itself"
+                exit 0
+                ;;
+        *)
+                echo "Unknown option: $arg (try --help)"
+                exit 1
+                ;;
+        esac
+done
+
 # --- Check prerequisites ---
 if ! command -v docker &> /dev/null; then
         echo "Docker is not installed. Install Docker first: https://docs.docker.com/engine/install/"
@@ -406,6 +425,102 @@ if [ -n "$aat" ]; then
         echo "/admin/hosts; re-print it with: docker compose exec app /app/abyssal-arsenal aat show"
 else
         echo "(The agent install token (AAT) will be on /admin/hosts once the app is up.)"
+fi
+
+# --- Agent on this server ---
+# Like Puppet, Salt or Wazuh managing their own server: an agent here lets
+# the control plane monitor and manage the machine it runs on (and run
+# Scourge in IDS mode on its traffic -- the app container can't see the
+# network itself). Its enrollment token flags the host as the control plane,
+# which turns on guardrails: the operations that would take this server's
+# containers down are refused (docs/control-plane-host.md).
+install_self_agent() {
+        if [ -f /etc/abyssal-agent/credentials.json ]; then
+                echo "This server already has an enrolled agent -- leaving it as it is."
+                echo "(If it isn't marked 'Control plane' on /admin/hosts, mark it there.)"
+                return 0
+        fi
+        if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+                echo "Skipping the agent on this server: the bundled agent is for x86_64 Linux."
+                return 0
+        fi
+        local sudo_cmd=""
+        if [ "$(id -u)" -ne 0 ]; then
+                if ! command -v sudo >/dev/null 2>&1; then
+                        echo "Skipping the agent on this server: installing it needs root (or sudo)."
+                        return 0
+                fi
+                sudo_cmd="sudo"
+        fi
+        # The address agents use -- not loopback, so this server's agent goes
+        # through Caddy and TLS exactly as every other host's does.
+        local url
+        url="$(grep -E '^PUBLIC_URL=' .env | tail -n 1 | cut -d '=' -f2- | sed -E "s/^['\"]//; s/['\"]$//")"
+        if [ -z "$url" ]; then
+                echo "Skipping the agent on this server: .env has no PUBLIC_URL to connect to."
+                return 0
+        fi
+
+        local work token
+        work="$(mktemp -d)"
+        # The app container must be up to mint the token; it was just started.
+        token=""
+        for _ in $(seq 1 30); do
+                token="$(docker compose exec -T app /app/abyssal-arsenal control-plane enrollment-token 2>/dev/null | tail -n 1 || true)"
+                case "$token" in "" | *" "*) token="" ;; *) break ;; esac
+                sleep 2
+        done
+        if [ -z "$token" ] \
+                || ! docker compose cp app:/app/agent-bundle/abyssal-agent-linux.tar.gz "$work/agent.tar.gz" >/dev/null 2>&1 \
+                || ! tar -xzf "$work/agent.tar.gz" -C "$work"; then
+                rm -rf "$work"
+                echo "Couldn't get the agent from the app container -- skipped. Install it later"
+                echo "the way you would on any host (/admin/hosts), then mark it 'Control plane'."
+                return 0
+        fi
+        local bin
+        bin="$(find "$work" -type f -name abyssal-agent | head -n 1)"
+        (umask 077 && printf '%s' "$token" > "$work/token")
+        local ca_args=()
+        docker compose exec -T app /app/abyssal-arsenal control-plane ca-bundle > "$work/ca.pem" 2>/dev/null || true
+        if grep -q "BEGIN CERTIFICATE" "$work/ca.pem" 2>/dev/null; then
+                ca_args=(--ca-cert "$work/ca.pem")
+        fi
+
+        echo "Installing and enrolling the agent on this server (connecting to ${url})..."
+        if $sudo_cmd "$bin" install --non-interactive --control-plane-url "$url" \
+                --enrollment-token-file "$work/token" "${ca_args[@]}"; then
+                echo "This server is now a managed host, marked 'Control plane' on /admin/hosts."
+                echo "Operations that would take the control plane down are refused for it."
+        else
+                echo "The agent on this server didn't install (see above) -- the control plane"
+                echo "itself is fine. Retry with ./install.sh, or install it from /admin/hosts"
+                echo "and mark it 'Control plane' there."
+        fi
+        rm -rf "$work"
+}
+
+if [ -z "$self_agent" ]; then
+        self_agent="$(grep -E '^CONTROL_PLANE_AGENT=' .env 2>/dev/null | tail -n 1 | cut -d '=' -f2- || true)"
+fi
+if [ -z "$self_agent" ] && [ ! -f /etc/abyssal-agent/credentials.json ]; then
+        echo ""
+        echo "Install an agent on this server too, so Abyssal Arsenal can monitor and"
+        echo "manage the machine it runs on? Operations that would take the control"
+        echo "plane down (isolating it, inline IPS, stopping Docker...) stay refused."
+        if [ -t 0 ]; then
+                read -rp "Install the agent here? [Y/n]: " answer
+        else
+                answer=""
+        fi
+        case "$answer" in [Nn]*) self_agent=no ;; *) self_agent=yes ;; esac
+        echo "CONTROL_PLANE_AGENT=${self_agent}" >> .env
+fi
+echo ""
+if [ "$self_agent" = "no" ]; then
+        echo "Not installing an agent on this server (CONTROL_PLANE_AGENT=no in .env)."
+else
+        install_self_agent
 fi
 
 echo ""

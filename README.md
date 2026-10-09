@@ -123,7 +123,11 @@ git checkout v0.2.1   # pin to the latest stable release; omit to run main
 
 `install.sh` generates secrets, asks a handful of questions it can't infer
 (host port, reverse proxy setup, optional SMTP), and brings the stack up with
-Docker Compose. Once it's running:
+Docker Compose. It also installs an agent on the server itself (skip with
+`--no-agent`), so the control plane can monitor and manage the machine it
+runs on. That host is marked **Control plane**, and operations that would
+take the control plane down are refused for it: see
+[docs/control-plane-host.md](docs/control-plane-host.md). Once it's running:
 
 1. Visit the app and go to `/setup` to create the first administrator
    account -- there's no default password, the account doesn't exist until

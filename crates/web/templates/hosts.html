@@ -7,6 +7,9 @@
 <div class="card">
   <p style="color:var(--text-muted);">
     Arsenals operate on these hosts, not on this control-plane container.
+    The server it runs on can be one of them, through its own agent
+    (<code>install.sh</code> sets one up): it's marked <strong>Control plane</strong>,
+    and operations that would take the control plane down are refused for it.
     {% if can_enroll %}
     Generate an enrollment token, then run the <code>abyssal-agent</code>
     installer on the target Linux or Windows host with it.
@@ -273,7 +276,7 @@
     <tbody>
       {% for h in hosts %}
       <tr>
-        <td>{{ h.name }}</td>
+        <td>{{ h.name }}{% if h.is_control_plane %}<br><span class="badge badge-control-plane" title="The control plane's own server: operations that would take the control plane down (isolation, inline IPS, closing its ports, stopping Docker or its containers, reformatting Docker's disk) are refused.">{% call macros::icon("shield") %} Control plane</span>{% endif %}</td>
         <td>{{ h.os }}<br><span style="color:var(--text-muted); font-size:0.85em;">agent v{{ h.agent_version }}</span></td>
         <td>
           {% if h.revoked %}<span class="badge badge-danger">Revoked</span>
@@ -305,6 +308,19 @@
             <button type="submit" class="{% if h.protocol_mismatch %}btn-warning{% else %}btn-secondary{% endif %}"{% if !h.online %} disabled title="The host must be connected to update it over its connection."{% endif %}>{% call macros::icon("generate") %} Update agent</button>
           </form>
           <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">{% call macros::icon("danger") %} Revoke</a>
+          {% if h.is_control_plane %}
+          <form method="post" action="/admin/hosts/{{ h.id }}/control-plane" data-confirm="Stop treating this host as the control plane's own server? Its guardrails come off: isolating it, inline IPS, closing its ports, stopping Docker and reformatting Docker's disk will all be allowed. Only do this if the control plane no longer runs on it.">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="is_control_plane" value="false">
+            <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} Not the control plane</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/hosts/{{ h.id }}/control-plane" data-confirm="Mark this host as the control plane's own server? Operations that would take the control plane down will be refused on it.">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="is_control_plane" value="true">
+            <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} Mark as control plane</button>
+          </form>
+          {% endif %}
           {% endif %}
           <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
           {% endif %}

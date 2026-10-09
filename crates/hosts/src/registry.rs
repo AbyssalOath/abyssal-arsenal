@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -6,6 +6,8 @@ use abyssal_agent_protocol::{AgentOperation, CommandOutcome, ServerMessage};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
+
+use crate::control_plane_guard::{self, ControlPlaneProtection};
 
 #[derive(Debug, Error)]
 pub enum DispatchError {
@@ -15,6 +17,11 @@ pub enum DispatchError {
     Timeout,
     #[error("host disconnected before responding")]
     ConnectionClosed,
+    /// Never sent: the host is the control plane's own server and the
+    /// operation would take the control plane down (see
+    /// `control_plane_guard`). The message says why, for the admin.
+    #[error("{0}")]
+    Refused(String),
 }
 
 struct Connection {
@@ -44,6 +51,10 @@ pub struct HostConnectionRegistry {
     /// to, so `unregister` can find and drop every request still in flight
     /// to a connection that just went away.
     pending: Mutex<HashMap<Uuid, (Uuid, oneshot::Sender<CommandOutcome>)>>,
+    /// Hosts flagged as the control plane's own server; every dispatch to
+    /// one goes through `control_plane_guard::check` first.
+    control_plane: Mutex<HashSet<Uuid>>,
+    protection: Mutex<ControlPlaneProtection>,
 }
 
 impl HostConnectionRegistry {
@@ -128,12 +139,55 @@ impl HostConnectionRegistry {
         }
     }
 
+    /// Flags (or unflags) `host_id` as the control plane's own server.
+    pub fn set_control_plane(&self, host_id: Uuid, is_control_plane: bool) {
+        let mut hosts = self.control_plane.lock().unwrap();
+        if is_control_plane {
+            hosts.insert(host_id);
+        } else {
+            hosts.remove(&host_id);
+        }
+    }
+
+    pub fn is_control_plane(&self, host_id: Uuid) -> bool {
+        self.control_plane.lock().unwrap().contains(&host_id)
+    }
+
+    /// The control plane's own ports, kept as configured at startup.
+    pub fn set_protected_ports(&self, ports: impl IntoIterator<Item = u16>) {
+        self.protection.lock().unwrap().ports = ports.into_iter().collect();
+    }
+
+    /// The device holding `/var/lib/docker` on the control plane's server,
+    /// once its agent has reported it.
+    pub fn set_docker_device(&self, device: Option<String>) {
+        self.protection.lock().unwrap().docker_device = device;
+    }
+
+    pub fn protection(&self) -> ControlPlaneProtection {
+        self.protection.lock().unwrap().clone()
+    }
+
+    /// `Err(reason)` when `operation` must not be sent to `host_id` because
+    /// it's the control plane's own server -- for a UI to grey out a button
+    /// ahead of time; `dispatch` enforces it regardless.
+    pub fn guard(&self, host_id: Uuid, operation: &AgentOperation) -> Result<(), String> {
+        if !self.is_control_plane(host_id) {
+            return Ok(());
+        }
+        control_plane_guard::check(operation, &self.protection.lock().unwrap())
+    }
+
     pub async fn dispatch(
         &self,
         host_id: Uuid,
         operation: AgentOperation,
         timeout: Duration,
     ) -> Result<CommandOutcome, DispatchError> {
+        if let Err(reason) = self.guard(host_id, &operation) {
+            tracing::warn!(%host_id, ?operation, "refused on the control plane's own server: {reason}");
+            return Err(DispatchError::Refused(reason));
+        }
         let sender = {
             let connections = self.connections.lock().unwrap();
             connections.get(&host_id).map(|c| c.sender.clone())
@@ -261,6 +315,52 @@ mod tests {
             Ok(CommandOutcome::Ok(output)) => assert_eq!(output.stdout, "pong"),
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn the_control_plane_host_is_guarded_and_nothing_is_sent() {
+        let registry = HostConnectionRegistry::new();
+        let host_id = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(4);
+        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
+
+        // Not flagged: sent (and times out, since nothing answers).
+        let result = registry
+            .dispatch(
+                host_id,
+                AgentOperation::IsolateHost,
+                Duration::from_millis(20),
+            )
+            .await;
+        assert!(matches!(result, Err(DispatchError::Timeout)));
+        assert!(rx.try_recv().is_ok());
+
+        registry.set_control_plane(host_id, true);
+        let result = registry
+            .dispatch(
+                host_id,
+                AgentOperation::IsolateHost,
+                Duration::from_millis(20),
+            )
+            .await;
+        assert!(matches!(result, Err(DispatchError::Refused(_))));
+        assert!(
+            rx.try_recv().is_err(),
+            "a refused operation must never reach the agent"
+        );
+
+        // Other hosts are unaffected.
+        assert!(
+            registry
+                .guard(Uuid::new_v4(), &AgentOperation::IsolateHost)
+                .is_ok()
+        );
+        registry.set_control_plane(host_id, false);
+        assert!(
+            registry
+                .guard(host_id, &AgentOperation::IsolateHost)
+                .is_ok()
+        );
     }
 
     #[test]

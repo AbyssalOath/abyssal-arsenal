@@ -19,7 +19,7 @@
           <select id="host-switcher-select" name="host_id" class="host-switcher-select">
             <option value="">All hosts</option>
             {% for h in base.available_hosts %}
-            <option value="{{ h.id }}" {% if h.selected %}selected{% endif %}>{{ h.name }}</option>
+            <option value="{{ h.id }}" {% if h.selected %}selected{% endif %}>{{ h.name }}{% if h.is_control_plane %} (control plane){% endif %}</option>
             {% endfor %}
           </select>
           <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">

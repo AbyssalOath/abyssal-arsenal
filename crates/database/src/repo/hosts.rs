@@ -16,6 +16,7 @@ struct HostRow {
     os: Option<String>,
     agent_version: Option<String>,
     pending_approval: bool,
+    is_control_plane: bool,
     revoked_at: Option<NaiveDateTime>,
 }
 
@@ -35,6 +36,7 @@ impl From<HostRow> for Host {
             os: row.os,
             agent_version: row.agent_version,
             pending_approval: row.pending_approval,
+            is_control_plane: row.is_control_plane,
             revoked_at: row.revoked_at.map(utc),
         }
     }
@@ -100,9 +102,10 @@ pub async fn find_by_credential_hash(
 }
 
 pub async fn list(pool: &DbPool) -> anyhow::Result<Vec<Host>> {
-    let rows: Vec<HostRow> = sqlx::query_as("SELECT * FROM hosts ORDER BY enrolled_at ASC")
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<HostRow> =
+        sqlx::query_as("SELECT * FROM hosts ORDER BY is_control_plane DESC, enrolled_at ASC")
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
@@ -151,6 +154,35 @@ pub async fn approve(pool: &DbPool, id: Uuid) -> anyhow::Result<bool> {
             .execute(pool)
             .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Flags (or unflags) a host as the control plane's own server, which turns
+/// on `abyssal_hosts::control_plane_guard` for it. Returns false if there's
+/// no such host.
+pub async fn set_control_plane(
+    pool: &DbPool,
+    id: Uuid,
+    is_control_plane: bool,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query("UPDATE hosts SET is_control_plane = ? WHERE id = ?")
+        .bind(is_control_plane)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    // MariaDB reports 0 affected rows when the value didn't change.
+    Ok(result.rows_affected() == 1 || find_by_id(pool, id).await?.is_some())
+}
+
+/// Every host flagged as the control plane, to load into the connection
+/// registry at startup.
+pub async fn control_plane_ids(pool: &DbPool) -> anyhow::Result<Vec<Uuid>> {
+    let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM hosts WHERE is_control_plane = 1")
+        .fetch_all(pool)
+        .await?;
+    Ok(ids
+        .into_iter()
+        .filter_map(|(id,)| Uuid::parse_str(&id).ok())
+        .collect())
 }
 
 pub async fn revoke(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {

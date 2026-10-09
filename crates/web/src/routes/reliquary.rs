@@ -57,6 +57,7 @@ pub async fn show(
     for host in repo::hosts::list(&state.pool).await? {
         if host.is_active() && state.hosts.is_connected(host.id) {
             hosts.push(ReliquaryHostRow {
+                is_control_plane: host.is_control_plane,
                 id: host.id.to_string(),
                 name: host.name,
             });

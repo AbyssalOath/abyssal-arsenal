@@ -107,6 +107,7 @@ async fn render_full(
             .remaining_for(host.id)
             .map(crate::templates::format_remaining);
         hosts.push(HostRow {
+            is_control_plane: host.is_control_plane,
             id: host.id.to_string(),
             name: host.name.clone(),
             enrolled_at: crate::common::format_in_tz(host.enrolled_at, &ctx.user.timezone),
@@ -507,6 +508,51 @@ pub async fn approve(
         )
         .await?;
     }
+    Ok(Redirect::to("/admin/hosts").into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct ControlPlaneForm {
+    csrf_token: String,
+    is_control_plane: bool,
+}
+
+/// Flags or unflags a host as the control plane's own server, for one that
+/// wasn't enrolled by `install.sh` (or was, and the control plane has since
+/// moved). Flagging turns its guardrails on immediately; unflagging turns
+/// them off, which the confirm prompt spells out.
+pub async fn set_control_plane(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<ControlPlaneForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let host = repo::hosts::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    repo::hosts::set_control_plane(&state.pool, id, form.is_control_plane).await?;
+    state.hosts.set_control_plane(id, form.is_control_plane);
+    if form.is_control_plane && state.hosts.is_connected(id) {
+        let hosts = state.hosts.clone();
+        tokio::spawn(async move {
+            crate::control_plane::probe_docker_device(&hosts, id).await;
+        });
+    }
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::HostControlPlaneChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&host.name)
+            .metadata(serde_json::json!({ "is_control_plane": form.is_control_plane })),
+    )
+    .await?;
     Ok(Redirect::to("/admin/hosts").into_response())
 }
 

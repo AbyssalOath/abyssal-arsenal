@@ -165,6 +165,7 @@ impl Executor {
             Err(DispatchError::ConnectionClosed) => Err(ExecutionError::Failed(
                 "host disconnected before responding".into(),
             )),
+            Err(DispatchError::Refused(reason)) => Err(ExecutionError::Refused(reason)),
         };
 
         match &outcome {
