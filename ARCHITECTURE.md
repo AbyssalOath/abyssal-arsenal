@@ -252,7 +252,7 @@ new column and one rule.
   only ever iterate the registry -- adding a new arsenal crate means adding
   one line to `crates/app/src/arsenals.rs` and the workspace manifest,
   nothing else.
-- All 25 arsenals have real capabilities wired up. See
+- All 26 arsenals have real capabilities wired up. See
   [CHANGELOG.md](CHANGELOG.md) for what each one actually does.
 
 **Control-plane arsenals vs. host-agent arsenals.** Most arsenals
@@ -902,12 +902,19 @@ The dashboard family of pages (the dashboard itself, `/dashboard/hosts`, and
 `/dashboard/activity`) can keep themselves current, and the default way they
 do it needs **no JavaScript at all**: a per-browser "Live updates" control
 (`_macros.html::live_updates_control`) lets a viewer pick an auto-refresh
-interval (off / 15s / 30s / 60s), stored as a plain cookie exactly like the
-theme and selected-host preferences (`dashboard_prefs.rs`). When set, the
+interval (off / 5s / 15s / 30s / 60s), stored as a plain cookie exactly like
+the theme and selected-host preferences (`dashboard_prefs.rs`). When set, the
 page renders a `<meta http-equiv="refresh" content="N">` in its head, which
-reloads the current URL -- query string and all -- on that interval. Off by
-default: with no cookie, these are the same static, server-rendered pages as
-every other page in the app.
+reloads the current URL -- query string and all -- on that interval. The 5s
+choice only polls at 5s with the htmx partial-refresh enhancement on (below);
+in the no-JS `<meta refresh>` fallback it is clamped up to 15s, because a full
+page reload every 5 seconds is jarring. The allowed set is enforced
+server-side (`dashboard_prefs::REFRESH_CHOICES`; a hand-edited cookie or an
+out-of-set form value falls back to off). Off by default: with no cookie,
+these are the same static, server-rendered pages as every other page in the
+app. This same control, head macro, and fragment pattern are reused verbatim
+by arsenal pages that need live views (e.g. Scourge); they add no new
+JavaScript, library, or endpoint shape.
 
 The **one new deliberate JavaScript exception** beyond the two progress
 pages above is opt-in per browser: the same control has a "Partial updates"
@@ -1683,7 +1690,7 @@ model, not oversights:
 - SSO/OIDC is not implemented yet. Notification providers now cover email
   (SMTP), syslog, and Slack/Teams/generic webhook; Telegram and Discord are
   not implemented -- see [CHANGELOG.md](CHANGELOG.md) for current status. All
-  25 arsenals have real capabilities.
+  26 arsenals have real capabilities.
 - Thanatos is pull-based: an on-demand/periodic full sweep plus an optional
   short-interval fast sweep for a curated high-signal set, not a continuous
   push-based EDR agent. The agent has no live kernel telemetry producer yet

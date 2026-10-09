@@ -1,0 +1,190 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Scourge — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{% block heading %}Scourge — {{ host_name }}{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/scourge">&larr; Back to host list</a> &nbsp; <a href="/arsenals/scourge/alerts">{% call macros::icon("alert") %} Alert inspection</a></p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">{% call macros::icon("sensor") %} {{ host_name }} <span class="badge badge-muted">{{ os_label }}</span></h2>
+    {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
+    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+  </div>
+  <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0;">{{ platform_note }}</p>
+
+  {% if !elevated && base.can_hosts_elevate %}
+  <form method="post" action="/arsenals/scourge/{{ host_id }}/elevate" class="elevate-form">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="elevate-password" class="sr-only">Sudo password</label>
+    <input type="password" id="elevate-password" name="sudo_password" placeholder="sudo password" autocomplete="off" required>
+    <button type="submit" class="btn-warning">{% call macros::icon("elevate") %} Elevate this host</button>
+  </form>
+  {% endif %}
+
+  {% if protocol_mismatch %}
+  <div class="warning-banner" style="margin-top:10px;">
+    {% call macros::icon("warning") %} <strong>This agent's protocol version doesn't match the control plane's.</strong>
+    It may not recognize Scourge's operations. Rebuild and redeploy <code>abyssal-agent</code> on this host.
+  </div>
+  {% endif %}
+
+  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+    <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
+    {% if let Some(output) = result_output %}
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    {% endif %}
+    {% if let Some(err) = result_error %}
+    <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
+    {% endif %}
+    {% if result_label.is_none() %}
+    <p class="results-empty">No output yet -- run a check.</p>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card kind-read">
+  <h3>Read</h3>
+  <div class="action-grid">
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/status">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("sensor") %} Sensor Status</button>
+    </form>
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/rules">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <label for="rule-query">Rule search (SID / message / keyword)</label>
+      <input type="text" id="rule-query" name="query" placeholder="blank = counts + files">
+      <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} List / Search Rules</button>
+    </form>
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/pcaps">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("packet") %} Packet Captures</button>
+    </form>
+  </div>
+</div>
+
+{% if can_manage %}
+<div class="card kind-write">
+  <h3>Sensor &amp; service</h3>
+  <p style="color:var(--text-muted); margin-top:0;">These need the host elevated (sudo); the confirm page offers a password field if it isn't.</p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/install/confirm">
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Install sensor&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/service/confirm">
+      <input type="hidden" name="verb" value="start">
+      <button type="submit" class="btn-warning">{% call macros::icon("sensor") %} Start&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/service/confirm">
+      <input type="hidden" name="verb" value="restart">
+      <button type="submit" class="btn-warning">{% call macros::icon("reboot") %} Restart&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/service/confirm">
+      <input type="hidden" name="verb" value="reload">
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Reload&hellip;</button>
+    </form>
+  </div>
+</div>
+
+<div class="card kind-write">
+  <h3>Configuration &amp; rules</h3>
+  {% if config_changes_enabled %}
+  <form method="get" action="/arsenals/scourge/{{ host_id }}/config/confirm">
+    <label for="cfg-interfaces">Monitored interface(s) (comma-separated; blank = unchanged)</label>
+    <input type="text" id="cfg-interfaces" name="interfaces" placeholder="e.g. eth0, eth1">
+    <label for="cfg-home">HOME_NET (blank = unchanged)</label>
+    <input type="text" id="cfg-home" name="home_net" placeholder="e.g. [192.168.0.0/16,10.0.0.0/8]">
+    <label for="cfg-ext">EXTERNAL_NET (blank = unchanged)</label>
+    <input type="text" id="cfg-ext" name="external_net" placeholder="e.g. !$HOME_NET">
+    <label><input type="checkbox" name="eve_enabled" value="true"> Enable EVE JSON output (required for the collection sweep)</label>
+    <div class="actions" style="margin-top:10px;">
+      <button type="submit" class="btn-warning">{% call macros::icon("settings") %} Apply config&hellip;</button>
+    </div>
+  </form>
+
+  <div class="action-grid" style="margin-top:12px;">
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/rules/update/confirm">
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Update rules&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/rules/sid/confirm">
+      <label for="sid-num">SID</label>
+      <input type="number" id="sid-num" name="sid" min="1" required>
+      <select name="enabled">
+        <option value="false">Disable</option>
+        <option value="true">Enable</option>
+      </select>
+      <button type="submit" class="btn-warning">{% call macros::icon("shield") %} Set SID&hellip;</button>
+    </form>
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/rules/suppress/confirm">
+      <label for="suppress-sid">SID</label>
+      <input type="number" id="suppress-sid" name="sid" min="1" required>
+      <select name="suppress">
+        <option value="true">Suppress</option>
+        <option value="false">Unsuppress</option>
+      </select>
+      <button type="submit" class="btn-warning">{% call macros::icon("shield") %} Suppress&hellip;</button>
+    </form>
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted); margin:0;">
+    Config and ruleset changes are disabled. An admin must enable "Scourge configuration/ruleset
+    changes" on the <a href="/admin/settings">Settings</a> page first -- a second layer on top of
+    the confirmation each change still requires.
+  </p>
+  {% endif %}
+
+  <form method="post" action="/arsenals/scourge/{{ host_id }}/rules/test" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="ruletest-pcap">Test ruleset against a captured pcap (filename from "Packet Captures")</label>
+    <input type="text" id="ruletest-pcap" name="pcap_name" placeholder="e.g. capture-2026-....pcap">
+    <button type="submit" class="btn-secondary">{% call macros::icon("packet") %} Rule Test</button>
+  </form>
+</div>
+
+<div class="card kind-write">
+  <h3>{% call macros::icon("packet") %} Packet capture</h3>
+  {% if capture_enabled %}
+  <p style="color:var(--text-muted); margin-top:0;">
+    Bounded capture (stops at the duration or size cap). Pcaps stay on this host; you only ever see
+    metadata here.
+  </p>
+  <form method="get" action="/arsenals/scourge/{{ host_id }}/capture/confirm">
+    <label for="cap-bpf">BPF filter (blank = capture all)</label>
+    <input type="text" id="cap-bpf" name="bpf" placeholder="e.g. tcp port 443 and host 10.0.0.5">
+    <label for="cap-secs">Max duration (s)</label>
+    <input type="number" id="cap-secs" name="max_seconds" min="1" max="3600" value="60" style="max-width:120px;">
+    <label for="cap-mb">Max size (MB)</label>
+    <input type="number" id="cap-mb" name="max_mb" min="1" max="1024" value="50" style="max-width:120px;">
+    <div class="actions" style="margin-top:10px;">
+      <button type="submit" class="btn-warning">{% call macros::icon("packet") %} Start capture&hellip;</button>
+    </div>
+  </form>
+  <form method="get" action="/arsenals/scourge/{{ host_id }}/pcap/delete/confirm" style="margin-top:12px;">
+    <label for="del-pcap">Delete a capture (filename from "Packet Captures")</label>
+    <input type="text" id="del-pcap" name="name" placeholder="e.g. capture-....pcap">
+    <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Delete pcap&hellip;</button>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted); margin:0;">
+    Packet capture is disabled. An admin must enable "Scourge packet capture" on the
+    <a href="/admin/settings">Settings</a> page first (it's privacy-sensitive).
+  </p>
+  {% endif %}
+</div>
+
+<div class="card kind-destructive">
+  <h3>{% call macros::icon("danger") %} Stop sensor</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Stopping the sensor blinds network intrusion detection on this host until it's started again.
+  </p>
+  <div class="action-grid">
+    <form method="get" action="/arsenals/scourge/{{ host_id }}/service/confirm">
+      <input type="hidden" name="verb" value="stop">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Stop sensor&hellip;</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

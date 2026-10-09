@@ -99,6 +99,17 @@ pub enum Permission {
     /// disk-management permission.
     StorageConnectionsView,
     StorageConnectionsManage,
+
+    /// Scourge (network IDS/IPS). `View` covers every read (sensor status,
+    /// alert/event inspection, rule listing, pcap listing); `Manage` covers
+    /// every write and destructive action (install/config, rule changes,
+    /// service control, packet capture, and inline IPS). The highest-risk
+    /// actions (IPS mode, drop/reject promotion, always-allow edits, pcap
+    /// deletion, the collection sweep) are additionally gated by their own
+    /// second-gate settings and type-to-confirm -- `Manage` is the permission
+    /// floor, not the only control.
+    ScourgeView,
+    ScourgeManage,
 }
 
 impl Permission {
@@ -155,6 +166,8 @@ impl Permission {
 
             Permission::StorageConnectionsView => "storage_connections.view",
             Permission::StorageConnectionsManage => "storage_connections.manage",
+            Permission::ScourgeView => "scourge.view",
+            Permission::ScourgeManage => "scourge.manage",
         }
     }
 
@@ -201,6 +214,8 @@ impl Permission {
         Permission::MacrosManageAll,
         Permission::StorageConnectionsView,
         Permission::StorageConnectionsManage,
+        Permission::ScourgeView,
+        Permission::ScourgeManage,
     ];
 }
 

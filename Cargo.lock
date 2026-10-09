@@ -80,6 +80,7 @@ dependencies = [
  "arsenal-reanimation",
  "arsenal-reliquary",
  "arsenal-resurrection",
+ "arsenal-scourge",
  "arsenal-sepulchre",
  "arsenal-thanatos",
  "arsenal-vivisection",
@@ -660,6 +661,14 @@ dependencies = [
 
 [[package]]
 name = "arsenal-resurrection"
+version = "0.2.2"
+dependencies = [
+ "abyssal-core",
+ "abyssal-modules",
+]
+
+[[package]]
+name = "arsenal-scourge"
 version = "0.2.2"
 dependencies = [
  "abyssal-core",

@@ -38,6 +38,7 @@ pub mod reliquary;
 pub mod reliquary_backup;
 pub mod resurrection;
 pub mod roles;
+pub mod scourge;
 pub mod sepulchre;
 pub mod settings;
 pub mod setup;

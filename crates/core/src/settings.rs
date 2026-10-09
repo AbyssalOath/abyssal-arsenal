@@ -295,6 +295,63 @@ pub const PANOPTICON_RADIUS_UNKNOWN_ACTION: &str = "panopticon.radius_unknown_ac
 pub const PANOPTICON_RADIUS_GUEST_VLAN: &str = "panopticon.radius_guest_vlan";
 pub const PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT: u32 = 0;
 
+// -----------------------------------------------------------------------
+// Scourge (network IDS/IPS). Every gate below is off/empty by default; the
+// three `*_enabled` bools are second gates in the sense of
+// `HOST_ISOLATION_ENABLED` -- an admin must deliberately enable them on the
+// Settings page, re-checked fresh at every entry point on top of the normal
+// permission and type-to-confirm.
+// -----------------------------------------------------------------------
+
+/// Second gate for the unattended collection sweep: when off, the sweep that
+/// pulls new EVE alerts from hosts and forwards them to Thanatos does not run.
+/// Off by default (like `THANATOS_MONITORING_ENABLED`).
+pub const SCOURGE_MONITORING_ENABLED: &str = "scourge.monitoring_enabled";
+
+/// Collection-sweep interval in seconds, clamped 5-60 (like
+/// `THANATOS_FAST_SWEEP_SECONDS`). Re-read every tick so a change takes effect
+/// without a restart.
+pub const SCOURGE_SWEEP_SECONDS: &str = "scourge.sweep_seconds";
+pub const SCOURGE_SWEEP_SECONDS_DEFAULT: u32 = 15;
+
+/// How long the bounded alert CACHE (not `thanatos_events`) is kept, in days.
+/// `0` disables age pruning (the hard row cap still applies).
+pub const SCOURGE_EVENT_RETENTION_DAYS: &str = "scourge.event_retention_days";
+pub const SCOURGE_EVENT_RETENTION_DAYS_DEFAULT: u32 = 14;
+
+/// Minimum severity (`low`/`medium`/`high`/`critical`) a Scourge alert must
+/// reach to be forwarded into Thanatos's ingest path -- so a noisy sensor can't
+/// flood the SIEM. Everything is still cached locally regardless; this only
+/// gates the forward.
+pub const SCOURGE_MIN_FORWARD_SEVERITY: &str = "scourge.min_forward_severity";
+pub const SCOURGE_MIN_FORWARD_SEVERITY_DEFAULT: &str = "medium";
+
+/// Second gate for Scourge changing what the sensor *runs* -- applying config
+/// (interfaces / HOME_NET / EXTERNAL_NET / EVE output) and ruleset changes
+/// (rule updates, enabling/disabling SIDs, suppressions). Off by default: an
+/// admin must deliberately allow Scourge to modify the sensor's configuration
+/// and ruleset, re-checked fresh at every entry point on top of the normal
+/// `scourge.manage` permission and confirmation. Install and service
+/// start/stop/restart/reload are standard lifecycle (permission + confirm only,
+/// not behind this gate); inline IPS and capture have their own gates.
+pub const SCOURGE_CONFIG_CHANGES_ENABLED: &str = "scourge.config_changes_enabled";
+
+/// Second gate for packet capture (privacy-sensitive) -- capture start and
+/// pcap deletion are refused unless this is on.
+pub const SCOURGE_CAPTURE_ENABLED: &str = "scourge.capture_enabled";
+
+/// Second gate for inline IPS: mode switching, per-SID drop/reject promotion,
+/// and always-allow list edits are all refused unless this is on. The riskiest
+/// gate -- an inline drop rule can sever connectivity.
+pub const SCOURGE_IPS_ENABLED: &str = "scourge.ips_enabled";
+
+/// Host-side pcap retention caps the sweep/capture jobs enforce: age in days
+/// and total size in MB of the pcap directory. `0` days disables age pruning.
+pub const SCOURGE_PCAP_RETENTION_DAYS: &str = "scourge.pcap_retention_days";
+pub const SCOURGE_PCAP_RETENTION_DAYS_DEFAULT: u32 = 7;
+pub const SCOURGE_PCAP_MAX_TOTAL_MB: &str = "scourge.pcap_max_total_mb";
+pub const SCOURGE_PCAP_MAX_TOTAL_MB_DEFAULT: u32 = 2048;
+
 /// Target (IP, CIDR range, or hostname) the active sweep scans on each
 /// tick when `PANOPTICON_SWEEP_ENABLED` is on -- validated with the same
 /// `abyssal_agent_protocol::is_valid_network_target` the manual scan form

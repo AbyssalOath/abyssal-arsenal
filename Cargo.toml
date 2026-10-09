@@ -40,6 +40,7 @@ members = [
     "crates/arsenals/inquest",
     "crates/arsenals/thanatos",
     "crates/arsenals/panopticon",
+    "crates/arsenals/scourge",
     "crates/arsenals/sepulchre",
 ]
 
@@ -88,6 +89,7 @@ arsenal-vivisection = { path = "crates/arsenals/vivisection" }
 arsenal-inquest = { path = "crates/arsenals/inquest" }
 arsenal-thanatos = { path = "crates/arsenals/thanatos" }
 arsenal-panopticon = { path = "crates/arsenals/panopticon" }
+arsenal-scourge = { path = "crates/arsenals/scourge" }
 arsenal-sepulchre = { path = "crates/arsenals/sepulchre" }
 
 tokio = { version = "1", features = ["full"] }

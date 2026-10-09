@@ -51,13 +51,14 @@ COPY crates/arsenals/inquest/Cargo.toml crates/arsenals/inquest/Cargo.toml
 COPY crates/arsenals/thanatos/Cargo.toml crates/arsenals/thanatos/Cargo.toml
 COPY crates/arsenals/panopticon/Cargo.toml crates/arsenals/panopticon/Cargo.toml
 COPY crates/arsenals/sepulchre/Cargo.toml crates/arsenals/sepulchre/Cargo.toml
+COPY crates/arsenals/scourge/Cargo.toml crates/arsenals/scourge/Cargo.toml
 
 RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol internal-ca web \
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \
         arsenals/apothecary arsenals/grimoire arsenals/haruspex arsenals/cryptkeeper arsenals/defleshing arsenals/vivisection \
-        arsenals/inquest arsenals/thanatos arsenals/panopticon arsenals/sepulchre; do \
+        arsenals/inquest arsenals/thanatos arsenals/panopticon arsenals/sepulchre arsenals/scourge; do \
         mkdir -p crates/$crate/src && echo "// stub" > crates/$crate/src/lib.rs; \
     done \
     && mkdir -p crates/app/src && echo "fn main() {}" > crates/app/src/main.rs \

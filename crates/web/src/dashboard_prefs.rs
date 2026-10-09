@@ -13,8 +13,11 @@ pub const HTMX_COOKIE: &str = "abyssal_dashboard_htmx";
 
 /// The auto-refresh intervals the UI offers, in seconds. `0` means off. Any
 /// other value is clamped to this set so a hand-edited cookie can't set an
-/// abusive (e.g. 1-second) reload cadence.
-pub const REFRESH_CHOICES: &[u32] = &[0, 15, 30, 60];
+/// abusive (e.g. 1-second) reload cadence. `5` is only meaningful with the htmx
+/// partial-refresh enhancement on -- in the no-JS `<meta refresh>` fallback a 5s
+/// selection is clamped up to 15s (see `refresh_head` in `_macros.html`),
+/// because a full-page reload every 5 seconds is jarring.
+pub const REFRESH_CHOICES: &[u32] = &[0, 5, 15, 30, 60];
 
 /// This browser's chosen auto-refresh interval in seconds, or `0` (off) when
 /// unset or not one of the offered choices.
@@ -68,6 +71,7 @@ mod tests {
     #[test]
     fn clamp_refresh_only_allows_offered_choices() {
         assert_eq!(clamp_refresh(0), 0);
+        assert_eq!(clamp_refresh(5), 5);
         assert_eq!(clamp_refresh(15), 15);
         assert_eq!(clamp_refresh(30), 30);
         assert_eq!(clamp_refresh(60), 60);

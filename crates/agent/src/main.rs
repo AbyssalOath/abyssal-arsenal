@@ -25,6 +25,7 @@ mod process;
 mod reanimation;
 mod reliquary;
 mod resurrection;
+mod scourge;
 mod selfupdate;
 mod sepulchre;
 mod shred;

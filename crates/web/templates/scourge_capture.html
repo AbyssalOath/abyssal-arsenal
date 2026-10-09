@@ -1,0 +1,52 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Scourge Capture — {{ host_name }} — Abyssal Arsenal{% endblock %}
+{# While running, refresh the page every 3s (no-JS); each load re-queries the
+   agent for the capture's progress and stops refreshing once it's done. #}
+{% block head_extra %}{% if running %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block heading %}Scourge — Packet Capture{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/arsenals/scourge/{{ host_id }}">&larr; Back to {{ host_name }}</a></p>
+
+<div class="card">
+  <h2 style="margin-top:0;">{% call macros::icon("packet") %} {{ capture_id }}
+    {% if running %}<span class="badge badge-warning">{{ state_label }}</span>
+    {% else %}<span class="badge badge-muted">{{ state_label }}</span>{% endif %}
+  </h2>
+
+  {% if let Some(err) = error %}
+  <div class="error-banner">{{ err }}</div>
+  {% endif %}
+
+  <table>
+    <tbody>
+      <tr><th style="text-align:left;">BPF filter</th><td>{{ bpf }}</td></tr>
+      <tr><th style="text-align:left;">Elapsed</th><td>{{ elapsed_secs }}s</td></tr>
+      <tr><th style="text-align:left;">Remaining (max)</th><td>{{ remaining_secs }}s (of {{ max_seconds }}s)</td></tr>
+      <tr><th style="text-align:left;">Size on host</th><td>{{ size }}</td></tr>
+      <tr><th style="text-align:left;">Pcap file</th><td><code>{{ pcap_name }}</code> (stays on the host)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="action-grid" style="margin-top:12px;">
+    {% if running %}
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/capture/{{ job_id }}/cancel">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn-danger">{% call macros::icon("danger") %} Cancel capture</button>
+    </form>
+    {% else %}
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/pcaps">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("packet") %} View captures</button>
+    </form>
+    <form method="post" action="/arsenals/scourge/{{ host_id }}/rules/test">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="pcap_name" value="{{ pcap_name }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} Test rules against it</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

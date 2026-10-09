@@ -28,7 +28,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 39;
+pub const PROTOCOL_VERSION: u32 = 40;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -1395,6 +1395,123 @@ pub enum AgentOperation {
     UpdateTrustedCa {
         bundle_pem: String,
     },
+
+    // -------------------------------------------------------------
+    // Scourge: network IDS/IPS (Suricata today, behind an engine
+    // abstraction). Linux-only -- every variant returns a clean
+    // "not supported on this platform" on Windows/macOS. The read
+    // variants below work from file permissions alone where possible
+    // (the collection sweep can't rely on human-triggered elevation);
+    // write/destructive variants arrive in later phases.
+    // -------------------------------------------------------------
+    /// Read: detected engine + version, running state, monitored interfaces,
+    /// config path, rule count + last rule update, log/pcap disk usage, and
+    /// whether the EVE log is readable. A sectioned text report.
+    ScourgeSensorStatus,
+    /// Read: pull new EVE (`eve.json`) alert records since a byte offset,
+    /// returning each as a Scourge-internal tab-separated line plus a trailing
+    /// `cursor\t<inode>\t<offset>` high-water mark the control plane persists
+    /// and passes back next sweep. `eve_inode`/`eve_offset` are the last-seen
+    /// position; a changed inode or a file smaller than `eve_offset` means
+    /// rotation/truncation, so the agent restarts from offset 0 of the current
+    /// file (no rewind, no double-ingest). `max_events` caps one pull. If the
+    /// EVE log is unreadable the agent returns a single `unreadable\t<reason>`
+    /// line (not an error), so the sweep can surface a clear "needs
+    /// permissions" state. Works from file permissions alone -- no elevation.
+    ScourgeCollectEvents {
+        #[serde(default)]
+        eve_offset: u64,
+        #[serde(default)]
+        eve_inode: u64,
+        #[serde(default)]
+        max_events: u32,
+    },
+    /// Read: list rule sources/files and counts; when `query` is non-empty,
+    /// return matching rules (by SID, message, classtype, or keyword), capped.
+    ScourgeListRules {
+        #[serde(default)]
+        query: String,
+    },
+    /// Read: list captured pcap files (name, size, mtime) in Scourge's
+    /// permission-restricted capture directory. Metadata only -- pcap contents
+    /// never cross the agent channel.
+    ScourgePcapList,
+    /// Write: install the IDS/IPS engine via Apothecary's package backend (never
+    /// a raw package-manager call). Requires elevation.
+    ScourgeInstall,
+    /// Write: apply sensor configuration through a Scourge-owned include/override
+    /// file, validated (`suricata -T`) before reload, with the previous config
+    /// backed up and restored-and-reloaded on any validation/reload failure (the
+    /// Sepulchre provisioning model). `interfaces` empty leaves the configured
+    /// interface(s) unchanged. Requires elevation.
+    ScourgeApplyConfig {
+        #[serde(default)]
+        interfaces: Vec<String>,
+        #[serde(default)]
+        home_net: String,
+        #[serde(default)]
+        external_net: String,
+        #[serde(default)]
+        eve_enabled: bool,
+    },
+    /// Write/Destructive (per verb): control the sensor service through the
+    /// detected init system (`start`/`restart`/`reload` are Write; `stop` is
+    /// Destructive and gated by type-to-confirm at the route). Requires
+    /// elevation.
+    ScourgeServiceAction {
+        verb: String,
+    },
+    /// Write: update rulesets (`suricata-update`), then validate and reload.
+    /// Requires elevation.
+    ScourgeUpdateRules,
+    /// Write: enable or disable a specific signature by SID (via the engine's
+    /// disable list + a rule refresh). Requires elevation.
+    ScourgeSetSidEnabled {
+        sid: u32,
+        enabled: bool,
+    },
+    /// Write: add or remove a suppression for a specific SID (threshold.conf),
+    /// then validate and reload. Requires elevation.
+    ScourgeSuppressSid {
+        sid: u32,
+        suppress: bool,
+    },
+    /// Read: test the current ruleset against a captured pcap offline, without
+    /// touching the live sensor. `pcap_name` is a bare filename within Scourge's
+    /// pcap directory (no path separators) -- the agent rejects anything else.
+    ScourgeRuleTest {
+        pcap_name: String,
+    },
+    /// Write: start a BOUNDED packet capture detached (a hard `timeout` duration
+    /// cap and tcpdump's own size cap), returning a capture id immediately. The
+    /// agent enforces pcap retention/size caps before starting so the capture
+    /// directory can't grow without bound. `bpf` is a validated Berkeley Packet
+    /// Filter (empty = capture all). Requires elevation.
+    ScourgeCaptureStart {
+        bpf: String,
+        max_seconds: u32,
+        max_mb: u32,
+        retention_days: u32,
+        max_total_mb: u32,
+    },
+    /// Read: report a capture's state (running/done), elapsed seconds, pcap size,
+    /// and remaining seconds. Metadata only; pcap contents never cross the wire.
+    ScourgeCaptureStatus {
+        capture_id: String,
+    },
+    /// Write: stop a running capture (identified by its id). Requires elevation.
+    ScourgeCaptureCancel {
+        capture_id: String,
+    },
+    /// Destructive: delete a captured pcap from the host's capture directory.
+    /// `pcap_name` is a bare filename (no path separators). Requires elevation.
+    ScourgePcapDelete {
+        pcap_name: String,
+        /// As `DeleteQuarantinedFile::shred_passes`: captures hold raw
+        /// traffic, so they can be shredded rather than just unlinked.
+        #[serde(default)]
+        shred_passes: u8,
+    },
 }
 
 /// Which Sepulchre-owned config drop-in/include an operation targets --
@@ -2551,6 +2668,84 @@ impl fmt::Debug for AgentOperation {
                     "certificates",
                     &bundle_pem.matches("BEGIN CERTIFICATE").count(),
                 )
+                .finish(),
+            AgentOperation::ScourgeSensorStatus => write!(f, "ScourgeSensorStatus"),
+            AgentOperation::ScourgeCollectEvents {
+                eve_offset,
+                eve_inode,
+                max_events,
+            } => f
+                .debug_struct("ScourgeCollectEvents")
+                .field("eve_offset", eve_offset)
+                .field("eve_inode", eve_inode)
+                .field("max_events", max_events)
+                .finish(),
+            AgentOperation::ScourgeListRules { query } => f
+                .debug_struct("ScourgeListRules")
+                .field("query", query)
+                .finish(),
+            AgentOperation::ScourgePcapList => write!(f, "ScourgePcapList"),
+            AgentOperation::ScourgeInstall => write!(f, "ScourgeInstall"),
+            AgentOperation::ScourgeApplyConfig {
+                interfaces,
+                home_net,
+                external_net,
+                eve_enabled,
+            } => f
+                .debug_struct("ScourgeApplyConfig")
+                .field("interfaces", interfaces)
+                .field("home_net", home_net)
+                .field("external_net", external_net)
+                .field("eve_enabled", eve_enabled)
+                .finish(),
+            AgentOperation::ScourgeServiceAction { verb } => f
+                .debug_struct("ScourgeServiceAction")
+                .field("verb", verb)
+                .finish(),
+            AgentOperation::ScourgeUpdateRules => write!(f, "ScourgeUpdateRules"),
+            AgentOperation::ScourgeSetSidEnabled { sid, enabled } => f
+                .debug_struct("ScourgeSetSidEnabled")
+                .field("sid", sid)
+                .field("enabled", enabled)
+                .finish(),
+            AgentOperation::ScourgeSuppressSid { sid, suppress } => f
+                .debug_struct("ScourgeSuppressSid")
+                .field("sid", sid)
+                .field("suppress", suppress)
+                .finish(),
+            AgentOperation::ScourgeRuleTest { pcap_name } => f
+                .debug_struct("ScourgeRuleTest")
+                .field("pcap_name", pcap_name)
+                .finish(),
+            AgentOperation::ScourgeCaptureStart {
+                bpf,
+                max_seconds,
+                max_mb,
+                retention_days,
+                max_total_mb,
+            } => f
+                .debug_struct("ScourgeCaptureStart")
+                .field("bpf", bpf)
+                .field("max_seconds", max_seconds)
+                .field("max_mb", max_mb)
+                .field("retention_days", retention_days)
+                .field("max_total_mb", max_total_mb)
+                .finish(),
+            AgentOperation::ScourgeCaptureStatus { capture_id } => f
+                .debug_struct("ScourgeCaptureStatus")
+                .field("capture_id", capture_id)
+                .finish(),
+            AgentOperation::ScourgeCaptureCancel { capture_id } => f
+                .debug_struct("ScourgeCaptureCancel")
+                .field("capture_id", capture_id)
+                .finish(),
+            AgentOperation::ScourgePcapDelete {
+                pcap_name,
+                shred_passes,
+            } => f
+                .debug_struct("ScourgePcapDelete")
+                .field("pcap_name", pcap_name)
+                .field("shred_passes", shred_passes)
                 .finish(),
         }
     }
