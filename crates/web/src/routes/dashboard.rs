@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
-use crate::common::{require_csrf, sparkline_points};
+use crate::common::{percent_sparkline_points, require_csrf};
 use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
@@ -467,6 +467,7 @@ async fn build_control_plane(state: &AppState) -> ControlPlaneCtx {
             cpu_spark: String::new(),
             mem_spark: String::new(),
             disk_spark: String::new(),
+            trend_minutes: 0,
             uptime: "—".to_string(),
             version,
             db_ok,
@@ -478,7 +479,8 @@ async fn build_control_plane(state: &AppState) -> ControlPlaneCtx {
     };
 
     // Recent history for the trend sparklines -- three small indexed reads.
-    let (cpu_spark, mem_spark, disk_spark) = self_metric_sparklines(&state.pool).await;
+    let (cpu_spark, mem_spark, disk_spark, trend_minutes) =
+        self_metric_sparklines(&state.pool).await;
 
     let age_secs = (chrono::Utc::now() - s.sampled_at).num_seconds().max(0);
     ControlPlaneCtx {
@@ -506,6 +508,7 @@ async fn build_control_plane(state: &AppState) -> ControlPlaneCtx {
         cpu_spark,
         mem_spark,
         disk_spark,
+        trend_minutes,
         uptime: format_uptime(s.uptime_secs),
         version,
         db_ok,
@@ -519,21 +522,31 @@ async fn build_control_plane(state: &AppState) -> ControlPlaneCtx {
 /// How many recent control-plane samples a trend sparkline plots.
 const SELF_METRIC_TREND_SAMPLES: i64 = 40;
 
-/// Builds the `(cpu, mem, disk)` trend sparklines from control-plane history.
-/// Best-effort: an empty string (no line) on any read error or too little data.
-async fn self_metric_sparklines(pool: &abyssal_database::DbPool) -> (String, String, String) {
+/// Fewer samples than this draw no trend: two or three points just make a
+/// line across the box that says nothing yet.
+const SELF_METRIC_TREND_MIN_SAMPLES: usize = 5;
+
+/// Builds the `(cpu, mem, disk)` trend sparklines from control-plane history,
+/// plus how many minutes they span. Best-effort: an empty string (no line) on
+/// any read error or too little data.
+async fn self_metric_sparklines(pool: &abyssal_database::DbPool) -> (String, String, String, i64) {
     use abyssal_database::repo::control_plane_metrics as cpm;
-    async fn spark(pool: &abyssal_database::DbPool, metric: &str) -> String {
+    async fn spark(pool: &abyssal_database::DbPool, metric: &str) -> (String, usize) {
         let values = cpm::recent(pool, metric, SELF_METRIC_TREND_SAMPLES)
             .await
             .unwrap_or_default();
-        sparkline_points(&values, 120.0, 24.0)
+        if values.len() < SELF_METRIC_TREND_MIN_SAMPLES {
+            return (String::new(), values.len());
+        }
+        (percent_sparkline_points(&values, 120.0, 24.0), values.len())
     }
-    (
-        spark(pool, cpm::METRIC_CPU).await,
-        spark(pool, cpm::METRIC_MEM).await,
-        spark(pool, cpm::METRIC_DISK).await,
-    )
+    let (cpu, samples) = spark(pool, cpm::METRIC_CPU).await;
+    let (mem, _) = spark(pool, cpm::METRIC_MEM).await;
+    let (disk, _) = spark(pool, cpm::METRIC_DISK).await;
+    let minutes = (samples.saturating_sub(1) as u64 * crate::self_metrics::SAMPLE_INTERVAL_SECS
+        / 60)
+        .max(1) as i64;
+    (cpu, mem, disk, minutes)
 }
 
 /// The five fleet summary tiles. Each drills into a fuller view when there is
@@ -1387,7 +1400,7 @@ async fn build_fleet_view(
                 disk: a.disk.map(percent_meter),
                 failed_units: a.failed_units,
                 attention_reason: attention_reason(a),
-                cpu_sparkline: sparkline_points(&cpu_values, 90.0, 22.0),
+                cpu_sparkline: percent_sparkline_points(&cpu_values, 90.0, 22.0),
                 last_seen: match a.last_seen {
                     Some(ts) => crate::common::format_in_tz(ts, &ctx.user.timezone),
                     None => "never".to_string(),

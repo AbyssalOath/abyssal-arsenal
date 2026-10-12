@@ -28,6 +28,34 @@ for what that means for cloning and updating.
   clears by itself when the host connects or answers again. It needs
   `hosts.manage` and is audited (`HOST_OFFLINE_ACKNOWLEDGED`). Migration
   0046.
+- **Buttons show that they're working.** Submitting any form that changes
+  something (a scan, a Recover, a remote command) disables its buttons and
+  shows "Working…" with a spinner until the page loads. A second click no
+  longer sends the action twice.
+- **The top nav works on phones and smaller windows.**
+  - At 1200px wide and below, the links fold into a **Menu** button.
+  - Above that, the links wrap rather than scroll sideways behind a
+    scrollbar, and on laptop widths "Apotheosis" and "Signed in as" shorten
+    to the icon and the username.
+  - "Obituary (Audit Log)" is now "Obituary", with the full name as a
+    tooltip. **Style Guide** moved into the user menu.
+  - Wide tables scroll inside their card on a phone instead of pushing the
+    whole page sideways.
+- **Command output is readable.** Arsenal results keep their columns: lines
+  no longer wrap mid-column, and long lines scroll inside the output box.
+  Each output has **Wrap lines** (the choice is remembered) and **Copy**
+  buttons.
+- **No empty "Results" toggle.** Arsenal host pages show "No output yet"
+  until something has run, rather than a collapsed, empty Results panel.
+
+### Fixed
+
+- **The control plane's CPU, memory and disk trend lines** drew as steep
+  diagonals across the dashboard card. They were scaled to the series' own
+  minimum and maximum, so a 48.00% → 48.01% disk change filled the whole
+  height. They're now on a fixed 0–100% scale, in a framed box with a
+  "trend, last N min" caption. They appear once there are five minutes of
+  samples. The fleet table's per-host CPU sparklines use the same scale.
 - **A host that's gone offline no longer lingers as "unreachable".** The
   health check only runs on connected hosts, so a host that timed out and
   then dropped off kept its old error until it came back. Its stale result

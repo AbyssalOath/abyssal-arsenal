@@ -70,6 +70,32 @@ pub fn sparkline_points(values: &[f64], width: f64, height: f64) -> String {
         .join(" ")
 }
 
+/// Like [`sparkline_points`], but for percentages: plotted on a fixed 0-100
+/// scale (clamped) instead of the series' own min..max. Min..max scaling
+/// stretches a 48.00% -> 48.01% disk change to the full box height, which
+/// draws a steep diagonal that reads as a strike-through under the meter
+/// bar; on a fixed scale the line sits at the bar's level and only moves
+/// when usage really does. Inset by a pixel top and bottom so a flat 0% or
+/// 100% line isn't clipped by the box edge.
+pub fn percent_sparkline_points(values: &[f64], width: f64, height: f64) -> String {
+    if values.len() < 2 {
+        return String::new();
+    }
+    let inset = 1.0_f64.min(height / 4.0);
+    let span = height - 2.0 * inset;
+    let last = values.len() - 1;
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let x = i as f64 / last as f64 * width;
+            let y = inset + span - v.clamp(0.0, 100.0) / 100.0 * span;
+            format!("{x:.1},{y:.1}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn require_csrf(jar: &CookieJar, submitted: &str) -> Result<(), WebError> {
     if csrf::verify(jar, submitted) {
         Ok(())
@@ -765,6 +791,17 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn percent_sparkline_uses_a_fixed_scale() {
+        // A tiny change stays nearly flat instead of spanning the box.
+        let pts = percent_sparkline_points(&[48.0, 48.01], 100.0, 22.0);
+        assert_eq!(pts, "0.0,11.4 100.0,11.4");
+        // 0% and 100% sit just inside the edges; out-of-range values clamp.
+        let pts = percent_sparkline_points(&[0.0, 100.0, 150.0], 100.0, 22.0);
+        assert_eq!(pts, "0.0,21.0 50.0,1.0 100.0,1.0");
+        assert_eq!(percent_sparkline_points(&[5.0], 100.0, 22.0), "");
+    }
 
     #[test]
     fn parses_common_suffixes() {

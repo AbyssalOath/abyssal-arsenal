@@ -21,7 +21,7 @@
   <details class="results-panel" open>
     <summary>{{ label }}</summary>
     {% if let Some(output) = result_output %}
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    <pre class="cmd-output">{{ output }}</pre>
     {% endif %}
     {% if let Some(err) = result_error %}
     <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>

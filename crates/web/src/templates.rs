@@ -465,6 +465,8 @@ pub struct ControlPlaneCtx {
     pub cpu_spark: String,
     pub mem_spark: String,
     pub disk_spark: String,
+    /// Minutes the trend sparklines span (samples are a minute apart).
+    pub trend_minutes: i64,
     pub uptime: String,
     pub version: String,
     pub db_ok: bool,

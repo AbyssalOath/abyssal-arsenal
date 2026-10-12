@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 use crate::task_health::{TaskHeartbeats, names};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
-const SAMPLE_INTERVAL_SECS: u64 = 60;
+pub(crate) const SAMPLE_INTERVAL_SECS: u64 = 60;
 /// How long control-plane self-metrics history is kept before pruning.
 const RETENTION_DAYS: i64 = 7;
 

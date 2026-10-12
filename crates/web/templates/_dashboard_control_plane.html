@@ -20,25 +20,34 @@
     <div>
       {% call macros::meter("CPU", "settings", cp.cpu) %}
       {% if !cp.cpu_spark.is_empty() %}
-      <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="CPU trend">
-        <polyline points="{{ cp.cpu_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-      </svg>
+      <div class="cp-trend">
+        <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="CPU use, recent trend on a 0 to 100% scale">
+          <polyline points="{{ cp.cpu_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        </svg>
+        <span class="cp-trend-caption">trend, last {{ cp.trend_minutes }} min</span>
+      </div>
       {% endif %}
     </div>
     <div>
       {% call macros::meter("Memory", "module", cp.mem) %}
       {% if !cp.mem_spark.is_empty() %}
-      <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="Memory trend">
-        <polyline points="{{ cp.mem_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-      </svg>
+      <div class="cp-trend">
+        <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="Memory use, recent trend on a 0 to 100% scale">
+          <polyline points="{{ cp.mem_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        </svg>
+        <span class="cp-trend-caption">trend, last {{ cp.trend_minutes }} min</span>
+      </div>
       {% endif %}
     </div>
     <div>
       {% call macros::meter("Disk", "database", cp.disk) %}
       {% if !cp.disk_spark.is_empty() %}
-      <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="Disk trend">
-        <polyline points="{{ cp.disk_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-      </svg>
+      <div class="cp-trend">
+        <svg class="cp-spark" viewBox="0 0 120 24" width="120" height="24" preserveAspectRatio="none" role="img" aria-label="Disk use, recent trend on a 0 to 100% scale">
+          <polyline points="{{ cp.disk_spark }}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        </svg>
+        <span class="cp-trend-caption">trend, last {{ cp.trend_minutes }} min</span>
+      </div>
       {% endif %}
     </div>
   </div>

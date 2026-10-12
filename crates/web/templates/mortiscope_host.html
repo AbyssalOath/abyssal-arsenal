@@ -52,18 +52,19 @@
   </div>
   {% endif %}
 
-  <details class="results-panel" {% if result_label.is_some() %}open{% endif %} style="margin-top:14px;">
+  {% if result_label.is_some() || result_output.is_some() || result_error.is_some() %}
+  <details class="results-panel" open style="margin-top:14px;">
     <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
     {% if let Some(output) = result_output %}
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ output }}</pre>
+    <pre class="cmd-output">{{ output }}</pre>
     {% endif %}
     {% if let Some(err) = result_error %}
     <div class="error-banner" style="margin:8px 0 0;">{{ err }}</div>
     {% endif %}
-    {% if result_label.is_none() %}
-    <p class="results-empty">No output yet -- run a check.</p>
-    {% endif %}
   </details>
+  {% else %}
+  <p class="results-empty" style="margin-top:14px;">No output yet -- run a check.</p>
+  {% endif %}
 
   {% if !suggested_actions.is_empty() %}
   <div class="suggested-actions-panel">
