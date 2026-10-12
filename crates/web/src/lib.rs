@@ -11,6 +11,7 @@ pub mod extract;
 pub mod health;
 mod health_ops;
 pub mod host_context;
+pub mod host_picker;
 pub mod internal_tls;
 mod middleware;
 mod mortiscope_ops;

@@ -47,6 +47,20 @@ for what that means for cloning and updating.
   buttons.
 - **No empty "Results" toggle.** Arsenal host pages show "No output yet"
   until something has run, rather than a collapsed, empty Results panel.
+- **Arsenal host lists show every host, with its status and OS.**
+  - Each arsenal's landing page lists every enrolled host as a tile with
+    Online/Offline, OS and Control plane badges. Offline hosts used to be
+    left out without a word. They're now shown with when they were last
+    seen, but aren't clickable.
+  - When the fleet is a single online host, the pure host-picker arsenals go
+    straight to it. Grimoire, Mortiscope, Reanimation, Reliquary and
+    Resurrection keep their landing page, since it also holds their fleet
+    views.
+  - `?all=1` always shows the list, skipping both that and the nav's
+    selected-host redirect. "Back to host list" links use it, so they no
+    longer bounce straight back to the same host.
+- **Dashboard:** "Last backup" in Fleet health has a history icon instead of
+  the "+" one.
 
 ### Fixed
 

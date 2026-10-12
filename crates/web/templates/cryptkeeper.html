@@ -1,24 +1,9 @@
 {% extends "app_base.html" %}
+{% import "_host_picker.html" as picker %}
 {% block title %}Cryptkeeper — Abyssal Arsenal{% endblock %}
 {% block heading %}Cryptkeeper — Secrets & Credentials{% endblock %}
 {% block content %}
 
-{% if hosts.is_empty() %}
-<div class="card">
-  <p style="color:var(--text-muted);">
-    No hosts are currently online. Enroll and connect a host from
-    <a href="/admin/hosts">Hosts</a> first.
-  </p>
-</div>
-{% else %}
-<div class="card">
-  <p style="color:var(--text-muted); margin-top:0;">Pick a host to inspect or manage its secrets, keys, and certificates.</p>
-  <div class="actions">
-    {% for h in hosts %}
-    <a class="btn btn-secondary" href="/arsenals/cryptkeeper/{{ h.id }}">{{ h.name }}{% if h.is_control_plane %} <span class="badge badge-control-plane" title="The control plane's own server: operations that would take it down are refused">Control plane</span>{% endif %}</a>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
+{% call picker::host_picker(hosts, "cryptkeeper", "Pick a host to inspect or manage its secrets, keys, and certificates.") %}
 
 {% endblock %}

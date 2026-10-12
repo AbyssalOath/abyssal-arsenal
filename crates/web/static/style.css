@@ -556,6 +556,34 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
   padding: var(--space-2) 0;
 }
 
+/* An arsenal landing page's host list (_host_picker.html): one tile per
+   host with its status and OS. Offline hosts are shown but not clickable. */
+.host-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+.host-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  text-decoration: none;
+}
+a.host-pick:hover, a.host-pick:focus-visible { border-color: var(--accent); color: var(--text); }
+a.host-pick:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 45%, transparent);
+}
+.host-pick-name { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; overflow-wrap: anywhere; }
+.host-pick-name .icon { flex-shrink: 0; color: var(--text-muted); }
+.host-pick-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.host-pick-offline { opacity: 0.65; cursor: default; }
+
 .tile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));

@@ -1240,13 +1240,6 @@ impl ShredOption {
     }
 }
 
-pub struct CystoolboxHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 pub struct HaruspexHostRow {
     /// The control plane's own server: shown with a badge.
     pub is_control_plane: bool,
@@ -1285,7 +1278,7 @@ pub struct HaruspexHostTemplate {
 #[template(path = "cystoolbox.html")]
 pub struct CystoolboxTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<CystoolboxHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 /// One "Suggested Next Steps" button: a matched workflow-registry action,
@@ -1320,18 +1313,11 @@ pub struct CystoolboxHostTemplate {
     pub suggested_actions: Vec<SuggestedActionView>,
 }
 
-pub struct CadavaultHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "cadavault.html")]
 pub struct CadavaultTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<CadavaultHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -1454,18 +1440,11 @@ pub struct PostmortemHostTemplate {
     pub context: Vec<WorkflowContextRow>,
 }
 
-pub struct MortiscopeHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "mortiscope.html")]
 pub struct MortiscopeTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<MortiscopeHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 /// No `can_manage` field -- every op in this arsenal is read-only
@@ -1566,7 +1545,7 @@ pub struct GrimoireHostRow {
 #[template(path = "grimoire.html")]
 pub struct GrimoireTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<GrimoireHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 /// One saved scheduled-task macro, as visible to the current user -- see
@@ -1701,18 +1680,11 @@ pub struct GrimoireMacroEditTemplate {
     pub error: Option<String>,
 }
 
-pub struct OssuaryHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "ossuary.html")]
 pub struct OssuaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<OssuaryHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -2625,18 +2597,11 @@ pub struct PanopticonDeployStatusTemplate {
     pub complete: bool,
 }
 
-pub struct CryptkeeperHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "cryptkeeper.html")]
 pub struct CryptkeeperTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<CryptkeeperHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -2872,18 +2837,11 @@ pub struct ThanatosHostTemplate {
     pub toggle_resolved_href: String,
 }
 
-pub struct ApothecaryHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "apothecary.html")]
 pub struct ApothecaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<ApothecaryHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -2905,18 +2863,11 @@ pub struct ApothecaryHostTemplate {
     pub result_error: Option<String>,
 }
 
-pub struct CatacombHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "catacomb.html")]
 pub struct CatacombTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<CatacombHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -2945,18 +2896,11 @@ pub struct CatacombHostTemplate {
     pub prefill_path: Option<String>,
 }
 
-pub struct ParishHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "parish.html")]
 pub struct ParishTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<ParishHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -2978,18 +2922,11 @@ pub struct ParishHostTemplate {
     pub result_error: Option<String>,
 }
 
-pub struct VivisectionHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "vivisection.html")]
 pub struct VivisectionTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<VivisectionHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3012,18 +2949,11 @@ pub struct VivisectionHostTemplate {
     pub context: Vec<WorkflowContextRow>,
 }
 
-pub struct DefleshingHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "defleshing.html")]
 pub struct DefleshingTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<DefleshingHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3046,18 +2976,11 @@ pub struct DefleshingHostTemplate {
     pub context: Vec<WorkflowContextRow>,
 }
 
-pub struct ReanimationHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "reanimation.html")]
 pub struct ReanimationTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<ReanimationHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3121,18 +3044,11 @@ pub struct ProcessRow {
     pub signal_refused: Option<String>,
 }
 
-pub struct NecropolisHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "necropolis.html")]
 pub struct NecropolisTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<NecropolisHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3155,18 +3071,11 @@ pub struct NecropolisHostTemplate {
     pub result_error: Option<String>,
 }
 
-pub struct NecropsyHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "necropsy.html")]
 pub struct NecropsyTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<NecropsyHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 /// No `can_manage` field -- every op in this arsenal is read-only hardware
@@ -3191,18 +3100,11 @@ pub struct NecropsyHostTemplate {
     pub prefill_device: Option<String>,
 }
 
-pub struct IncarnationHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "incarnation.html")]
 pub struct IncarnationTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<IncarnationHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3225,18 +3127,11 @@ pub struct IncarnationHostTemplate {
     pub context: Vec<WorkflowContextRow>,
 }
 
-pub struct ResurrectionHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "resurrection.html")]
 pub struct ResurrectionTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<ResurrectionHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3321,18 +3216,11 @@ pub struct FailedUnitRow {
     pub description: String,
 }
 
-pub struct ReliquaryHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "reliquary.html")]
 pub struct ReliquaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<ReliquaryHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3361,18 +3249,11 @@ pub struct ReliquaryHostTemplate {
     pub prefill_source_path: Option<String>,
 }
 
-pub struct NecrolinkHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "necrolink.html")]
 pub struct NecrolinkTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<NecrolinkHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]
@@ -3399,18 +3280,11 @@ pub struct NecrolinkHostTemplate {
     pub result_error: Option<String>,
 }
 
-pub struct ObituaryHostRow {
-    /// The control plane's own server: shown with a badge.
-    pub is_control_plane: bool,
-    pub id: String,
-    pub name: String,
-}
-
 #[derive(Template)]
 #[template(path = "obituary.html")]
 pub struct ObituaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<ObituaryHostRow>,
+    pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
 #[derive(Template)]

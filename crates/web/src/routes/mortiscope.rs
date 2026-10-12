@@ -22,10 +22,11 @@ use crate::csrf;
 use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
+use crate::host_picker;
 use crate::mortiscope_ops::{TREND_METRICS, evaluate_thresholds, metric_label};
 use crate::state::AppState;
 use crate::templates::{
-    BaseCtx, MortiscopeHostRow, MortiscopeHostTemplate, MortiscopeTemplate, MortiscopeThresholdRow,
+    BaseCtx, MortiscopeHostTemplate, MortiscopeTemplate, MortiscopeThresholdRow,
     MortiscopeThresholdsTemplate, MortiscopeTrendRow, SuggestedActionView,
 };
 use crate::theme;
@@ -69,11 +70,13 @@ async fn load_trends(pool: &abyssal_database::DbPool, host_id: Uuid) -> Vec<Mort
 pub async fn show(
     State(state): State<AppState>,
     jar: CookieJar,
+    Query(picker_query): Query<host_picker::PickerQuery>,
     CurrentUser(ctx): CurrentUser,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
 
-    if let Some(host_id) = host_context::current(&jar)
+    if !picker_query.show_list()
+        && let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/mortiscope/{host_id}")).into_response());
@@ -91,16 +94,7 @@ pub async fn show(
     )
     .await?;
 
-    let mut hosts = Vec::new();
-    for host in repo::hosts::list(&state.pool).await? {
-        if host.is_active() && state.hosts.is_connected(host.id) {
-            hosts.push(MortiscopeHostRow {
-                is_control_plane: host.is_control_plane,
-                id: host.id.to_string(),
-                name: host.name,
-            });
-        }
-    }
+    let hosts = host_picker::hosts(&state).await?;
 
     let tpl = MortiscopeTemplate { base, hosts };
     let jar = jar.clone();

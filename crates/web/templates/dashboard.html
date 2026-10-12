@@ -62,7 +62,7 @@
     </p>
     {% endif %}
 
-    <h3>{% call macros::icon("generate") %} Last backup</h3>
+    <h3>{% call macros::icon("backup") %} Last backup</h3>
     {% if let Some(b) = fleet_health.last_backup %}
     <p class="text-muted" style="margin:0;">{{ b.name }} on {{ b.host_name }} &mdash; {{ b.when }}</p>
     {% else %}

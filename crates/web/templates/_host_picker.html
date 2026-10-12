@@ -1,0 +1,42 @@
+{% import "_macros.html" as macros %}
+{# The host list on an arsenal's landing page (`crate::host_picker`):
+   every enrolled host with its OS and whether it's online. Offline hosts
+   are shown, with when they were last seen, but not linked -- their page
+   can't run anything until the agent reconnects. #}
+{% macro host_picker(hosts, arsenal, intro) %}
+{% if hosts.is_empty() %}
+<div class="card">
+  <p style="color:var(--text-muted); margin:0;">
+    No hosts are enrolled yet. Enroll one from <a href="/admin/hosts">Hosts</a> first.
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">{{ intro }}</p>
+  <div class="host-picker">
+    {% for h in hosts %}
+    {% if h.online %}
+    <a class="host-pick" href="/arsenals/{{ arsenal }}/{{ h.id }}">
+    {% else %}
+    <div class="host-pick host-pick-offline" title="Offline: its agent isn't connected, so nothing can run on it until it reconnects">
+    {% endif %}
+      <span class="host-pick-name">{% call macros::icon("host") %} {{ h.name }}</span>
+      <span class="host-pick-badges">
+        {% if h.online %}
+        <span class="badge badge-success">Online</span>
+        {% else %}
+        <span class="badge badge-warning">Offline · seen {{ h.last_seen }}</span>
+        {% endif %}
+        <span class="badge badge-muted">{{ h.os }}</span>
+        {% if h.is_control_plane %}<span class="badge badge-control-plane" title="The control plane's own server: operations that would take it down are refused">Control plane</span>{% endif %}
+      </span>
+    {% if h.online %}
+    </a>
+    {% else %}
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endmacro %}
