@@ -4,11 +4,10 @@
 {% block heading %}Reliquary — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;">
-  <a href="/arsenals/reliquary?all=1">&larr; Back to host list</a>
-  &nbsp;&middot;&nbsp;
+<div class="page-crumbs">
+  {% call macros::host_breadcrumb("Reliquary", "/arsenals/reliquary?all=1", "/arsenals/reliquary/", host_id, host_name, base.available_hosts) %}
   <a href="/arsenals/reliquary/backups">Control-plane backups&hellip;</a>
-</p>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

@@ -4,10 +4,10 @@
 {% block heading %}Resurrection — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-  <a href="/arsenals/resurrection?all=1">&larr; Back to host list</a>
+<div class="page-crumbs">
+  {% call macros::host_breadcrumb("Resurrection", "/arsenals/resurrection?all=1", "/arsenals/resurrection/", host_id, host_name, base.available_hosts) %}
   <a href="/arsenals/resurrection/fleet">{% call macros::icon("route") %} Fleet recovery</a>
-</p>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

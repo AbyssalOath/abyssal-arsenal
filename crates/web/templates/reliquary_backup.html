@@ -4,6 +4,8 @@
 {% block heading %}Reliquary — Application Backups{% endblock %}
 {% block content %}
 
+<div class="page-crumbs">{% call macros::page_breadcrumb("Reliquary", "/arsenals/reliquary", "Application Backups") %}</div>
+
 {% if let Some(m) = message %}
 <div class="info-banner">{{ m }}</div>
 {% if m.starts_with("Backup completed") %}<span hidden data-bats="Entombed for eternity."></span>{% else if m.starts_with("Restore completed") %}<span hidden data-bats="The dead rise."></span>{% endif %}
@@ -11,8 +13,6 @@
 {% if let Some(e) = error %}
 <div class="error-banner">{{ e }}</div>
 {% endif %}
-
-<p style="margin-top:-12px;"><a href="/arsenals/reliquary">&larr; Remote (agent) host backups</a></p>
 
 <div class="card">
   <h2>{% call macros::icon("database") %} Application Data</h2>

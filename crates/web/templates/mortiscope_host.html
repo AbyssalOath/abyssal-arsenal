@@ -4,13 +4,13 @@
 {% block heading %}Mortiscope — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-  <a href="/arsenals/mortiscope?all=1">&larr; Back to host list</a>
+<div class="page-crumbs">
+  {% call macros::host_breadcrumb("Mortiscope", "/arsenals/mortiscope?all=1", "/arsenals/mortiscope/", host_id, host_name, base.available_hosts) %}
   <span style="display:flex; gap:14px;">
     <a href="/arsenals/mortiscope/overview">{% call macros::icon("route") %} Fleet overview</a>
     <a href="/arsenals/mortiscope/thresholds">{% call macros::icon("route") %} Monitoring &amp; thresholds</a>
   </span>
-</p>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

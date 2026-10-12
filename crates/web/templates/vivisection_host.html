@@ -4,7 +4,7 @@
 {% block heading %}Vivisection — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/vivisection?all=1">&larr; Back to host list</a></p>
+<div class="page-crumbs">{% call macros::host_breadcrumb("Vivisection", "/arsenals/vivisection?all=1", "/arsenals/vivisection/", host_id, host_name, base.available_hosts) %}</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

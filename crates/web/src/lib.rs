@@ -15,6 +15,7 @@ pub mod host_picker;
 pub mod internal_tls;
 mod middleware;
 mod mortiscope_ops;
+pub mod nav;
 pub mod pagination;
 mod panopticon_arp;
 mod panopticon_dhcp;

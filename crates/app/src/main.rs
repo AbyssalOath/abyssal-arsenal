@@ -167,7 +167,11 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         pool,
-        modules: Arc::new(registry),
+        modules: {
+            let registry = Arc::new(registry);
+            abyssal_web::nav::set_registry(registry.clone());
+            registry
+        },
         workflows: Arc::new(WorkflowRegistry::load_builtin()),
         config: Arc::new(WebConfig {
             session_cookie_name: config.session_cookie_name.clone(),

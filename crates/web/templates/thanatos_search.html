@@ -5,12 +5,13 @@
 {% block heading %}Thanatos — Investigation Console{% endblock %}
 {% block content %}
 
+<div class="page-crumbs">{% call macros::page_breadcrumb("Thanatos", "/arsenals/thanatos", "Investigation Console") %}</div>
+
 <div class="card">
   <p style="color:var(--text-muted); margin-top:0;">
     Search and pivot across every stored security event, fleet-wide. The free-text
     box matches the finding detail and label &mdash; use it to pivot on a source IP,
     username, process name, pipe name, or anything else that appears in an event.
-    <a href="/arsenals/thanatos">&larr; Back to the Thanatos dashboard</a>
   </p>
 
   <form method="get" action="/arsenals/thanatos/search" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">

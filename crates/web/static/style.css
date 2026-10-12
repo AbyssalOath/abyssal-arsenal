@@ -424,6 +424,44 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 45%, transparent);
 }
 
+/* The Arsenals menu sits among the nav links: its panel opens to the left
+   edge of the button and lays the groups out side by side. */
+.topnav-links .arsenal-menu { margin-left: 0; }
+.topnav-links .arsenal-menu summary { color: var(--text); font-size: 0.88rem; padding: 8px 12px; }
+.arsenal-menu-panel {
+  left: 0;
+  right: auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: max-content;
+  max-width: min(720px, calc(100vw - 40px));
+  max-height: calc(100vh - 90px);
+  overflow-y: auto;
+}
+.arsenal-menu-group { display: flex; flex-direction: column; min-width: 150px; flex: 1 0 150px; }
+/* Pinned runs across the top so the categories below stay in one row of
+   columns. */
+.arsenal-menu-pinned {
+  flex-basis: 100%;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.arsenal-menu-pinned .arsenal-menu-heading { width: 100%; }
+.arsenal-menu-heading {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: var(--space-1) var(--space-3);
+}
+.topnav-links .arsenal-menu-panel a.user-menu-link { padding: 6px var(--space-3); font-size: 0.88rem; }
+
 .apotheosis-toggle.active summary {
   color: var(--warning);
   animation: apotheosis-nav-pulse 2.2s ease-in-out infinite;
@@ -444,7 +482,7 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
 .main { flex: 1; width: 100%; min-width: 0; padding: 28px 36px; }
 
 /* ---- Laptop widths: keep the nav on one row ----------------------------- */
-@media (max-width: 1500px) {
+@media (max-width: 1680px) {
   .topnav .topnav-brand { margin-right: 14px; }
   .topnav-links a { padding: 8px 9px; }
   .host-switcher { margin: 0 6px 0 2px; }
@@ -458,8 +496,13 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
 }
 
 /* Just above the Menu breakpoint, the links lose their small icons. */
+@media (max-width: 1439px) and (min-width: 1201px) {
+  .topnav-links a .icon, .topnav-links summary .icon { display: none; }
+}
+/* ...and just above it, tighter spacing. */
 @media (max-width: 1300px) and (min-width: 1201px) {
-  .topnav-links a .icon { display: none; }
+  .topnav-links a, .topnav-links .arsenal-menu summary { padding: 8px 6px; }
+  .host-switcher-select { max-width: 105px; }
 }
 
 /* ---- Phones, tablets and narrow windows ------------------------------------ */
@@ -484,6 +527,17 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
   }
   .topnav.nav-open .topnav-links { display: flex; }
   .topnav-links a { padding: 10px 12px; }
+  /* In the open Menu, the Arsenals list expands in place instead of
+     floating over the page. */
+  .topnav-links .arsenal-menu summary { padding: 10px 12px; }
+  .topnav-links .arsenal-menu-panel {
+    position: static;
+    width: auto;
+    max-width: none;
+    max-height: none;
+    box-shadow: none;
+    margin: 2px 0 6px 12px;
+  }
   .host-switcher { margin: 0 0 6px; }
   .host-switcher-select { flex: 1; max-width: none; }
 }
@@ -1456,3 +1510,48 @@ a.stat-tile:hover { border-color: var(--accent); }
   padding: 0 6px;
 }
 .witness-box textarea { width: 100%; }
+
+/* ---- Breadcrumbs (_macros.html host_breadcrumb / page_breadcrumb) -------- */
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+.breadcrumb-sep { color: var(--text-muted); }
+.breadcrumb a { color: var(--text-muted); text-decoration: none; }
+.breadcrumb a:hover { color: var(--text); text-decoration: underline; }
+.breadcrumb [aria-current="page"] { color: var(--text); font-weight: 600; }
+.breadcrumb-switcher { position: relative; }
+.breadcrumb-switcher summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 2px 8px;
+  margin-left: -8px;
+  border-radius: 5px;
+}
+.breadcrumb-switcher summary::-webkit-details-marker { display: none; }
+.breadcrumb-switcher summary::after { content: "\25BE"; margin-left: 6px; color: var(--text-muted); font-weight: 400; }
+.breadcrumb-switcher summary:hover { background: var(--surface-raised); }
+.breadcrumb-switcher-panel {
+  left: 0;
+  right: auto;
+  min-width: 220px;
+  max-height: min(420px, calc(100vh - 160px));
+  overflow-y: auto;
+}
+.breadcrumb-switcher-current { cursor: default; color: var(--text-muted); }
+.breadcrumb-switcher-current:hover { background: none; color: var(--text-muted); }
+/* The breadcrumb row: the trail on the left, an arsenal's other pages
+   (fleet views, settings) on the right. */
+.page-crumbs {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: -12px 0 16px;
+}
+.page-crumbs > span { display: flex; flex-wrap: wrap; gap: 14px; }

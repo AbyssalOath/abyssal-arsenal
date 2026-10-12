@@ -12,6 +12,21 @@ for what that means for cloning and updating.
 
 ### Changed
 
+- **An Arsenals menu in the top bar.** Every arsenal is one click away from
+  any page. It's grouped like the dashboard (Pinned first, then Operate,
+  Observe, Defend, Preserve / Recover) and lists only the arsenals you can
+  open: disabled ones, ones you lack the permission for, and ones hidden
+  from your role are left out. On phones it opens inside the **Menu** list.
+  The top bar still fits on one row down to 1201px wide.
+- **Breadcrumbs.** Every per-host page starts with
+  `Arsenals › <Arsenal> › <host>` instead of "Back to host list". The host
+  name is a menu that opens the same arsenal for another host. An arsenal's
+  other pages (fleet views, Panopticon topology and DHCP, Thanatos search,
+  rules and indicators, and others) show `Arsenals › <Arsenal> › <page>`.
+- The top bar's menus (Arsenals, Apotheosis, the user menu) and the
+  breadcrumb's host menu close on a click elsewhere or Escape, and opening
+  one closes the others.
+
 - **The dashboard explains itself.**
   - The hero badge ("Degraded", "Fleet offline", "All systems healthy") is a
     link to a new **Fleet status** page (`/dashboard/status`). It says

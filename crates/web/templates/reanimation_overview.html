@@ -4,7 +4,7 @@
 {% block heading %}Reanimation — Fleet Processes{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/reanimation?all=1">&larr; Back to host list</a></p>
+<div class="page-crumbs">{% call macros::page_breadcrumb("Reanimation", "/arsenals/reanimation?all=1", "Fleet Processes") %}</div>
 
 <div class="card">
   <h3>{{ total }} connected host{% if total != 1 %}s{% endif %}</h3>

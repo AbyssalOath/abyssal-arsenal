@@ -4,13 +4,13 @@
 {% block heading %}Grimoire — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-  <a href="/arsenals/grimoire?all=1">&larr; Back to host list</a>
+<div class="page-crumbs">
+  {% call macros::host_breadcrumb("Grimoire", "/arsenals/grimoire?all=1", "/arsenals/grimoire/", host_id, host_name, base.available_hosts) %}
   <span style="display:flex; gap:14px;">
     <a href="/arsenals/grimoire/drift">{% call macros::icon("route") %} Fleet drift</a>
     <a href="/arsenals/grimoire/profiles">{% call macros::icon("audit") %} Config profiles</a>
   </span>
-</p>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

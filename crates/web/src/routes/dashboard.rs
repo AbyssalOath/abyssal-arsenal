@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use abyssal_audit::AuditFilter;
-use abyssal_core::{AppError, ModuleCategory, Permission};
+use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use axum::Form;
 use axum::extract::{Path, Query, State};
@@ -15,6 +15,7 @@ use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::mortiscope_ops::{METRIC_CPU_BUSY, METRIC_DISK_USED, METRIC_MEM_USED};
+use crate::nav::CATEGORY_ORDER;
 use crate::pagination;
 use crate::state::AppState;
 use crate::templates::{
@@ -56,13 +57,6 @@ const FLEET_BASE_PATH: &str = "/dashboard/hosts";
 const ACTIVITY_PER_PAGE: u32 = 30;
 const ACTIVITY_BASE_PATH: &str = "/dashboard/activity";
 
-const CATEGORY_ORDER: [ModuleCategory; 4] = [
-    ModuleCategory::Operate,
-    ModuleCategory::Observe,
-    ModuleCategory::Defend,
-    ModuleCategory::PreserveRecover,
-];
-
 #[derive(Deserialize)]
 pub struct DashboardQuery {
     #[serde(default)]
@@ -99,23 +93,11 @@ pub async fn show(
     )
     .await?;
 
-    let pinned_keys = repo::pinned_modules::list_for_user(&state.pool, ctx.user.id).await?;
     let search = q.q.trim().to_lowercase();
-    let role_restriction =
-        repo::role_module_visibility::effective_restriction_for_user(&state.pool, ctx.user.id)
-            .await?;
-
-    let visible: Vec<ModuleTile> = state
-        .modules
-        .list(&state.pool)
+    // The same rule as the top bar's Arsenals menu (`crate::nav`).
+    let visible: Vec<ModuleTile> = crate::nav::visible_modules(&state.modules, &state.pool, &ctx)
         .await?
         .into_iter()
-        .filter(|m| m.enabled)
-        .filter(|m| m.view_permissions.is_empty() || m.view_permissions.iter().any(|p| ctx.has(*p)))
-        .filter(|m| match &role_restriction {
-            Some(allowed) => allowed.contains(m.key),
-            None => true,
-        })
         .filter(|m| {
             search.is_empty()
                 || m.display_name.to_lowercase().contains(&search)
@@ -126,7 +108,7 @@ pub async fn show(
             display_name: m.display_name,
             description: m.description,
             category: m.category.to_string(),
-            pinned: pinned_keys.iter().any(|k| k == m.key),
+            pinned: m.pinned,
         })
         .collect();
 

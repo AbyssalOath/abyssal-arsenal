@@ -67,6 +67,9 @@ pub struct BaseCtx {
     pub selected_host_name: Option<String>,
     /// Every connected, active host, for the top-nav switcher `<select>`.
     pub available_hosts: Vec<HostOption>,
+    /// The top bar's Arsenals menu, grouped like the dashboard
+    /// (`crate::nav`).
+    pub arsenal_menu: Vec<crate::nav::ArsenalMenuGroup>,
 }
 
 impl BaseCtx {
@@ -137,6 +140,7 @@ impl BaseCtx {
             available_timezones,
             selected_host_name,
             available_hosts,
+            arsenal_menu: crate::nav::arsenal_menu(pool, ctx).await,
         })
     }
 }
@@ -3597,6 +3601,36 @@ mod csp_tests {
                 }
             }
         }
+        assert!(offenders.is_empty(), "{offenders:#?}");
+    }
+}
+
+#[cfg(test)]
+mod breadcrumb_tests {
+    /// Every per-host arsenal page opens with the shared
+    /// `Arsenals › <Arsenal> › <host>` trail (`_macros.html`), whose host
+    /// is a switcher -- not a page-specific "Back to host list" link.
+    #[test]
+    fn every_host_page_has_the_breadcrumb() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let mut pages = 0;
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.ends_with("_host.html") {
+                continue;
+            }
+            pages += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            if !text.contains("macros::host_breadcrumb(") {
+                offenders.push(format!("{name}: no host_breadcrumb"));
+            }
+            if text.contains("&larr; Back to") {
+                offenders.push(format!("{name}: still has a back link"));
+            }
+        }
+        assert!(pages >= 25, "found only {pages} host pages");
         assert!(offenders.is_empty(), "{offenders:#?}");
     }
 }
