@@ -19,10 +19,10 @@ use crate::pagination;
 use crate::state::AppState;
 use crate::templates::{
     ActivityFeedTemplate, ActivityFragment, ActivityGroup, ActivityRow, BaseCtx, ControlPlaneCtx,
-    ControlPlaneFragment, DashboardTemplate, FleetHealthCtx, FleetHostRow, FleetHostsFragment,
-    FleetHostsTemplate, FleetSortHeader, FleetStatusOption, HeroCtx, HostAttentionRow,
-    LastBackupRow, MeterCtx, ModuleGroup, ModuleTile, OverviewFragment, SummaryTile,
-    UpdateNoticeCtx,
+    ControlPlaneFragment, DashboardStatusTemplate, DashboardTemplate, FleetHealthCtx, FleetHostRow,
+    FleetHostsFragment, FleetHostsTemplate, FleetSortHeader, FleetStatusOption, HeroCtx,
+    HostAttentionRow, LastBackupRow, MeterCtx, ModuleGroup, ModuleTile, OfflineHostRow,
+    OverviewFragment, SummaryTile, UpdateNoticeCtx,
 };
 use crate::theme;
 
@@ -153,13 +153,7 @@ pub async fn show(
     let fleet_health = if can_hosts_view {
         build_fleet_health(&state, &ctx).await?
     } else {
-        FleetHealthCtx {
-            host_count: 0,
-            online_count: 0,
-            open_alerts: 0,
-            hosts_needing_attention: Vec::new(),
-            last_backup: None,
-        }
+        FleetHealthCtx::default()
     };
 
     // Hero + control plane + summary tiles are the operational overview: real
@@ -293,18 +287,78 @@ async fn build_fleet_health(
     let open_alerts =
         repo::security_events::count_recent_alerts(&state.pool, ALERT_WINDOW_HOURS).await?;
 
+    let tz = &ctx.user.timezone;
+    let acknowledged = |h: &abyssal_core::Host| -> Option<String> {
+        h.offline_ack_at.map(|at| {
+            format!(
+                "Marked known offline by {} on {}",
+                h.offline_ack_by.as_deref().unwrap_or("an admin"),
+                crate::common::format_in_tz(at, tz)
+            )
+        })
+    };
+    let offline_hosts: Vec<OfflineHostRow> = active_hosts
+        .iter()
+        .filter(|h| !state.hosts.is_connected(h.id))
+        .map(|h| OfflineHostRow {
+            host_id: h.id.to_string(),
+            host_name: h.name.clone(),
+            os: h.os.clone().unwrap_or_else(|| "unknown".to_string()),
+            last_seen: h
+                .last_seen_at
+                .map(|t| crate::common::format_in_tz(t, tz))
+                .unwrap_or_else(|| "never".to_string()),
+            acknowledged: acknowledged(h),
+        })
+        .collect();
+    let offline_unacked = offline_hosts
+        .iter()
+        .filter(|h| h.acknowledged.is_none())
+        .count();
+
+    // Only connected, unacknowledged hosts: a stale snapshot of a host that
+    // has since gone offline is shown as "offline", not as a health problem.
+    let flagged_ok = |id: uuid::Uuid| {
+        state.hosts.is_connected(id)
+            && active_hosts
+                .iter()
+                .any(|h| h.id == id && h.offline_ack_at.is_none())
+    };
+    let known_offline = active_hosts
+        .iter()
+        .filter(|h| h.offline_ack_at.is_some())
+        .count();
+    let can_see_units = ctx.has(Permission::SystemsView);
     let hosts_needing_attention = repo::host_health::needing_attention(&state.pool)
         .await?
         .into_iter()
-        .map(|h| HostAttentionRow {
-            host_name: host_name(h.host_id),
-            reason: match &h.error {
-                Some(e) => format!("unreachable: {e}"),
-                None => format!(
+        .filter(|h| flagged_ok(h.host_id))
+        .map(|h| match &h.error {
+            Some(e) => HostAttentionRow {
+                host_id: h.host_id.to_string(),
+                host_name: host_name(h.host_id),
+                reason: format!("not responding: {e}"),
+                href: Some(format!("/dashboard/status#host-{}", h.host_id)),
+                not_responding: true,
+                fix: "Connected, but didn't answer the health check -- often asleep or \
+                      overloaded. It clears on the next answer; mark it known offline if \
+                      that's expected."
+                    .to_string(),
+            },
+            None => HostAttentionRow {
+                host_id: h.host_id.to_string(),
+                host_name: host_name(h.host_id),
+                reason: format!(
                     "{} failed unit{}",
                     h.failed_unit_count,
                     if h.failed_unit_count == 1 { "" } else { "s" }
                 ),
+                href: can_see_units
+                    .then(|| format!("/arsenals/resurrection/{}?show=failed-units", h.host_id)),
+                not_responding: false,
+                fix: "See which units failed and why, then Recover them (clears the failed \
+                      state and restarts)."
+                    .to_string(),
             },
         })
         .collect();
@@ -314,14 +368,17 @@ async fn build_fleet_health(
         .map(|b| LastBackupRow {
             host_name: host_name(b.host_id),
             name: b.name,
-            when: crate::common::format_in_tz(b.created_at, &ctx.user.timezone),
+            when: crate::common::format_in_tz(b.created_at, tz),
         });
 
     Ok(FleetHealthCtx {
         host_count,
         online_count,
+        offline_unacked,
+        known_offline,
         open_alerts,
         hosts_needing_attention,
+        offline_hosts,
         last_backup,
     })
 }
@@ -350,15 +407,15 @@ fn build_hero(username: &str, can_hosts_view: bool, fleet: &FleetHealthCtx) -> H
         };
     }
 
-    let offline = fleet.host_count.saturating_sub(fleet.online_count);
     let attention = !fleet.hosts_needing_attention.is_empty();
-    let (state_label, state_class, state_icon) = if fleet.online_count == 0 {
-        ("Fleet offline", "crit", "danger")
-    } else if offline > 0 || fleet.open_alerts > 0 || attention {
-        ("Degraded", "warn", "warning")
-    } else {
-        ("All systems healthy", "ok", "shield-check")
-    };
+    let (state_label, state_class, state_icon) =
+        if fleet.online_count == 0 && fleet.offline_unacked > 0 {
+            ("Fleet offline", "crit", "danger")
+        } else if fleet.offline_unacked > 0 || fleet.open_alerts > 0 || attention {
+            ("Degraded", "warn", "warning")
+        } else {
+            ("All systems healthy", "ok", "shield-check")
+        };
 
     let alerts_part = if fleet.open_alerts > 0 {
         format!(
@@ -369,8 +426,13 @@ fn build_hero(username: &str, can_hosts_view: bool, fleet: &FleetHealthCtx) -> H
     } else {
         "no open alerts".to_string()
     };
+    let known = if fleet.known_offline > 0 {
+        format!(" ({} known offline)", fleet.known_offline)
+    } else {
+        String::new()
+    };
     let summary_line = format!(
-        "{} of {} host{} online · {}",
+        "{} of {} host{} online{known} · {}",
         fleet.online_count,
         fleet.host_count,
         if fleet.host_count == 1 { "" } else { "s" },
@@ -493,10 +555,17 @@ async fn build_summary_tiles(
     tiles.push(SummaryTile {
         label: "Hosts".to_string(),
         value: fleet.host_count.to_string(),
-        sub: format!("{} online · {} offline", fleet.online_count, offline),
-        tone: if fleet.host_count > 0 && fleet.online_count == 0 {
+        sub: if fleet.known_offline > 0 {
+            format!(
+                "{} online · {} offline ({} known)",
+                fleet.online_count, offline, fleet.known_offline
+            )
+        } else {
+            format!("{} online · {} offline", fleet.online_count, offline)
+        },
+        tone: if fleet.host_count > 0 && fleet.online_count == 0 && fleet.offline_unacked > 0 {
             "crit"
-        } else if offline > 0 {
+        } else if fleet.offline_unacked > 0 {
             "warn"
         } else {
             "ok"
@@ -521,7 +590,9 @@ async fn build_summary_tiles(
         sub: "Thanatos (24h)".to_string(),
         tone: if fleet.open_alerts > 0 { "crit" } else { "ok" }.to_string(),
         icon: "warning",
-        href: None,
+        href: ctx
+            .has(Permission::SecurityView)
+            .then(|| "/arsenals/thanatos#recent-alerts".to_string()),
     });
 
     tiles.push(SummaryTile {
@@ -716,6 +787,94 @@ pub async fn control_plane_fragment(
         control_plane: Some(build_control_plane(&state).await),
     };
     Ok(tpl.into_response())
+}
+
+#[derive(Deserialize)]
+pub struct StatusQuery {
+    #[serde(default)]
+    notice: Option<String>,
+}
+
+/// `/dashboard/status`: exactly what's making the dashboard degraded --
+/// offline hosts, hosts not answering the health check, failed units, open
+/// alerts -- each with how to resolve it. What the hero badge links to.
+pub async fn status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<StatusQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsView)?;
+    let fleet = build_fleet_health(&state, &ctx).await?;
+    let hero = build_hero(&ctx.user.username, true, &fleet);
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let notice = match q.notice.as_deref() {
+        Some("known") => Some("Marked known offline. It clears by itself when the host is back."),
+        Some("unknown") => Some("No longer marked known offline."),
+        _ => None,
+    };
+    let tpl = DashboardStatusTemplate {
+        base,
+        hero,
+        fleet,
+        can_manage: ctx.has(Permission::HostsManage),
+        can_view_alerts: ctx.has(Permission::SecurityView),
+        notice: notice.map(str::to_string),
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct OfflineAckForm {
+    csrf_token: String,
+    host_id: uuid::Uuid,
+    known: bool,
+}
+
+/// Marks a host "known offline" (or clears it): it stops counting as
+/// degraded and leaves "Needs attention" until it's back, when the mark
+/// clears by itself (on reconnect, or a successful health check).
+pub async fn offline_ack(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<OfflineAckForm>,
+) -> Result<Response, WebError> {
+    use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let host = repo::hosts::find_by_id(&state.pool, form.host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let by = form.known.then_some(ctx.user.username.as_str());
+    repo::hosts::set_offline_ack(&state.pool, host.id, by).await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::HostOfflineAcknowledged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&host.name)
+            .metadata(serde_json::json!({ "known_offline": form.known })),
+    )
+    .await?;
+    let notice = if form.known { "known" } else { "unknown" };
+    Ok(Redirect::to(&format!("/dashboard/status?notice={notice}")).into_response())
 }
 
 /// `/dashboard/fragments/overview`: hero banner + fleet summary tiles.
@@ -1486,9 +1645,9 @@ mod tests {
         FleetHealthCtx {
             host_count,
             online_count,
+            offline_unacked: host_count.saturating_sub(online_count),
             open_alerts,
-            hosts_needing_attention: Vec::new(),
-            last_backup: None,
+            ..Default::default()
         }
     }
 
@@ -1562,6 +1721,7 @@ mod tests {
         attn.hosts_needing_attention.push(HostAttentionRow {
             host_name: "WEB-01".to_string(),
             reason: "2 failed units".to_string(),
+            ..Default::default()
         });
         assert_eq!(build_hero("nyx", true, &attn).state_class, "warn");
 
@@ -1569,6 +1729,22 @@ mod tests {
         let crit = build_hero("nyx", true, &fleet(5, 0, 0));
         assert_eq!(crit.state_class, "crit");
         assert_eq!(crit.state_label, "Fleet offline");
+
+        // Offline hosts marked known offline don't make it degraded.
+        let mut known = fleet(5, 3, 0);
+        known.offline_unacked = 0;
+        known.known_offline = 2;
+        let h = build_hero("nyx", true, &known);
+        assert_eq!(h.state_class, "ok");
+        assert!(
+            h.summary_line
+                .contains("3 of 5 hosts online (2 known offline)")
+        );
+        // ...nor does a fleet that's entirely known offline count as dark.
+        let mut all_known = fleet(2, 0, 0);
+        all_known.offline_unacked = 0;
+        all_known.known_offline = 2;
+        assert_eq!(build_hero("nyx", true, &all_known).state_class, "ok");
     }
 
     #[test]

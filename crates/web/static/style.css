@@ -1008,6 +1008,11 @@ th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transf
   font-weight: 600;
 }
 .hero-badge .icon { width: 15px; height: 15px; }
+/* Clickable status badges (dashboard hero, fleet health): same look, plus an
+   affordance on hover/focus. */
+a.hero-badge-link, a.badge-link { text-decoration: none; cursor: pointer; }
+a.hero-badge-link:hover, a.badge-link:hover,
+a.hero-badge-link:focus-visible, a.badge-link:focus-visible { filter: brightness(1.15); text-decoration: underline; }
 .hero-badge-ok { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
 .hero-badge-warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
 .hero-badge-crit { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }

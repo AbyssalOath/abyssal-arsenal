@@ -10,6 +10,29 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Changed
+
+- **The dashboard explains itself.**
+  - The hero badge ("Degraded", "Fleet offline", "All systems healthy") is a
+    link to a new **Fleet status** page (`/dashboard/status`). It says
+    exactly what makes the fleet degraded and how to fix each part: offline
+    hosts (with what to check, on Linux and Windows), connected hosts that
+    didn't answer the health check, failed units, and open Thanatos alerts.
+  - **Fleet health** rows are links. "N failed units" opens that host's
+    Resurrection page with the failed units listed and a **Recover** button
+    each (`?show=failed-units`). "Not responding" opens its explanation.
+  - The **Open alerts** tile links to Thanatos's recent alerts.
+- **Mark a host "known offline".** On the Fleet status page, an offline host
+  (or one not answering the health check) can be marked known offline. It
+  then stops counting as degraded and leaves Needs attention, and the mark
+  clears by itself when the host connects or answers again. It needs
+  `hosts.manage` and is audited (`HOST_OFFLINE_ACKNOWLEDGED`). Migration
+  0046.
+- **A host that's gone offline no longer lingers as "unreachable".** The
+  health check only runs on connected hosts, so a host that timed out and
+  then dropped off kept its old error until it came back. Its stale result
+  is now ignored, and it's listed as offline instead.
+
 ## [0.2.3] - 2026-10-09
 
 ### Added

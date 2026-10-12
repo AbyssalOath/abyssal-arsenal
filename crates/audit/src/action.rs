@@ -32,6 +32,8 @@ pub enum AuditAction {
     HostApproved,
     /// A host was flagged (or unflagged) as the control plane's own server.
     HostControlPlaneChanged,
+    /// A host was marked (or unmarked) "known offline" on the dashboard.
+    HostOfflineAcknowledged,
     SanitizationSignedOff,
     HostRevoked,
     HostRemoved,
@@ -149,6 +151,7 @@ impl AuditAction {
             AuditAction::HostEnrolled => "HOST_ENROLLED",
             AuditAction::HostApproved => "HOST_APPROVED",
             AuditAction::HostControlPlaneChanged => "HOST_CONTROL_PLANE_CHANGED",
+            AuditAction::HostOfflineAcknowledged => "HOST_OFFLINE_ACKNOWLEDGED",
             AuditAction::SanitizationSignedOff => "SANITIZATION_SIGNED_OFF",
             AuditAction::HostRevoked => "HOST_REVOKED",
             AuditAction::HostRemoved => "HOST_REMOVED",
@@ -236,6 +239,7 @@ impl AuditAction {
         AuditAction::HostEnrolled,
         AuditAction::HostApproved,
         AuditAction::HostControlPlaneChanged,
+        AuditAction::HostOfflineAcknowledged,
         AuditAction::SanitizationSignedOff,
         AuditAction::HostRevoked,
         AuditAction::HostRemoved,

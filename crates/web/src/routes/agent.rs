@@ -343,6 +343,12 @@ async fn handle_socket(
         );
     }
     tracing::info!(host_id = %host.id, name = %host.name, ?os, ?agent_version, "agent connected");
+    // Back online: no longer "known offline".
+    if host.offline_ack_at.is_some()
+        && let Err(e) = repo::hosts::clear_offline_ack(&state.pool, host.id).await
+    {
+        tracing::warn!(error = %e, "failed to clear a host's known-offline mark");
+    }
     if let Err(e) = repo::hosts::touch_last_seen_with_ip(
         &state.pool,
         host.id,

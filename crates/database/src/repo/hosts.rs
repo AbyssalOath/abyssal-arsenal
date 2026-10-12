@@ -17,6 +17,8 @@ struct HostRow {
     agent_version: Option<String>,
     pending_approval: bool,
     is_control_plane: bool,
+    offline_ack_at: Option<NaiveDateTime>,
+    offline_ack_by: Option<String>,
     revoked_at: Option<NaiveDateTime>,
 }
 
@@ -37,6 +39,8 @@ impl From<HostRow> for Host {
             agent_version: row.agent_version,
             pending_approval: row.pending_approval,
             is_control_plane: row.is_control_plane,
+            offline_ack_at: row.offline_ack_at.map(utc),
+            offline_ack_by: row.offline_ack_by,
             revoked_at: row.revoked_at.map(utc),
         }
     }
@@ -143,6 +147,32 @@ pub async fn touch_last_seen_with_ip(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Marks a host "known offline" (`by` = the admin), or clears it (`None`).
+pub async fn set_offline_ack(pool: &DbPool, id: Uuid, by: Option<&str>) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE hosts SET offline_ack_at = IF(? IS NULL, NULL, CURRENT_TIMESTAMP(6)), \
+             offline_ack_by = ? WHERE id = ?",
+    )
+    .bind(by)
+    .bind(by)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Clears "known offline" when the host is back. Returns whether it was set.
+pub async fn clear_offline_ack(pool: &DbPool, id: Uuid) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE hosts SET offline_ack_at = NULL, offline_ack_by = NULL \
+         WHERE id = ? AND offline_ack_at IS NOT NULL",
+    )
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Lets a pending host's agent connect. Returns false if no pending host has

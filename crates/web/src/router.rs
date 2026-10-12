@@ -18,6 +18,11 @@ pub fn build(state: AppState) -> Router {
             post(routes::dashboard::check_for_updates),
         )
         .route("/dashboard/activity", get(routes::dashboard::activity))
+        .route("/dashboard/status", get(routes::dashboard::status))
+        .route(
+            "/dashboard/status/offline-ack",
+            post(routes::dashboard::offline_ack),
+        )
         .route(
             "/dashboard/preferences",
             post(routes::dashboard::set_preferences),

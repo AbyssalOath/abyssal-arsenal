@@ -1,0 +1,121 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Fleet status — Abyssal Arsenal{% endblock %}
+{% block heading %}Fleet status{% endblock %}
+{% block content %}
+
+<p style="margin-top:-12px;"><a href="/">&larr; Back to the dashboard</a></p>
+
+{% if let Some(n) = notice %}
+<div class="info-banner" role="status">{{ n }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="hero-state" style="margin:0 0 8px;">
+    <span class="hero-badge hero-badge-{{ hero.state_class }}">{% call macros::icon(hero.state_icon) %} {{ hero.state_label }}</span>
+    <span class="hero-summary">{{ hero.summary_line }}</span>
+  </div>
+  <p class="text-muted" style="margin:0;">
+    The dashboard says <strong>Degraded</strong> while any of these is true: a host is offline
+    (and not marked known offline), a connected host failed its health check or has failed
+    services, or Thanatos raised an alert in the last 24 hours. <strong>Fleet offline</strong>
+    means no host is connected at all.
+    {% if fleet.offline_unacked == 0 && fleet.hosts_needing_attention.is_empty() && fleet.open_alerts == 0 %}
+    Right now nothing needs attention.
+    {% endif %}
+  </p>
+</div>
+
+{% if !fleet.offline_hosts.is_empty() %}
+<div class="card">
+  <h2>{% call macros::icon("host") %} Offline hosts ({{ fleet.offline_hosts.len() }})</h2>
+  <p class="text-muted" style="margin-top:0;">
+    <strong>To fix:</strong> make sure the machine is powered on and on the network. If it is,
+    check its agent. On Linux use <code>systemctl status abyssal-agent</code> and
+    <code>journalctl -u abyssal-agent</code>. On Windows use <code>sc query abyssal-agent</code>
+    and the log at <code>C:\ProgramData\abyssal-agent\agent.log</code>. A <code>401</code> in the
+    log means its enrollment was removed: uninstall it with <code>--purge</code> and reinstall
+    with a new token.
+    If the machine is off on purpose, mark it <strong>known offline</strong>. It then stops
+    counting as degraded, and the mark clears by itself when the host is back.
+  </p>
+  <table>
+    <thead><tr><th>Host</th><th>Platform</th><th>Last seen</th><th>Status</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for h in fleet.offline_hosts %}
+      <tr id="host-{{ h.host_id }}">
+        <td style="white-space:nowrap;">{{ h.host_name }}</td>
+        <td>{{ h.os }}</td>
+        <td>{{ h.last_seen }}</td>
+        <td>
+          {% if let Some(ack) = h.acknowledged %}<span class="badge badge-muted" title="{{ ack }}">Known offline</span>
+          {% else %}<span class="badge badge-warning">Offline</span>{% endif %}
+        </td>
+        {% if can_manage %}
+        <td>
+          <form method="post" action="/dashboard/status/offline-ack" style="margin:0;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="host_id" value="{{ h.host_id }}">
+            {% if h.acknowledged.is_some() %}
+            <input type="hidden" name="known" value="false">
+            <button type="submit" class="btn-secondary btn-sm">Not known offline</button>
+            {% else %}
+            <input type="hidden" name="known" value="true">
+            <button type="submit" class="btn-secondary btn-sm">Mark known offline</button>
+            {% endif %}
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if !fleet.hosts_needing_attention.is_empty() %}
+<div class="card">
+  <h2>{% call macros::icon("warning") %} Needs attention ({{ fleet.hosts_needing_attention.len() }})</h2>
+  <p class="text-muted" style="margin-top:0;">From the health check, which runs on every connected host every few minutes.</p>
+  <table>
+    <thead><tr><th>Host</th><th>Problem</th><th>How to fix</th><th></th></tr></thead>
+    <tbody>
+      {% for r in fleet.hosts_needing_attention %}
+      <tr id="host-{{ r.host_id }}">
+        <td style="white-space:nowrap;">{{ r.host_name }}</td>
+        <td><span class="badge badge-warning">{{ r.reason }}</span></td>
+        <td class="text-muted">{{ r.fix }}</td>
+        <td style="white-space:nowrap;">
+          {% if !r.not_responding %}
+          {% if let Some(href) = r.href %}<a class="btn btn-secondary btn-sm" href="{{ href }}">View failed units &rarr;</a>{% endif %}
+          {% else if can_manage %}
+          <form method="post" action="/dashboard/status/offline-ack" style="margin:0;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="host_id" value="{{ r.host_id }}">
+            <input type="hidden" name="known" value="true">
+            <button type="submit" class="btn-secondary btn-sm">Mark known offline</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>{% call macros::icon("shield") %} Open alerts (24h): {{ fleet.open_alerts }}</h2>
+  {% if fleet.open_alerts > 0 %}
+  <p class="text-muted" style="margin-top:0;">
+    <strong>To fix:</strong> review them in Thanatos. Investigate each one, respond from
+    Inquest (block, quarantine, isolate), or suppress a false positive so it stops alerting.
+    The count covers the last 24 hours, so alerts also age out on their own.
+  </p>
+  {% if can_view_alerts %}<a class="btn btn-secondary" href="/arsenals/thanatos#recent-alerts">View recent alerts in Thanatos &rarr;</a>{% endif %}
+  {% else %}
+  <p class="text-muted" style="margin:0;">None in the last 24 hours.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

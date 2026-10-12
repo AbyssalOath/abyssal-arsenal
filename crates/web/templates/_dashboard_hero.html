@@ -5,9 +5,9 @@
   <div class="hero-greeting">{{ hero.greeting }}</div>
   {% if hero.show_fleet %}
   <div class="hero-state">
-    <span class="hero-badge hero-badge-{{ hero.state_class }}">
-      {% call macros::icon(hero.state_icon) %} {{ hero.state_label }}
-    </span>
+    <a class="hero-badge hero-badge-{{ hero.state_class }} hero-badge-link" href="/dashboard/status" title="What's behind this, and how to fix it">
+      {% call macros::icon(hero.state_icon) %} {{ hero.state_label }} <span aria-hidden="true">&rsaquo;</span>
+    </a>
     <span class="hero-summary">{{ hero.summary_line }}</span>
   </div>
   {% else if !hero.state_label.is_empty() %}

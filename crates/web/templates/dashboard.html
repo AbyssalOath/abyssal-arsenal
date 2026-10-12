@@ -46,11 +46,20 @@
     <h3>{% call macros::icon("warning") %} Needs attention</h3>
     <div class="actions">
       {% for h in fleet_health.hosts_needing_attention %}
-      <span class="badge badge-warning">{{ h.host_name }}: {{ h.reason }}</span>
+      {% if let Some(href) = h.href %}
+      <a class="badge badge-warning badge-link" href="{{ href }}" title="{{ h.fix }}">{{ h.host_name }}: {{ h.reason }} &rsaquo;</a>
+      {% else %}
+      <span class="badge badge-warning" title="{{ h.fix }}">{{ h.host_name }}: {{ h.reason }}</span>
+      {% endif %}
       {% endfor %}
     </div>
     {% else %}
     <p class="text-muted">Every host is reporting clean.</p>
+    {% endif %}
+    {% if fleet_health.offline_unacked > 0 || fleet_health.known_offline > 0 %}
+    <p class="text-muted" style="margin:8px 0 0;">
+      <a href="/dashboard/status">{{ fleet_health.offline_unacked }} offline{% if fleet_health.known_offline > 0 %}, {{ fleet_health.known_offline }} known offline{% endif %} &rsaquo;</a>
+    </p>
     {% endif %}
 
     <h3>{% call macros::icon("generate") %} Last backup</h3>

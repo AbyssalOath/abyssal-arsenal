@@ -363,9 +363,28 @@ pub struct ActivityFeedTemplate {
 }
 
 /// One host `host_health_snapshots` flags as needing attention.
+#[derive(Default)]
 pub struct HostAttentionRow {
+    pub host_id: String,
     pub host_name: String,
     pub reason: String,
+    /// Where to see and fix it: the host's failed units, or the status
+    /// page's explanation of a host that isn't answering.
+    pub href: Option<String>,
+    /// Connected but not answering the health check (vs failed units).
+    pub not_responding: bool,
+    /// One line on how to resolve it.
+    pub fix: String,
+}
+
+/// A host that's offline, for the dashboard status page.
+pub struct OfflineHostRow {
+    pub host_id: String,
+    pub host_name: String,
+    pub os: String,
+    pub last_seen: String,
+    /// "Marked known offline by X, <when>" when it has been.
+    pub acknowledged: Option<String>,
 }
 
 /// The single most recent Reliquary backup across the fleet.
@@ -377,11 +396,32 @@ pub struct LastBackupRow {
 
 /// The dashboard's fleet-health overview -- replaces the old permanent
 /// "Active tasks" placeholder with real, cheaply-queried aggregates.
+/// `/dashboard/status`: what's behind the hero badge, and how to fix it.
+#[derive(Template)]
+#[template(path = "dashboard_status.html")]
+pub struct DashboardStatusTemplate {
+    pub base: BaseCtx,
+    pub hero: HeroCtx,
+    pub fleet: FleetHealthCtx,
+    /// `hosts.manage`: may mark hosts known offline.
+    pub can_manage: bool,
+    /// `security.view`: the alerts link goes somewhere.
+    pub can_view_alerts: bool,
+    pub notice: Option<String>,
+}
+
+#[derive(Default)]
 pub struct FleetHealthCtx {
     pub host_count: usize,
     pub online_count: usize,
+    /// Offline and not marked known offline -- what counts as degraded.
+    pub offline_unacked: usize,
+    /// Offline (or not responding) and marked known offline.
+    pub known_offline: usize,
     pub open_alerts: i64,
+    /// Connected hosts the health sweep flagged, minus known-offline ones.
     pub hosts_needing_attention: Vec<HostAttentionRow>,
+    pub offline_hosts: Vec<OfflineHostRow>,
     pub last_backup: Option<LastBackupRow>,
 }
 

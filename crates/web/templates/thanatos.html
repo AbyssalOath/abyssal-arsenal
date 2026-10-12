@@ -29,7 +29,7 @@
   {% endif %}
 </div>
 
-<div class="card">
+<div class="card" id="recent-alerts">
   <h3>{% call macros::icon("warning") %} Recent Alerts</h3>
   {% if recent_alerts.is_empty() %}
   <p style="color:var(--text-muted); margin-top:0;">No correlation alerts raised yet.</p>

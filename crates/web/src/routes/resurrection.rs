@@ -203,6 +203,9 @@ pub async fn show_host(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
+    if query.get("show").map(String::as_str) == Some("failed-units") {
+        return failed_units_page(&state, &jar, &ctx, host_id).await;
+    }
     render_host_with_suggestions(
         &state,
         &jar,
@@ -488,7 +491,19 @@ pub async fn list_failed_units(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SystemsView)?;
     require_csrf(&jar, &form.csrf_token)?;
+    failed_units_page(&state, &jar, &ctx, host_id).await
+}
 
+/// Lists the host's failed units with a Recover button each -- from the
+/// button here, or straight from the dashboard's "N failed units" link
+/// (`?show=failed-units`). Read-only, so a GET is fine.
+async fn failed_units_page(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &abyssal_rbac::AuthContext,
+    host_id: Uuid,
+) -> Result<Response, WebError> {
+    let (state, jar, ctx) = (state.clone(), jar.clone(), ctx.clone());
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;

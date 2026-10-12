@@ -37,6 +37,10 @@ pub struct Host {
     /// The control plane's own server: the operations that would take the
     /// control plane down are refused for it (`abyssal_hosts::control_plane_guard`).
     pub is_control_plane: bool,
+    /// When an admin marked this host "known offline", and who. Cleared when
+    /// it connects or answers a health check again.
+    pub offline_ack_at: Option<DateTime<Utc>>,
+    pub offline_ack_by: Option<String>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
 

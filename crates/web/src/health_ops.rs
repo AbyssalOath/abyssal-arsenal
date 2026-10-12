@@ -83,6 +83,11 @@ pub fn spawn_health_sweep(state: AppState) {
                 {
                     tracing::error!(host = %host.name, error = %e, "health sweep failed to persist snapshot");
                 }
+                // Answering again (a machine that slept without dropping its
+                // connection): no longer "known offline".
+                if error.is_none() && host.offline_ack_at.is_some() {
+                    let _ = repo::hosts::clear_offline_ack(&state.pool, host.id).await;
+                }
             }
             state
                 .task_health
