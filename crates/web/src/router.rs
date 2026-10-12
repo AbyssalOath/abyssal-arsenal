@@ -2027,6 +2027,9 @@ pub fn build(state: AppState) -> Router {
         // AAT-keyed proof of the CA bundle, for a host installing with only
         // the install token (abyssal_agent_protocol::aat).
         .route("/api/agent/ca", get(routes::agent::ca_proof))
+        // Which host an agent credential belongs to (401 once it's removed):
+        // how `abyssal-agent install` spots a stale credentials.json.
+        .route("/api/agent/whoami", get(routes::agent::whoami))
         .route("/ws/agent", get(routes::agent::ws_upgrade))
         // Public, unauthenticated bootstrap installers (no secrets in the
         // served text -- see routes::bootstrap): the target of the copy-

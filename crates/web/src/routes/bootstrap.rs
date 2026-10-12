@@ -265,7 +265,8 @@ if [ "$rc" -ne 0 ]; then
   describe "$rc"
   fail "$rc" "abyssal-agent install failed (see the agent's ERROR line above)."
 fi
-say "Done. The agent is enrolled and running: systemctl status abyssal-agent"
+# Nothing more to say: the agent printed "Done." (or why it skipped the
+# service on a host without systemd).
 "#;
 
 const INSTALL_PS1_TEMPLATE: &str = r#"<#
@@ -503,7 +504,8 @@ function Install-Agent {
 
     $service = Get-Service -Name abyssal-agent -ErrorAction SilentlyContinue
     if (-not $service) { Exit-Install 40 'The abyssal-agent service is not registered after install.' }
-    Write-Output "Done. abyssal-agent is enrolled; service status: $($service.Status)."
+    # The agent already printed "Done."; just confirm the service.
+    Write-Output "Service status: $($service.Status)."
   } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
   }

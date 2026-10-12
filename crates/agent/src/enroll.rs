@@ -57,6 +57,87 @@ impl std::fmt::Display for EnrollRejected {
 
 impl std::error::Error for EnrollRejected {}
 
+/// What the control plane says about an existing `credentials.json`
+/// (`GET /api/agent/whoami`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum CredentialCheck {
+    /// Known and allowed to connect.
+    Accepted,
+    /// Known, but pending approval or revoked (403): still this host's
+    /// enrollment, so it's kept.
+    Refused,
+    /// Unknown to the control plane (401): the host was removed, and this
+    /// credential will never work again.
+    Rejected,
+    /// Couldn't tell: an older control plane without the endpoint (404),
+    /// or no answer. Kept, as before the check existed.
+    Unknown(String),
+}
+
+/// Asks the control plane whether `credentials` still belong to a host.
+pub async fn check_credentials(
+    control_plane_url: &str,
+    credentials: &Credentials,
+    trust: &crate::tls::Trust,
+) -> CredentialCheck {
+    let client = match trust
+        .http_client(reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)))
+    {
+        Ok(client) => client,
+        Err(e) => return CredentialCheck::Unknown(format!("{e:#}")),
+    };
+    let url = format!(
+        "{}/api/agent/whoami",
+        control_plane_url.trim_end_matches('/')
+    );
+    match client
+        .get(&url)
+        .bearer_auth(&credentials.credential)
+        .send()
+        .await
+    {
+        Ok(response) => classify_whoami(response.status().as_u16()),
+        Err(e) => CredentialCheck::Unknown(format!("{e:#}")),
+    }
+}
+
+fn classify_whoami(status: u16) -> CredentialCheck {
+    match status {
+        200..=299 => CredentialCheck::Accepted,
+        401 => CredentialCheck::Rejected,
+        403 => CredentialCheck::Refused,
+        other => CredentialCheck::Unknown(format!("HTTP {other}")),
+    }
+}
+
+/// Moves a rejected `credentials.json` aside as
+/// `credentials.json.rejected-<unix time>` (kept, not deleted, in case it's
+/// wanted for a look later), so the next enrollment writes a fresh one.
+pub async fn set_aside_rejected(credentials_file: &Path) -> anyhow::Result<std::path::PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let mut name = credentials_file.as_os_str().to_owned();
+    name.push(format!(".rejected-{stamp}"));
+    let aside = std::path::PathBuf::from(name);
+    tokio::fs::rename(credentials_file, &aside)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "could not move the rejected {} aside: {e}",
+                credentials_file.display()
+            )
+        })?;
+    Ok(aside)
+}
+
+/// Reads `credentials.json`, if there is one.
+pub async fn read_credentials(credentials_file: &Path) -> Option<Credentials> {
+    let contents = tokio::fs::read_to_string(credentials_file).await.ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
 /// Loads persisted credentials if they exist; otherwise enrolls with the
 /// control plane using a one-time token and persists the result. Idempotent
 /// across restarts — once credentials exist, `enrollment_token` is ignored.
@@ -177,4 +258,38 @@ fn default_hostname() -> String {
         return name.trim().to_string();
     }
     "unknown-host".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whoami_statuses() {
+        assert_eq!(classify_whoami(200), CredentialCheck::Accepted);
+        assert_eq!(classify_whoami(401), CredentialCheck::Rejected);
+        assert_eq!(classify_whoami(403), CredentialCheck::Refused);
+        // An older control plane without the endpoint: keep the credential.
+        assert!(matches!(classify_whoami(404), CredentialCheck::Unknown(_)));
+        assert!(matches!(classify_whoami(502), CredentialCheck::Unknown(_)));
+    }
+
+    #[tokio::test]
+    async fn rejected_credentials_are_moved_aside_not_deleted() {
+        let dir = std::env::temp_dir().join(format!("aa-enroll-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("credentials.json");
+        std::fs::write(&file, "{}").unwrap();
+        let aside = set_aside_rejected(&file).await.unwrap();
+        assert!(!file.exists());
+        assert!(aside.exists());
+        assert!(
+            aside
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("credentials.json.rejected-")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

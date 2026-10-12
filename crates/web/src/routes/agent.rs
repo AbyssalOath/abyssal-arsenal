@@ -268,6 +268,17 @@ pub async fn ca_proof(
     Json(abyssal_agent_protocol::aat::CaProofResponse { ca_pem, proof }).into_response()
 }
 
+/// `GET /api/agent/whoami` -- the host this credential belongs to. A
+/// removed host's credential gets 401, a pending or revoked one 403 (both
+/// from `AgentAuth`). Read-only: it doesn't touch `last_seen`.
+pub async fn whoami(AgentAuth { host, .. }: AgentAuth) -> Response {
+    Json(abyssal_agent_protocol::WhoamiResponse {
+        host_id: host.id,
+        name: host.name,
+    })
+    .into_response()
+}
+
 pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,

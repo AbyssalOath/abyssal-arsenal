@@ -32,6 +32,19 @@ use uuid::Uuid;
 /// so any change here just calls the whole build "out of date."
 pub const PROTOCOL_VERSION: u32 = 45;
 
+/// `GET /api/agent/whoami` (agent-authenticated, `Authorization: Bearer
+/// <credential>`): which host a credential belongs to. 401 means the
+/// control plane doesn't know the credential (the host was removed), 403
+/// that the host is pending approval or revoked, and 404 an older control
+/// plane without the endpoint. `abyssal-agent install` uses it to notice a
+/// stale `credentials.json` before trusting it. Plain HTTP, outside the
+/// WebSocket messages, so it doesn't change [`PROTOCOL_VERSION`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoamiResponse {
+    pub host_id: Uuid,
+    pub name: String,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
     /// Pure connectivity/liveness check — no work performed.

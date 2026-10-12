@@ -89,6 +89,36 @@ for what that means for cloning and updating.
   health check only runs on connected hosts, so a host that timed out and
   then dropped off kept its old error until it came back. Its stale result
   is now ignored, and it's listed as offline instead.
+- **Reinstalling an agent on a machine whose host was removed now enrolls
+  it again.** Before, `install` reused the old `credentials.json` without
+  asking the control plane. The service then "ran" while the server
+  answered `401` forever, and the machine never showed up on
+  `/admin/hosts`. Now `install` checks existing credentials first, using
+  the new agent-authenticated `GET /api/agent/whoami`. If the control plane
+  no longer knows them, the old file is kept as
+  `credentials.json.rejected-<time>` and the host enrolls again with the
+  token given. An unattended install with no token stops and says to rerun
+  it with one. A host that's pending approval or revoked keeps its
+  credentials, with a note. An older control plane without the endpoint
+  keeps today's behaviour. The `uninstall --purge` workaround is no longer
+  needed.
+- **The agent's log says why a removed host can't connect.** A `401` used
+  to be logged as a generic "connection error; retrying". It now says the
+  control plane doesn't recognize this host's credential, that the host was
+  probably removed on `/admin/hosts`, and to reinstall with a new token.
+  Both the `401` and the existing `403` message now go by the handshake's
+  actual status, not by looking for "403" in the error text.
+- **Installer wording.** A re-run that keeps the existing enrollment says
+  "Using existing enrollment as host …" instead of "Enrolled as host …".
+  The `install.sh` and `install.ps1` one-liners no longer print a second
+  "Done." after the agent's own. `install.sh` also no longer claimed the
+  agent was "enrolled and running" on a host without systemd, where the
+  agent skips service setup.
+- **Reinstalling right after uninstalling on Windows** no longer races the
+  uninstall's delayed removal of `C:\Program Files\AbyssalAgent`, which
+  could delete the new install's folder a few seconds later. The removal
+  now only runs if its marker file is still there, and `install` deletes
+  the marker to cancel it.
 
 ## [0.2.3] - 2026-10-09
 
