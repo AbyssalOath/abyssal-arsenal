@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `dev` is where the next release is built and tested before it's merged
+    # into main, so every push there gets the full run too (including the
+    # Windows agent build below, kept as a downloadable artifact).
+    branches: [main, dev]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -134,3 +137,18 @@ jobs:
             -d Version="$(tr -d '[:space:]' < VERSION)" \
             -d AgentExe=target/release/abyssal-agent.exe \
             -o abyssal-agent-ci.msi
+      # Keeps this run's Windows agent, so a dev build can be installed on a
+      # Windows test machine before any release exists: control planes only
+      # hand out Windows agents from GitHub release assets
+      # (releases/download/v<VERSION>/), which a dev build doesn't have.
+      # Either file works: `abyssal-agent.exe install ...` or the MSI
+      # (`AllowSameVersionUpgrades` lets it install over a same-version agent).
+      - name: Keep the Windows agent (exe + MSI) as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: abyssal-agent-windows-${{ github.sha }}
+          path: |
+            target/release/abyssal-agent.exe
+            abyssal-agent-ci.msi
+          if-no-files-found: error
+          retention-days: 14

@@ -35,7 +35,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # Release only ever proceeds past a green test run -- tag pushes don't
-      # otherwise trigger ci.yml (it's scoped to main and pull requests), so
+      # otherwise trigger ci.yml (it runs on main, dev and pull requests), so
       # this is the only gate a release actually has to pass.
       # A tag only releases a commit CI has passed on main: clippy, fmt,
       # shellcheck, the Docker build and the Windows agent + MSI, none of
