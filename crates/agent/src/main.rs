@@ -921,19 +921,34 @@ async fn fetch_ca_with_aat(
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
 
-    let url = format!("{control_plane_url}/api/agent/ca?nonce={nonce}");
-    let response: abyssal_agent_protocol::aat::CaProofResponse = reqwest::Client::builder()
+    // `key` tells a control plane with several install tokens which one
+    // this is (not the token itself, which only goes out once the CA is
+    // verified).
+    let url = format!(
+        "{control_plane_url}/api/agent/ca?nonce={nonce}&key={}",
+        abyssal_agent_protocol::aat::key_id(aat)
+    );
+    let response = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(30))
         .build()?
         .get(&url)
         .send()
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("could not fetch the CA from {control_plane_url}/api/agent/ca"))?
-        .json()
-        .await
-        .with_context(|| {
+        .with_context(|| format!("could not fetch the CA from {control_plane_url}/api/agent/ca"))?;
+    // The control plane says why (an unknown, revoked or expired token),
+    // and a 401 exits as a rejected token, like enrollment's.
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        return Err(
+            anyhow::Error::from(enroll::EnrollRejected { status, body }).context(format!(
+                "could not fetch the CA from {control_plane_url}/api/agent/ca"
+            )),
+        );
+    }
+    let response: abyssal_agent_protocol::aat::CaProofResponse =
+        response.json().await.with_context(|| {
             format!(
                 "{control_plane_url}/api/agent/ca didn't answer like an Abyssal Arsenal control \
                  plane (too old for install tokens? update it)"

@@ -4,258 +4,232 @@
 {% block heading %}Managed Hosts{% endblock %}
 {% block content %}
 
-<div class="card">
-  <p style="color:var(--text-muted);">
-    Arsenals operate on these hosts, not on this control-plane container.
-    The server it runs on can be one of them, through its own agent
-    (<code>install.sh</code> sets one up): it's marked <strong>Control plane</strong>,
-    and operations that would take the control plane down are refused for it.
-    {% if can_enroll %}
-    Generate an enrollment token, then run the <code>abyssal-agent</code>
-    installer on the target Linux or Windows host with it.
-    {% endif %}
-  </p>
-  {% if can_enroll %}
-  <form method="post" action="/admin/hosts/enroll-token">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Generate enrollment token</button>
-  </form>
-  {% endif %}
-
-  {% if let Some(e) = enrollment %}
-  <div class="info-banner" style="margin-top:14px;">
-    <strong>Token expires in 15 minutes, and enrolls one host.</strong>
-    Copy the block for the target host's platform.
-    {% if let Some(fp) = e.ca_fingerprint %}
-    <p style="color:var(--text-muted); margin:8px 0 0;">
-      This control plane uses an internal CA. Each command fetches it from
-      <code>/ca.crt</code> and refuses to continue unless its SHA-256
-      fingerprint is <code style="overflow-wrap:anywhere;">{{ fp }}</code>
-      (the value <code>install.sh</code> printed), so no certificate needs
-      copying to the host beforehand.
-    </p>
-    {% endif %}
-
-    <h4 style="margin:14px 0 4px;">{% call macros::icon("host") %} Linux</h4>
-    <p style="color:var(--text-muted); margin:0 0 4px;">
-      One-liner (downloads the agent, enrolls, installs a systemd service):
-    </p>
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.linux_oneliner }}</pre>
-    <details style="margin:6px 0 0;">
-      <summary style="cursor:pointer; color:var(--text-muted);">Prefer to download and run it by hand?</summary>
-      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ e.linux_manual }}</pre>
-    </details>
-
-    <h4 style="margin:16px 0 4px;">{% call macros::icon("host") %} Windows</h4>
-    <p style="color:var(--text-muted); margin:0 0 4px;">
-      One-liner, from an <strong>administrator</strong> PowerShell (downloads
-      the agent, enrolls, registers a LocalSystem service):
-    </p>
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.windows_oneliner }}</pre>
-    <details style="margin:6px 0 0;">
-      <summary style="cursor:pointer; color:var(--text-muted);">Prefer to download and run it by hand?</summary>
-      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ e.windows_manual }}</pre>
-    </details>
-    <details style="margin:6px 0 0;">
-      <summary style="cursor:pointer; color:var(--text-muted);">Running it from PDQ, Intune, or another RMM tool as SYSTEM?</summary>
-      <p style="color:var(--text-muted); margin:6px 0 4px;">
-        Unattended script: no dependence on the working directory, the token
-        kept off the command line, errors on stdout, and a non-zero exit code
-        on failure (codes are listed at the top of <code>/install.ps1</code>).
-        For many machines, use a deployment token below instead.
-      </p>
-      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.windows_rmm }}</pre>
-    </details>
-
-    <p style="color:var(--text-muted); margin:12px 0 0;">
-      No release binary for this host's architecture, or building the agent
-      itself? See <code>crates/agent/README.md</code> for building from
-      source and the manual service setup.
-    </p>
-  </div>
-  {% endif %}
-
-  {% if let Some(cmd) = uninstall_command %}
-  <div class="info-banner" style="margin-top:14px;">
-    <strong>Host removed.</strong> Its agent keeps running on the machine until
-    you uninstall it there:
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ cmd }}</pre>
-  </div>
-  {% endif %}
-
-  {% if let Some(result) = action_result %}
-  <div class="info-banner" style="margin-top:14px;">
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ result }}</pre>
-  </div>
-  {% endif %}
-
-  {% if let Some(err) = action_error %}
-  <div class="error-banner" style="margin-top:14px;">{{ err }}</div>
-  {% endif %}
+{% if let Some(cmd) = uninstall_command %}
+<div class="info-banner">
+  <strong>Host removed.</strong> Its agent keeps running on the machine until
+  you uninstall it there:
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ cmd }}</pre>
 </div>
+{% endif %}
 
-{% if can_manage %}
+{% if let Some(result) = action_result %}
+<div class="info-banner">
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ result }}</pre>
+</div>
+{% endif %}
+
+{% if let Some(err) = action_error %}
+<div class="error-banner">{{ err }}</div>
+{% endif %}
+
 <div class="card">
-  <h2>{% call macros::icon("host") %} Agent install token (AAT)</h2>
-  <p style="color:var(--text-muted); margin-top:0;">
-    One reusable token for this control plane, like a CrowdStrike CID: put it in
-    your PDQ Deploy, Intune, or GPO package once and every machine that runs the
-    installer enrolls under its own hostname. It also proves this control
-    plane's certificate to new hosts, so no CA fingerprint is needed. It never
-    expires -- <strong>rotate</strong> it if it leaks; hosts it already enrolled
-    keep working.
-  </p>
-
-  {% if let Some(token) = aat.revealed %}
-  <p style="margin:0 0 4px;"><strong>AAT</strong></p>
-  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 12px;">{{ token }}</pre>
-  {% else %}
-  <div class="action-grid" style="margin-bottom:12px;">
-    <form method="post" action="/admin/hosts/aat/reveal" style="margin:0;">
+  <div class="hosts-head">
+    <p class="hosts-summary">
+      <strong>{{ summary.total }}</strong> host{% if summary.total != 1 %}s{% endif %}
+      &middot; {{ summary.online }} online
+      &middot; {{ summary.out_of_date }} out of date
+      {% if summary.pending > 0 %}&middot; <strong>{{ summary.pending }} pending approval</strong>{% endif %}
+    </p>
+    {% if can_manage && update_all_count > 0 %}
+    <form method="post" action="/admin/hosts/update-all" style="margin:0;"
+          data-confirm="Update the agent on {{ update_all_count }} connected host(s) that are out of date? Each downloads the new build, swaps it in and restarts its service (a few seconds offline each), a few hosts at a time. Offline hosts, and agents too old to update themselves, are skipped.">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <button type="submit" class="btn-secondary">{% call macros::icon("generate") %} Show token</button>
+      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Update all out-of-date agents ({{ update_all_count }})</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="hosts-toolbar">
+    <nav class="filter-tabs" aria-label="Filter hosts">
+      {% for t in filter_tabs %}
+      <a href="{{ t.href }}" class="filter-tab{% if t.active %} active{% endif %}"{% if t.active %} aria-current="true"{% endif %}>{{ t.label }} <span class="filter-count">{{ t.count }}</span></a>
+      {% endfor %}
+    </nav>
+    <form method="get" action="/admin/hosts" class="hosts-search">
+      {% if !query.filter.is_empty() %}<input type="hidden" name="filter" value="{{ query.filter }}">{% endif %}
+      <label for="hosts-q" class="sr-only">Search by name</label>
+      <input type="search" id="hosts-q" name="q" value="{{ query.q }}" placeholder="Search by name">
+      <label for="hosts-sort" class="sr-only">Sort by</label>
+      <select id="hosts-sort" name="sort">
+        <option value="name"{% if query.sort != "status" && query.sort != "last-seen" %} selected{% endif %}>Sort: name</option>
+        <option value="status"{% if query.sort == "status" %} selected{% endif %}>Sort: status</option>
+        <option value="last-seen"{% if query.sort == "last-seen" %} selected{% endif %}>Sort: last seen</option>
+      </select>
+      <button type="submit" class="btn-secondary">Apply</button>
     </form>
   </div>
-  <p style="color:var(--text-muted); margin:0 0 12px;">
-    Hidden by default; showing it is recorded in the audit log. The commands
-    below fill it in once shown.
+
+  {% if hosts.is_empty() %}
+  <p class="text-muted" style="margin:16px 0 0;">
+    {% if summary.total == 0 %}No hosts yet. Add one with an install token below.
+    {% else %}No hosts match. <a href="/admin/hosts">Show all</a>{% endif %}
   </p>
+  {% else %}
+  <table class="hosts-table">
+    <thead><tr><th>Name</th><th>Platform</th><th>Status</th><th>Enrolled</th><th>Last seen</th>{% if can_manage %}<th><span class="sr-only">Actions</span></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for h in hosts %}
+      <tr id="host-{{ h.id }}">
+        <td class="host-name">{{ h.name }}{% if h.is_control_plane %}<br><span class="badge badge-control-plane" title="The control plane's own server: operations that would take the control plane down (isolation, inline IPS, closing its ports, stopping Docker or its containers, reformatting Docker's disk) are refused.">{% call macros::icon("shield") %} Control plane</span>{% endif %}</td>
+        <td data-label="Platform">{{ h.os }}<br><span class="text-muted" style="font-size:0.85em;">{% if h.agent_version == "unknown" %}agent version unknown{% else %}agent v{{ h.agent_version }}{% endif %}</span></td>
+        <td data-label="Status">
+          {% if h.revoked %}<span class="badge badge-danger">Revoked</span>
+          {% else if h.pending_approval %}<span class="badge badge-warning">Pending approval</span>
+          {% else if h.online %}<span class="badge badge-success">Online</span>
+          {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
+          {% if let Some(remaining) = h.elevation_remaining %}<span class="badge badge-elevated">Elevated ({{ remaining }})</span>
+          {% endif %}
+          {% if h.out_of_date %}<span class="badge badge-warning" title="This agent is older than the control plane. Anything it can't do yet is refused before it's sent. Use 'Update agent' to bring it up to date over its connection; an agent too old even for that needs a re-deploy (an install command under Add hosts, or SSH quick-add).">{% call macros::icon("warning") %} Out of date</span>
+          {% endif %}
+        </td>
+        <td data-label="Enrolled">{{ h.enrolled_at }}{% if !h.enrolled_via.is_empty() %}<br><span class="text-muted" style="font-size:0.85em;">via {{ h.enrolled_via }}</span>{% endif %}</td>
+        <td data-label="Last seen">{{ h.last_seen_at }}</td>
+        {% if can_manage %}
+        <td class="host-actions">
+          {% if h.primary_is("approve") %}
+          <form method="post" action="/admin/hosts/{{ h.id }}/approve">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn-warning">{% call macros::icon("check") %} Approve</button>
+          </form>
+          {% else if h.primary_is("update") %}
+          <form method="post" action="/admin/hosts/{{ h.id }}/update" data-confirm="Update this host's agent to the latest published version? It will download the new build, swap the binary, and briefly restart its service.">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Update agent</button>
+          </form>
+          {% else if h.primary_is("system-info") %}
+          <form method="post" action="/admin/hosts/{{ h.id }}/system-info">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <button type="submit" class="btn-secondary"{% if !h.online %} disabled title="The host must be connected."{% endif %}>{% call macros::icon("host") %} Run System Info</button>
+          </form>
+          {% endif %}
+          <details class="row-menu">
+            <summary class="btn btn-secondary" aria-label="More actions for {{ h.name }}">More</summary>
+            <div class="user-menu-panel row-menu-panel">
+              {% if !h.revoked %}
+              {% if !h.primary_is("system-info") %}
+              <form method="post" action="/admin/hosts/{{ h.id }}/system-info">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                <button type="submit" class="user-menu-link"{% if !h.online %} disabled title="The host must be connected."{% endif %}>Run System Info</button>
+              </form>
+              {% endif %}
+              {% if !h.primary_is("update") %}
+              <form method="post" action="/admin/hosts/{{ h.id }}/update" data-confirm="Update this host's agent to the latest published version? It will download the new build, swap the binary, and briefly restart its service.">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                <button type="submit" class="user-menu-link"{% if !h.online %} disabled title="The host must be connected to update it over its connection."{% endif %}>Update agent</button>
+              </form>
+              {% endif %}
+              {% if h.is_control_plane %}
+              <form method="post" action="/admin/hosts/{{ h.id }}/control-plane" data-confirm="Stop treating this host as the control plane's own server? Its guardrails come off: isolating it, inline IPS, closing its ports, stopping Docker and reformatting Docker's disk will all be allowed. Only do this if the control plane no longer runs on it.">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                <input type="hidden" name="is_control_plane" value="false">
+                <button type="submit" class="user-menu-link">Not the control plane</button>
+              </form>
+              {% else %}
+              <form method="post" action="/admin/hosts/{{ h.id }}/control-plane" data-confirm="Mark this host as the control plane's own server? Operations that would take the control plane down will be refused on it.">
+                <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+                <input type="hidden" name="is_control_plane" value="true">
+                <button type="submit" class="user-menu-link">Mark as control plane</button>
+              </form>
+              {% endif %}
+              <hr class="menu-divider">
+              <a class="user-menu-link menu-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">Revoke&hellip;</a>
+              {% endif %}
+              <a class="user-menu-link menu-danger" href="/admin/hosts/{{ h.id }}/remove/confirm">Remove&hellip;</a>
+            </div>
+          </details>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
   {% endif %}
-
-  <h4 style="margin:12px 0 4px;">{% call macros::icon("host") %} Windows</h4>
-  <p style="color:var(--text-muted); margin:0 0 4px;">
-    Download the <a href="{{ aat.commands.msi_url }}">MSI</a> or the
-    <a href="{{ aat.commands.exe_url }}">exe</a> into your deploy tool. Both run
-    unattended as SYSTEM, enroll, and register the <code>abyssal-agent</code>
-    service. PDQ Deploy package, exe, <em>Parameters</em> box:
+  <p class="text-muted" style="margin:14px 0 0; font-size:0.88rem;">
+    Arsenals operate on these hosts, not on this control-plane container. The
+    server it runs on can be one of them, through its own agent
+    (<code>install.sh</code> sets one up): it's marked <strong>Control plane</strong>,
+    and operations that would take the control plane down are refused for it.
   </p>
-  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ aat.commands.exe_parameters }}</pre>
-  <details style="margin:6px 0 0;">
-    <summary style="cursor:pointer; color:var(--text-muted);">Full command lines (exe and MSI)</summary>
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ aat.commands.exe }}</pre>
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ aat.commands.msi }}</pre>
-    <p style="color:var(--text-muted); margin:6px 0 0;">
-      Uninstall: <code>abyssal-agent.exe /uninstall /quiet</code>, or remove the
-      MSI. Both keep this machine's enrollment, so a reinstall reconnects as the
-      same host; remove it here to decommission it.
-    </p>
-  </details>
-
-  <h4 style="margin:16px 0 4px;">{% call macros::icon("host") %} Linux</h4>
-  <p style="color:var(--text-muted); margin:0 0 4px;">
-    Hosts with internet access -- downloads this version's agent from GitHub
-    (publicly trusted HTTPS), then installs it:
-  </p>
-  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ aat.commands.linux_github }}</pre>
-  <details style="margin:6px 0 0;">
-    <summary style="cursor:pointer; color:var(--text-muted);">No internet access?</summary>
-    <p style="color:var(--text-muted); margin:6px 0 4px;">
-      Copy the <a href="{{ aat.commands.linux_url }}">agent from this control plane</a>
-      to the host with your own tooling, extract it, then run:
-    </p>
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ aat.commands.linux }}</pre>
-  </details>
-
-  <form method="post" action="/admin/hosts/aat/approval" style="margin:16px 0 0;">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <label style="display:flex; gap:8px; align-items:center;">
-      <input type="checkbox" name="require_approval"{% if aat.require_approval %} checked{% endif %} data-autosubmit>
-      Require approval for hosts that enroll with this token
-    </label>
-    <noscript><button type="submit" class="btn-secondary btn-sm">Save</button></noscript>
-    <p style="color:var(--text-muted); margin:4px 0 0;">
-      {% if aat.require_approval %}
-      New hosts wait as <strong>Pending</strong> below until you approve them.
-      {% if aat.pending_count > 0 %}<strong>{{ aat.pending_count }} waiting.</strong>{% endif %}
-      {% else %}
-      New hosts connect immediately (zero-touch).
-      {% endif %}
-    </p>
-  </form>
-
-  <form method="post" action="/admin/hosts/aat/rotate" style="margin:12px 0 0;"
-        data-confirm="Rotate the install token? The current one stops enrolling new hosts immediately, so every deploy package using it must be updated. Enrolled hosts are unaffected.">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <button type="submit" class="btn-danger btn-sm">{% call macros::icon("danger") %} Rotate token</button>
-  </form>
 </div>
 
-<div class="card">
-  <h2>{% call macros::icon("host") %} Deployment tokens (mass rollout)</h2>
-  <p style="color:var(--text-muted); margin-top:0;">
-    A <strong>reusable</strong> token for rolling the agent out to many machines
-    at once -- paste the generated command into PDQ Deploy, a GPO startup script,
-    or Intune. Every machine that runs it enrolls automatically under its own
-    hostname. Unlike the single-use token above, one deployment token provisions
-    every host it reaches until it expires or you revoke it.
+{% if can_enroll || can_manage %}
+<details class="card add-hosts" id="add-hosts"{% if add_hosts_open %} open{% endif %}>
+  <summary><h2>{% call macros::icon("host") %} Add hosts</h2></summary>
+
+  {% if can_manage %}
+  <h3>Install tokens</h3>
+  <p class="text-muted" style="margin-top:0;">
+    Any install token enrolls hosts everywhere: the Windows exe and MSI
+    (<code>AAT=</code>), <code>abyssal-agent install --aat</code> on Linux, and
+    the one-liners. It also proves this control plane's certificate to a new
+    host, so no CA fingerprint is needed. Use the <strong>default token</strong>
+    for your standing deploy packages, and an <strong>additional token</strong>
+    for a rollout you want to label, limit in time, count, or revoke on its own.
+    Hosts a token enrolled keep working when it's revoked or rotated.
   </p>
-
-  <form method="post" action="/admin/hosts/deployment-token" class="action-grid">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <div>
-      <label for="dep-os">Target OS</label>
-      <select id="dep-os" name="os">
-        <option value="windows">Windows</option>
-        <option value="linux">Linux</option>
-      </select>
-    </div>
-    <div>
-      <label for="dep-ttl">Valid for (hours)</label>
-      <input type="number" id="dep-ttl" name="ttl_hours" min="1" max="8760" value="720">
-    </div>
-    <div>
-      <label for="dep-label">Label (optional)</label>
-      <input type="text" id="dep-label" name="label" placeholder="e.g. Finance OU rollout">
-    </div>
-    <div style="grid-column: 1 / -1;">
-      <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create deployment token</button>
-    </div>
-  </form>
-
-  {% if let Some(d) = deployment %}
-  <div class="info-banner" style="margin-top:14px;">
-    <strong>{{ d.os_label }} deployment command</strong> &mdash; expires {{ d.expires }}.
-    Save this now: the token is shown only once (revoke and recreate if you lose it).
-    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0;">{{ d.command }}</pre>
-    {% if let Some(cmd) = d.interactive_command %}
-    <details style="margin:6px 0 0;">
-      <summary style="cursor:pointer; color:var(--text-muted);">Try it by hand first (elevated PowerShell)</summary>
-      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ cmd }}</pre>
-    </details>
-    {% endif %}
-    {% if let Some(fp) = d.ca_fingerprint %}
-    <p style="color:var(--text-muted); margin:8px 0 0;">
-      This control plane uses an internal CA. The command fetches it and
-      refuses to continue unless its SHA-256 fingerprint is
-      <code style="overflow-wrap:anywhere;">{{ fp }}</code>, so target machines
-      need no certificate pushed beforehand. (Already distributing the CA by
-      GPO? That works too.)
-    </p>
-    {% else %}
-    <p style="color:var(--text-muted); margin:8px 0 0;">
-      Target machines must trust this control plane's certificate. A
-      publicly-trusted one (Let's Encrypt) already is; for a certificate from
-      your own internal CA, distribute that CA by GPO first (see the README's
-      "Reverse proxy / TLS" section).
-    </p>
-    {% endif %}
-  </div>
-  {% endif %}
-
-  {% if !deployment_tokens.is_empty() %}
-  <h3 style="margin-top:18px;">Active deployment tokens</h3>
   <div class="table-scroll">
-    <table>
-      <thead><tr><th>Label</th><th>Created</th><th>Expires</th><th>Hosts enrolled</th><th>Actions</th></tr></thead>
+    <table class="token-table">
+      <thead><tr><th>Token</th><th>Created</th><th>Expires</th><th>Hosts</th><th>Approval</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
-        {% for t in deployment_tokens %}
         <tr>
-          <td>{{ t.label }}</td>
+          <td><strong>Default token</strong></td>
+          <td class="text-muted">&mdash;</td>
+          <td class="text-muted">Never</td>
+          <td class="text-muted" title="Hosts currently enrolled with it">{{ default_token_hosts }}</td>
+          <td>
+            <form method="post" action="/admin/hosts/aat/approval" style="margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <label style="display:flex; gap:6px; align-items:center; margin:0;">
+                <input type="checkbox" name="require_approval"{% if default_token_requires_approval %} checked{% endif %} data-autosubmit>
+                Required
+              </label>
+              <noscript><button type="submit" class="btn-secondary btn-sm">Save</button></noscript>
+            </form>
+          </td>
+          <td class="token-actions">
+            <form method="post" action="/admin/hosts/aat/reveal" style="margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-secondary btn-sm">Show</button>
+            </form>
+            <form method="post" action="/admin/hosts/aat/rotate" style="margin:0;"
+                  data-confirm="Rotate the default install token? It stops enrolling new hosts immediately, so every deploy package using it must be updated. Enrolled hosts and additional tokens are unaffected.">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-danger btn-sm">Rotate</button>
+            </form>
+          </td>
+        </tr>
+        {% for t in additional_tokens %}
+        <tr{% if !t.active %} class="token-inactive"{% endif %}>
+          <td>{{ t.label }}{% if t.revoked %} <span class="badge badge-muted">Revoked</span>{% else if !t.active %} <span class="badge badge-muted">Expired</span>{% endif %}</td>
+          <td class="text-muted">{{ t.created }}</td>
+          <td class="text-muted">{{ t.expires }}</td>
+          <td class="text-muted" title="Hosts it has enrolled">{{ t.use_count }}</td>
+          <td class="text-muted">{% if t.require_approval %}Required{% else %}Not required{% endif %}</td>
+          <td class="token-actions">
+            {% if t.active %}
+            <form method="post" action="/admin/hosts/install-tokens/{{ t.id }}/reveal" style="margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-secondary btn-sm">Show</button>
+            </form>
+            <form method="post" action="/admin/hosts/install-tokens/{{ t.id }}/revoke" style="margin:0;"
+                  data-confirm="Revoke install token &quot;{{ t.label }}&quot;? It stops enrolling new hosts immediately. Hosts it enrolled keep working.">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <button type="submit" class="btn-danger btn-sm">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% for t in legacy_tokens %}
+        <tr>
+          <td>{{ t.label }} <span class="badge badge-muted" title="A deployment token from before install tokens. It only works with the one-liners, and keeps working until it expires or is revoked. New ones can't be created.">Legacy (one-liner only)</span></td>
           <td class="text-muted">{{ t.created }}</td>
           <td class="text-muted">{{ t.expires }}</td>
           <td class="text-muted">{{ t.use_count }}</td>
-          <td>
-            <form method="post" action="/admin/hosts/deployment-token/{{ t.id }}/revoke" style="margin:0;">
+          <td class="text-muted">Not required</td>
+          <td class="token-actions">
+            <form method="post" action="/admin/hosts/deployment-token/{{ t.id }}/revoke" style="margin:0;"
+                  data-confirm="Revoke this legacy deployment token? It stops enrolling new hosts immediately. Hosts it enrolled keep working.">
               <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
               <button type="submit" class="btn-danger btn-sm">Revoke</button>
             </form>
@@ -265,81 +239,168 @@
       </tbody>
     </table>
   </div>
+
+  <details class="new-token">
+    <summary class="btn btn-secondary">{% call macros::icon("generate") %} New install token</summary>
+    <form method="post" action="/admin/hosts/install-tokens" class="action-grid" style="margin-top:12px;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <div>
+        <label for="tok-label">Label</label>
+        <input type="text" id="tok-label" name="label" maxlength="100" required placeholder="e.g. Finance OU rollout">
+      </div>
+      <div>
+        <label for="tok-expiry">Expires after</label>
+        <select id="tok-expiry" name="expires_in_days">
+          {% for (days, label) in expiry_choices %}
+          <option value="{{ days }}"{% if days == "30" %} selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="align-self:end;">
+        <label style="display:flex; gap:8px; align-items:center;">
+          <input type="checkbox" name="require_approval"{% if default_token_requires_approval %} checked{% endif %}>
+          Require approval for hosts it enrolls
+        </label>
+      </div>
+      <div style="grid-column: 1 / -1;">
+        <button type="submit" class="btn-warning">Create install token</button>
+      </div>
+    </form>
+  </details>
+
+  <h3 id="install-commands">Install commands &mdash; {{ commands.token_name }}</h3>
+  {% if let Some(token) = commands.revealed_token %}
+  {% if commands.just_created %}
+  <p style="margin:0 0 6px; color:var(--warning);">
+    Copy it into your deploy tool now. You can show it again later with
+    <strong>Show</strong>, which is recorded in the audit log.
+  </p>
   {% endif %}
-</div>
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 12px;">{{ token }}</pre>
+  {% else %}
+  <p class="text-muted" style="margin:0 0 12px;">
+    Tokens are hidden: the commands below show <code>&lt;AAT&gt;</code> until you
+    <strong>Show</strong> one above, which fills them in and is recorded in the
+    audit log.
+  </p>
+  {% endif %}
 
-{% endif %}
+  <h4 style="margin:12px 0 4px;">{% call macros::icon("host") %} Windows</h4>
+  <p class="text-muted" style="margin:0 0 4px;">
+    Download the <a href="{{ commands.aat.msi_url }}">MSI</a> or the
+    <a href="{{ commands.aat.exe_url }}">exe</a> into your deploy tool. Both run
+    unattended as SYSTEM, enroll, and register the <code>abyssal-agent</code>
+    service. PDQ Deploy package, exe, <em>Parameters</em> box:
+  </p>
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ commands.aat.exe_parameters }}</pre>
+  <details style="margin:6px 0 0;">
+    <summary style="cursor:pointer;" class="text-muted">Full command lines (exe and MSI)</summary>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ commands.aat.exe }}</pre>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ commands.aat.msi }}</pre>
+    <p class="text-muted" style="margin:6px 0 0;">
+      Uninstall: <code>abyssal-agent.exe /uninstall /quiet</code>, or remove the
+      MSI. Both keep this machine's enrollment, so a reinstall reconnects as the
+      same host; remove it here to decommission it.
+    </p>
+  </details>
 
-{% if can_manage && update_all_count > 0 %}
-<div class="card">
-  <form method="post" action="/admin/hosts/update-all" style="margin:0; display:flex; gap:12px; align-items:center; flex-wrap:wrap;"
-        data-confirm="Update the agent on {{ update_all_count }} connected host(s) that are out of date? Each downloads the new build, swaps it in and restarts its service (a few seconds offline each), a few hosts at a time.">
+  <h4 style="margin:16px 0 4px;">{% call macros::icon("host") %} Linux</h4>
+  <p class="text-muted" style="margin:0 0 4px;">
+    Hosts with internet access -- downloads this version's agent from GitHub
+    (publicly trusted HTTPS), then installs it:
+  </p>
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ commands.aat.linux_github }}</pre>
+  <details style="margin:6px 0 0;">
+    <summary style="cursor:pointer;" class="text-muted">No internet access?</summary>
+    <p class="text-muted" style="margin:6px 0 4px;">
+      Copy the <a href="{{ commands.aat.linux_url }}">agent from this control plane</a>
+      to the host with your own tooling, extract it, then run:
+    </p>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ commands.aat.linux }}</pre>
+  </details>
+
+  {% if let Some(linux) = commands.linux_oneliner %}
+  <h4 style="margin:16px 0 4px;">One-liners (download from this control plane)</h4>
+  <p class="text-muted" style="margin:0 0 4px;">Linux:</p>
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ linux }}</pre>
+  {% if let Some(windows) = commands.windows_oneliner %}
+  <p class="text-muted" style="margin:8px 0 4px;">Windows, from an <strong>administrator</strong> PowerShell:</p>
+  <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ windows }}</pre>
+  {% endif %}
+  {% if let Some(rmm) = commands.windows_rmm %}
+  <details style="margin:6px 0 0;">
+    <summary style="cursor:pointer;" class="text-muted">Running it from PDQ, Intune, or another RMM tool as SYSTEM?</summary>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ rmm }}</pre>
+  </details>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+
+  {% if can_enroll %}
+  <h3 style="margin-top:22px;">One-time token</h3>
+  <p class="text-muted" style="margin-top:0;">
+    For a single machine: a token that enrolls one host and expires in 15
+    minutes, with ready-to-paste commands for Linux and Windows.
+  </p>
+  <form method="post" action="/admin/hosts/enroll-token">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Update all out-of-date agents ({{ update_all_count }})</button>
-    <span style="color:var(--text-muted);">Offline hosts, and agents too old to update themselves, are listed but skipped.</span>
+    <button type="submit" class="btn-secondary">{% call macros::icon("generate") %} Generate one-time token</button>
   </form>
-</div>
-{% endif %}
 
-<div class="card">
-  <table>
-    <thead><tr><th>Name</th><th>Platform</th><th>Status</th><th>Enrolled</th><th>Last seen</th><th>Actions</th></tr></thead>
-    <tbody>
-      {% for h in hosts %}
-      <tr>
-        <td>{{ h.name }}{% if h.is_control_plane %}<br><span class="badge badge-control-plane" title="The control plane's own server: operations that would take the control plane down (isolation, inline IPS, closing its ports, stopping Docker or its containers, reformatting Docker's disk) are refused.">{% call macros::icon("shield") %} Control plane</span>{% endif %}</td>
-        <td>{{ h.os }}<br><span style="color:var(--text-muted); font-size:0.85em;">agent v{{ h.agent_version }}</span></td>
-        <td>
-          {% if h.revoked %}<span class="badge badge-danger">Revoked</span>
-          {% else if h.pending_approval %}<span class="badge badge-warning">Pending approval</span>
-          {% else if h.online %}<span class="badge badge-success">Online</span>
-          {% else %}<span class="badge badge-muted">Offline</span>{% endif %}
-          {% if let Some(remaining) = h.elevation_remaining %}<span class="badge badge-elevated">Elevated ({{ remaining }})</span>
-          {% endif %}
-          {% if h.protocol_mismatch %}<span class="badge badge-warning" title="This agent is older than the control plane. Anything it can't do yet is refused before it's sent. Use 'Update agent' to bring it up to date over its connection; an agent too old even for that needs a re-deploy (bootstrap one-liner or SSH quick-add).">{% call macros::icon("warning") %} Agent out of date</span>
-          {% endif %}
-        </td>
-        <td>{{ h.enrolled_at }}</td>
-        <td>{{ h.last_seen_at }}</td>
-        <td class="actions">
-          {% if can_manage %}
-          {% if h.pending_approval %}
-          <form method="post" action="/admin/hosts/{{ h.id }}/approve">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Approve</button>
-          </form>
-          {% endif %}
-          <form method="post" action="/admin/hosts/{{ h.id }}/system-info">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <button type="submit" class="btn-secondary"{% if !h.online %} disabled{% endif %}>{% call macros::icon("host") %} Run System Info</button>
-          </form>
-          {% if !h.revoked %}
-          <form method="post" action="/admin/hosts/{{ h.id }}/update" data-confirm="Update this host's agent to the latest published version? It will download the new build, swap the binary, and briefly restart its service.">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <button type="submit" class="{% if h.protocol_mismatch %}btn-warning{% else %}btn-secondary{% endif %}"{% if !h.online %} disabled title="The host must be connected to update it over its connection."{% endif %}>{% call macros::icon("generate") %} Update agent</button>
-          </form>
-          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/revoke/confirm">{% call macros::icon("danger") %} Revoke</a>
-          {% if h.is_control_plane %}
-          <form method="post" action="/admin/hosts/{{ h.id }}/control-plane" data-confirm="Stop treating this host as the control plane's own server? Its guardrails come off: isolating it, inline IPS, closing its ports, stopping Docker and reformatting Docker's disk will all be allowed. Only do this if the control plane no longer runs on it.">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <input type="hidden" name="is_control_plane" value="false">
-            <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} Not the control plane</button>
-          </form>
-          {% else %}
-          <form method="post" action="/admin/hosts/{{ h.id }}/control-plane" data-confirm="Mark this host as the control plane's own server? Operations that would take the control plane down will be refused on it.">
-            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-            <input type="hidden" name="is_control_plane" value="true">
-            <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} Mark as control plane</button>
-          </form>
-          {% endif %}
-          {% endif %}
-          <a class="btn btn-danger" href="/admin/hosts/{{ h.id }}/remove/confirm">{% call macros::icon("danger") %} Remove</a>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+  {% if let Some(e) = enrollment %}
+  <div class="info-banner" style="margin-top:14px;">
+    <strong>Token expires in 15 minutes, and enrolls one host.</strong>
+    Copy the block for the target host's platform.
+    {% if let Some(fp) = e.ca_fingerprint %}
+    <p class="text-muted" style="margin:8px 0 0;">
+      This control plane uses an internal CA. Each command fetches it from
+      <code>/ca.crt</code> and refuses to continue unless its SHA-256
+      fingerprint is <code style="overflow-wrap:anywhere;">{{ fp }}</code>
+      (the value <code>install.sh</code> printed), so no certificate needs
+      copying to the host beforehand.
+    </p>
+    {% endif %}
+
+    <h4 style="margin:14px 0 4px;">{% call macros::icon("host") %} Linux</h4>
+    <p class="text-muted" style="margin:0 0 4px;">
+      One-liner (downloads the agent, enrolls, installs a systemd service):
+    </p>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.linux_oneliner }}</pre>
+    <details style="margin:6px 0 0;">
+      <summary style="cursor:pointer;" class="text-muted">Prefer to download and run it by hand?</summary>
+      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ e.linux_manual }}</pre>
+    </details>
+
+    <h4 style="margin:16px 0 4px;">{% call macros::icon("host") %} Windows</h4>
+    <p class="text-muted" style="margin:0 0 4px;">
+      One-liner, from an <strong>administrator</strong> PowerShell (downloads
+      the agent, enrolls, registers a LocalSystem service):
+    </p>
+    <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.windows_oneliner }}</pre>
+    <details style="margin:6px 0 0;">
+      <summary style="cursor:pointer;" class="text-muted">Prefer to download and run it by hand?</summary>
+      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0;">{{ e.windows_manual }}</pre>
+    </details>
+    <details style="margin:6px 0 0;">
+      <summary style="cursor:pointer;" class="text-muted">Running it from PDQ, Intune, or another RMM tool as SYSTEM?</summary>
+      <p class="text-muted" style="margin:6px 0 4px;">
+        Unattended script: no dependence on the working directory, the token
+        kept off the command line, errors on stdout, and a non-zero exit code
+        on failure (codes are listed at the top of <code>/install.ps1</code>).
+        For many machines, use an install token instead.
+      </p>
+      <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:0;">{{ e.windows_rmm }}</pre>
+    </details>
+
+    <p class="text-muted" style="margin:12px 0 0;">
+      No release binary for this host's architecture, or building the agent
+      itself? See <code>crates/agent/README.md</code> for building from
+      source and the manual service setup.
+    </p>
+  </div>
+  {% endif %}
+  {% endif %}
+</details>
+{% endif %}
 
 {% endblock %}

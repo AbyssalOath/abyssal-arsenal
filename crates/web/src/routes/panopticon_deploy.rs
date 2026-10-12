@@ -314,7 +314,7 @@ pub async fn credentials_form(
     Ok((jar, tpl).into_response())
 }
 
-/// Windows path for "add host from scan": mint a reusable deployment token so a
+/// Windows path for "add host from scan": mint an install token so a
 /// single command enrolls every selected host, build the CA-aware Windows
 /// install commands, and show them alongside the host list. Nothing is pushed --
 /// Windows has no SSH equivalent here -- so the operator runs the command on the
@@ -350,16 +350,35 @@ async fn windows_deploy_page(
         });
     }
 
-    // One reusable deployment token covers every selected host; valid 24h.
-    const TTL_HOURS: i64 = 24;
-    let token = generate_token();
-    let hash = hash_token(&token);
-    repo::host_enrollment_tokens::create_deployment(
+    // One install token covers every selected host; valid a day, and
+    // approval follows the default token's setting.
+    const TTL_DAYS: u32 = 1;
+    let (token_id, token) = crate::install_tokens::create(
         &state.pool,
-        &hash,
+        state.encryption_key.as_deref(),
+        "Panopticon Windows add",
+        Some(TTL_DAYS),
+        crate::aat::require_approval(&state.pool).await?,
         Some(ctx.user.id),
-        ChronoDuration::hours(TTL_HOURS),
-        Some("Panopticon Windows add"),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        abyssal_audit::AuditEvent::new(
+            abyssal_audit::AuditAction::ConfigurationChanged,
+            abyssal_audit::AuditOutcome::Success,
+        )
+        .actor(abyssal_audit::Actor {
+            user_id: ctx.user.id,
+            username: &ctx.user.username,
+        })
+        .resource("host.install_token")
+        .metadata(serde_json::json!({
+            "action": "create",
+            "id": token_id,
+            "label": "Panopticon Windows add",
+            "expires_in_days": TTL_DAYS,
+        })),
     )
     .await?;
 
@@ -368,7 +387,7 @@ async fn windows_deploy_page(
     let oneliner = deploy_commands::windows_oneliner(&base_url, &token, ca.as_ref());
     let rmm = deploy_commands::windows_rmm(&base_url, &token, ca.as_ref());
     let expires = crate::common::format_in_tz(
-        chrono::Utc::now() + ChronoDuration::hours(TTL_HOURS),
+        chrono::Utc::now() + ChronoDuration::days(i64::from(TTL_DAYS)),
         &ctx.user.timezone,
     );
 

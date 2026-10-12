@@ -8,6 +8,7 @@ pub mod host_enrollment_tokens;
 pub mod host_health;
 pub mod host_metrics;
 pub mod hosts;
+pub mod install_tokens;
 pub mod macros;
 pub mod managed_shares;
 pub mod modules;

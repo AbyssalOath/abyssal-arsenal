@@ -304,9 +304,18 @@ pub fn build(state: AppState) -> Router {
             post(routes::hosts::generate_enrollment_token),
         )
         .route(
-            "/admin/hosts/deployment-token",
-            post(routes::hosts::generate_deployment_token),
+            "/admin/hosts/install-tokens",
+            post(routes::hosts::create_install_token),
         )
+        .route(
+            "/admin/hosts/install-tokens/:id/reveal",
+            post(routes::hosts::reveal_install_token),
+        )
+        .route(
+            "/admin/hosts/install-tokens/:id/revoke",
+            post(routes::hosts::revoke_install_token),
+        )
+        // Legacy deployment tokens: revoke only (install tokens replace them).
         .route(
             "/admin/hosts/deployment-token/:id/revoke",
             post(routes::hosts::revoke_deployment_token),

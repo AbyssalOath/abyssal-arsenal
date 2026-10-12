@@ -111,7 +111,7 @@ a:hover { color: var(--accent-hover); }
 
 label { display: block; font-size: 0.85rem; margin-bottom: var(--space-1); color: var(--text-muted); font-weight: 600; }
 
-input[type="text"], input[type="email"], input[type="password"], input[type="number"], select, textarea {
+input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="number"], select, textarea {
   width: 100%;
   padding: 9px 11px;
   margin-bottom: var(--space-4);
@@ -1555,3 +1555,92 @@ a.stat-tile:hover { border-color: var(--accent); }
   margin: -12px 0 16px;
 }
 .page-crumbs > span { display: flex; flex-wrap: wrap; gap: 14px; }
+
+/* ---- /admin/hosts ---------------------------------------------------------- */
+.hosts-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 14px;
+}
+.hosts-summary { margin: 0; color: var(--text-muted); }
+.hosts-summary strong { color: var(--text); }
+.hosts-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 12px;
+}
+.filter-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.filter-tab {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.filter-tab:hover { color: var(--text); background: var(--surface-raised); }
+.filter-tab.active { color: var(--text); border-color: var(--accent); background: var(--surface-raised); }
+.filter-count { color: var(--text-muted); margin-left: 2px; }
+.hosts-search { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0; }
+.hosts-search input, .hosts-search select { margin: 0; width: auto; }
+.hosts-search input[type="search"] { min-width: 180px; }
+
+/* One primary button per row, the rest under "More". */
+.host-actions { white-space: nowrap; text-align: right; }
+.host-actions > form { display: inline-block; margin: 0; vertical-align: middle; }
+.row-menu { position: relative; display: inline-block; vertical-align: middle; }
+.row-menu > summary { list-style: none; cursor: pointer; }
+.row-menu > summary::-webkit-details-marker { display: none; }
+.row-menu > summary::after { content: "\25BE"; margin-left: 6px; }
+.row-menu-panel { right: 0; left: auto; min-width: 210px; text-align: left; white-space: normal; }
+.user-menu-link:disabled, .user-menu-link:disabled:hover {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.menu-divider { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.user-menu-link.menu-danger { color: var(--danger); }
+.user-menu-link.menu-danger:hover { color: var(--danger); }
+
+.add-hosts > summary { list-style: none; cursor: pointer; }
+.add-hosts > summary::-webkit-details-marker { display: none; }
+.add-hosts > summary h2 { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.add-hosts > summary h2::after { content: "\25B8"; color: var(--text-muted); font-size: 0.9em; }
+.add-hosts[open] > summary h2::after { content: "\25BE"; }
+.add-hosts[open] > summary { margin-bottom: 14px; }
+.token-actions { white-space: nowrap; }
+.token-actions form { display: inline-block; }
+.token-inactive td { opacity: 0.6; }
+.new-token { margin: 12px 0 20px; }
+.new-token > summary { list-style: none; display: inline-flex; }
+.new-token > summary::-webkit-details-marker { display: none; }
+
+@media (max-width: 700px) {
+  /* Each host becomes a stacked card: labelled fields, buttons below. */
+  .card table.hosts-table { display: block; overflow: visible; }
+  .hosts-table thead { display: none; }
+  .hosts-table tbody, .hosts-table tr, .hosts-table td { display: block; }
+  .hosts-table tr { padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .hosts-table td { border: 0; padding: 2px 0; }
+  .hosts-table td[data-label]::before {
+    content: attr(data-label) ": ";
+    color: var(--text-muted);
+    font-size: 0.8rem;
+  }
+  .hosts-table td[data-label] br { display: none; }
+  .hosts-table td[data-label] br + .text-muted::before { content: " \00b7  "; }
+  .hosts-table .host-name { font-weight: 600; font-size: 1rem; padding-bottom: 4px; }
+  .hosts-table .host-actions { text-align: left; white-space: normal; padding-top: 8px; }
+  /* A scrolled table would clip the menu; open it in place instead. */
+  .row-menu-panel { position: static; box-shadow: none; margin-top: 6px; }
+  .hosts-search input[type="search"] { min-width: 0; flex: 1; }
+}

@@ -33,21 +33,42 @@ pub struct EnrollResponse {
 /// token (an admin-generated secret, not a browser session), so this is
 /// intentionally outside `CurrentUser`/CSRF.
 ///
-/// The token may also be the AAT (`abyssal_agent_protocol::aat`), the
-/// reusable install token: never consumed, and the host starts out pending
-/// when approval is required.
+/// The token may also be an install token (`abyssal_agent_protocol::aat`):
+/// the default one or an additional one (`crate::install_tokens`). Those are
+/// reusable, never consumed, and the host starts out pending when that
+/// token requires approval.
 pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -> Response {
     let via_aat = abyssal_agent_protocol::aat::is_aat(&req.token);
     let mut pending_approval = false;
     let mut is_control_plane = false;
+    // What enrolled it, for the Hosts page and the audit trail.
+    let enrolled_via: &str;
+    let mut token_id: Option<Uuid> = None;
+    let mut token_label: Option<String> = None;
     if via_aat {
-        match crate::aat::matches(&state.pool, state.encryption_key.as_deref(), &req.token).await {
-            Ok(true) => {}
-            Ok(false) => {
+        let key = state.encryption_key.as_deref();
+        match crate::install_tokens::match_presented(&state.pool, key, &req.token).await {
+            Ok(Some(crate::install_tokens::Matched::Default)) => {
+                enrolled_via = "default_token";
+                pending_approval = match crate::aat::require_approval(&state.pool).await {
+                    Ok(required) => required,
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to read the AAT approval setting");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                };
+            }
+            Ok(Some(crate::install_tokens::Matched::Additional(token))) => {
+                enrolled_via = "install_token";
+                pending_approval = token.require_approval;
+                token_id = Some(token.id);
+                token_label = Some(token.label);
+            }
+            Ok(None) => {
                 return (
                     StatusCode::UNAUTHORIZED,
-                    "invalid agent install token (AAT) -- it may have been rotated; copy the \
-                     current one from /admin/hosts",
+                    "invalid install token -- it may have been rotated, revoked or have expired; \
+                     copy a current one from /admin/hosts",
                 )
                     .into_response();
             }
@@ -56,25 +77,24 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
                 return aat_unavailable();
             }
         }
-        pending_approval = match crate::aat::require_approval(&state.pool).await {
-            Ok(required) => required,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to read the AAT approval setting");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
     } else {
         let token_hash = hash_token(&req.token);
         match repo::host_enrollment_tokens::consume(&state.pool, &token_hash).await {
             Ok(true) => {
+                let kind = repo::host_enrollment_tokens::kind(&state.pool, &token_hash)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::error!(error = %e, "failed to read the enrollment token's kind");
+                        None
+                    });
                 // Minted by `install.sh` for the server's own agent.
-                is_control_plane =
-                    repo::host_enrollment_tokens::is_control_plane(&state.pool, &token_hash)
-                        .await
-                        .unwrap_or_else(|e| {
-                            tracing::error!(error = %e, "failed to read the enrollment token's control-plane flag");
-                            false
-                        });
+                is_control_plane = kind.as_ref().is_some_and(|k| k.control_plane);
+                enrolled_via = match &kind {
+                    _ if is_control_plane => "control_plane",
+                    Some(k) if k.reusable => "deployment_token",
+                    _ => "enrollment_token",
+                };
+                token_id = kind.map(|k| k.id);
             }
             Ok(false) => {
                 return (
@@ -181,6 +201,16 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
+    if let Err(e) =
+        repo::hosts::set_enrolled_via(&state.pool, host.id, enrolled_via, token_id).await
+    {
+        tracing::warn!(error = %e, "failed to record which token enrolled a host");
+    }
+    if let (Some(id), "install_token") = (token_id, enrolled_via)
+        && let Err(e) = repo::install_tokens::record_use(&state.pool, id).await
+    {
+        tracing::warn!(error = %e, "failed to count an install token's use");
+    }
     if is_control_plane {
         // Flag it before its agent can connect, so the guardrails are on
         // from its first command. Failing to is failing the enrollment:
@@ -199,7 +229,9 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
         AuditEvent::new(AuditAction::HostEnrolled, AuditOutcome::Success)
             .resource(&host.name)
             .metadata(serde_json::json!({
-                "via": if via_aat { "aat" } else { "enrollment_token" },
+                "via": enrolled_via,
+                "token_id": token_id,
+                "token_label": token_label,
                 "pending_approval": pending_approval,
                 "control_plane": is_control_plane,
             })),
@@ -230,6 +262,9 @@ fn aat_unavailable() -> Response {
 #[derive(Deserialize)]
 pub struct CaProofQuery {
     nonce: String,
+    /// `abyssal_agent_protocol::aat::key_id` of the agent's install token;
+    /// absent from agents older than 0.2.4, which get the default token.
+    key: Option<String>,
 }
 
 /// `GET /api/agent/ca?nonce=...` -- the control plane's CA bundle plus an
@@ -248,8 +283,23 @@ pub async fn ca_proof(
     if !(16..=128).contains(&query.nonce.len()) {
         return (StatusCode::BAD_REQUEST, "nonce must be 16-128 characters").into_response();
     }
-    let aat = match crate::aat::current(&state.pool, state.encryption_key.as_deref()).await {
+    let requested = query.key.as_deref().filter(|k| !k.is_empty());
+    let aat = match crate::install_tokens::for_ca_proof(
+        &state.pool,
+        state.encryption_key.as_deref(),
+        requested,
+    )
+    .await
+    {
         Ok(Some(aat)) => aat,
+        Ok(None) if requested.is_some() => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                "this install token isn't valid here -- it may have been rotated, revoked or have \
+                 expired; copy a current one from /admin/hosts",
+            )
+                .into_response();
+        }
         Ok(None) => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,

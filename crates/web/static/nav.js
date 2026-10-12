@@ -1,7 +1,7 @@
 // The top nav's "Menu" toggle at phone widths (style.css hides the links
 // behind it below 1200px), and closing the top bar's dropdowns (Arsenals,
-// Apotheosis, the user menu) and the breadcrumb's host switcher on an
-// outside click or Escape. A static file because the Content-Security-Policy
+// Apotheosis, the user menu), the breadcrumb's host switcher and the host
+// list's "More" menus on an outside click or Escape. A static file because the Content-Security-Policy
 // (`script-src 'self'`) blocks inline handlers.
 (function () {
   "use strict";
@@ -15,9 +15,9 @@
     if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
-  // The top bar's dropdowns and the breadcrumb's host switcher.
+  var MENUS = ".topnav details[open], .breadcrumb details[open], details.row-menu[open]";
   function openMenus() {
-    return document.querySelectorAll(".topnav details[open], .breadcrumb details[open]");
+    return document.querySelectorAll(MENUS);
   }
 
   if (toggle) {
@@ -29,7 +29,7 @@
   // Opening one dropdown closes the others.
   document.addEventListener("toggle", function (e) {
     var opened = e.target;
-    if (!opened.open || !opened.closest(".topnav, .breadcrumb")) return;
+    if (!opened.open || !opened.matches(MENUS)) return;
     openMenus().forEach(function (d) {
       if (d !== opened && !d.contains(opened)) d.open = false;
     });

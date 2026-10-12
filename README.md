@@ -142,8 +142,8 @@ take the control plane down are refused for it: see
    installs itself as a systemd service in one step. See
    [`crates/agent/README.md`](crates/agent/README.md) for the full
    walkthrough and non-interactive/scripted install options.
-4. To manage a Windows host, go to `/admin/hosts` and generate a deployment
-   command (single-use, or a reusable deployment token for mass rollout). Run
+4. To manage a Windows host, go to `/admin/hosts` › **Add hosts** and copy a
+   command (a one-time token, or an install token for mass rollout). Run
    it in an elevated PowerShell on the host, or push it with PDQ Deploy / a GPO
    startup script / Intune; it downloads the agent from the control plane,
    trusts its CA, enrolls, and installs itself as a service in one step.
@@ -291,7 +291,7 @@ trust the control plane:
    Public Key Policies → Trusted Root Certification Authorities* → **Import**.
 3. `gpupdate /force` on a client (or wait for the next refresh).
 
-With the CA already trusted that way, the deployment-token command works
+With the CA already trusted that way, the install-token one-liners work
 as-is (it still verifies the fingerprint before running anything).
 
 **Browsers on admin workstations** show an "unknown issuer" warning until the
@@ -331,8 +331,8 @@ The agent and the install scripts exit with distinct codes, and print an
 Hosts download the agent from **this control plane** (`/agent/windows`,
 `/agent/linux`), not from GitHub — so an internal or air-gapped network only
 needs to reach the control plane, and every host gets whatever agent build the
-control plane is serving. The bootstrap one-liners and the reusable
-deployment-token command both use this.
+control plane is serving. The bootstrap one-liners (with a one-time
+or an install token) use this.
 
 The control plane serves from a volume (`abyssal_agent_dist`, mounted at
 `/agent-dist`):

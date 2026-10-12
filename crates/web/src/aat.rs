@@ -24,12 +24,12 @@ const REQUIRE_APPROVAL_KEY: &str = "agents.aat_require_approval";
 /// plaintext AAT from before a key was configured.
 const ENCRYPTED_PREFIX: &str = "enc:v1:";
 
-fn new_aat() -> String {
+pub(crate) fn new_aat() -> String {
     format!("{AAT_PREFIX}{}", generate_token())
 }
 
 /// The stored form of `aat`: encrypted when there's a key.
-fn seal(aat: &str, key: Option<&EncryptionKey>) -> anyhow::Result<String> {
+pub(crate) fn seal(aat: &str, key: Option<&EncryptionKey>) -> anyhow::Result<String> {
     match key {
         Some(key) => Ok(format!(
             "{ENCRYPTED_PREFIX}{}",
@@ -42,7 +42,7 @@ fn seal(aat: &str, key: Option<&EncryptionKey>) -> anyhow::Result<String> {
 
 /// Reverses [`seal`]. `Ok(None)` for nothing stored (or something that isn't
 /// an AAT at all); an error when it's encrypted and can't be decrypted.
-fn unseal(stored: &str, key: Option<&EncryptionKey>) -> anyhow::Result<Option<String>> {
+pub(crate) fn unseal(stored: &str, key: Option<&EncryptionKey>) -> anyhow::Result<Option<String>> {
     let aat = match stored.strip_prefix(ENCRYPTED_PREFIX) {
         Some(ciphertext) => {
             let key = key.ok_or_else(|| {

@@ -46,41 +46,27 @@ pub async fn create_control_plane(
     Ok(())
 }
 
-/// Whether a token (already [`consume`]d) was minted for the control
-/// plane's own server.
-pub async fn is_control_plane(pool: &DbPool, token_hash: &str) -> anyhow::Result<bool> {
-    let flag: Option<(bool,)> =
-        sqlx::query_as("SELECT control_plane FROM host_enrollment_tokens WHERE token_hash = ?")
-            .bind(token_hash)
-            .fetch_optional(pool)
-            .await?;
-    Ok(flag.is_some_and(|(f,)| f))
+/// What kind of token a (already [`consume`]d) token is.
+pub struct TokenKind {
+    pub id: Uuid,
+    /// A legacy reusable deployment token.
+    pub reusable: bool,
+    /// Minted by `install.sh` for the control plane's own server.
+    pub control_plane: bool,
 }
 
-/// Creates a reusable deployment token (Wazuh-style registration key): it can
-/// enroll many hosts until it expires or is revoked, with an optional label to
-/// identify it. Returns its id so the UI can offer a revoke button immediately.
-pub async fn create_deployment(
-    pool: &DbPool,
-    token_hash: &str,
-    created_by: Option<Uuid>,
-    ttl: Duration,
-    label: Option<&str>,
-) -> anyhow::Result<Uuid> {
-    let id = Uuid::new_v4();
-    let expires_at = chrono::Utc::now() + ttl;
-    sqlx::query(
-        "INSERT INTO host_enrollment_tokens (id, token_hash, created_by, expires_at, reusable, label) \
-         VALUES (?, ?, ?, ?, 1, ?)",
+pub async fn kind(pool: &DbPool, token_hash: &str) -> anyhow::Result<Option<TokenKind>> {
+    let row: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT id, reusable, control_plane FROM host_enrollment_tokens WHERE token_hash = ?",
     )
-    .bind(id.to_string())
     .bind(token_hash)
-    .bind(created_by.map(|u| u.to_string()))
-    .bind(expires_at.naive_utc())
-    .bind(label)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    Ok(id)
+    Ok(row.map(|(id, reusable, control_plane)| TokenKind {
+        id: Uuid::parse_str(&id).unwrap_or_default(),
+        reusable,
+        control_plane,
+    }))
 }
 
 /// Atomically validates and records one use of a token, reporting whether it

@@ -33,6 +33,27 @@ pub fn is_aat(token: &str) -> bool {
         .is_some_and(|secret| !secret.is_empty())
 }
 
+/// Domain separation for [`key_id`].
+const KEY_ID_CONTEXT: &[u8] = b"abyssal-arsenal/aat-key-id/v1";
+
+/// A short, non-secret name for an install token, which the agent sends with
+/// its CA request (`GET /api/agent/ca?nonce=..&key=..`) so a control plane
+/// with several install tokens knows which one to key the proof with. It's a
+/// truncated, domain-separated SHA-256 of a high-entropy secret, so it says
+/// nothing usable about the token, and it can't be confused with the lookup
+/// hash stored server-side. An agent that predates it sends none, and gets a
+/// proof keyed with the default token. 16 lower-case hex digits.
+pub fn key_id(aat: &str) -> String {
+    use sha2::Digest;
+    let mut hasher = Sha256::new();
+    hasher.update(KEY_ID_CONTEXT);
+    hasher.update(aat.as_bytes());
+    hasher.finalize()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// HMAC-SHA256, keyed by the AAT, over the agent's nonce and the CA bundle
 /// the control plane is vouching for (empty when it has no internal CA and
 /// relies on a publicly trusted certificate). Lower-case hex.
@@ -80,6 +101,23 @@ pub struct CaProofResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_ids_are_short_stable_and_distinct() {
+        let a = key_id("AAT1-one");
+        assert_eq!(a.len(), 16);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(a, key_id("AAT1-one"));
+        assert_ne!(a, key_id("AAT1-two"));
+        assert!(!a.contains("one"));
+    }
+
+    #[test]
+    fn key_id_known_answer() {
+        // sha256("abyssal-arsenal/aat-key-id/v1" || token), first 8 bytes:
+        // the server looks tokens up by this, so it must never drift.
+        assert_eq!(key_id("AAT1-known-answer"), "e427caa1c0a6f717");
+    }
 
     const AAT: &str = "AAT1-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
     const PEM: &str = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";

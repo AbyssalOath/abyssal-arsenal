@@ -12,6 +12,52 @@ for what that means for cloning and updating.
 
 ### Changed
 
+- **Install tokens replace deployment tokens.** The AAT becomes the
+  **default install token**, and you can add **additional install tokens**
+  beside it ("New install token" under Hosts › Add hosts). Each additional
+  token has:
+  - a label;
+  - an expiry of 1, 7, 30 or 90 days, a year, or never;
+  - a use count;
+  - its own "require approval" setting;
+  - its own **Revoke**.
+
+  They work everywhere the AAT does: the exe and MSI `AAT=`,
+  `abyssal-agent install --aat`, and the one-liners. They also prove the
+  control plane's CA to a new host, like the AAT. Like the AAT, they're
+  encrypted at rest with `ENCRYPTION_KEY`, and **Show** is audited. Rotating
+  the default token doesn't affect them, and revoking one doesn't affect the
+  others.
+  - Existing deployment tokens keep working until they expire or are
+    revoked. They're listed as "Legacy (one-liner only)", and new ones can't
+    be created.
+  - Each host records which token enrolled it. The host list shows it ("via
+    Install token “Finance”"), and so does the `HOST_ENROLLED` audit record.
+  - Panopticon's "add Windows hosts" now creates a one-day install token
+    instead of a deployment token.
+  - Agents send a short, non-secret key ID with their CA request so the
+    control plane knows which token to prove the CA with. An agent from
+    before 0.2.4 sends none, so it can only use the default token where the
+    CA proof is needed (an `https://` control plane with an internal CA and
+    no `--ca-cert`).
+  - Migration 0047.
+- **The Hosts page puts the host list first.**
+  - The list opens with a summary ("N hosts · N online · N out of date ·
+    N pending approval") and the "Update all out-of-date agents" button.
+  - Filter tabs with counts: All, Online, Offline, Out of date, Pending
+    approval. Plus a search by name, and sorting by name, status or last
+    seen.
+  - Each row has **one button** picked by the host's state: Approve
+    (pending), Update agent (out of date and online), otherwise Run System
+    Info. The rest sit under **More**, with Revoke and Remove last, in red.
+  - "Out of date" now also covers an older agent version, not only a
+    protocol mismatch, matching "Update all".
+  - The enrollment, AAT and deployment-token cards are now one **Add hosts**
+    section: the install tokens, their commands, and the one-time token. It
+    starts collapsed, and opens when there are no hosts yet or a token was
+    just shown.
+  - On phones, each host is a stacked card with its buttons underneath.
+
 - **An Arsenals menu in the top bar.** Every arsenal is one click away from
   any page. It's grouped like the dashboard (Pinned first, then Operate,
   Observe, Defend, Preserve / Recover) and lists only the arsenals you can

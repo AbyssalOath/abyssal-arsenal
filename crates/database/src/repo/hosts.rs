@@ -73,6 +73,53 @@ pub async fn create_with_approval(
         .ok_or_else(|| anyhow::anyhow!("host vanished immediately after insert"))
 }
 
+/// Records which token enrolled a host (`migrations/0047_install_tokens.sql`
+/// lists the `via` values).
+pub async fn set_enrolled_via(
+    pool: &DbPool,
+    id: Uuid,
+    via: &str,
+    token_id: Option<Uuid>,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE hosts SET enrolled_via = ?, enrolled_via_token_id = ? WHERE id = ?")
+        .bind(via)
+        .bind(token_id.map(|t| t.to_string()))
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// How a host enrolled: `via` and the token's ID, both `None` for hosts
+/// enrolled before it was recorded.
+#[derive(Debug, Clone, Default)]
+pub struct EnrollmentSource {
+    pub via: Option<String>,
+    pub token_id: Option<Uuid>,
+}
+
+/// [`EnrollmentSource`] for every host, by host ID.
+pub async fn enrollment_sources(
+    pool: &DbPool,
+) -> anyhow::Result<std::collections::HashMap<Uuid, EnrollmentSource>> {
+    let rows: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT id, enrolled_via, enrolled_via_token_id FROM hosts")
+            .fetch_all(pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, via, token_id)| {
+            Some((
+                Uuid::parse_str(&id).ok()?,
+                EnrollmentSource {
+                    via,
+                    token_id: token_id.and_then(|t| Uuid::parse_str(&t).ok()),
+                },
+            ))
+        })
+        .collect())
+}
+
 pub async fn find_by_id(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<Host>> {
     let row: Option<HostRow> = sqlx::query_as("SELECT * FROM hosts WHERE id = ?")
         .bind(id.to_string())

@@ -1022,7 +1022,15 @@ pub struct HostRow {
     pub id: String,
     pub name: String,
     pub enrolled_at: String,
+    /// Which token enrolled it ("Default token", an install token's label,
+    /// ...), or empty for hosts enrolled before that was recorded.
+    pub enrolled_via: String,
     pub last_seen_at: String,
+    /// For sorting by last seen.
+    pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
+    /// Older than this control plane (`agent_update::is_out_of_date`): what
+    /// the "Out of date" filter, badge and "Update agent" button go by.
+    pub out_of_date: bool,
     pub online: bool,
     pub revoked: bool,
     pub elevation_remaining: Option<String>,
@@ -1070,25 +1078,100 @@ pub struct EnrollmentInstructions {
     pub ca_fingerprint: Option<String>,
 }
 
-/// The just-created reusable deployment token and the ready-to-paste command
-/// for the chosen OS -- shown once (the raw token is hashed at rest). Built for
-/// mass rollout via PDQ Deploy / GPO / Intune; each machine that runs it
-/// auto-enrolls under its own hostname.
-pub struct DeploymentInstructions {
-    pub os_label: String,
-    pub token: String,
-    /// The command (Windows: the unattended RMM script) to drop into the
-    /// deploy tool.
-    pub command: String,
-    /// Windows only: the interactive one-liner, for trying it by hand first.
-    pub interactive_command: Option<String>,
-    /// `AB:CD:...` when the control plane has an internal CA.
-    pub ca_fingerprint: Option<String>,
-    pub expires: String,
+/// The main button in a host's row: one, chosen by its state, with the
+/// rest under "More". See [`HostRow::primary_action`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryAction {
+    Approve,
+    UpdateAgent,
+    SystemInfo,
+    /// Revoked: nothing but Remove, which is under "More".
+    None,
 }
 
-/// One active deployment token in the management list.
-pub struct DeploymentTokenView {
+impl HostRow {
+    pub fn primary_action(&self) -> PrimaryAction {
+        if self.revoked {
+            PrimaryAction::None
+        } else if self.pending_approval {
+            PrimaryAction::Approve
+        } else if self.out_of_date && self.online {
+            PrimaryAction::UpdateAgent
+        } else {
+            PrimaryAction::SystemInfo
+        }
+    }
+
+    pub fn primary_is(&self, name: &str) -> bool {
+        let action = self.primary_action();
+        matches!(
+            (name, action),
+            ("approve", PrimaryAction::Approve)
+                | ("update", PrimaryAction::UpdateAgent)
+                | ("system-info", PrimaryAction::SystemInfo)
+        )
+    }
+
+    /// For the list's filter tabs (`routes::hosts::filter_hosts`).
+    pub fn matches_filter(&self, filter: &str) -> bool {
+        match filter {
+            "online" => self.online,
+            "offline" => !self.online && !self.revoked && !self.pending_approval,
+            "out-of-date" => self.out_of_date,
+            "pending" => self.pending_approval,
+            _ => true,
+        }
+    }
+
+    /// Sorting by status: what needs attention first.
+    pub fn status_rank(&self) -> u8 {
+        if self.pending_approval {
+            0
+        } else if self.out_of_date {
+            1
+        } else if !self.online && !self.revoked {
+            2
+        } else if self.online {
+            3
+        } else {
+            4
+        }
+    }
+}
+
+/// "N hosts · N online · N out of date" above the list.
+pub struct HostSummary {
+    pub total: usize,
+    pub online: usize,
+    pub out_of_date: usize,
+    pub pending: usize,
+}
+
+/// One of the list's filter tabs.
+pub struct HostFilterTab {
+    pub key: &'static str,
+    /// This tab, keeping the current search and sort.
+    pub href: String,
+    pub label: &'static str,
+    pub count: usize,
+    pub active: bool,
+}
+
+/// An additional install token in the Install tokens table.
+pub struct InstallTokenView {
+    pub id: String,
+    pub label: String,
+    pub created: String,
+    pub expires: String,
+    pub use_count: i64,
+    pub require_approval: bool,
+    /// Still enrolls hosts (not revoked or expired).
+    pub active: bool,
+    pub revoked: bool,
+}
+
+/// A legacy deployment token, listed until it expires or is revoked.
+pub struct LegacyTokenView {
     pub id: String,
     pub label: String,
     pub created: String,
@@ -1096,14 +1179,20 @@ pub struct DeploymentTokenView {
     pub use_count: i64,
 }
 
-/// The agent install token (AAT) card on `/admin/hosts`.
-pub struct AatView {
-    /// The AAT in clear -- only right after an audited reveal or a rotate.
-    pub revealed: Option<String>,
-    /// Install lines, with the AAT filled in only when `revealed`.
-    pub commands: crate::deploy_commands::AatCommands,
-    pub require_approval: bool,
-    pub pending_count: usize,
+/// The install commands under Add hosts, for one install token: masked
+/// (`<AAT>`) until a token is revealed or created.
+pub struct CommandsView {
+    /// "Default token" or the additional token's label.
+    pub token_name: String,
+    pub revealed_token: Option<String>,
+    /// Just created or rotated: say to save it.
+    pub just_created: bool,
+    pub aat: crate::deploy_commands::AatCommands,
+    /// The interactive one-liners (they pin the CA fingerprint), only with a
+    /// revealed token.
+    pub linux_oneliner: Option<String>,
+    pub windows_oneliner: Option<String>,
+    pub windows_rmm: Option<String>,
 }
 
 /// Progress of an "Update all out-of-date agents" job.
@@ -1133,19 +1222,28 @@ pub struct AgentUpdateRow {
 #[template(path = "hosts.html")]
 pub struct HostsTemplate {
     pub base: BaseCtx,
-    /// `hosts.enroll`: the single-use enrollment token card.
+    /// `hosts.enroll`: the one-time enrollment token.
     pub can_enroll: bool,
-    /// `hosts.manage`: deployment tokens, the AAT, and per-host actions.
+    /// `hosts.manage`: install tokens and per-host actions.
     pub can_manage: bool,
-    pub aat: AatView,
-    pub hosts: Vec<HostRow>,
-    pub enrollment: Option<EnrollmentInstructions>,
-    /// A deployment token + command that was just generated (shown once).
-    pub deployment: Option<DeploymentInstructions>,
-    /// Active reusable deployment tokens, for review/revoke.
-    pub deployment_tokens: Vec<DeploymentTokenView>,
     /// Connected hosts "Update all out-of-date agents" would update now.
     pub update_all_count: usize,
+    pub summary: HostSummary,
+    /// After the filter, search and sort.
+    pub hosts: Vec<HostRow>,
+    pub filter_tabs: Vec<HostFilterTab>,
+    pub query: crate::routes::hosts::HostListQuery,
+    /// "Add hosts" starts open: no hosts yet, or a token was just shown.
+    pub add_hosts_open: bool,
+    pub default_token_requires_approval: bool,
+    /// Hosts currently enrolled through the default token.
+    pub default_token_hosts: usize,
+    pub additional_tokens: Vec<InstallTokenView>,
+    pub legacy_tokens: Vec<LegacyTokenView>,
+    /// (days or "" for never, label) for the new-token form.
+    pub expiry_choices: Vec<(String, &'static str)>,
+    pub commands: CommandsView,
+    pub enrollment: Option<EnrollmentInstructions>,
     pub uninstall_command: Option<String>,
     pub action_result: Option<String>,
     pub action_error: Option<String>,
