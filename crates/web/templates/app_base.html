@@ -15,6 +15,21 @@
       <button type="button" class="topnav-toggle btn-secondary" aria-expanded="false" aria-controls="topnav-links">{% call macros::icon("menu") %} Menu</button>
       <nav class="topnav-links" id="topnav-links" aria-label="Main">
         <a href="/">Dashboard</a>
+        {% if !base.arsenal_menu.is_empty() %}
+        <details class="user-menu arsenal-menu">
+          <summary>{% call macros::icon("module") %} Arsenals</summary>
+          <div class="user-menu-panel arsenal-menu-panel">
+            {% for g in base.arsenal_menu %}
+            <div class="arsenal-menu-group{% if g.pinned %} arsenal-menu-pinned{% endif %}">
+              <div class="arsenal-menu-heading">{{ g.label }}</div>
+              {% for item in g.items %}
+              <a href="/arsenals/{{ item.key }}" class="user-menu-link" title="{{ item.description }}">{{ item.name }}</a>
+              {% endfor %}
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+        {% endif %}
         <form method="post" action="/host-context/select" class="host-switcher">
           <label for="host-switcher-select" class="sr-only">Selected host</label>
           <select id="host-switcher-select" name="host_id" class="host-switcher-select">
@@ -76,6 +91,7 @@
   </div>
   <script src="/static/confirm.js" defer></script>
   <script src="/static/nav.js" defer></script>
+  <script src="/static/copy.js" defer></script>
   <script src="/static/output.js" defer></script>
   <script src="/static/bats.js" defer></script>
 </body>

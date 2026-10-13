@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use abyssal_audit::AuditFilter;
-use abyssal_core::{AppError, ModuleCategory, Permission};
+use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use axum::Form;
 use axum::extract::{Path, Query, State};
@@ -15,6 +15,7 @@ use crate::error::WebError;
 use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::mortiscope_ops::{METRIC_CPU_BUSY, METRIC_DISK_USED, METRIC_MEM_USED};
+use crate::nav::CATEGORY_ORDER;
 use crate::pagination;
 use crate::state::AppState;
 use crate::templates::{
@@ -56,13 +57,6 @@ const FLEET_BASE_PATH: &str = "/dashboard/hosts";
 const ACTIVITY_PER_PAGE: u32 = 30;
 const ACTIVITY_BASE_PATH: &str = "/dashboard/activity";
 
-const CATEGORY_ORDER: [ModuleCategory; 4] = [
-    ModuleCategory::Operate,
-    ModuleCategory::Observe,
-    ModuleCategory::Defend,
-    ModuleCategory::PreserveRecover,
-];
-
 #[derive(Deserialize)]
 pub struct DashboardQuery {
     #[serde(default)]
@@ -99,23 +93,11 @@ pub async fn show(
     )
     .await?;
 
-    let pinned_keys = repo::pinned_modules::list_for_user(&state.pool, ctx.user.id).await?;
     let search = q.q.trim().to_lowercase();
-    let role_restriction =
-        repo::role_module_visibility::effective_restriction_for_user(&state.pool, ctx.user.id)
-            .await?;
-
-    let visible: Vec<ModuleTile> = state
-        .modules
-        .list(&state.pool)
+    // The same rule as the top bar's Arsenals menu (`crate::nav`).
+    let visible: Vec<ModuleTile> = crate::nav::visible_modules(&state.modules, &state.pool, &ctx)
         .await?
         .into_iter()
-        .filter(|m| m.enabled)
-        .filter(|m| m.view_permissions.is_empty() || m.view_permissions.iter().any(|p| ctx.has(*p)))
-        .filter(|m| match &role_restriction {
-            Some(allowed) => allowed.contains(m.key),
-            None => true,
-        })
         .filter(|m| {
             search.is_empty()
                 || m.display_name.to_lowercase().contains(&search)
@@ -126,7 +108,7 @@ pub async fn show(
             display_name: m.display_name,
             description: m.description,
             category: m.category.to_string(),
-            pinned: pinned_keys.iter().any(|k| k == m.key),
+            pinned: m.pinned,
         })
         .collect();
 
@@ -329,6 +311,11 @@ async fn build_fleet_health(
         .filter(|h| h.offline_ack_at.is_some())
         .count();
     let can_see_units = ctx.has(Permission::SystemsView);
+    let is_windows = |id: uuid::Uuid| {
+        active_hosts
+            .iter()
+            .any(|h| h.id == id && h.os.as_deref() == Some("windows"))
+    };
     let hosts_needing_attention = repo::host_health::needing_attention(&state.pool)
         .await?
         .into_iter()
@@ -348,17 +335,18 @@ async fn build_fleet_health(
             None => HostAttentionRow {
                 host_id: h.host_id.to_string(),
                 host_name: host_name(h.host_id),
-                reason: format!(
-                    "{} failed unit{}",
-                    h.failed_unit_count,
-                    if h.failed_unit_count == 1 { "" } else { "s" }
-                ),
+                reason: crate::common::failed_phrase(h.failed_unit_count, is_windows(h.host_id)),
                 href: can_see_units
                     .then(|| format!("/arsenals/resurrection/{}?show=failed-units", h.host_id)),
                 not_responding: false,
-                fix: "See which units failed and why, then Recover them (clears the failed \
-                      state and restarts)."
-                    .to_string(),
+                fix: if is_windows(h.host_id) {
+                    "See which automatic services are stopped and why, then Recover them \
+                     (starts the service)."
+                } else {
+                    "See which units failed and why, then Recover them (clears the failed \
+                     state and restarts)."
+                }
+                .to_string(),
             },
         })
         .collect();
@@ -1178,6 +1166,8 @@ struct HostAgg {
     mem: Option<f64>,
     disk: Option<f64>,
     failed_units: i32,
+    /// A Windows host's are services, not units.
+    windows: bool,
     error: Option<String>,
     last_seen: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -1323,6 +1313,7 @@ async fn build_fleet_view(
                 mem,
                 disk,
                 failed_units: hh.map(|x| x.failed_unit_count).unwrap_or(0),
+                windows: h.os.as_deref() == Some("windows"),
                 error: hh.and_then(|x| x.error.clone()),
                 last_seen: h.last_seen_at,
                 id: h.id,
@@ -1501,11 +1492,7 @@ fn attention_reason(a: &HostAgg) -> Option<String> {
     if let Some(e) = &a.error {
         Some(format!("unreachable: {e}"))
     } else if a.failed_units > 0 {
-        Some(format!(
-            "{} failed unit{}",
-            a.failed_units,
-            if a.failed_units == 1 { "" } else { "s" }
-        ))
+        Some(crate::common::failed_phrase(a.failed_units, a.windows))
     } else {
         None
     }
@@ -1852,6 +1839,7 @@ mod tests {
             mem: None,
             disk: None,
             failed_units: failed,
+            windows: false,
             error: None,
             last_seen: None,
         }

@@ -23,6 +23,7 @@ mod ops;
 mod ossuary;
 mod parish;
 mod postmortem;
+mod posture;
 mod process;
 mod reanimation;
 mod reliquary;
@@ -39,6 +40,7 @@ mod tls;
 mod tls_tests;
 mod transport;
 mod vivisection;
+mod windows_services;
 #[cfg(windows)]
 mod winservice;
 
@@ -378,14 +380,23 @@ async fn run(
             .await
         {
             Ok(()) => tracing::warn!("connection to control plane closed; reconnecting"),
-            // The control plane refuses a host that's pending approval or
-            // revoked with 403 -- say so, rather than only "403 Forbidden".
-            Err(e) if format!("{e:#}").contains("403") => tracing::warn!(
-                error = %e,
-                "control plane refused this host -- it's pending approval or was revoked on \
-                 /admin/hosts; retrying"
-            ),
-            Err(e) => tracing::error!(error = %e, "connection error; retrying"),
+            // Say what a refused handshake means, rather than only "401
+            // Unauthorized" / "403 Forbidden".
+            Err(e) => match transport::handshake_status(&e) {
+                Some(401) => tracing::error!(
+                    error = %e,
+                    "the control plane doesn't recognize this host's credential -- the host was \
+                     probably removed on /admin/hosts. Reinstall with a new token (an install \
+                     run with a token replaces the old credentials); retrying"
+                ),
+                // Pending approval or revoked.
+                Some(403) => tracing::warn!(
+                    error = %e,
+                    "control plane refused this host -- it's pending approval or was revoked on \
+                     /admin/hosts; retrying"
+                ),
+                _ => tracing::error!(error = %e, "connection error; retrying"),
+            },
         }
         tracing::info!(delay = ?backoff, "reconnecting after backoff");
         tokio::time::sleep(backoff).await;
@@ -451,7 +462,7 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
     let already_enrolled = tokio::fs::metadata(&credentials_file).await.is_ok();
     if already_enrolled {
         println!(
-            "Found existing credentials at {} -- skipping enrollment.",
+            "Found existing credentials at {}.",
             credentials_file.display()
         );
     }
@@ -473,6 +484,9 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
     };
     let control_plane_url = control_plane_url.trim_end_matches('/').to_string();
 
+    // Kept even when already enrolled: if the control plane turns out to
+    // have forgotten this host (below), it's what re-enrolls it.
+    let given_token = enrollment_token.clone().or_else(|| aat.clone());
     let enrollment_token = if already_enrolled {
         None
     } else {
@@ -520,6 +534,61 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
     )?;
     let trust = tls::Trust::load(ca_cert.as_deref())?;
 
+    // Existing credentials are only worth keeping if the control plane still
+    // knows them. A host removed on /admin/hosts leaves a credential that
+    // gets 401 forever, and the machine would never show up again.
+    let mut enrollment_token = enrollment_token;
+    let mut reusing = already_enrolled;
+    let existing = if already_enrolled {
+        enroll::read_credentials(&credentials_file).await
+    } else {
+        None
+    };
+    if let Some(existing) = existing {
+        match enroll::check_credentials(&control_plane_url, &existing, &trust).await {
+            enroll::CredentialCheck::Accepted => {}
+            enroll::CredentialCheck::Refused => println!(
+                "Note: the control plane knows this host ({}) but won't let it connect yet -- \
+                 it's pending approval or was revoked on {control_plane_url}/admin/hosts.",
+                existing.host_id
+            ),
+            enroll::CredentialCheck::Unknown(why) => println!(
+                "Couldn't check the existing credentials with the control plane ({why}); \
+                 keeping them."
+            ),
+            enroll::CredentialCheck::Rejected => {
+                println!(
+                    "The control plane no longer recognizes host {} -- it was probably removed \
+                     on {control_plane_url}/admin/hosts.",
+                    existing.host_id
+                );
+                let token = match given_token {
+                    Some(token) => token,
+                    None if non_interactive => {
+                        return Err(tls::InstallError::BadArguments(format!(
+                            "this host's credentials at {} were rejected by the control plane \
+                             and no token was given to enroll it again -- rerun with AAT= \
+                             (--aat) or an enrollment token from {control_plane_url}/admin/hosts",
+                            credentials_file.display()
+                        ))
+                        .into());
+                    }
+                    None => prompt(
+                        "Install token (AAT) or enrollment token to enroll it again (from \
+                         /admin/hosts): ",
+                    )?,
+                };
+                let aside = enroll::set_aside_rejected(&credentials_file).await?;
+                println!(
+                    "Moved the old credentials to {} and enrolling again.",
+                    aside.display()
+                );
+                enrollment_token = Some(token);
+                reusing = false;
+            }
+        }
+    }
+
     let credentials = enroll::load_or_enroll(
         &control_plane_url,
         enrollment_token,
@@ -528,7 +597,11 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
         &trust,
     )
     .await?;
-    println!("Enrolled as host {}", credentials.host_id);
+    if reusing {
+        println!("Using existing enrollment as host {}", credentials.host_id);
+    } else {
+        println!("Enrolled as host {}", credentials.host_id);
+    }
 
     #[cfg(windows)]
     {
@@ -850,19 +923,34 @@ async fn fetch_ca_with_aat(
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
 
-    let url = format!("{control_plane_url}/api/agent/ca?nonce={nonce}");
-    let response: abyssal_agent_protocol::aat::CaProofResponse = reqwest::Client::builder()
+    // `key` tells a control plane with several install tokens which one
+    // this is (not the token itself, which only goes out once the CA is
+    // verified).
+    let url = format!(
+        "{control_plane_url}/api/agent/ca?nonce={nonce}&key={}",
+        abyssal_agent_protocol::aat::key_id(aat)
+    );
+    let response = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(30))
         .build()?
         .get(&url)
         .send()
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("could not fetch the CA from {control_plane_url}/api/agent/ca"))?
-        .json()
-        .await
-        .with_context(|| {
+        .with_context(|| format!("could not fetch the CA from {control_plane_url}/api/agent/ca"))?;
+    // The control plane says why (an unknown, revoked or expired token),
+    // and a 401 exits as a rejected token, like enrollment's.
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        return Err(
+            anyhow::Error::from(enroll::EnrollRejected { status, body }).context(format!(
+                "could not fetch the CA from {control_plane_url}/api/agent/ca"
+            )),
+        );
+    }
+    let response: abyssal_agent_protocol::aat::CaProofResponse =
+        response.json().await.with_context(|| {
             format!(
                 "{control_plane_url}/api/agent/ca didn't answer like an Abyssal Arsenal control \
                  plane (too old for install tokens? update it)"

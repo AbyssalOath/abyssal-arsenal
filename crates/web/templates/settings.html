@@ -226,6 +226,81 @@
 </div>
 {% endif %}
 
+{% if access.posture %}
+<div class="settings-section" id="posture">
+  <h2 class="settings-section-title">Security Posture (Cadavault)</h2>
+  <div class="card settings-list">
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("route") %} Run the posture checks daily</div>
+        <p class="settings-row-desc">Once a day on every connected host, so the fleet view and each host's history stay current.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Checked hourly: any connected host whose last run is more than a day old gets one,
+            recorded as run by "schedule". Hosts whose agent predates 0.2.4 are skipped. The
+            on-demand button on each host's report works either way. With the audit syslog
+            export on, every failed check is also exported (<code>scope=posture</code>).
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if posture_daily %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if posture_daily %}On{% else %}Off{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/posture-daily">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if posture_daily %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if posture_daily %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if posture_daily %}Turn off{% else %}Turn on{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if access.resurrection %}
+<div class="settings-section" id="resurrection">
+  <h2 class="settings-section-title">Failed Services (Resurrection)</h2>
+  <div class="card settings-list">
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("warning") %} Services not to count as failed</div>
+        <p class="settings-row-desc">The fleet health check doesn't count these, and Resurrection doesn't list them.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            One service or unit name per line (or comma-separated), for services that are
+            meant to be stopped at your site. A trailing <code>*</code> matches a prefix
+            (<code>MSSQL$*</code>). A systemd unit also matches without its
+            <code>.service</code> suffix, so <code>nginx</code> covers
+            <code>nginx.service</code>.
+          </p>
+          <p>
+            On Windows, a failed service is an automatic-start one that's stopped. The agent
+            already leaves out trigger-start services, delayed-start ones in their first ten
+            minutes after boot, ones that exited cleanly, per-user services, and these
+            routinely-stopped ones: <code style="overflow-wrap:anywhere;">{{ resurrection_builtin_ignored }}</code>.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/resurrection-ignored-services" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="resurrection-ignored-services" class="sr-only">Services not to count as failed</label>
+          <textarea id="resurrection-ignored-services" name="services" rows="3" placeholder="Spooler&#10;nginx.service">{{ resurrection_ignored_services }}</textarea>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endif %}
+
 {% if access.thanatos %}
 <div class="settings-section">
   <h2 class="settings-section-title">Security Monitoring (Thanatos)</h2>

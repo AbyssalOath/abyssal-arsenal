@@ -11,6 +11,7 @@
 mod min_protocol;
 pub use min_protocol::agent_release_for_protocol;
 pub mod aat;
+pub mod failed_services;
 
 use std::fmt;
 
@@ -30,7 +31,35 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 45;
+pub const PROTOCOL_VERSION: u32 = 46;
+
+/// `PostureFacts`'s answer, as JSON on stdout: every fact Cadavault's
+/// posture checks read, flat and stringly typed (`"sshd.permitrootlogin" ->
+/// "no"`, `"sysctl.kernel.randomize_va_space" -> "2"`). A fact the agent
+/// couldn't read is absent, and the check that needs it reports "not
+/// applicable" with the reason from `notes` where there is one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PostureFactsReport {
+    /// `linux` or `windows`.
+    pub platform: String,
+    pub facts: std::collections::BTreeMap<String, String>,
+    /// Why a group of facts is missing, by group (`"sshd"`, `"secedit"`).
+    #[serde(default)]
+    pub notes: std::collections::BTreeMap<String, String>,
+}
+
+/// `GET /api/agent/whoami` (agent-authenticated, `Authorization: Bearer
+/// <credential>`): which host a credential belongs to. 401 means the
+/// control plane doesn't know the credential (the host was removed), 403
+/// that the host is pending approval or revoked, and 404 an older control
+/// plane without the endpoint. `abyssal-agent install` uses it to notice a
+/// stale `credentials.json` before trusting it. Plain HTTP, outside the
+/// WebSocket messages, so it doesn't change [`PROTOCOL_VERSION`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoamiResponse {
+    pub host_id: Uuid,
+    pub name: String,
+}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
@@ -119,6 +148,11 @@ pub enum AgentOperation {
     /// (SELinux or AppArmor, detected rather than assumed), including whether
     /// it's enforcing.
     MacStatus,
+    /// Read-only: every fact Cadavault's posture checks look at, as one JSON
+    /// object of string facts (`PostureFactsReport`). The checks themselves
+    /// live control-plane side (`abyssal-posture`), so improving one needs
+    /// no agent update. Protocol 46.
+    PostureFacts,
     /// Read-only status of automatic security updates for the detected package
     /// manager (unattended-upgrades on apt, `dnf-automatic` on dnf/yum, etc.).
     AutomaticUpdatesStatus,
@@ -1858,6 +1892,7 @@ impl AgentOperation {
                 | Op::SysctlSecurityPosture
                 | Op::AccountPolicyAudit
                 | Op::MacStatus
+                | Op::PostureFacts
                 | Op::AutomaticUpdatesStatus
                 | Op::ElevationStatus
                 | Op::NetworkInterfaces
@@ -2277,6 +2312,7 @@ impl fmt::Debug for AgentOperation {
                 .finish(),
             AgentOperation::ClearSshHardening => write!(f, "ClearSshHardening"),
             AgentOperation::SysctlSecurityPosture => write!(f, "SysctlSecurityPosture"),
+            AgentOperation::PostureFacts => write!(f, "PostureFacts"),
             AgentOperation::AccountPolicyAudit => write!(f, "AccountPolicyAudit"),
             AgentOperation::MacStatus => write!(f, "MacStatus"),
             AgentOperation::AutomaticUpdatesStatus => write!(f, "AutomaticUpdatesStatus"),

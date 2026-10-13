@@ -4,13 +4,14 @@
 {% block heading %}Thanatos — Threat-Intel Indicators{% endblock %}
 {% block content %}
 
+<div class="page-crumbs">{% call macros::page_breadcrumb("Thanatos", "/arsenals/thanatos", "Threat-Intel Indicators") %}</div>
+
 <div class="card">
   <p style="color:var(--text-muted); margin-top:0;">
     Indicators of compromise matched against every stored finding. When an IP, domain or file
     hash below appears in a finding, a high-signal <code>ioc</code> finding is raised at the
     chosen severity (and alerted through your notification channels). Matching is on whole tokens
     &mdash; a domain also matches its subdomains, an IP/hash matches exactly.
-    <a href="/arsenals/thanatos">&larr; Back to the Thanatos dashboard</a>
   </p>
 
   <h3>Import indicators</h3>

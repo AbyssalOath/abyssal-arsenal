@@ -74,6 +74,18 @@ pub const THANATOS_ALERT_RECIPIENTS: &str = "thanatos.alert_recipients";
 /// host rather than sent anyway (see `thanatos_ops::extra_fim_paths_for`).
 pub const THANATOS_EXTRA_FIM_PATHS: &str = "thanatos.extra_fim_paths";
 
+/// Service or unit names the fleet health check and Resurrection don't
+/// count as failed, on top of the agent's built-in Windows list
+/// (`abyssal_agent_protocol::failed_services::BUILTIN_IGNORED_SERVICES`).
+/// Newline-separated; a trailing `*` matches a prefix. Applied on the
+/// control plane, so it needs no agent change. Empty by default.
+pub const RESURRECTION_IGNORED_SERVICES: &str = "resurrection.ignored_services";
+
+/// Run Cadavault's posture checks once a day on every connected host
+/// (`posture_ops::spawn_posture_schedule`). Off by default: the on-demand
+/// button always works.
+pub const CADAVAULT_POSTURE_DAILY: &str = "cadavault.posture_daily";
+
 /// Gates autonomous, no-human-in-the-loop dispatch of `QuarantineFile`
 /// against a host the instant Thanatos's own FIM watch detects a changed
 /// *per-user* `authorized_keys` file (Phase 10) -- planting/altering an

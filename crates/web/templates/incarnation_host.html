@@ -4,7 +4,7 @@
 {% block heading %}Incarnation — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/incarnation?all=1">&larr; Back to host list</a></p>
+<div class="page-crumbs">{% call macros::host_breadcrumb("Incarnation", "/arsenals/incarnation?all=1", "/arsenals/incarnation/", host_id, host_name, base.available_hosts) %}</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

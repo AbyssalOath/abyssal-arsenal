@@ -227,6 +227,14 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_thanatos_correlation),
         )
         .route(
+            "/admin/settings/posture-daily",
+            post(routes::settings::set_posture_daily),
+        )
+        .route(
+            "/admin/settings/resurrection-ignored-services",
+            post(routes::settings::set_resurrection_ignored_services),
+        )
+        .route(
             "/admin/settings/thanatos-extra-fim-paths",
             post(routes::settings::set_thanatos_extra_fim_paths),
         )
@@ -304,9 +312,18 @@ pub fn build(state: AppState) -> Router {
             post(routes::hosts::generate_enrollment_token),
         )
         .route(
-            "/admin/hosts/deployment-token",
-            post(routes::hosts::generate_deployment_token),
+            "/admin/hosts/install-tokens",
+            post(routes::hosts::create_install_token),
         )
+        .route(
+            "/admin/hosts/install-tokens/:id/reveal",
+            post(routes::hosts::reveal_install_token),
+        )
+        .route(
+            "/admin/hosts/install-tokens/:id/revoke",
+            post(routes::hosts::revoke_install_token),
+        )
+        // Legacy deployment tokens: revoke only (install tokens replace them).
         .route(
             "/admin/hosts/deployment-token/:id/revoke",
             post(routes::hosts::revoke_deployment_token),
@@ -412,9 +429,23 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/cadavault/:host_id/recent-auth-log",
             post(routes::cadavault::recent_auth_log),
         )
+        // The posture report (abyssal-posture). The old POST
+        // /posture-report button target still runs it.
+        .route(
+            "/arsenals/cadavault/posture",
+            get(routes::cadavault_posture::fleet),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/posture",
+            get(routes::cadavault_posture::report).post(routes::cadavault_posture::run),
+        )
         .route(
             "/arsenals/cadavault/:host_id/posture-report",
-            post(routes::cadavault::posture_report),
+            post(routes::cadavault_posture::run),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/posture/:run_id/csv",
+            get(routes::cadavault_posture::csv),
         )
         .route(
             "/arsenals/cadavault/:host_id/sshd-config-audit",
@@ -2027,6 +2058,9 @@ pub fn build(state: AppState) -> Router {
         // AAT-keyed proof of the CA bundle, for a host installing with only
         // the install token (abyssal_agent_protocol::aat).
         .route("/api/agent/ca", get(routes::agent::ca_proof))
+        // Which host an agent credential belongs to (401 once it's removed):
+        // how `abyssal-agent install` spots a stale credentials.json.
+        .route("/api/agent/whoami", get(routes::agent::whoami))
         .route("/ws/agent", get(routes::agent::ws_upgrade))
         // Public, unauthenticated bootstrap installers (no secrets in the
         // served text -- see routes::bootstrap): the target of the copy-

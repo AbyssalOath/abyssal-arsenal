@@ -19,22 +19,6 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(300);
 const SWEEP_INTERVAL_SECS: u64 = 300;
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Parses `systemctl --failed --no-pager` output by reading its own
-/// trailing summary line ("N loaded units listed.") rather than counting
-/// rows -- robust against the header row, the "No systemd on this host"
-/// informational message a non-systemd host returns instead, and any
-/// future formatting changes to the unit rows themselves.
-fn count_failed_units(stdout: &str) -> i32 {
-    for line in stdout.lines().rev() {
-        if let Some(rest) = line.trim().strip_suffix("loaded units listed.")
-            && let Ok(n) = rest.trim().parse::<i32>()
-        {
-            return n;
-        }
-    }
-    0
-}
-
 pub fn spawn_health_sweep(state: AppState) {
     tokio::spawn(async move {
         state
@@ -57,6 +41,8 @@ pub fn spawn_health_sweep(state: AppState) {
                 }
             };
 
+            // Settings › Resurrection: services and units not to count.
+            let ignored = crate::failed_services::ignore_list(&state.pool).await;
             for host in hosts {
                 if !host.is_active() || !state.hosts.is_connected(host.id) {
                     continue;
@@ -68,7 +54,10 @@ pub fn spawn_health_sweep(state: AppState) {
                     .await;
 
                 let (failed_unit_count, error) = match outcome {
-                    Ok(CommandOutcome::Ok(output)) => (count_failed_units(&output.stdout), None),
+                    Ok(CommandOutcome::Ok(output)) => (
+                        crate::failed_services::count_failed(&output.stdout, &ignored),
+                        None,
+                    ),
                     Ok(CommandOutcome::Err(message)) => (0, Some(message)),
                     Err(e) => (0, Some(e.to_string())),
                 };
@@ -99,7 +88,11 @@ pub fn spawn_health_sweep(state: AppState) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::failed_services::count_failed;
+
+    fn count_failed_units(stdout: &str) -> i32 {
+        count_failed(stdout, &[])
+    }
 
     #[test]
     fn counts_failed_units_from_trailing_summary_line() {

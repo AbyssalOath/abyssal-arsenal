@@ -25,6 +25,20 @@ pub fn to_ws_url(base: &str) -> anyhow::Result<String> {
     Ok(format!("{converted}/ws/agent"))
 }
 
+/// The HTTP status the control plane refused the WebSocket handshake with
+/// (401: unknown credential, 403: pending or revoked), if that's what
+/// `connect_and_serve` failed on.
+pub fn handshake_status(err: &anyhow::Error) -> Option<u16> {
+    err.chain().find_map(|cause| {
+        match cause.downcast_ref::<tokio_tungstenite::tungstenite::Error>()? {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                Some(response.status().as_u16())
+            }
+            _ => None,
+        }
+    })
+}
+
 /// Connects to the control plane's `/ws/agent` endpoint, authenticating via
 /// a `Bearer` header (validated server-side before the WebSocket upgrade
 /// completes), and serves incoming commands until the connection closes.
@@ -324,6 +338,25 @@ fn unsupported_command(text: &str) -> Option<AgentMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handshake_status_finds_a_refused_upgrade() {
+        let refused = |status: u16| -> anyhow::Error {
+            let response = http::Response::builder()
+                .status(status)
+                .body(None::<Vec<u8>>)
+                .unwrap();
+            anyhow::Error::from(tokio_tungstenite::tungstenite::Error::Http(response))
+                .context("connecting to the control plane")
+        };
+        assert_eq!(handshake_status(&refused(401)), Some(401));
+        assert_eq!(handshake_status(&refused(403)), Some(403));
+        // Not a refusal -- a port number that merely contains "401" isn't one.
+        assert_eq!(
+            handshake_status(&anyhow::anyhow!("connection refused: 10.0.0.1:4013")),
+            None
+        );
+    }
 
     use std::time::{Duration, Instant};
 

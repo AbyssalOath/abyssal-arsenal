@@ -34,6 +34,7 @@ pub mod names {
     pub const ELEVATION_EXPIRY_SWEEP: &str = "elevation_expiry_sweep";
     pub const SELF_MONITOR_SWEEP: &str = "self_monitor_sweep";
     pub const INTERNAL_TLS_SWEEP: &str = "internal_tls_sweep";
+    pub const POSTURE_SCHEDULE: &str = "posture_schedule";
 }
 
 /// One task's most recent liveness state.

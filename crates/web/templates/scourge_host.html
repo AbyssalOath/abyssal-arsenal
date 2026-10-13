@@ -4,7 +4,10 @@
 {% block heading %}Scourge — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/scourge">&larr; Back to host list</a> &nbsp; <a href="/arsenals/scourge/alerts">{% call macros::icon("alert") %} Alert inspection</a></p>
+<div class="page-crumbs">
+  {% call macros::host_breadcrumb("Scourge", "/arsenals/scourge", "/arsenals/scourge/", host_id, host_name, base.available_hosts) %}
+  <a href="/arsenals/scourge/alerts">{% call macros::icon("alert") %} Alert inspection</a>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

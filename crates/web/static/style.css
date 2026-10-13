@@ -111,7 +111,7 @@ a:hover { color: var(--accent-hover); }
 
 label { display: block; font-size: 0.85rem; margin-bottom: var(--space-1); color: var(--text-muted); font-weight: 600; }
 
-input[type="text"], input[type="email"], input[type="password"], input[type="number"], select, textarea {
+input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="number"], select, textarea {
   width: 100%;
   padding: 9px 11px;
   margin-bottom: var(--space-4);
@@ -424,6 +424,44 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 45%, transparent);
 }
 
+/* The Arsenals menu sits among the nav links: its panel opens to the left
+   edge of the button and lays the groups out side by side. */
+.topnav-links .arsenal-menu { margin-left: 0; }
+.topnav-links .arsenal-menu summary { color: var(--text); font-size: 0.88rem; padding: 8px 12px; }
+.arsenal-menu-panel {
+  left: 0;
+  right: auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: max-content;
+  max-width: min(720px, calc(100vw - 40px));
+  max-height: calc(100vh - 90px);
+  overflow-y: auto;
+}
+.arsenal-menu-group { display: flex; flex-direction: column; min-width: 150px; flex: 1 0 150px; }
+/* Pinned runs across the top so the categories below stay in one row of
+   columns. */
+.arsenal-menu-pinned {
+  flex-basis: 100%;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.arsenal-menu-pinned .arsenal-menu-heading { width: 100%; }
+.arsenal-menu-heading {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: var(--space-1) var(--space-3);
+}
+.topnav-links .arsenal-menu-panel a.user-menu-link { padding: 6px var(--space-3); font-size: 0.88rem; }
+
 .apotheosis-toggle.active summary {
   color: var(--warning);
   animation: apotheosis-nav-pulse 2.2s ease-in-out infinite;
@@ -444,7 +482,7 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
 .main { flex: 1; width: 100%; min-width: 0; padding: 28px 36px; }
 
 /* ---- Laptop widths: keep the nav on one row ----------------------------- */
-@media (max-width: 1500px) {
+@media (max-width: 1680px) {
   .topnav .topnav-brand { margin-right: 14px; }
   .topnav-links a { padding: 8px 9px; }
   .host-switcher { margin: 0 6px 0 2px; }
@@ -458,8 +496,13 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
 }
 
 /* Just above the Menu breakpoint, the links lose their small icons. */
+@media (max-width: 1439px) and (min-width: 1201px) {
+  .topnav-links a .icon, .topnav-links summary .icon { display: none; }
+}
+/* ...and just above it, tighter spacing. */
 @media (max-width: 1300px) and (min-width: 1201px) {
-  .topnav-links a .icon { display: none; }
+  .topnav-links a, .topnav-links .arsenal-menu summary { padding: 8px 6px; }
+  .host-switcher-select { max-width: 105px; }
 }
 
 /* ---- Phones, tablets and narrow windows ------------------------------------ */
@@ -484,6 +527,17 @@ form[aria-busy="true"] button:disabled { cursor: progress; }
   }
   .topnav.nav-open .topnav-links { display: flex; }
   .topnav-links a { padding: 10px 12px; }
+  /* In the open Menu, the Arsenals list expands in place instead of
+     floating over the page. */
+  .topnav-links .arsenal-menu summary { padding: 10px 12px; }
+  .topnav-links .arsenal-menu-panel {
+    position: static;
+    width: auto;
+    max-width: none;
+    max-height: none;
+    box-shadow: none;
+    margin: 2px 0 6px 12px;
+  }
   .host-switcher { margin: 0 0 6px; }
   .host-switcher-select { flex: 1; max-width: none; }
 }
@@ -1456,3 +1510,176 @@ a.stat-tile:hover { border-color: var(--accent); }
   padding: 0 6px;
 }
 .witness-box textarea { width: 100%; }
+
+/* ---- Breadcrumbs (_macros.html host_breadcrumb / page_breadcrumb) -------- */
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+.breadcrumb-sep { color: var(--text-muted); }
+.breadcrumb a { color: var(--text-muted); text-decoration: none; }
+.breadcrumb a:hover { color: var(--text); text-decoration: underline; }
+.breadcrumb [aria-current="page"] { color: var(--text); font-weight: 600; }
+.breadcrumb-switcher { position: relative; }
+.breadcrumb-switcher summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 2px 8px;
+  margin-left: -8px;
+  border-radius: 5px;
+}
+.breadcrumb-switcher summary::-webkit-details-marker { display: none; }
+.breadcrumb-switcher summary::after { content: "\25BE"; margin-left: 6px; color: var(--text-muted); font-weight: 400; }
+.breadcrumb-switcher summary:hover { background: var(--surface-raised); }
+.breadcrumb-switcher-panel {
+  left: 0;
+  right: auto;
+  min-width: 220px;
+  max-height: min(420px, calc(100vh - 160px));
+  overflow-y: auto;
+}
+.breadcrumb-switcher-current { cursor: default; color: var(--text-muted); }
+.breadcrumb-switcher-current:hover { background: none; color: var(--text-muted); }
+/* The breadcrumb row: the trail on the left, an arsenal's other pages
+   (fleet views, settings) on the right. */
+.page-crumbs {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: -12px 0 16px;
+}
+.page-crumbs > span { display: flex; flex-wrap: wrap; gap: 14px; }
+
+/* ---- /admin/hosts ---------------------------------------------------------- */
+.hosts-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 14px;
+}
+.hosts-summary { margin: 0; color: var(--text-muted); }
+.hosts-summary strong { color: var(--text); }
+.hosts-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 12px;
+}
+.filter-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.filter-tab {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.filter-tab:hover { color: var(--text); background: var(--surface-raised); }
+.filter-tab.active { color: var(--text); border-color: var(--accent); background: var(--surface-raised); }
+.filter-count { color: var(--text-muted); margin-left: 2px; }
+.hosts-search { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0; }
+.hosts-search input, .hosts-search select { margin: 0; width: auto; }
+.hosts-search input[type="search"] { min-width: 180px; }
+
+/* One primary button per row, the rest under "More". */
+.host-actions { white-space: nowrap; text-align: right; }
+.host-actions > form { display: inline-block; margin: 0; vertical-align: middle; }
+.row-menu { position: relative; display: inline-block; vertical-align: middle; }
+.row-menu > summary { list-style: none; cursor: pointer; }
+.row-menu > summary::-webkit-details-marker { display: none; }
+.row-menu > summary::after { content: "\25BE"; margin-left: 6px; }
+.row-menu-panel { right: 0; left: auto; min-width: 210px; text-align: left; white-space: normal; }
+.user-menu-link:disabled, .user-menu-link:disabled:hover {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.menu-divider { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.user-menu-link.menu-danger { color: var(--danger); }
+.user-menu-link.menu-danger:hover { color: var(--danger); }
+
+.add-hosts > summary { list-style: none; cursor: pointer; }
+.add-hosts > summary::-webkit-details-marker { display: none; }
+.add-hosts > summary h2 { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.add-hosts > summary h2::after { content: "\25B8"; color: var(--text-muted); font-size: 0.9em; }
+.add-hosts[open] > summary h2::after { content: "\25BE"; }
+.add-hosts[open] > summary { margin-bottom: 14px; }
+.token-actions { white-space: nowrap; }
+.token-actions form { display: inline-block; }
+.token-inactive td { opacity: 0.6; }
+.new-token { margin: 12px 0 20px; }
+.new-token > summary { list-style: none; display: inline-flex; }
+.new-token > summary::-webkit-details-marker { display: none; }
+
+@media (max-width: 700px) {
+  /* Each host becomes a stacked card: labelled fields, buttons below. */
+  .card table.hosts-table { display: block; overflow: visible; }
+  .hosts-table thead { display: none; }
+  .hosts-table tbody, .hosts-table tr, .hosts-table td { display: block; }
+  .hosts-table tr { padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .hosts-table td { border: 0; padding: 2px 0; }
+  .hosts-table td[data-label]::before {
+    content: attr(data-label) ": ";
+    color: var(--text-muted);
+    font-size: 0.8rem;
+  }
+  .hosts-table td[data-label] br { display: none; }
+  .hosts-table td[data-label] br + .text-muted::before { content: " \00b7  "; }
+  .hosts-table .host-name { font-weight: 600; font-size: 1rem; padding-bottom: 4px; }
+  .hosts-table .host-actions { text-align: left; white-space: normal; padding-top: 8px; }
+  /* A scrolled table would clip the menu; open it in place instead. */
+  .row-menu-panel { position: static; box-shadow: none; margin-top: 6px; }
+  .hosts-search input[type="search"] { min-width: 0; flex: 1; }
+}
+
+/* ---- Cadavault posture report --------------------------------------------- */
+.posture-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+.posture-score { font-size: 1.25rem; padding: 4px 12px; margin-right: 10px; }
+.posture-counts { font-size: 0.95rem; }
+.posture-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.posture-checks { display: flex; flex-direction: column; gap: 6px; }
+.posture-check {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--surface-solid);
+}
+.posture-check.posture-failed { border-left-color: var(--danger); }
+.posture-check.posture-passed { border-left-color: var(--success); }
+.posture-check > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.posture-check > summary::-webkit-details-marker { display: none; }
+.posture-check > summary:hover { background: var(--surface-raised); }
+.posture-id { font-size: 0.82rem; white-space: nowrap; }
+.posture-title { flex: 1 1 260px; }
+.posture-category { font-size: 0.82rem; }
+.posture-body { padding: 4px 14px 12px; border-top: 1px solid var(--border); }
+.posture-body p { margin: 8px 0; }
+.posture-command { display: flex; gap: 8px; align-items: flex-start; }
+.posture-command pre { flex: 1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }

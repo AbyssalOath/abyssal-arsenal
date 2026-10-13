@@ -8,9 +8,144 @@ and this project follows [Semantic Versioning](https://semver.org/). The
 the stable checkpoints built from it. See [README.md](README.md#releases-and-branches)
 for what that means for cloning and updating.
 
-## [Unreleased]
+## [0.2.4] - 2026-10-12
+
+### Added
+
+- **Cadavault's posture report checks each setting.** It replaces the six
+  category rows with 58 Linux and 47 Windows checks. Each has:
+  - a stable ID (`AA-LNX-SSH-002`, `AA-WIN-SMB-001`);
+  - a title and why it matters;
+  - what was actually found on the host;
+  - passed, failed or not applicable, with the reason;
+  - how to fix it, with a command or Group Policy path to copy (shown,
+    never run);
+  - MITRE ATT&CK references where one fits.
+
+  Coverage:
+  - **Linux:** SSH (root login, passwords, MaxAuthTries, weak ciphers, MACs
+    and key exchange, and more); kernel parameters; the firewall and its
+    default policy; password ageing, length and lockout; UID 0 and
+    empty-password accounts; file permissions on `/etc/passwd` and
+    `/etc/shadow`; world-writable files; SELinux/AppArmor; automatic
+    updates; `/tmp` and `/dev/shm` mounts; legacy services; auditd; time
+    sync.
+  - **Windows:** password and lockout policy; audit policy, read by
+    subcategory GUID so the display language doesn't matter; SMBv1 and SMB
+    signing; firewall profiles; Defender; BitLocker; UAC; LSA protection,
+    WDigest and NTLM settings; LLMNR and NetBIOS; RDP NLA; AutoPlay;
+    PowerShell logging; Windows Update; the Security log size.
+
+  The page:
+  - A summary shows the score, the counts, and what changed since the
+    previous run.
+  - Filter by status and search. Each check expands, with a Copy button
+    for its command.
+  - Where Cadavault already has a safe fix (SSH hardening, the kernel
+    baseline, enabling the firewall), the failed check links to it. On the
+    control plane's own server, a fix the guard would refuse says so.
+  - Runs are kept, so earlier runs can be opened.
+  - **Download CSV** exports a run.
+  - A new **fleet view** (`/arsenals/cadavault/posture`) shows each host's
+    score and trend, and the checks failing on the most hosts.
+  - Settings › Security Posture can run the checks **once a day** (off by
+    default).
+  - With the audit syslog export on, every failed check is also sent to
+    syslog with `scope=posture`.
+
+  The checks run on the control plane from facts the agent reports
+  through a new read-only operation, `PostureFacts` (protocol 46). Hosts
+  need agent 0.2.4, and improving a check later needs no agent update.
+  Migration 0048.
 
 ### Changed
+
+- **Windows hosts report failed services.** Until now the health check
+  counted every Windows host as 0 failed, because "failed units" meant
+  systemd. A failed service on Windows is an automatic-start service that's
+  stopped. Normal stops aren't counted:
+  - trigger-start services;
+  - delayed-start ones in their first ten minutes after boot;
+  - services that exited cleanly (exit code 0);
+  - per-user services;
+  - a built-in list of services that are routinely stopped (`sppsvc`,
+    Google and Edge updaters, `MapsBroker`, `RemoteRegistry`,
+    `TrustedInstaller` and the like).
+
+  What this changes:
+  - The dashboard says "N failed services" for Windows hosts, and its link
+    opens **Resurrection**, which lists each service with its exit code and
+    the latest System-log failure event (7000, 7009, 7011, 7023 or 7031) as
+    "why it stopped".
+  - **Recover** starts the service and waits for it to run.
+  - **Settings › Failed Services (Resurrection)** has an ignore list for
+    services or units meant to be stopped at your site. It applies to Linux
+    units too, and a trailing `*` matches a prefix. It needs
+    `systems.manage`, is audited, and is applied on the control plane, so it
+    takes effect for every agent at once.
+  - No protocol change. Windows agents older than 0.2.4 keep reporting 0
+    until they're updated.
+
+- **Install tokens replace deployment tokens.** The AAT becomes the
+  **default install token**, and you can add **additional install tokens**
+  beside it ("New install token" under Hosts › Add hosts). Each additional
+  token has:
+  - a label;
+  - an expiry of 1, 7, 30 or 90 days, a year, or never;
+  - a use count;
+  - its own "require approval" setting;
+  - its own **Revoke**.
+
+  They work everywhere the AAT does: the exe and MSI `AAT=`,
+  `abyssal-agent install --aat`, and the one-liners. They also prove the
+  control plane's CA to a new host, like the AAT. Like the AAT, they're
+  encrypted at rest with `ENCRYPTION_KEY`, and **Show** is audited. Rotating
+  the default token doesn't affect them, and revoking one doesn't affect the
+  others.
+  - Existing deployment tokens keep working until they expire or are
+    revoked. They're listed as "Legacy (one-liner only)", and new ones can't
+    be created.
+  - Each host records which token enrolled it. The host list shows it ("via
+    Install token “Finance”"), and so does the `HOST_ENROLLED` audit record.
+  - Panopticon's "add Windows hosts" now creates a one-day install token
+    instead of a deployment token.
+  - Agents send a short, non-secret key ID with their CA request so the
+    control plane knows which token to prove the CA with. An agent from
+    before 0.2.4 sends none, so it can only use the default token where the
+    CA proof is needed (an `https://` control plane with an internal CA and
+    no `--ca-cert`).
+  - Migration 0047.
+- **The Hosts page puts the host list first.**
+  - The list opens with a summary ("N hosts · N online · N out of date ·
+    N pending approval") and the "Update all out-of-date agents" button.
+  - Filter tabs with counts: All, Online, Offline, Out of date, Pending
+    approval. Plus a search by name, and sorting by name, status or last
+    seen.
+  - Each row has **one button** picked by the host's state: Approve
+    (pending), Update agent (out of date and online), otherwise Run System
+    Info. The rest sit under **More**, with Revoke and Remove last, in red.
+  - "Out of date" now also covers an older agent version, not only a
+    protocol mismatch, matching "Update all".
+  - The enrollment, AAT and deployment-token cards are now one **Add hosts**
+    section: the install tokens, their commands, and the one-time token. It
+    starts collapsed, and opens when there are no hosts yet or a token was
+    just shown.
+  - On phones, each host is a stacked card with its buttons underneath.
+
+- **An Arsenals menu in the top bar.** Every arsenal is one click away from
+  any page. It's grouped like the dashboard (Pinned first, then Operate,
+  Observe, Defend, Preserve / Recover) and lists only the arsenals you can
+  open: disabled ones, ones you lack the permission for, and ones hidden
+  from your role are left out. On phones it opens inside the **Menu** list.
+  The top bar still fits on one row down to 1201px wide.
+- **Breadcrumbs.** Every per-host page starts with
+  `Arsenals › <Arsenal> › <host>` instead of "Back to host list". The host
+  name is a menu that opens the same arsenal for another host. An arsenal's
+  other pages (fleet views, Panopticon topology and DHCP, Thanatos search,
+  rules and indicators, and others) show `Arsenals › <Arsenal> › <page>`.
+- The top bar's menus (Arsenals, Apotheosis, the user menu) and the
+  breadcrumb's host menu close on a click elsewhere or Escape, and opening
+  one closes the others.
 
 - **The dashboard explains itself.**
   - The hero badge ("Degraded", "Fleet offline", "All systems healthy") is a
@@ -74,6 +209,36 @@ for what that means for cloning and updating.
   health check only runs on connected hosts, so a host that timed out and
   then dropped off kept its old error until it came back. Its stale result
   is now ignored, and it's listed as offline instead.
+- **Reinstalling an agent on a machine whose host was removed now enrolls
+  it again.** Before, `install` reused the old `credentials.json` without
+  asking the control plane. The service then "ran" while the server
+  answered `401` forever, and the machine never showed up on
+  `/admin/hosts`. Now `install` checks existing credentials first, using
+  the new agent-authenticated `GET /api/agent/whoami`. If the control plane
+  no longer knows them, the old file is kept as
+  `credentials.json.rejected-<time>` and the host enrolls again with the
+  token given. An unattended install with no token stops and says to rerun
+  it with one. A host that's pending approval or revoked keeps its
+  credentials, with a note. An older control plane without the endpoint
+  keeps today's behaviour. The `uninstall --purge` workaround is no longer
+  needed.
+- **The agent's log says why a removed host can't connect.** A `401` used
+  to be logged as a generic "connection error; retrying". It now says the
+  control plane doesn't recognize this host's credential, that the host was
+  probably removed on `/admin/hosts`, and to reinstall with a new token.
+  Both the `401` and the existing `403` message now go by the handshake's
+  actual status, not by looking for "403" in the error text.
+- **Installer wording.** A re-run that keeps the existing enrollment says
+  "Using existing enrollment as host …" instead of "Enrolled as host …".
+  The `install.sh` and `install.ps1` one-liners no longer print a second
+  "Done." after the agent's own. `install.sh` also no longer claimed the
+  agent was "enrolled and running" on a host without systemd, where the
+  agent skips service setup.
+- **Reinstalling right after uninstalling on Windows** no longer races the
+  uninstall's delayed removal of `C:\Program Files\AbyssalAgent`, which
+  could delete the new install's folder a few seconds later. The removal
+  now only runs if its marker file is still there, and `install` deletes
+  the marker to cancel it.
 
 ## [0.2.3] - 2026-10-09
 

@@ -7,7 +7,7 @@ use abyssal_core::{AppError, Permission};
 use abyssal_database::repo;
 use abyssal_execution::OperationKind;
 use axum::Form;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
@@ -23,7 +23,8 @@ use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{
-    BaseCtx, DeploymentInstructions, EnrollmentInstructions, HostRow, HostsTemplate,
+    BaseCtx, CommandsView, EnrollmentInstructions, HostFilterTab, HostRow, HostSummary,
+    HostsTemplate, InstallTokenView, LegacyTokenView,
 };
 use crate::theme;
 
@@ -49,44 +50,144 @@ fn build_enrollment_instructions(base_url: &str, token: &str) -> EnrollmentInstr
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The host list's filter, search and sort (`GET /admin/hosts?filter=..`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HostListQuery {
+    #[serde(default)]
+    pub filter: String,
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub sort: String,
+}
+
+/// An install token shown in clear: right after it's created, or after an
+/// audited reveal. The commands on the page fill it in.
+pub struct RevealedToken {
+    /// "Default token", or the additional token's label.
+    pub name: String,
+    pub token: String,
+    pub just_created: bool,
+}
+
+/// Everything a render of `/admin/hosts` can carry beyond the page itself.
+#[derive(Default)]
+struct PageExtras {
+    enrollment: Option<EnrollmentInstructions>,
+    uninstall_command: Option<String>,
+    action_result: Option<String>,
+    action_error: Option<String>,
+    revealed: Option<RevealedToken>,
+    query: HostListQuery,
+}
+
+impl PageExtras {
+    fn error(message: impl Into<String>) -> Self {
+        PageExtras {
+            action_error: Some(message.into()),
+            ..Default::default()
+        }
+    }
+
+    fn result(message: impl Into<String>) -> Self {
+        PageExtras {
+            action_result: Some(message.into()),
+            ..Default::default()
+        }
+    }
+}
+
+/// What enrolled a host, for its row: "Default token", the additional
+/// token's label, and so on. Empty for hosts from before it was recorded.
+fn enrolled_via_label(
+    source: Option<&repo::hosts::EnrollmentSource>,
+    tokens: &[repo::install_tokens::InstallToken],
+) -> String {
+    let Some(source) = source else {
+        return String::new();
+    };
+    match source.via.as_deref() {
+        Some("default_token") => "Default token".to_string(),
+        Some("install_token") => source
+            .token_id
+            .and_then(|id| tokens.iter().find(|t| t.id == id))
+            .map(|t| format!("Install token \u{201c}{}\u{201d}", t.label))
+            .unwrap_or_else(|| "Install token".to_string()),
+        Some("deployment_token") => "Deployment token (legacy)".to_string(),
+        Some("enrollment_token") => "One-time token".to_string(),
+        Some("control_plane") => "install.sh (this server)".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// `/admin/hosts` with this filter and the query's search and sort.
+fn list_href(filter: &str, query: &HostListQuery) -> String {
+    let mut params = form_urlencoded::Serializer::new(String::new());
+    if filter != "all" {
+        params.append_pair("filter", filter);
+    }
+    if !query.q.trim().is_empty() {
+        params.append_pair("q", query.q.trim());
+    }
+    if !query.sort.is_empty() {
+        params.append_pair("sort", &query.sort);
+    }
+    let params = params.finish();
+    if params.is_empty() {
+        "/admin/hosts".to_string()
+    } else {
+        format!("/admin/hosts?{params}")
+    }
+}
+
+/// Applies the list's filter, search and sort, and counts each filter.
+fn filter_hosts(rows: Vec<HostRow>, query: &HostListQuery) -> (Vec<HostRow>, Vec<HostFilterTab>) {
+    const FILTERS: [(&str, &str); 5] = [
+        ("all", "All"),
+        ("online", "Online"),
+        ("offline", "Offline"),
+        ("out-of-date", "Out of date"),
+        ("pending", "Pending approval"),
+    ];
+    let active = if FILTERS.iter().any(|(k, _)| *k == query.filter) {
+        query.filter.as_str()
+    } else {
+        "all"
+    };
+    let tabs = FILTERS
+        .iter()
+        .map(|(key, label)| HostFilterTab {
+            key,
+            href: list_href(key, query),
+            label,
+            count: rows.iter().filter(|h| h.matches_filter(key)).count(),
+            active: *key == active,
+        })
+        .collect();
+    let needle = query.q.trim().to_lowercase();
+    let mut rows: Vec<HostRow> = rows
+        .into_iter()
+        .filter(|h| h.matches_filter(active))
+        .filter(|h| needle.is_empty() || h.name.to_lowercase().contains(&needle))
+        .collect();
+    match query.sort.as_str() {
+        "status" => rows.sort_by(|a, b| {
+            a.status_rank()
+                .cmp(&b.status_rank())
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        }),
+        // Most recently seen first; never-seen last.
+        "last-seen" => rows.sort_by_key(|h| std::cmp::Reverse(h.last_seen)),
+        _ => rows.sort_by_key(|h| h.name.to_lowercase()),
+    }
+    (rows, tabs)
+}
+
 async fn render(
     state: &AppState,
     jar: &CookieJar,
     ctx: &abyssal_rbac::AuthContext,
-    enrollment: Option<EnrollmentInstructions>,
-    deployment: Option<crate::templates::DeploymentInstructions>,
-    uninstall_command: Option<String>,
-    action_result: Option<String>,
-    action_error: Option<String>,
-) -> Result<Response, WebError> {
-    render_full(
-        state,
-        jar,
-        ctx,
-        enrollment,
-        deployment,
-        uninstall_command,
-        action_result,
-        action_error,
-        None,
-    )
-    .await
-}
-
-/// [`render`], plus the AAT in clear -- only ever passed by the audited
-/// reveal/rotate handlers; every other render shows it masked.
-#[allow(clippy::too_many_arguments)]
-async fn render_full(
-    state: &AppState,
-    jar: &CookieJar,
-    ctx: &abyssal_rbac::AuthContext,
-    enrollment: Option<EnrollmentInstructions>,
-    deployment: Option<crate::templates::DeploymentInstructions>,
-    uninstall_command: Option<String>,
-    action_result: Option<String>,
-    action_error: Option<String>,
-    revealed_aat: Option<String>,
+    extras: PageExtras,
 ) -> Result<Response, WebError> {
     let (csrf_token, new_cookie) = csrf::ensure_token(jar);
     let base = BaseCtx::build(
@@ -99,26 +200,36 @@ async fn render_full(
         host_context::current(jar),
     )
     .await?;
+    let tz = &ctx.user.timezone;
+    let now = chrono::Utc::now();
 
-    let mut hosts = Vec::new();
+    let install_tokens = repo::install_tokens::list(&state.pool).await?;
+    let sources = repo::hosts::enrollment_sources(&state.pool).await?;
+
+    let mut all_hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
         let elevation_remaining = state
             .elevation
             .remaining_for(host.id)
             .map(crate::templates::format_remaining);
-        hosts.push(HostRow {
+        all_hosts.push(HostRow {
             is_control_plane: host.is_control_plane,
             id: host.id.to_string(),
             name: host.name.clone(),
-            enrolled_at: crate::common::format_in_tz(host.enrolled_at, &ctx.user.timezone),
+            enrolled_at: crate::common::format_in_tz(host.enrolled_at, tz),
+            enrolled_via: enrolled_via_label(sources.get(&host.id), &install_tokens),
             last_seen_at: host
                 .last_seen_at
-                .map(|t| crate::common::format_in_tz(t, &ctx.user.timezone))
+                .map(|t| crate::common::format_in_tz(t, tz))
                 .unwrap_or_else(|| "never".to_string()),
+            last_seen: host.last_seen_at,
             online: state.hosts.is_connected(host.id),
             revoked: host.revoked_at.is_some(),
             elevation_remaining,
             protocol_mismatch: state.hosts.agent_protocol_mismatch(host.id),
+            out_of_date: host.is_active()
+                && !host.pending_approval
+                && crate::agent_update::is_out_of_date(state, &host),
             pending_approval: host.pending_approval,
             os: host.os.clone().unwrap_or_else(|| "unknown".to_string()),
             agent_version: host
@@ -127,55 +238,108 @@ async fn render_full(
                 .unwrap_or_else(|| "unknown".to_string()),
         });
     }
+    let summary = HostSummary {
+        total: all_hosts.len(),
+        online: all_hosts.iter().filter(|h| h.online).count(),
+        out_of_date: all_hosts.iter().filter(|h| h.out_of_date).count(),
+        pending: all_hosts.iter().filter(|h| h.pending_approval).count(),
+    };
+    let no_hosts = all_hosts.is_empty();
+    let (hosts, filter_tabs) = filter_hosts(all_hosts, &extras.query);
 
-    let deployment_tokens = repo::host_enrollment_tokens::list_active_deployment(&state.pool)
+    let can_manage = ctx.has(Permission::HostsManage);
+    let additional_tokens = install_tokens
+        .iter()
+        .map(|t| InstallTokenView {
+            id: t.id.to_string(),
+            label: t.label.clone(),
+            created: crate::common::format_in_tz(t.created_at, tz),
+            expires: crate::install_tokens::expiry_label(t, now, tz),
+            use_count: t.use_count,
+            require_approval: t.require_approval,
+            active: t.is_active(now),
+            revoked: t.revoked_at.is_some(),
+        })
+        .collect();
+    let legacy_tokens = repo::host_enrollment_tokens::list_active_deployment(&state.pool)
         .await?
         .into_iter()
-        .map(|t| crate::templates::DeploymentTokenView {
+        .map(|t| LegacyTokenView {
             id: t.id.to_string(),
             label: t.label.unwrap_or_else(|| "(unlabeled)".to_string()),
-            created: crate::common::format_in_tz(t.created_at, &ctx.user.timezone),
-            expires: crate::common::format_in_tz(t.expires_at, &ctx.user.timezone),
+            created: crate::common::format_in_tz(t.created_at, tz),
+            expires: crate::common::format_in_tz(t.expires_at, tz),
             use_count: t.use_count,
         })
         .collect();
 
-    let aat = crate::templates::AatView {
-        // PUBLIC_URL (install.sh sets it) -- this render has no request to
-        // infer the address from, and the commands are for other machines.
-        commands: crate::deploy_commands::aat_commands(
+    // PUBLIC_URL (install.sh sets it) -- this render has no request to infer
+    // the address from, and the commands are for other machines.
+    let public_url = state
+        .config
+        .public_url
+        .as_deref()
+        .unwrap_or("https://<control-plane-address>")
+        .trim_end_matches('/')
+        .to_string();
+    let revealed_token = extras.revealed.as_ref().map(|r| r.token.as_str());
+    let ca = crate::public_ca::load();
+    let commands = CommandsView {
+        token_name: extras
+            .revealed
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| "Default token".to_string()),
+        revealed_token: revealed_token.map(str::to_string),
+        just_created: extras.revealed.as_ref().is_some_and(|r| r.just_created),
+        aat: deploy_commands::aat_commands(
             &crate::update_check::agent_release_version(state).await,
-            state
-                .config
-                .public_url
-                .as_deref()
-                .unwrap_or("https://<control-plane-address>")
-                .trim_end_matches('/'),
-            revealed_aat.as_deref(),
+            &public_url,
+            revealed_token,
         ),
-        revealed: revealed_aat,
-        require_approval: crate::aat::require_approval(&state.pool).await?,
-        pending_count: hosts.iter().filter(|h| h.pending_approval).count(),
+        // The interactive one-liners pin the CA fingerprint themselves, so
+        // they need the token in clear: only shown once one is revealed.
+        linux_oneliner: revealed_token
+            .map(|t| deploy_commands::linux_oneliner(&public_url, t, ca.as_ref())),
+        windows_oneliner: revealed_token
+            .map(|t| deploy_commands::windows_oneliner(&public_url, t, ca.as_ref())),
+        windows_rmm: revealed_token
+            .map(|t| deploy_commands::windows_rmm(&public_url, t, ca.as_ref())),
     };
 
-    let update_all_count = if ctx.has(Permission::HostsManage) {
+    let update_all_count = if can_manage {
         crate::agent_update::updatable_count(state).await
     } else {
         0
     };
+    // Open "Add hosts" when there's something in it to look at now.
+    let add_hosts_open = no_hosts || extras.revealed.is_some() || extras.enrollment.is_some();
     let tpl = HostsTemplate {
         base,
         can_enroll: ctx.has(Permission::HostsEnroll),
-        can_manage: ctx.has(Permission::HostsManage),
+        can_manage,
         update_all_count,
-        aat,
+        summary,
         hosts,
-        enrollment,
-        deployment,
-        deployment_tokens,
-        uninstall_command,
-        action_result,
-        action_error,
+        filter_tabs,
+        query: extras.query,
+        add_hosts_open,
+        default_token_requires_approval: crate::aat::require_approval(&state.pool).await?,
+        default_token_hosts: sources
+            .values()
+            .filter(|s| s.via.as_deref() == Some("default_token"))
+            .count(),
+        additional_tokens,
+        legacy_tokens,
+        expiry_choices: crate::install_tokens::EXPIRY_CHOICES
+            .iter()
+            .map(|(days, label)| (days.map(|d| d.to_string()).unwrap_or_default(), *label))
+            .collect(),
+        commands,
+        enrollment: extras.enrollment,
+        uninstall_command: extras.uninstall_command,
+        action_result: extras.action_result,
+        action_error: extras.action_error,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -189,9 +353,19 @@ pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
+    Query(query): Query<HostListQuery>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsView)?;
-    render(&state, &jar, &ctx, None, None, None, None, None).await
+    render(
+        &state,
+        &jar,
+        &ctx,
+        PageExtras {
+            query,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -226,120 +400,213 @@ pub async fn generate_enrollment_token(
         &state,
         &jar,
         &ctx,
-        Some(instructions),
-        None,
-        None,
-        None,
-        None,
+        PageExtras {
+            enrollment: Some(instructions),
+            ..Default::default()
+        },
     )
     .await
 }
 
-/// The install command(s) for a reusable deployment token, by OS -- what an
-/// operator drops into PDQ Deploy, a GPO startup script, or Intune. Same
-/// commands as a single-use token; the difference is the token is reusable,
-/// so the same command provisions every machine it's pushed to. Windows gets
-/// the unattended RMM script as the primary command (that's what deployment
-/// tokens are for) plus the interactive one-liner for a quick manual test.
-fn build_deployment_command(
-    base_url: &str,
-    token: &str,
-    os: &str,
-    ca: Option<&crate::public_ca::PublicCa>,
-) -> (String, String, Option<String>) {
-    if os == "linux" {
-        (
-            "Linux".to_string(),
-            deploy_commands::linux_oneliner(base_url, token, ca),
-            None,
-        )
-    } else {
-        (
-            "Windows".to_string(),
-            deploy_commands::windows_rmm(base_url, token, ca),
-            Some(deploy_commands::windows_oneliner(base_url, token, ca)),
-        )
+fn audit_actor(ctx: &abyssal_rbac::AuthContext) -> Actor<'_> {
+    Actor {
+        user_id: ctx.user.id,
+        username: &ctx.user.username,
     }
 }
 
 #[derive(Deserialize)]
-pub struct DeploymentForm {
+pub struct NewInstallTokenForm {
     csrf_token: String,
     #[serde(default)]
-    os: String,
-    #[serde(default)]
-    ttl_hours: u32,
-    #[serde(default)]
     label: String,
+    /// Days, or empty for no expiry (`install_tokens::EXPIRY_CHOICES`).
+    #[serde(default)]
+    expires_in_days: String,
+    /// A checkbox: present when checked.
+    #[serde(default)]
+    require_approval: Option<String>,
 }
 
-/// Creates a reusable deployment token and shows the OS-specific install
-/// command for mass rollout. The command (which contains the token) is shown
-/// once -- the token is hashed at rest -- so save it into your deploy tool now.
-pub async fn generate_deployment_token(
+/// "New install token": an additional token beside the default one, shown
+/// with its commands right away.
+pub async fn create_install_token(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(ctx): CurrentUser,
-    headers: HeaderMap,
-    Form(form): Form<DeploymentForm>,
+    Form(form): Form<NewInstallTokenForm>,
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
     require_csrf(&jar, &form.csrf_token)?;
 
-    // Default 30 days; clamp to [1 hour, 1 year] so a hand-posted value can't
-    // mint an effectively-permanent key by accident.
-    let ttl_hours = if form.ttl_hours == 0 {
-        720
-    } else {
-        form.ttl_hours.clamp(1, 24 * 365)
-    };
     let label = form.label.trim();
-    let token = generate_token();
-    let hash = hash_token(&token);
-    repo::host_enrollment_tokens::create_deployment(
+    if label.is_empty() || label.chars().count() > 100 {
+        return render(
+            &state,
+            &jar,
+            &ctx,
+            PageExtras::error("Give the install token a label of up to 100 characters."),
+        )
+        .await;
+    }
+    // Only the offered choices; anything else is a hand-posted value.
+    let expires_in_days = match form.expires_in_days.trim() {
+        "" => None,
+        days => match days.parse::<u32>() {
+            Ok(d)
+                if crate::install_tokens::EXPIRY_CHOICES
+                    .iter()
+                    .any(|(c, _)| *c == Some(d)) =>
+            {
+                Some(d)
+            }
+            _ => {
+                return render(
+                    &state,
+                    &jar,
+                    &ctx,
+                    PageExtras::error("Pick one of the offered expiry times."),
+                )
+                .await;
+            }
+        },
+    };
+    let require_approval = form.require_approval.is_some();
+    let (id, token) = crate::install_tokens::create(
         &state.pool,
-        &hash,
+        state.encryption_key.as_deref(),
+        label,
+        expires_in_days,
+        require_approval,
         Some(ctx.user.id),
-        ChronoDuration::hours(i64::from(ttl_hours)),
-        (!label.is_empty()).then_some(label),
     )
     .await?;
-
     abyssal_audit::record(
         &state.pool,
         AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
-            .actor(Actor {
-                user_id: ctx.user.id,
-                username: &ctx.user.username,
-            })
-            .resource("host.deployment_token")
-            .metadata(
-                serde_json::json!({ "action": "create", "label": label, "ttl_hours": ttl_hours }),
-            ),
+            .actor(audit_actor(&ctx))
+            .resource("host.install_token")
+            .metadata(serde_json::json!({
+                "action": "create",
+                "id": id,
+                "label": label,
+                "expires_in_days": expires_in_days,
+                "require_approval": require_approval,
+            })),
     )
     .await?;
 
-    let base_url = control_plane_base_url(&state, &headers);
-    let ca = crate::public_ca::load();
-    let (os_label, command, interactive_command) =
-        build_deployment_command(&base_url, &token, &form.os, ca.as_ref());
-    let deployment = DeploymentInstructions {
-        os_label,
-        token,
-        command,
-        interactive_command,
-        ca_fingerprint: ca.as_ref().map(|ca| ca.fingerprint_display()),
-        expires: crate::common::format_in_tz(
-            chrono::Utc::now() + ChronoDuration::hours(i64::from(ttl_hours)),
-            &ctx.user.timezone,
-        ),
-    };
-
-    render(&state, &jar, &ctx, None, Some(deployment), None, None, None).await
+    render(
+        &state,
+        &jar,
+        &ctx,
+        PageExtras {
+            revealed: Some(RevealedToken {
+                name: label.to_string(),
+                token,
+                just_created: true,
+            }),
+            action_result: Some(format!(
+                "Created install token \u{201c}{label}\u{201d}. Its commands are filled in under \
+                 Add hosts."
+            )),
+            ..Default::default()
+        },
+    )
+    .await
 }
 
-/// Revokes a reusable deployment token (it stops enrolling new hosts
-/// immediately; already-enrolled hosts are unaffected).
+/// Shows an additional install token (and its commands). Audited, like the
+/// default token's reveal.
+pub async fn reveal_install_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let token = repo::install_tokens::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if !token.is_active(chrono::Utc::now()) {
+        return render(
+            &state,
+            &jar,
+            &ctx,
+            PageExtras::error(format!(
+                "Install token \u{201c}{}\u{201d} is revoked or expired, so it no longer enrolls \
+                 hosts. Create a new one.",
+                token.label
+            )),
+        )
+        .await;
+    }
+    let secret = match crate::install_tokens::unseal(&token, state.encryption_key.as_deref()) {
+        Ok(secret) => secret,
+        Err(e) => return render(&state, &jar, &ctx, PageExtras::error(format!("{e:#}"))).await,
+    };
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::SecretAccessed, AuditOutcome::Success)
+            .actor(audit_actor(&ctx))
+            .resource("host.install_token")
+            .metadata(serde_json::json!({ "id": id, "label": token.label })),
+    )
+    .await?;
+    render(
+        &state,
+        &jar,
+        &ctx,
+        PageExtras {
+            revealed: Some(RevealedToken {
+                name: token.label,
+                token: secret,
+                just_created: false,
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// Revokes an additional install token: it stops enrolling hosts at once.
+/// Hosts it enrolled keep working -- each has its own credential.
+pub async fn revoke_install_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<SimpleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let token = repo::install_tokens::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if repo::install_tokens::revoke(&state.pool, id).await? {
+        abyssal_audit::record(
+            &state.pool,
+            AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+                .actor(audit_actor(&ctx))
+                .resource("host.install_token")
+                .metadata(serde_json::json!({
+                    "action": "revoke",
+                    "id": id,
+                    "label": token.label,
+                })),
+        )
+        .await?;
+    }
+    Ok(Redirect::to("/admin/hosts").into_response())
+}
+
+/// Revokes a legacy deployment token (it stops enrolling new hosts
+/// immediately; already-enrolled hosts are unaffected). New ones can't be
+/// created any more: install tokens replace them.
 pub async fn revoke_deployment_token(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -354,10 +621,7 @@ pub async fn revoke_deployment_token(
     abyssal_audit::record(
         &state.pool,
         AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
-            .actor(Actor {
-                user_id: ctx.user.id,
-                username: &ctx.user.username,
-            })
+            .actor(audit_actor(&ctx))
             .resource("host.deployment_token")
             .metadata(serde_json::json!({ "action": "revoke", "id": id.to_string() })),
     )
@@ -366,8 +630,9 @@ pub async fn revoke_deployment_token(
     Ok(Redirect::to("/admin/hosts").into_response())
 }
 
-/// Shows the AAT in clear. A POST, not part of the page, so every view of the
-/// secret is a deliberate, audit-logged action.
+/// Shows the default install token (the AAT) in clear. A POST, not part of
+/// the page, so every view of the secret is a deliberate, audit-logged
+/// action.
 pub async fn reveal_aat(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -379,36 +644,34 @@ pub async fn reveal_aat(
 
     let aat = match crate::aat::ensure(&state.pool, state.encryption_key.as_deref()).await {
         Ok(aat) => aat,
-        Err(e) => {
-            return render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                None,
-                None,
-                Some(format!("{e:#}")),
-            )
-            .await;
-        }
+        Err(e) => return render(&state, &jar, &ctx, PageExtras::error(format!("{e:#}"))).await,
     };
     abyssal_audit::record(
         &state.pool,
         AuditEvent::new(AuditAction::SecretAccessed, AuditOutcome::Success)
-            .actor(Actor {
-                user_id: ctx.user.id,
-                username: &ctx.user.username,
-            })
+            .actor(audit_actor(&ctx))
             .resource("host.aat"),
     )
     .await?;
-    render_full(&state, &jar, &ctx, None, None, None, None, None, Some(aat)).await
+    render(
+        &state,
+        &jar,
+        &ctx,
+        PageExtras {
+            revealed: Some(RevealedToken {
+                name: "Default token".to_string(),
+                token: aat,
+                just_created: false,
+            }),
+            ..Default::default()
+        },
+    )
+    .await
 }
 
-/// Replaces the AAT. The old one stops enrolling new hosts immediately;
-/// enrolled hosts are unaffected. Shows the new one, since every deploy
-/// package needs updating with it.
+/// Replaces the default install token. The old one stops enrolling new
+/// hosts immediately; enrolled hosts and additional tokens are unaffected.
+/// Shows the new one, since every deploy package using it needs updating.
 pub async fn rotate_aat(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -427,28 +690,29 @@ pub async fn rotate_aat(
     abyssal_audit::record(
         &state.pool,
         AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
-            .actor(Actor {
-                user_id: ctx.user.id,
-                username: &ctx.user.username,
-            })
+            .actor(audit_actor(&ctx))
             .resource("host.aat")
             .metadata(serde_json::json!({ "action": "rotate" })),
     )
     .await?;
-    render_full(
+    render(
         &state,
         &jar,
         &ctx,
-        None,
-        None,
-        None,
-        Some(
-            "Install token rotated. The old one no longer enrolls hosts -- update your \
-             PDQ/Intune/GPO packages with the new one below."
-                .to_string(),
-        ),
-        None,
-        Some(aat),
+        PageExtras {
+            revealed: Some(RevealedToken {
+                name: "Default token".to_string(),
+                token: aat,
+                just_created: true,
+            }),
+            action_result: Some(
+                "Default install token rotated. The old one no longer enrolls hosts -- update \
+                 your PDQ/Intune/GPO packages with the new one under Add hosts. Additional \
+                 install tokens are unaffected."
+                    .to_string(),
+            ),
+            ..Default::default()
+        },
     )
     .await
 }
@@ -475,10 +739,7 @@ pub async fn set_aat_approval(
     abyssal_audit::record(
         &state.pool,
         AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
-            .actor(Actor {
-                user_id: ctx.user.id,
-                username: &ctx.user.username,
-            })
+            .actor(audit_actor(&ctx))
             .resource("host.aat")
             .metadata(serde_json::json!({ "require_approval": required })),
     )
@@ -584,7 +845,7 @@ pub async fn update_agent(
     let (operation, version) = match self_update_operation(&state, &host).await {
         Ok(planned) => planned,
         Err(message) => {
-            return render(&state, &jar, &ctx, None, None, None, None, Some(message)).await;
+            return render(&state, &jar, &ctx, PageExtras::error(message)).await;
         }
     };
     // Too old for even this: the only way forward is a re-deploy.
@@ -593,13 +854,9 @@ pub async fn update_agent(
             &state,
             &jar,
             &ctx,
-            None,
-            None,
-            None,
-            None,
-            Some(format!(
+            PageExtras::error(format!(
                 "{}'s agent is too old to update itself over its connection. Re-deploy it to \
-                 {version} with the bootstrap one-liner (generate a token above) or the SSH \
+                 {version} with the bootstrap one-liner (under Add hosts) or the SSH \
                  quick-add from a Panopticon scan; after that, updates are one click from here.",
                 host.name
             )),
@@ -627,32 +884,8 @@ pub async fn update_agent(
         .await;
 
     match result {
-        Ok(output) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                None,
-                Some(output.stdout),
-                None,
-            )
-            .await
-        }
-        Err(e) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                None,
-                None,
-                Some(e.to_string()),
-            )
-            .await
-        }
+        Ok(output) => render(&state, &jar, &ctx, PageExtras::result(output.stdout)).await,
+        Err(e) => render(&state, &jar, &ctx, PageExtras::error(e.to_string())).await,
     }
 }
 
@@ -777,24 +1010,23 @@ pub async fn update_all_agents(
             &state,
             &jar,
             &ctx,
-            None,
-            None,
-            None,
-            Some(if hosts.is_empty() {
-                "Every agent is up to date.".to_string()
-            } else {
-                format!(
-                    "Nothing to update right now. {} out-of-date host(s) can't be updated from \
+            PageExtras {
+                action_result: Some(if hosts.is_empty() {
+                    "Every agent is up to date.".to_string()
+                } else {
+                    format!(
+                        "Nothing to update right now. {} out-of-date host(s) can't be updated from \
                      here yet: {}",
-                    hosts.len(),
-                    hosts
-                        .iter()
-                        .map(|h| format!("{} ({})", h.name, h.detail.trim_end_matches('.')))
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                )
-            }),
-            None,
+                        hosts.len(),
+                        hosts
+                            .iter()
+                            .map(|h| format!("{} ({})", h.name, h.detail.trim_end_matches('.')))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                }),
+                ..Default::default()
+            },
         )
         .await;
     }
@@ -905,32 +1137,8 @@ pub async fn run_system_info(
         .await;
 
     match result {
-        Ok(output) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                None,
-                Some(output.stdout),
-                None,
-            )
-            .await
-        }
-        Err(e) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                None,
-                None,
-                Some(e.to_string()),
-            )
-            .await
-        }
+        Ok(output) => render(&state, &jar, &ctx, PageExtras::result(output.stdout)).await,
+        Err(e) => render(&state, &jar, &ctx, PageExtras::error(e.to_string())).await,
     }
 }
 
@@ -969,32 +1177,8 @@ pub async fn deescalate(
     state.elevation.mark_deescalated(id);
 
     match result {
-        Ok(output) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                None,
-                Some(output.stdout),
-                None,
-            )
-            .await
-        }
-        Err(e) => {
-            render(
-                &state,
-                &jar,
-                &ctx,
-                None,
-                None,
-                None,
-                None,
-                Some(e.to_string()),
-            )
-            .await
-        }
+        Ok(output) => render(&state, &jar, &ctx, PageExtras::result(output.stdout)).await,
+        Err(e) => render(&state, &jar, &ctx, PageExtras::error(e.to_string())).await,
     }
 }
 
@@ -1202,18 +1386,18 @@ pub async fn remove(
                  so a later ./install.sh doesn't install it again.",
             );
         }
-        return render(&state, &jar, &ctx, None, None, None, Some(message), None).await;
+        return render(&state, &jar, &ctx, PageExtras::result(message)).await;
     }
 
     render(
         &state,
         &jar,
         &ctx,
-        None,
-        None,
-        Some(manual_uninstall_command(host.os.as_deref()).to_string()),
-        None,
-        why_not,
+        PageExtras {
+            uninstall_command: Some(manual_uninstall_command(host.os.as_deref()).to_string()),
+            action_error: why_not,
+            ..Default::default()
+        },
     )
     .await
 }
@@ -1297,32 +1481,179 @@ fn manual_uninstall_command(os: Option<&str>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::templates::PrimaryAction;
 
-    #[test]
-    fn deployment_command_windows_is_the_rmm_script_plus_the_one_liner() {
-        let (label, cmd, interactive) =
-            build_deployment_command("https://arsenal.corp.local", "TOK123", "windows", None);
-        assert_eq!(label, "Windows");
-        assert!(cmd.contains("install.ps1"));
-        assert!(cmd.contains("-ExitCode"));
-        assert!(cmd.contains("$env:ABYSSAL_ENROLLMENT_TOKEN = 'TOK123'"));
-        assert!(interactive.unwrap().contains("-EnrollmentToken 'TOK123'"));
+    fn row(name: &str) -> HostRow {
+        HostRow {
+            is_control_plane: false,
+            id: name.to_string(),
+            name: name.to_string(),
+            enrolled_at: String::new(),
+            enrolled_via: String::new(),
+            last_seen_at: String::new(),
+            last_seen: None,
+            out_of_date: false,
+            online: true,
+            revoked: false,
+            elevation_remaining: None,
+            pending_approval: false,
+            protocol_mismatch: false,
+            os: "linux".to_string(),
+            agent_version: "0.2.4".to_string(),
+        }
     }
 
     #[test]
-    fn deployment_command_linux_uses_the_sh_one_liner() {
-        let (label, cmd, interactive) =
-            build_deployment_command("https://arsenal.corp.local", "TOK123", "linux", None);
-        assert_eq!(label, "Linux");
-        assert!(cmd.contains("install.sh"));
-        assert!(cmd.contains("--enrollment-token 'TOK123'"));
-        assert!(interactive.is_none());
+    fn primary_action_follows_the_hosts_state() {
+        assert_eq!(row("a").primary_action(), PrimaryAction::SystemInfo);
+        let pending = HostRow {
+            pending_approval: true,
+            online: false,
+            ..row("p")
+        };
+        assert_eq!(pending.primary_action(), PrimaryAction::Approve);
+        let stale = HostRow {
+            out_of_date: true,
+            ..row("s")
+        };
+        assert_eq!(stale.primary_action(), PrimaryAction::UpdateAgent);
+        // An out-of-date host that's offline can't be updated now.
+        let stale_offline = HostRow {
+            online: false,
+            ..stale
+        };
+        assert_eq!(stale_offline.primary_action(), PrimaryAction::SystemInfo);
+        let revoked = HostRow {
+            revoked: true,
+            online: false,
+            ..row("r")
+        };
+        assert_eq!(revoked.primary_action(), PrimaryAction::None);
+        assert!(pending.primary_is("approve") && !pending.primary_is("system-info"));
+    }
+
+    fn names(rows: &[HostRow]) -> Vec<&str> {
+        rows.iter().map(|h| h.name.as_str()).collect()
+    }
+
+    fn fleet() -> Vec<HostRow> {
+        let mut offline = row("bravo");
+        offline.online = false;
+        offline.last_seen = Some(chrono::Utc::now() - chrono::Duration::hours(3));
+        let mut stale = row("Charlie");
+        stale.out_of_date = true;
+        stale.last_seen = Some(chrono::Utc::now());
+        let mut pending = row("alpha");
+        pending.pending_approval = true;
+        pending.online = false;
+        vec![offline, stale, pending, row("delta")]
     }
 
     #[test]
-    fn deployment_command_defaults_to_windows_for_unknown_os() {
-        // Anything that isn't "linux" falls back to the Windows command.
-        let (label, _, _) = build_deployment_command("https://x", "t", "", None);
-        assert_eq!(label, "Windows");
+    fn filters_count_and_select() {
+        let query = |filter: &str| HostListQuery {
+            filter: filter.to_string(),
+            ..Default::default()
+        };
+        let (all, tabs) = filter_hosts(fleet(), &query(""));
+        assert_eq!(names(&all), ["alpha", "bravo", "Charlie", "delta"]);
+        let count = |key: &str| tabs.iter().find(|t| t.key == key).unwrap().count;
+        assert_eq!(
+            (
+                count("all"),
+                count("online"),
+                count("offline"),
+                count("out-of-date"),
+                count("pending")
+            ),
+            (4, 2, 1, 1, 1)
+        );
+        assert!(tabs.iter().find(|t| t.key == "all").unwrap().active);
+        // A pending host isn't "offline": it can't connect until approved.
+        assert_eq!(
+            names(&filter_hosts(fleet(), &query("offline")).0),
+            ["bravo"]
+        );
+        assert_eq!(
+            names(&filter_hosts(fleet(), &query("pending")).0),
+            ["alpha"]
+        );
+        // An unknown filter is All.
+        assert_eq!(filter_hosts(fleet(), &query("bogus")).0.len(), 4);
+    }
+
+    #[test]
+    fn search_and_sort() {
+        let (found, _) = filter_hosts(
+            fleet(),
+            &HostListQuery {
+                q: " CHAR ".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(names(&found), ["Charlie"]);
+        let sorted = |sort: &str| {
+            names(
+                &filter_hosts(
+                    fleet(),
+                    &HostListQuery {
+                        sort: sort.to_string(),
+                        ..Default::default()
+                    },
+                )
+                .0,
+            )
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        };
+        // Needs attention first: pending, out of date, offline, online.
+        assert_eq!(sorted("status"), ["alpha", "Charlie", "bravo", "delta"]);
+        // Most recent first, never seen last.
+        assert_eq!(sorted("last-seen")[..2], ["Charlie", "bravo"]);
+    }
+
+    #[test]
+    fn tab_links_keep_search_and_sort() {
+        let query = HostListQuery {
+            filter: "online".to_string(),
+            q: "web & db".to_string(),
+            sort: "status".to_string(),
+        };
+        assert_eq!(
+            list_href("offline", &query),
+            "/admin/hosts?filter=offline&q=web+%26+db&sort=status"
+        );
+        assert_eq!(list_href("all", &HostListQuery::default()), "/admin/hosts");
+    }
+
+    #[test]
+    fn enrolled_via_names_the_token() {
+        let id = Uuid::new_v4();
+        let token = repo::install_tokens::InstallToken {
+            id,
+            label: "Finance".to_string(),
+            token_sealed: String::new(),
+            require_approval: false,
+            created_at: chrono::Utc::now(),
+            expires_at: None,
+            revoked_at: None,
+            use_count: 1,
+            last_used_at: None,
+        };
+        let source = |via: &str, token_id| repo::hosts::EnrollmentSource {
+            via: Some(via.to_string()),
+            token_id,
+        };
+        let tokens = [token];
+        assert_eq!(
+            enrolled_via_label(Some(&source("install_token", Some(id))), &tokens),
+            "Install token \u{201c}Finance\u{201d}"
+        );
+        assert_eq!(
+            enrolled_via_label(Some(&source("default_token", None)), &tokens),
+            "Default token"
+        );
+        assert_eq!(enrolled_via_label(None, &tokens), "");
     }
 }

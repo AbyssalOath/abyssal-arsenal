@@ -121,6 +121,7 @@ async fn render_host_with_suggestions(
         suggested_actions,
         context,
         Vec::new(),
+        0,
     )
     .await
 }
@@ -137,6 +138,7 @@ async fn render_host_full(
     suggested_actions: Vec<SuggestedActionView>,
     context: Vec<WorkflowContextRow>,
     failed_units: Vec<crate::templates::FailedUnitRow>,
+    failed_hidden: usize,
 ) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
@@ -175,6 +177,8 @@ async fn render_host_full(
         suggested_actions,
         context,
         failed_units,
+        failed_hidden,
+        windows: host.os.as_deref() == Some("windows"),
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -372,14 +376,33 @@ pub async fn system_running_state(
 
 /// Parses `systemctl list-units --failed --plain` output into failed-unit
 /// rows (UNIT LOAD ACTIVE SUB DESCRIPTION), skipping the "No failed units."
-/// placeholder and any line without enough columns.
+/// placeholder and any line without enough columns. A Windows agent's
+/// answer is one tab-separated line per service instead (name, state, exit
+/// code, display name, why; `abyssal_agent_protocol::failed_services`).
 fn parse_failed_units(stdout: &str) -> Vec<crate::templates::FailedUnitRow> {
     stdout
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed == "No failed units." {
+            if trimmed.is_empty()
+                || trimmed == "No failed units."
+                || trimmed == "No failed services."
+            {
                 return None;
+            }
+            if line.contains('\t') {
+                let f: Vec<&str> = line.split('\t').map(str::trim).collect();
+                if f.len() < 4 || f[0].is_empty() {
+                    return None;
+                }
+                return Some(crate::templates::FailedUnitRow {
+                    unit: f[0].to_string(),
+                    active: f[1].to_string(),
+                    sub: String::new(),
+                    description: f[3].to_string(),
+                    exit_code: f[2].to_string(),
+                    why: f.get(4).map(|s| s.to_string()).unwrap_or_default(),
+                });
             }
             let f: Vec<&str> = line.split_whitespace().collect();
             if f.len() < 4 {
@@ -390,9 +413,17 @@ fn parse_failed_units(stdout: &str) -> Vec<crate::templates::FailedUnitRow> {
                 active: f[2].to_string(),
                 sub: f[3].to_string(),
                 description: f.get(4..).map(|rest| rest.join(" ")).unwrap_or_default(),
+                exit_code: String::new(),
+                why: String::new(),
             })
         })
         .collect()
+}
+
+/// Whether a `ListFailedUnits` answer came from a Windows agent (its
+/// tab-separated format), for "services" instead of "units".
+fn is_windows_list(stdout: &str) -> bool {
+    stdout.contains('\t') || stdout.trim() == "No failed services."
 }
 
 /// Parses `df -Ph` output into `{mount_point, usage_percent}` per filesystem.
@@ -500,7 +531,11 @@ async fn failed_units_page(
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let result_label = Some(format!("Failed Units -- {}", host.name));
+    let result_label = Some(if host.os.as_deref() == Some("windows") {
+        format!("Failed Services -- {}", host.name)
+    } else {
+        format!("Failed Units -- {}", host.name)
+    });
 
     let elevated = state.elevation.is_elevated(host_id);
     let result = state
@@ -522,7 +557,9 @@ async fn failed_units_page(
 
     match result {
         Ok(output) => {
-            let failed_units = parse_failed_units(&output.stdout);
+            let ignored = crate::failed_services::ignore_list(&state.pool).await;
+            let (stdout, hidden) = crate::failed_services::strip_ignored(&output.stdout, &ignored);
+            let failed_units = parse_failed_units(&stdout);
             let entry = serde_json::json!({ "failed_unit_count": failed_units.len() });
             let suggested_actions = crate::common::suggested_actions_for(
                 &state,
@@ -533,8 +570,20 @@ async fn failed_units_page(
             )
             .await;
             // Show the table when we parsed rows; otherwise the raw message.
+            let what = if host.os.as_deref() == Some("windows") {
+                "services"
+            } else {
+                "units"
+            };
             let output_text = if failed_units.is_empty() {
-                Some(output.stdout)
+                Some(if hidden > 0 {
+                    format!(
+                        "No failed {what} ({hidden} hidden by the ignore list in Settings › \
+                         Resurrection)."
+                    )
+                } else {
+                    output.stdout
+                })
             } else {
                 None
             };
@@ -549,6 +598,7 @@ async fn failed_units_page(
                 suggested_actions,
                 Vec::new(),
                 failed_units,
+                hidden,
             )
             .await
         }
@@ -584,9 +634,13 @@ pub async fn recover_unit(
     abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
     require_csrf(&jar, &form.csrf_token)?;
     let unit = form.unit.trim().to_string();
-    if !abyssal_agent_protocol::is_valid_unit_name(&unit) {
+    // A systemd unit, or a Windows service name (`MSSQL$SQLEXPRESS`); the
+    // agent checks it against its own platform's rule too.
+    if !abyssal_agent_protocol::is_valid_unit_name(&unit)
+        && !abyssal_agent_protocol::failed_services::is_valid_windows_service_name(&unit)
+    {
         return Err(WebError(AppError::Validation(
-            "Enter a valid systemd unit name.".into(),
+            "Enter a valid systemd unit or Windows service name.".into(),
         )));
     }
     run_write_op(
@@ -1004,7 +1058,7 @@ fn fleet_status(
         let n = parse_failed_units(out).len();
         if n > 0 {
             rank = rank.max(2);
-            problems.push(format!("{n} failed unit(s)"));
+            problems.push(crate::common::failed_phrase(n as i32, is_windows_list(out)));
         }
         entries.push((
             "list_failed_units",
@@ -1068,6 +1122,7 @@ pub async fn fleet(
     let mut seen = std::collections::HashSet::new();
     let mut suggested_actions = Vec::new();
 
+    let ignored = crate::failed_services::ignore_list(&state.pool).await;
     for host in repo::hosts::list(&state.pool).await? {
         if !host.is_active() || !state.hosts.is_connected(host.id) {
             continue;
@@ -1089,7 +1144,8 @@ pub async fn fleet(
             &host.name,
             AgentOperation::ListFailedUnits,
         )
-        .await;
+        .await
+        .map(|out| crate::failed_services::strip_ignored(&out, &ignored).0);
         let read_only = run_read_capture(
             &state,
             &ctx,
@@ -1258,14 +1314,19 @@ fn assemble_triage(
                 "list_failed_units",
                 vec![serde_json::json!({ "failed_unit_count": n })],
             ));
+            let (label, windows) = if is_windows_list(out) {
+                ("Failed services", true)
+            } else {
+                ("Failed units", false)
+            };
             if n == 0 {
-                triage_row("Failed units", "ok", "badge-success", "None".into())
+                triage_row(label, "ok", "badge-success", "None".into())
             } else {
                 triage_row(
-                    "Failed units",
+                    label,
                     "warning",
                     "badge-warning",
-                    format!("{n} failed unit(s)"),
+                    crate::common::failed_phrase(n as i32, windows),
                 )
             }
         }
@@ -1462,6 +1523,7 @@ pub async fn triage(
         AgentOperation::SystemRunningState,
     )
     .await;
+    let ignored = crate::failed_services::ignore_list(&state.pool).await;
     let failed = run_read_capture(
         &state,
         &ctx,
@@ -1469,7 +1531,8 @@ pub async fn triage(
         &host.name,
         AgentOperation::ListFailedUnits,
     )
-    .await;
+    .await
+    .map(|out| crate::failed_services::strip_ignored(&out, &ignored).0);
     let read_only = run_read_capture(
         &state,
         &ctx,
@@ -1734,6 +1797,22 @@ mod tests {
         assert_eq!(rows[0].active, "failed");
         assert_eq!(rows[0].description, "A high performance web server");
         assert!(parse_failed_units("No failed units.").is_empty());
+        assert!(parse_failed_units("No failed services.").is_empty());
+    }
+
+    #[test]
+    fn parses_windows_failed_services() {
+        let out = "MSSQL$SQLEXPRESS\tStopped\t17058 (service-specific)\tSQL Server (SQLEXPRESS)\t\n\
+                   Spooler\tStopped\t1067\tPrint Spooler\t2026-10-12 08:01 UTC: The Print Spooler service terminated unexpectedly.";
+        let rows = parse_failed_units(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].unit, "MSSQL$SQLEXPRESS");
+        assert_eq!(rows[0].exit_code, "17058 (service-specific)");
+        assert_eq!(rows[0].why, "");
+        assert_eq!(rows[1].description, "Print Spooler");
+        assert!(rows[1].why.contains("terminated unexpectedly"));
+        assert!(is_windows_list(out));
+        assert!(!is_windows_list("nginx.service loaded failed failed web"));
     }
 
     #[test]

@@ -786,11 +786,23 @@ pub async fn record_sign_off(
     Ok(())
 }
 
+/// "N failed units" (systemd), or "N failed services" for a Windows host.
+pub fn failed_phrase(count: i32, windows: bool) -> String {
+    let noun = if windows { "service" } else { "unit" };
+    format!("{count} failed {noun}{}", if count == 1 { "" } else { "s" })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn failed_phrase_names_units_or_services() {
+        assert_eq!(failed_phrase(1, false), "1 failed unit");
+        assert_eq!(failed_phrase(2, true), "2 failed services");
+    }
 
     #[test]
     fn percent_sparkline_uses_a_fixed_scale() {

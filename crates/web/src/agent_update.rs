@@ -101,7 +101,7 @@ impl AgentUpdateJob {
 
 /// Whether `host`'s agent is older than this control plane: a different
 /// protocol, or an older version number.
-fn is_out_of_date(state: &AppState, host: &Host) -> bool {
+pub(crate) fn is_out_of_date(state: &AppState, host: &Host) -> bool {
     use crate::update_check::{CURRENT_VERSION, parse_version};
     if state.hosts.agent_protocol_mismatch(host.id) {
         return true;

@@ -71,6 +71,11 @@ pub struct SettingsAccess {
     pub audit_export: bool,
     /// Scourge (IDS/IPS): sweep, config/ruleset-change and capture gates.
     pub scourge: bool,
+    /// Resurrection's failed-service ignore list: `systems.manage`, the
+    /// permission its Recover button needs.
+    pub resurrection: bool,
+    /// Cadavault's daily posture runs: `security.manage`.
+    pub posture: bool,
 }
 
 impl SettingsAccess {
@@ -87,6 +92,8 @@ impl SettingsAccess {
             nac: ctx.has(Permission::NetworkNac),
             audit_export: ctx.has(Permission::AuditExport),
             scourge: ctx.has(Permission::ScourgeManage),
+            resurrection: ctx.has(Permission::SystemsManage),
+            posture: ctx.has(Permission::SecurityManage),
         }
     }
 
@@ -160,6 +167,18 @@ async fn render(
         repo::settings::get_string(&state.pool, THANATOS_ALERT_RECIPIENTS, "").await?;
     let thanatos_extra_fim_paths =
         repo::settings::get_string(&state.pool, THANATOS_EXTRA_FIM_PATHS, "").await?;
+    let posture_daily = repo::settings::get_bool(
+        &state.pool,
+        abyssal_core::settings::CADAVAULT_POSTURE_DAILY,
+        false,
+    )
+    .await?;
+    let resurrection_ignored_services = repo::settings::get_string(
+        &state.pool,
+        abyssal_core::settings::RESURRECTION_IGNORED_SERVICES,
+        "",
+    )
+    .await?;
     let thanatos_c2_ports =
         repo::settings::get_string(&state.pool, THANATOS_C2_PORTS, THANATOS_C2_PORTS_DEFAULT)
             .await?;
@@ -299,6 +318,10 @@ async fn render(
         thanatos_monitoring_enabled,
         thanatos_alert_recipients,
         thanatos_extra_fim_paths,
+        resurrection_ignored_services,
+        posture_daily,
+        resurrection_builtin_ignored:
+            abyssal_agent_protocol::failed_services::BUILTIN_IGNORED_SERVICES.join(", "),
         thanatos_c2_ports,
         thanatos_auto_quarantine_ssh_keys_enabled,
         thanatos_auto_disable_account_enabled,
@@ -940,6 +963,78 @@ pub async fn set_thanatos_extra_fim_paths(
     .await?;
 
     Ok(Redirect::to("/admin/settings").into_response())
+}
+
+/// Turns Cadavault's daily posture runs on or off.
+pub async fn set_posture_daily(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<RegistrationForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::settings::set(
+        &state.pool,
+        abyssal_core::settings::CADAVAULT_POSTURE_DAILY,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(abyssal_core::settings::CADAVAULT_POSTURE_DAILY)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/settings#posture").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ResurrectionIgnoredServicesForm {
+    csrf_token: String,
+    #[serde(default)]
+    services: String,
+}
+
+/// Saves the failed-service ignore list (`crate::failed_services`): the
+/// health check stops counting those services and units, and Resurrection
+/// stops listing them. Blank clears it.
+pub async fn set_resurrection_ignored_services(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<ResurrectionIgnoredServicesForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SystemsManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let list = crate::failed_services::validate_list(&form.services)
+        .map_err(|e| WebError(AppError::Validation(e)))?;
+    repo::settings::set(
+        &state.pool,
+        abyssal_core::settings::RESURRECTION_IGNORED_SERVICES,
+        serde_json::json!(list),
+        Some(ctx.user.id),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(abyssal_core::settings::RESURRECTION_IGNORED_SERVICES)
+            .metadata(serde_json::json!({ "services": list })),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/settings#resurrection").into_response())
 }
 
 #[derive(Deserialize)]

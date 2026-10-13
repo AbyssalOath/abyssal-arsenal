@@ -4,7 +4,10 @@
 {% block heading %}Cadavault — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/cadavault?all=1">&larr; Back to host list</a></p>
+<div class="page-crumbs">
+  {% call macros::host_breadcrumb("Cadavault", "/arsenals/cadavault?all=1", "/arsenals/cadavault/", host_id, host_name, base.available_hosts) %}
+  <a href="/arsenals/cadavault/posture">{% call macros::icon("route") %} Fleet posture</a>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -75,14 +78,18 @@
 <div class="card">
   <h3>{% call macros::icon("route") %} Security posture report</h3>
   <p style="margin-top:0; color:var(--text-muted);">
-    Run every Cadavault check at once (firewall, SSH, kernel/sysctl, accounts,
-    access control, updates) and get a single scored report with prioritized
-    next steps.
+    Every posture check for this host (SSH, kernel, firewall, accounts, file
+    permissions, audit and more on Linux; password, audit, SMB, Defender,
+    credential and network policy on Windows), each with what was found and how
+    to fix it.
   </p>
-  <form method="post" action="/arsenals/cadavault/{{ host_id }}/posture-report">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <button type="submit" class="btn">{% call macros::icon("firewall") %} Run Security Posture Report</button>
-  </form>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <form method="post" action="/arsenals/cadavault/{{ host_id }}/posture" style="margin:0;">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <button type="submit" class="btn">{% call macros::icon("firewall") %} Run the posture checks</button>
+    </form>
+    <a class="btn btn-secondary" href="/arsenals/cadavault/{{ host_id }}/posture">View the last report</a>
+  </div>
 </div>
 
 <div class="card">

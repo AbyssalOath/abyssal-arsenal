@@ -67,6 +67,9 @@ pub struct BaseCtx {
     pub selected_host_name: Option<String>,
     /// Every connected, active host, for the top-nav switcher `<select>`.
     pub available_hosts: Vec<HostOption>,
+    /// The top bar's Arsenals menu, grouped like the dashboard
+    /// (`crate::nav`).
+    pub arsenal_menu: Vec<crate::nav::ArsenalMenuGroup>,
 }
 
 impl BaseCtx {
@@ -137,6 +140,7 @@ impl BaseCtx {
             available_timezones,
             selected_host_name,
             available_hosts,
+            arsenal_menu: crate::nav::arsenal_menu(pool, ctx).await,
         })
     }
 }
@@ -909,6 +913,12 @@ pub struct SettingsTemplate {
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
     pub thanatos_extra_fim_paths: String,
+    /// Settings > Resurrection: the operator's failed-service ignore list,
+    /// one per line, and the agent's built-in Windows one (read-only).
+    pub resurrection_ignored_services: String,
+    /// Settings > Security Posture: daily Cadavault posture runs.
+    pub posture_daily: bool,
+    pub resurrection_builtin_ignored: String,
     pub thanatos_c2_ports: String,
     pub thanatos_auto_quarantine_ssh_keys_enabled: bool,
     pub thanatos_auto_disable_account_enabled: bool,
@@ -1018,7 +1028,15 @@ pub struct HostRow {
     pub id: String,
     pub name: String,
     pub enrolled_at: String,
+    /// Which token enrolled it ("Default token", an install token's label,
+    /// ...), or empty for hosts enrolled before that was recorded.
+    pub enrolled_via: String,
     pub last_seen_at: String,
+    /// For sorting by last seen.
+    pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
+    /// Older than this control plane (`agent_update::is_out_of_date`): what
+    /// the "Out of date" filter, badge and "Update agent" button go by.
+    pub out_of_date: bool,
     pub online: bool,
     pub revoked: bool,
     pub elevation_remaining: Option<String>,
@@ -1066,25 +1084,100 @@ pub struct EnrollmentInstructions {
     pub ca_fingerprint: Option<String>,
 }
 
-/// The just-created reusable deployment token and the ready-to-paste command
-/// for the chosen OS -- shown once (the raw token is hashed at rest). Built for
-/// mass rollout via PDQ Deploy / GPO / Intune; each machine that runs it
-/// auto-enrolls under its own hostname.
-pub struct DeploymentInstructions {
-    pub os_label: String,
-    pub token: String,
-    /// The command (Windows: the unattended RMM script) to drop into the
-    /// deploy tool.
-    pub command: String,
-    /// Windows only: the interactive one-liner, for trying it by hand first.
-    pub interactive_command: Option<String>,
-    /// `AB:CD:...` when the control plane has an internal CA.
-    pub ca_fingerprint: Option<String>,
-    pub expires: String,
+/// The main button in a host's row: one, chosen by its state, with the
+/// rest under "More". See [`HostRow::primary_action`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryAction {
+    Approve,
+    UpdateAgent,
+    SystemInfo,
+    /// Revoked: nothing but Remove, which is under "More".
+    None,
 }
 
-/// One active deployment token in the management list.
-pub struct DeploymentTokenView {
+impl HostRow {
+    pub fn primary_action(&self) -> PrimaryAction {
+        if self.revoked {
+            PrimaryAction::None
+        } else if self.pending_approval {
+            PrimaryAction::Approve
+        } else if self.out_of_date && self.online {
+            PrimaryAction::UpdateAgent
+        } else {
+            PrimaryAction::SystemInfo
+        }
+    }
+
+    pub fn primary_is(&self, name: &str) -> bool {
+        let action = self.primary_action();
+        matches!(
+            (name, action),
+            ("approve", PrimaryAction::Approve)
+                | ("update", PrimaryAction::UpdateAgent)
+                | ("system-info", PrimaryAction::SystemInfo)
+        )
+    }
+
+    /// For the list's filter tabs (`routes::hosts::filter_hosts`).
+    pub fn matches_filter(&self, filter: &str) -> bool {
+        match filter {
+            "online" => self.online,
+            "offline" => !self.online && !self.revoked && !self.pending_approval,
+            "out-of-date" => self.out_of_date,
+            "pending" => self.pending_approval,
+            _ => true,
+        }
+    }
+
+    /// Sorting by status: what needs attention first.
+    pub fn status_rank(&self) -> u8 {
+        if self.pending_approval {
+            0
+        } else if self.out_of_date {
+            1
+        } else if !self.online && !self.revoked {
+            2
+        } else if self.online {
+            3
+        } else {
+            4
+        }
+    }
+}
+
+/// "N hosts · N online · N out of date" above the list.
+pub struct HostSummary {
+    pub total: usize,
+    pub online: usize,
+    pub out_of_date: usize,
+    pub pending: usize,
+}
+
+/// One of the list's filter tabs.
+pub struct HostFilterTab {
+    pub key: &'static str,
+    /// This tab, keeping the current search and sort.
+    pub href: String,
+    pub label: &'static str,
+    pub count: usize,
+    pub active: bool,
+}
+
+/// An additional install token in the Install tokens table.
+pub struct InstallTokenView {
+    pub id: String,
+    pub label: String,
+    pub created: String,
+    pub expires: String,
+    pub use_count: i64,
+    pub require_approval: bool,
+    /// Still enrolls hosts (not revoked or expired).
+    pub active: bool,
+    pub revoked: bool,
+}
+
+/// A legacy deployment token, listed until it expires or is revoked.
+pub struct LegacyTokenView {
     pub id: String,
     pub label: String,
     pub created: String,
@@ -1092,14 +1185,20 @@ pub struct DeploymentTokenView {
     pub use_count: i64,
 }
 
-/// The agent install token (AAT) card on `/admin/hosts`.
-pub struct AatView {
-    /// The AAT in clear -- only right after an audited reveal or a rotate.
-    pub revealed: Option<String>,
-    /// Install lines, with the AAT filled in only when `revealed`.
-    pub commands: crate::deploy_commands::AatCommands,
-    pub require_approval: bool,
-    pub pending_count: usize,
+/// The install commands under Add hosts, for one install token: masked
+/// (`<AAT>`) until a token is revealed or created.
+pub struct CommandsView {
+    /// "Default token" or the additional token's label.
+    pub token_name: String,
+    pub revealed_token: Option<String>,
+    /// Just created or rotated: say to save it.
+    pub just_created: bool,
+    pub aat: crate::deploy_commands::AatCommands,
+    /// The interactive one-liners (they pin the CA fingerprint), only with a
+    /// revealed token.
+    pub linux_oneliner: Option<String>,
+    pub windows_oneliner: Option<String>,
+    pub windows_rmm: Option<String>,
 }
 
 /// Progress of an "Update all out-of-date agents" job.
@@ -1129,19 +1228,28 @@ pub struct AgentUpdateRow {
 #[template(path = "hosts.html")]
 pub struct HostsTemplate {
     pub base: BaseCtx,
-    /// `hosts.enroll`: the single-use enrollment token card.
+    /// `hosts.enroll`: the one-time enrollment token.
     pub can_enroll: bool,
-    /// `hosts.manage`: deployment tokens, the AAT, and per-host actions.
+    /// `hosts.manage`: install tokens and per-host actions.
     pub can_manage: bool,
-    pub aat: AatView,
-    pub hosts: Vec<HostRow>,
-    pub enrollment: Option<EnrollmentInstructions>,
-    /// A deployment token + command that was just generated (shown once).
-    pub deployment: Option<DeploymentInstructions>,
-    /// Active reusable deployment tokens, for review/revoke.
-    pub deployment_tokens: Vec<DeploymentTokenView>,
     /// Connected hosts "Update all out-of-date agents" would update now.
     pub update_all_count: usize,
+    pub summary: HostSummary,
+    /// After the filter, search and sort.
+    pub hosts: Vec<HostRow>,
+    pub filter_tabs: Vec<HostFilterTab>,
+    pub query: crate::routes::hosts::HostListQuery,
+    /// "Add hosts" starts open: no hosts yet, or a token was just shown.
+    pub add_hosts_open: bool,
+    pub default_token_requires_approval: bool,
+    /// Hosts currently enrolled through the default token.
+    pub default_token_hosts: usize,
+    pub additional_tokens: Vec<InstallTokenView>,
+    pub legacy_tokens: Vec<LegacyTokenView>,
+    /// (days or "" for never, label) for the new-token form.
+    pub expiry_choices: Vec<(String, &'static str)>,
+    pub commands: CommandsView,
+    pub enrollment: Option<EnrollmentInstructions>,
     pub uninstall_command: Option<String>,
     pub action_result: Option<String>,
     pub action_error: Option<String>,
@@ -1320,6 +1428,128 @@ pub struct CadavaultTemplate {
     pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
+/// Cadavault's check-by-check posture report for one host
+/// (`routes::cadavault_posture::report`).
+#[derive(Template)]
+#[template(path = "cadavault_posture.html")]
+pub struct CadavaultPostureTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// The run's platform (`linux` / `windows`).
+    pub platform: String,
+    pub has_run: bool,
+    pub run_id: String,
+    pub run_when: String,
+    pub run_by: String,
+    /// Showing the newest run (not one picked from the history).
+    pub viewing_latest: bool,
+    pub score: String,
+    pub score_badge: &'static str,
+    pub passed: i32,
+    pub failed: i32,
+    pub not_applicable: i32,
+    /// "Since <time>: score 70% → 75%; newly failing: ...; fixed: ...".
+    pub change: Option<String>,
+    pub filter_tabs: Vec<PostureFilterTab>,
+    pub status_filter: String,
+    pub q: String,
+    /// The `?run=` being shown, kept in the search form.
+    pub run_query: String,
+    /// After the filter and search, failed first.
+    pub rows: Vec<PostureCheckRow>,
+    pub runs: Vec<PostureRunLink>,
+    /// Some checks were not applicable only because the agent lacked root.
+    pub needs_root: bool,
+    pub online: bool,
+    /// Connected, but its agent is older than `PostureFacts`.
+    pub needs_update: bool,
+    pub control_plane: Option<crate::control_plane::PageNote>,
+    /// Why the last run attempt didn't happen.
+    pub error: Option<String>,
+}
+
+pub struct PostureFilterTab {
+    pub label: &'static str,
+    pub count: usize,
+    pub active: bool,
+    pub href: String,
+}
+
+/// One check's result, with its catalog text.
+pub struct PostureCheckRow {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+    /// passed, failed or na.
+    pub status: &'static str,
+    pub status_label: &'static str,
+    pub badge: &'static str,
+    pub evidence: String,
+    pub rationale: String,
+    pub remediation: String,
+    pub command: Option<String>,
+    /// (technique ID, its attack.mitre.org page).
+    pub mitre: Vec<(String, String)>,
+    /// An existing Cadavault action that fixes it (failed checks, for
+    /// `security.manage`).
+    pub fix: Option<PostureFixLink>,
+    /// Why that action would be refused on the control plane's server.
+    pub fix_refused: Option<String>,
+    /// For ordering: failed, passed, not applicable.
+    pub rank: abyssal_posture::Status,
+}
+
+pub struct PostureFixLink {
+    pub label: String,
+    pub href: String,
+    /// A form POST (with CSRF) rather than a link.
+    pub post: bool,
+}
+
+pub struct PostureRunLink {
+    pub href: String,
+    pub when: String,
+    pub by: String,
+    pub score: String,
+    pub current: bool,
+}
+
+/// Cadavault's posture fleet view (`routes::cadavault_posture::fleet`).
+#[derive(Template)]
+#[template(path = "cadavault_posture_fleet.html")]
+pub struct CadavaultPostureFleetTemplate {
+    pub base: BaseCtx,
+    /// Lowest score first.
+    pub hosts: Vec<PostureFleetHostRow>,
+    pub top_failing: Vec<PostureTopCheckRow>,
+    /// (name, report link) for active hosts with no run yet.
+    pub never_run: Vec<(String, String)>,
+}
+
+pub struct PostureFleetHostRow {
+    pub href: String,
+    pub name: String,
+    pub platform: String,
+    pub score: String,
+    pub score_value: i32,
+    pub score_badge: &'static str,
+    /// "▲ 5", "▼ 3", "—" or empty with no earlier run.
+    pub trend: String,
+    pub passed: i32,
+    pub failed: i32,
+    pub not_applicable: i32,
+    pub when: String,
+}
+
+pub struct PostureTopCheckRow {
+    pub id: String,
+    pub title: String,
+    pub count: usize,
+    /// (host name, link to its report filtered to this check).
+    pub hosts: Vec<(String, String)>,
+}
+
 #[derive(Template)]
 #[template(path = "cadavault_host.html")]
 pub struct CadavaultHostTemplate {
@@ -1347,39 +1577,6 @@ pub struct CadavaultHostTemplate {
     pub sysctl_posture: Vec<SysctlPostureRow>,
     pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
-}
-
-/// One row of Cadavault's aggregate Security Posture Report: a category
-/// (Firewall, SSH, Kernel/sysctl, Accounts, MAC, Updates) with its rolled-up
-/// status and a one-line summary.
-pub struct PostureCategoryRow {
-    pub name: String,
-    pub status_label: String,
-    pub status_badge_class: String,
-    pub summary: String,
-}
-
-#[derive(Template)]
-#[template(path = "cadavault_posture.html")]
-pub struct CadavaultPostureTemplate {
-    pub base: BaseCtx,
-    pub host_id: String,
-    pub host_name: String,
-    pub elevated: bool,
-    pub protocol_mismatch: bool,
-    /// Set when the host is the control plane's own server: what's
-    /// refused there (`control_plane::page_note`).
-    pub control_plane: Option<crate::control_plane::PageNote>,
-    /// Weighted score 0-100 (pass = 1, warn = 0.5, fail = 0; unavailable
-    /// categories are excluded from the denominator).
-    pub score_percent: u8,
-    pub score_label: String,
-    pub score_badge_class: String,
-    pub pass_count: usize,
-    pub warn_count: usize,
-    pub fail_count: usize,
-    pub categories: Vec<PostureCategoryRow>,
-    pub suggested_actions: Vec<SuggestedActionView>,
 }
 
 /// One row of Cadavault's kernel/sysctl security-posture table: a baseline
@@ -3153,8 +3350,13 @@ pub struct ResurrectionHostTemplate {
     pub result_error: Option<String>,
     pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
-    /// Failed systemd units, populated when the Failed Units check was run.
+    /// Failed systemd units (or Windows services), populated when the
+    /// Failed Units check was run.
     pub failed_units: Vec<FailedUnitRow>,
+    /// How many the Settings › Resurrection ignore list hid.
+    pub failed_hidden: usize,
+    /// "Failed services" wording and columns.
+    pub windows: bool,
 }
 
 /// One host row in Resurrection's fleet recovery console.
@@ -3210,10 +3412,16 @@ pub struct ResurrectionTriageTemplate {
 
 /// One failed systemd unit row in Resurrection's recovery table.
 pub struct FailedUnitRow {
+    /// The unit, or the Windows service's name.
     pub unit: String,
     pub active: String,
     pub sub: String,
+    /// The unit's description, or the service's display name.
     pub description: String,
+    /// Windows: the service's exit code. Empty for systemd.
+    pub exit_code: String,
+    /// Windows: the latest System-log failure event for it, if any.
+    pub why: String,
 }
 
 #[derive(Template)]
@@ -3597,6 +3805,36 @@ mod csp_tests {
                 }
             }
         }
+        assert!(offenders.is_empty(), "{offenders:#?}");
+    }
+}
+
+#[cfg(test)]
+mod breadcrumb_tests {
+    /// Every per-host arsenal page opens with the shared
+    /// `Arsenals › <Arsenal> › <host>` trail (`_macros.html`), whose host
+    /// is a switcher -- not a page-specific "Back to host list" link.
+    #[test]
+    fn every_host_page_has_the_breadcrumb() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let mut pages = 0;
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.ends_with("_host.html") {
+                continue;
+            }
+            pages += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            if !text.contains("macros::host_breadcrumb(") {
+                offenders.push(format!("{name}: no host_breadcrumb"));
+            }
+            if text.contains("&larr; Back to") {
+                offenders.push(format!("{name}: still has a back link"));
+            }
+        }
+        assert!(pages >= 25, "found only {pages} host pages");
         assert!(offenders.is_empty(), "{offenders:#?}");
     }
 }

@@ -4,7 +4,7 @@
 {% block heading %}Sepulchre — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/sepulchre">&larr; Connections</a></p>
+<div class="page-crumbs">{% call macros::host_breadcrumb("Sepulchre", "/arsenals/sepulchre", "/arsenals/sepulchre/hosts/", host_id, host_name, base.available_hosts) %}</div>
 
 {% if let Some(m) = message %}
 <div class="info-banner">{{ m }}</div>

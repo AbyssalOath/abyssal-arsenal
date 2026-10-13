@@ -28,6 +28,7 @@ COPY crates/modules/Cargo.toml crates/modules/Cargo.toml
 COPY crates/workflows/Cargo.toml crates/workflows/Cargo.toml
 COPY crates/agent-protocol/Cargo.toml crates/agent-protocol/Cargo.toml
 COPY crates/internal-ca/Cargo.toml crates/internal-ca/Cargo.toml
+COPY crates/posture/Cargo.toml crates/posture/Cargo.toml
 COPY crates/web/Cargo.toml crates/web/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
 COPY crates/agent/Cargo.toml crates/agent/Cargo.toml
@@ -58,7 +59,7 @@ COPY crates/arsenals/panopticon/Cargo.toml crates/arsenals/panopticon/Cargo.toml
 COPY crates/arsenals/sepulchre/Cargo.toml crates/arsenals/sepulchre/Cargo.toml
 COPY crates/arsenals/scourge/Cargo.toml crates/arsenals/scourge/Cargo.toml
 
-RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol internal-ca web \
+RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol internal-ca posture web \
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \

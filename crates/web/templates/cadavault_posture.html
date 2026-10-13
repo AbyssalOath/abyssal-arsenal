@@ -4,78 +4,152 @@
 {% block heading %}Cadavault — Security Posture — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px;"><a href="/arsenals/cadavault/{{ host_id }}">&larr; Back to Cadavault</a></p>
+<div class="page-crumbs">
+  {% call macros::page_breadcrumb("Cadavault", "/arsenals/cadavault?all=1", "Security Posture") %}
+  <span>
+    <a href="/arsenals/cadavault/{{ host_id }}">{% call macros::icon("host") %} {{ host_name }} in Cadavault</a>
+    <a href="/arsenals/cadavault/posture">{% call macros::icon("route") %} Fleet posture</a>
+  </span>
+</div>
+
+{% if let Some(e) = error %}
+<div class="error-banner">The checks didn't run: {{ e }}</div>
+{% endif %}
+
+{% if needs_update %}
+<div class="warning-banner">
+  {% call macros::icon("warning") %} <strong>This host's agent is too old for the posture checks.</strong>
+  They need agent 0.2.4 or later: use <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
+</div>
+{% endif %}
 
 <div class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-    <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
-    <span class="badge {{ score_badge_class }}" style="font-size:1.1em;">{{ score_label }} — {{ score_percent }}%</span>
+  <div class="posture-summary">
+    <div>
+      {% if has_run %}
+      <span class="badge {{ score_badge }} posture-score">{{ score }}</span>
+      <span class="posture-counts">
+        <strong>{{ failed }}</strong> failed &middot; <strong>{{ passed }}</strong> passed &middot; {{ not_applicable }} not applicable
+      </span>
+      <p class="text-muted" style="margin:6px 0 0;">
+        {% if !viewing_latest %}<strong>An earlier run:</strong> {% endif %}{{ run_when }}, run by {{ run_by }}{% if !platform.is_empty() %} ({{ platform }}){% endif %}.
+        The score is passed as a share of the checks that applied.
+      </p>
+      {% if let Some(c) = change %}<p style="margin:6px 0 0;">{{ c }}</p>{% endif %}
+      {% else %}
+      <p style="margin:0;">No posture run on this host yet.</p>
+      {% endif %}
+    </div>
+    <div class="posture-actions">
+      <form method="post" action="/arsenals/cadavault/{{ host_id }}/posture" style="margin:0;">
+        <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+        <button type="submit" class="btn-warning"{% if !online %} disabled title="The host must be connected."{% endif %}>{% call macros::icon("route") %} {% if has_run %}Run again{% else %}Run the checks{% endif %}</button>
+      </form>
+      {% if has_run %}
+      <a class="btn btn-secondary" href="/arsenals/cadavault/{{ host_id }}/posture/{{ run_id }}/csv">Download CSV</a>
+      {% endif %}
+    </div>
   </div>
-  <p style="margin:8px 0 0; color:var(--text-muted);">
-    {{ pass_count }} passing, {{ warn_count }} warning, {{ fail_count }} failing.
-    Score weights a warning as half a pass; checks that couldn't run are excluded.
+
+  {% if needs_root %}
+  <p class="text-muted" style="margin:10px 0 0; font-size:0.88rem;">
+    Some checks couldn't be read because this agent isn't running as root (the full SSH
+    config, empty passwords, audit rules). An agent installed as a service runs as root;
+    one started by hand reports those as not applicable.
   </p>
+  {% endif %}
 
   {% if let Some(cp) = control_plane %}
   <div class="info-banner" style="margin-top:10px;">
     {% call macros::icon("shield") %} <strong>This is the control plane's own server.</strong>
-    Operations that would take the control plane down are refused here: {{ cp.summary }}.
-    Anything refused can still be done deliberately from a shell on the server
-    (<a href="https://github.com/AbyssalOath/abyssal-arsenal/blob/main/docs/control-plane-host.md">why</a>).
+    Fixes that would take the control plane down are refused here: {{ cp.summary }}.
   </div>
   {% endif %}
-
-  {% if protocol_mismatch %}
-  <div class="warning-banner" style="margin-top:10px;">
-    {% call macros::icon("warning") %} <strong>This host's agent is older than the control plane.</strong>
-    Anything it can't do yet is refused before it's sent, with a message saying so, so nothing breaks --
-    but those actions won't work until it's updated: use <strong>Update agent</strong> on <a href="/admin/hosts">Hosts</a>.
-  </div>
-  {% endif %}
-
-  {% if !elevated %}
-  <div class="info-banner" style="margin-top:10px;">
-    This host isn't elevated. Some checks (empty-password accounts, sudoers, the full sshd config) need root and may show as <em>unavailable</em> or incomplete. Elevate from the Cadavault page and re-run for a complete report.
-  </div>
-  {% endif %}
-
-  <form method="post" action="/arsenals/cadavault/{{ host_id }}/posture-report" style="margin-top:12px;">
-    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-    <button type="submit" class="btn-secondary">{% call macros::icon("route") %} Re-run report</button>
-  </form>
 </div>
 
+{% if has_run %}
 <div class="card">
-  <h3>Checks</h3>
-  <div class="table-scroll" tabindex="0" role="region" aria-label="Security posture checks">
-    <table>
-      <thead>
-        <tr><th>Category</th><th>Status</th><th>Summary</th></tr>
-      </thead>
-      <tbody>
-        {% for c in categories %}
-        <tr>
-          <td>{{ c.name }}</td>
-          <td><span class="badge {{ c.status_badge_class }}">{{ c.status_label }}</span></td>
-          <td>{{ c.summary }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-
-{% if !suggested_actions.is_empty() %}
-<div class="card">
-  <div class="suggested-actions-panel">
-    <strong>{% call macros::icon("route") %} Suggested Next Steps</strong>
-    <div class="action-grid" style="margin-top:8px;">
-      {% for action in suggested_actions %}
-      <a class="btn btn-suggestion" href="{{ action.url }}">{{ action.label }}</a>
+  <div class="hosts-toolbar">
+    <nav class="filter-tabs" aria-label="Filter checks">
+      {% for t in filter_tabs %}
+      <a href="{{ t.href }}" class="filter-tab{% if t.active %} active{% endif %}"{% if t.active %} aria-current="true"{% endif %}>{{ t.label }} <span class="filter-count">{{ t.count }}</span></a>
       {% endfor %}
-    </div>
+    </nav>
+    <form method="get" action="/arsenals/cadavault/{{ host_id }}/posture" class="hosts-search">
+      {% if status_filter != "all" %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
+      {% if !run_query.is_empty() %}<input type="hidden" name="run" value="{{ run_query }}">{% endif %}
+      <label for="posture-q" class="sr-only">Search checks</label>
+      <input type="search" id="posture-q" name="q" value="{{ q }}" placeholder="Search ID, title, evidence">
+      <button type="submit" class="btn-secondary">Search</button>
+    </form>
   </div>
+
+  {% if rows.is_empty() %}
+  <p class="text-muted">No checks match.</p>
+  {% else %}
+  <div class="posture-checks">
+    {% for r in rows %}
+    <details class="posture-check posture-{{ r.status }}" id="{{ r.id }}">
+      <summary>
+        <span class="badge {{ r.badge }}">{{ r.status_label }}</span>
+        <code class="posture-id">{{ r.id }}</code>
+        <span class="posture-title">{{ r.title }}</span>
+        <span class="posture-category text-muted">{{ r.category }}</span>
+      </summary>
+      <div class="posture-body">
+        <p><strong>Found:</strong> {{ r.evidence }}</p>
+        {% if !r.rationale.is_empty() %}<p><strong>Why it matters:</strong> {{ r.rationale }}</p>{% endif %}
+        {% if r.status != "passed" && !r.remediation.is_empty() %}
+        <p><strong>How to fix:</strong> {{ r.remediation }}</p>
+        {% if let Some(cmd) = r.command %}
+        <div class="posture-command">
+          <pre id="cmd-{{ r.id }}">{{ cmd }}</pre>
+          <button type="button" class="btn-secondary btn-sm" data-copy="cmd-{{ r.id }}">Copy</button>
+        </div>
+        <p class="text-muted" style="font-size:0.85rem;">Shown to copy, never run by Abyssal Arsenal. Review it for this host before running it.</p>
+        {% endif %}
+        {% if let Some(fix) = r.fix %}
+        {% if let Some(why) = r.fix_refused %}
+        <p class="text-muted"><strong>Cadavault's fix is refused here:</strong> {{ why }}</p>
+        {% else if fix.post %}
+        <form method="post" action="{{ fix.href }}" style="margin:0 0 8px;">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <button type="submit" class="btn-secondary btn-sm">{{ fix.label }}</button>
+        </form>
+        {% else %}
+        <p><a class="btn btn-secondary btn-sm" href="{{ fix.href }}">{{ fix.label }}</a></p>
+        {% endif %}
+        {% endif %}
+        {% endif %}
+        {% if !r.mitre.is_empty() %}
+        <p class="text-muted" style="font-size:0.85rem; margin-bottom:0;">MITRE ATT&amp;CK:
+          {% for (t, url) in r.mitre %}<a href="{{ url }}" rel="noopener noreferrer" target="_blank">{{ t }}</a>{% if !loop.last %}, {% endif %}{% endfor %}
+        </p>
+        {% endif %}
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
+
+{% if runs.len() > 1 %}
+<div class="card">
+  <h3 style="margin-top:0;">Earlier runs</h3>
+  <table>
+    <thead><tr><th>When</th><th>Score</th><th>Run by</th></tr></thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td>{% if r.current %}<strong>{{ r.when }}</strong> (shown){% else %}<a href="{{ r.href }}">{{ r.when }}</a>{% endif %}</td>
+        <td>{{ r.score }}</td>
+        <td>{{ r.by }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 {% endif %}
 
 {% endblock %}

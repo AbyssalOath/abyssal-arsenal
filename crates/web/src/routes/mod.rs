@@ -6,6 +6,7 @@ pub mod arsenals;
 pub mod audit;
 pub mod bootstrap;
 pub mod cadavault;
+pub mod cadavault_posture;
 pub mod catacomb;
 pub mod cryptkeeper;
 pub mod cystoolbox;

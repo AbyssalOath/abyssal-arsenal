@@ -167,7 +167,11 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         pool,
-        modules: Arc::new(registry),
+        modules: {
+            let registry = Arc::new(registry);
+            abyssal_web::nav::set_registry(registry.clone());
+            registry
+        },
         workflows: Arc::new(WorkflowRegistry::load_builtin()),
         config: Arc::new(WebConfig {
             session_cookie_name: config.session_cookie_name.clone(),
@@ -218,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
     abyssal_web::spawn_scourge_sweep(state.clone());
     abyssal_web::spawn_scourge_retention(state.clone());
     abyssal_web::spawn_health_sweep(state.clone());
+    abyssal_web::posture_ops::spawn_posture_schedule(state.clone());
     abyssal_web::spawn_mortiscope_metrics_sweep(state.clone());
     abyssal_web::spawn_self_metrics_sampler(
         state.self_metrics.clone(),

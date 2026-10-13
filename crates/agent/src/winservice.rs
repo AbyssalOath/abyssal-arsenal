@@ -269,9 +269,20 @@ pub fn uninstall_service() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Present in `INSTALLED_BINARY_DIR` while an uninstall's deferred removal
+/// of it is pending (see `remove_installed_binary`). The detached `cmd` only
+/// deletes the folder if this is still there, so an install that starts in
+/// the meantime cancels the removal by deleting it.
+const PENDING_REMOVAL_MARKER: &str = r"C:\Program Files\AbyssalAgent\.pending-removal";
+
+/// How long the deferred removal waits for the uninstalling process to exit.
+const DEFERRED_REMOVAL_DELAY_SECS: u32 = 3;
+
 /// Removes `INSTALLED_BINARY_DIR`. A running .exe can't delete itself, so
 /// when this *is* the installed copy (the usual `/uninstall` case), the
-/// removal is handed to a detached `cmd` that waits for this process to exit.
+/// removal is handed to a detached `cmd` that waits for this process to exit
+/// -- and that an install started in the meantime can cancel
+/// (`cancel_pending_removal`).
 pub fn remove_installed_binary() -> anyhow::Result<()> {
     let dir = Path::new(INSTALLED_BINARY_DIR);
     if !dir.exists() {
@@ -281,9 +292,14 @@ pub fn remove_installed_binary() -> anyhow::Result<()> {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::fs::write(PENDING_REMOVAL_MARKER, b"")
+            .with_context(|| format!("failed to write {PENDING_REMOVAL_MARKER}"))?;
+        // `ping -n N` waits about N-1 seconds.
+        let pings = DEFERRED_REMOVAL_DELAY_SECS + 1;
         std::process::Command::new("cmd.exe")
             .raw_arg(format!(
-                "/d /c ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{INSTALLED_BINARY_DIR}\""
+                "/d /c ping -n {pings} 127.0.0.1 >nul & if exist \"{PENDING_REMOVAL_MARKER}\" \
+                 rmdir /s /q \"{INSTALLED_BINARY_DIR}\""
             ))
             .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
             .spawn()
@@ -295,6 +311,20 @@ pub fn remove_installed_binary() -> anyhow::Result<()> {
         println!("Removed {INSTALLED_BINARY_DIR}.");
     }
     Ok(())
+}
+
+/// An install run right after an uninstall would otherwise race the
+/// uninstall's deferred folder removal: the new binary copied in, then the
+/// folder deleted out from under the service a moment later. Deleting the
+/// marker cancels a removal that hasn't started; the short wait lets one
+/// that already passed its check finish before the folder is recreated.
+fn cancel_pending_removal() {
+    if std::fs::remove_file(PENDING_REMOVAL_MARKER).is_ok() {
+        println!(
+            "Cancelled the pending removal of {INSTALLED_BINARY_DIR} from an earlier uninstall."
+        );
+        std::thread::sleep(Duration::from_secs(2));
+    }
 }
 
 /// Windows paths are case-insensitive; `current_exe()` may not match the
@@ -321,6 +351,7 @@ fn is_installed_binary(path: &Path) -> bool {
 /// mirrors). Skips the copy (but still re-hardens ACLs, so a repair-run
 /// re-asserts them) when already running from `INSTALLED_BINARY_PATH`.
 fn install_agent_binary() -> anyhow::Result<PathBuf> {
+    cancel_pending_removal();
     let current_exe =
         std::env::current_exe().context("could not determine this binary's own path")?;
     let target = PathBuf::from(INSTALLED_BINARY_PATH);

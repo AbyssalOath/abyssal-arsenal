@@ -147,7 +147,8 @@ the bootstrap scripts, or the agent's TLS/enrollment code.
    Editing one hex digit of `$fp` stops the command with "CA fingerprint
    mismatch" before anything is imported; a consumed token gives exit code
    20 with the token hint.
-6. **RMM.** Create a Windows deployment token and run the generated script
+6. **RMM.** Create an install token (Hosts › Add hosts › New install token),
+   **Show** it, and run the generated RMM script
    from PDQ (or `psexec -s powershell -File script.ps1`) as SYSTEM: exit
    code 0 and the host enrolls; with a revoked token, the output shows the
    `ERROR:` line and exit code 20, never the token.

@@ -4,6 +4,8 @@
 {% block heading %}Thanatos — Suppression &amp; Allowlist Rules{% endblock %}
 {% block content %}
 
+<div class="page-crumbs">{% call macros::page_breadcrumb("Thanatos", "/arsenals/thanatos", "Suppression & Allowlist Rules") %}</div>
+
 <div class="card">
   <p style="color:var(--text-muted); margin-top:0;">
     A finding matching any <strong>active</strong> rule is dropped at ingest &mdash; never stored,
@@ -11,7 +13,6 @@
     or technique) or to allowlist a known-good indicator (match by text &mdash; a monitoring host's
     IP, a service account). Every field you set is an <em>AND</em> condition; a blank field matches
     anything. Text matches whole tokens (so <code>10.0.0.5</code> won't match <code>210.0.0.59</code>).
-    <a href="/arsenals/thanatos">&larr; Back to the Thanatos dashboard</a>
   </p>
 
   <h3>Add a rule</h3>

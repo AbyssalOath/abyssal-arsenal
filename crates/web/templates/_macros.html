@@ -146,3 +146,40 @@
   </a>
 </div>
 {% endmacro %}
+
+{# Arsenals › <Arsenal> › <host> at the top of a per-host page. The host is
+   a menu of the other hosts (`base.available_hosts`), each opening this
+   arsenal's page for that host at `host_prefix` + its id. nav.js closes it
+   on an outside click or Escape. #}
+{% macro host_breadcrumb(arsenal_name, list_href, host_prefix, host_id, host_name, hosts) %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/">Arsenals</a><span class="breadcrumb-sep" aria-hidden="true">&rsaquo;</span>
+  <a href="{{ list_href }}">{{ arsenal_name }}</a><span class="breadcrumb-sep" aria-hidden="true">&rsaquo;</span>
+  {% if hosts.len() > 1 %}
+  <details class="breadcrumb-switcher">
+    <summary title="Switch to another host" aria-current="page">{{ host_name }}</summary>
+    <div class="user-menu-panel breadcrumb-switcher-panel">
+      {% for h in hosts %}
+      {% if h.id == host_id %}
+      <span class="user-menu-link breadcrumb-switcher-current">{{ h.name }}{% if h.is_control_plane %} <span class="text-muted">(control plane)</span>{% endif %}</span>
+      {% else %}
+      <a href="{{ host_prefix }}{{ h.id }}" class="user-menu-link">{{ h.name }}{% if h.is_control_plane %} <span class="text-muted">(control plane)</span>{% endif %}</a>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </details>
+  {% else %}
+  <span aria-current="page">{{ host_name }}</span>
+  {% endif %}
+</nav>
+{% endmacro %}
+
+{# Arsenals › <Arsenal> › <page> at the top of an arsenal's other pages
+   (fleet views, settings, search). #}
+{% macro page_breadcrumb(arsenal_name, arsenal_href, page_name) %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/">Arsenals</a><span class="breadcrumb-sep" aria-hidden="true">&rsaquo;</span>
+  <a href="{{ arsenal_href }}">{{ arsenal_name }}</a><span class="breadcrumb-sep" aria-hidden="true">&rsaquo;</span>
+  <span aria-current="page">{{ page_name }}</span>
+</nav>
+{% endmacro %}

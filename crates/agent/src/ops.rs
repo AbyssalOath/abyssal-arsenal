@@ -87,6 +87,7 @@ pub async fn run(
             crate::cadavault::account_policy_audit(elevation).await
         }
         AgentOperation::MacStatus => crate::cadavault::mac_status(elevation).await,
+        AgentOperation::PostureFacts => crate::posture::posture_facts(elevation).await,
         AgentOperation::AutomaticUpdatesStatus => {
             crate::cadavault::automatic_updates_status(elevation).await
         }

@@ -4,10 +4,10 @@
 {% block heading %}Resurrection — {{ host_name }}{% endblock %}
 {% block content %}
 
-<p style="margin-top:-12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-  <a href="/arsenals/resurrection?all=1">&larr; Back to host list</a>
+<div class="page-crumbs">
+  {% call macros::host_breadcrumb("Resurrection", "/arsenals/resurrection?all=1", "/arsenals/resurrection/", host_id, host_name, base.available_hosts) %}
   <a href="/arsenals/resurrection/fleet">{% call macros::icon("route") %} Fleet recovery</a>
-</p>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -108,7 +108,7 @@
     </form>
     <form method="post" action="/arsenals/resurrection/{{ host_id }}/failed-units">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-      <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Failed Units</button>
+      <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} {% if windows %}Failed Services{% else %}Failed Units{% endif %}</button>
     </form>
     <form method="post" action="/arsenals/resurrection/{{ host_id }}/disk-space">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
@@ -123,7 +123,43 @@
 
 {% if !failed_units.is_empty() %}
 <div class="card">
+  {% if windows %}
+  <h3>Failed services</h3>
+  <p class="text-muted" style="margin-top:0;">
+    Automatic-start services that are stopped. Left out: trigger-start services,
+    delayed-start ones just after boot, ones that exited cleanly, per-user
+    services, and a built-in list of services that are routinely stopped.
+    {% if failed_hidden > 0 %}{{ failed_hidden }} more hidden by the ignore list in Settings &rsaquo; Resurrection.{% endif %}
+  </p>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Failed Windows services">
+    <table>
+      <thead><tr><th>Service</th><th>State</th><th>Exit code</th><th>Why it stopped</th>{% if can_manage %}<th>Action</th>{% endif %}</tr></thead>
+      <tbody>
+        {% for u in failed_units %}
+        <tr>
+          <td><code>{{ u.unit }}</code>{% if !u.description.is_empty() %}<br><span class="text-muted" style="font-size:0.85em;">{{ u.description }}</span>{% endif %}</td>
+          <td>{{ u.active }}</td>
+          <td>{{ u.exit_code }}</td>
+          <td>{% if u.why.is_empty() %}<span class="text-muted">No failure event in the System log this week.</span>{% else %}{{ u.why }}{% endif %}</td>
+          {% if can_manage %}
+          <td>
+            <form method="post" action="/arsenals/resurrection/{{ host_id }}/recover-unit">
+              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+              <input type="hidden" name="unit" value="{{ u.unit }}">
+              <button type="submit" class="btn-warning btn-sm" title="Start the service">Recover</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
   <h3>Failed units</h3>
+  {% if failed_hidden > 0 %}
+  <p class="text-muted" style="margin-top:0;">{{ failed_hidden }} more hidden by the ignore list in Settings &rsaquo; Resurrection.</p>
+  {% endif %}
   <div class="table-scroll" tabindex="0" role="region" aria-label="Failed systemd units">
     <table>
       <thead><tr><th>Unit</th><th>Active</th><th>Sub</th><th>Description</th>{% if can_manage %}<th>Action</th>{% endif %}</tr></thead>
@@ -148,6 +184,7 @@
       </tbody>
     </table>
   </div>
+  {% endif %}
 </div>
 {% endif %}
 
