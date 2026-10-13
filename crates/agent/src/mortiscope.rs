@@ -11,6 +11,7 @@ use std::time::Duration;
 use abyssal_agent_protocol::{CommandOutcome, OperationOutput};
 
 use crate::elevation::ElevationState;
+#[cfg(not(windows))]
 use crate::init_system::{self, InitSystem};
 use crate::process::{command_exists, run_command, truncate_lines};
 
@@ -384,6 +385,13 @@ pub async fn memory_pressure() -> CommandOutcome {
 }
 
 pub async fn failed_services(elevation: &ElevationState) -> CommandOutcome {
+    // Automatic-start services that are stopped (`windows_services`).
+    #[cfg(windows)]
+    {
+        let _ = elevation;
+        crate::windows_services::failed_services().await
+    }
+    #[cfg(not(windows))]
     match init_system::detect().await {
         InitSystem::Systemd => match elevation
             .run("systemctl", &["--failed", "--no-pager"])

@@ -1,8 +1,8 @@
 // The top nav's "Menu" toggle at phone widths (style.css hides the links
 // behind it below 1200px), and closing the top bar's dropdowns (Arsenals,
 // Apotheosis, the user menu), the breadcrumb's host switcher and the host
-// list's "More" menus on an outside click or Escape. A static file because the Content-Security-Policy
-// (`script-src 'self'`) blocks inline handlers.
+// list's "More" menus on an outside click or Escape. A static file because
+// the Content-Security-Policy (`script-src 'self'`) blocks inline handlers.
 (function () {
   "use strict";
 

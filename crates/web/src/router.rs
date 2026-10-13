@@ -227,6 +227,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_thanatos_correlation),
         )
         .route(
+            "/admin/settings/resurrection-ignored-services",
+            post(routes::settings::set_resurrection_ignored_services),
+        )
+        .route(
             "/admin/settings/thanatos-extra-fim-paths",
             post(routes::settings::set_thanatos_extra_fim_paths),
         )

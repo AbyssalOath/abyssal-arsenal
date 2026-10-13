@@ -154,6 +154,13 @@ pub async fn fstab_check(elevation: &ElevationState) -> CommandOutcome {
 }
 
 pub async fn list_failed_units(elevation: &ElevationState) -> CommandOutcome {
+    // Windows: failed services, one tab-separated line each.
+    #[cfg(windows)]
+    {
+        let _ = elevation;
+        return crate::windows_services::list_failed().await;
+    }
+    #[allow(unreachable_code)]
     if init_system::detect().await != InitSystem::Systemd {
         return CommandOutcome::Err(NO_SYSTEMD.to_string());
     }
@@ -176,7 +183,14 @@ pub async fn list_failed_units(elevation: &ElevationState) -> CommandOutcome {
 }
 
 /// Targeted recovery of one unit: clear its failed state, then restart it.
+/// On Windows, starts the service (`windows_services::start`).
 pub async fn recover_unit(unit: String, elevation: &ElevationState) -> CommandOutcome {
+    #[cfg(windows)]
+    {
+        let _ = elevation;
+        return crate::windows_services::start(&unit).await;
+    }
+    #[allow(unreachable_code)]
     if init_system::detect().await != InitSystem::Systemd {
         return CommandOutcome::Err(NO_SYSTEMD.to_string());
     }

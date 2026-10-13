@@ -11,6 +11,7 @@
 mod min_protocol;
 pub use min_protocol::agent_release_for_protocol;
 pub mod aat;
+pub mod failed_services;
 
 use std::fmt;
 

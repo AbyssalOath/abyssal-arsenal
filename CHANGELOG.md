@@ -12,6 +12,32 @@ for what that means for cloning and updating.
 
 ### Changed
 
+- **Windows hosts report failed services.** Until now the health check
+  counted every Windows host as 0 failed, because "failed units" meant
+  systemd. A failed service on Windows is an automatic-start service that's
+  stopped. Normal stops aren't counted:
+  - trigger-start services;
+  - delayed-start ones in their first ten minutes after boot;
+  - services that exited cleanly (exit code 0);
+  - per-user services;
+  - a built-in list of services that are routinely stopped (`sppsvc`,
+    Google and Edge updaters, `MapsBroker`, `RemoteRegistry`,
+    `TrustedInstaller` and the like).
+
+  What this changes:
+  - The dashboard says "N failed services" for Windows hosts, and its link
+    opens **Resurrection**, which lists each service with its exit code and
+    the latest System-log failure event (7000, 7009, 7011, 7023 or 7031) as
+    "why it stopped".
+  - **Recover** starts the service and waits for it to run.
+  - **Settings › Failed Services (Resurrection)** has an ignore list for
+    services or units meant to be stopped at your site. It applies to Linux
+    units too, and a trailing `*` matches a prefix. It needs
+    `systems.manage`, is audited, and is applied on the control plane, so it
+    takes effect for every agent at once.
+  - No protocol change. Windows agents older than 0.2.4 keep reporting 0
+    until they're updated.
+
 - **Install tokens replace deployment tokens.** The AAT becomes the
   **default install token**, and you can add **additional install tokens**
   beside it ("New install token" under Hosts › Add hosts). Each additional

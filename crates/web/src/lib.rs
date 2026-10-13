@@ -8,6 +8,7 @@ pub mod dashboard_prefs;
 pub mod deploy_commands;
 pub mod error;
 pub mod extract;
+pub mod failed_services;
 pub mod health;
 mod health_ops;
 pub mod host_context;

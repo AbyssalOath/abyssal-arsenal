@@ -226,6 +226,46 @@
 </div>
 {% endif %}
 
+{% if access.resurrection %}
+<div class="settings-section" id="resurrection">
+  <h2 class="settings-section-title">Failed Services (Resurrection)</h2>
+  <div class="card settings-list">
+
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("warning") %} Services not to count as failed</div>
+        <p class="settings-row-desc">The fleet health check doesn't count these, and Resurrection doesn't list them.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            One service or unit name per line (or comma-separated), for services that are
+            meant to be stopped at your site. A trailing <code>*</code> matches a prefix
+            (<code>MSSQL$*</code>). A systemd unit also matches without its
+            <code>.service</code> suffix, so <code>nginx</code> covers
+            <code>nginx.service</code>.
+          </p>
+          <p>
+            On Windows, a failed service is an automatic-start one that's stopped. The agent
+            already leaves out trigger-start services, delayed-start ones in their first ten
+            minutes after boot, ones that exited cleanly, per-user services, and these
+            routinely-stopped ones: <code style="overflow-wrap:anywhere;">{{ resurrection_builtin_ignored }}</code>.
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <form method="post" action="/admin/settings/resurrection-ignored-services" class="settings-inline-form">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <label for="resurrection-ignored-services" class="sr-only">Services not to count as failed</label>
+          <textarea id="resurrection-ignored-services" name="services" rows="3" placeholder="Spooler&#10;nginx.service">{{ resurrection_ignored_services }}</textarea>
+          <button type="submit" class="btn-warning">Save</button>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endif %}
+
 {% if access.thanatos %}
 <div class="settings-section">
   <h2 class="settings-section-title">Security Monitoring (Thanatos)</h2>

@@ -39,6 +39,7 @@ mod tls;
 mod tls_tests;
 mod transport;
 mod vivisection;
+mod windows_services;
 #[cfg(windows)]
 mod winservice;
 

@@ -913,6 +913,10 @@ pub struct SettingsTemplate {
     pub thanatos_monitoring_enabled: bool,
     pub thanatos_alert_recipients: String,
     pub thanatos_extra_fim_paths: String,
+    /// Settings > Resurrection: the operator's failed-service ignore list,
+    /// one per line, and the agent's built-in Windows one (read-only).
+    pub resurrection_ignored_services: String,
+    pub resurrection_builtin_ignored: String,
     pub thanatos_c2_ports: String,
     pub thanatos_auto_quarantine_ssh_keys_enabled: bool,
     pub thanatos_auto_disable_account_enabled: bool,
@@ -3255,8 +3259,13 @@ pub struct ResurrectionHostTemplate {
     pub result_error: Option<String>,
     pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
-    /// Failed systemd units, populated when the Failed Units check was run.
+    /// Failed systemd units (or Windows services), populated when the
+    /// Failed Units check was run.
     pub failed_units: Vec<FailedUnitRow>,
+    /// How many the Settings › Resurrection ignore list hid.
+    pub failed_hidden: usize,
+    /// "Failed services" wording and columns.
+    pub windows: bool,
 }
 
 /// One host row in Resurrection's fleet recovery console.
@@ -3312,10 +3321,16 @@ pub struct ResurrectionTriageTemplate {
 
 /// One failed systemd unit row in Resurrection's recovery table.
 pub struct FailedUnitRow {
+    /// The unit, or the Windows service's name.
     pub unit: String,
     pub active: String,
     pub sub: String,
+    /// The unit's description, or the service's display name.
     pub description: String,
+    /// Windows: the service's exit code. Empty for systemd.
+    pub exit_code: String,
+    /// Windows: the latest System-log failure event for it, if any.
+    pub why: String,
 }
 
 #[derive(Template)]

@@ -311,6 +311,11 @@ async fn build_fleet_health(
         .filter(|h| h.offline_ack_at.is_some())
         .count();
     let can_see_units = ctx.has(Permission::SystemsView);
+    let is_windows = |id: uuid::Uuid| {
+        active_hosts
+            .iter()
+            .any(|h| h.id == id && h.os.as_deref() == Some("windows"))
+    };
     let hosts_needing_attention = repo::host_health::needing_attention(&state.pool)
         .await?
         .into_iter()
@@ -330,17 +335,18 @@ async fn build_fleet_health(
             None => HostAttentionRow {
                 host_id: h.host_id.to_string(),
                 host_name: host_name(h.host_id),
-                reason: format!(
-                    "{} failed unit{}",
-                    h.failed_unit_count,
-                    if h.failed_unit_count == 1 { "" } else { "s" }
-                ),
+                reason: crate::common::failed_phrase(h.failed_unit_count, is_windows(h.host_id)),
                 href: can_see_units
                     .then(|| format!("/arsenals/resurrection/{}?show=failed-units", h.host_id)),
                 not_responding: false,
-                fix: "See which units failed and why, then Recover them (clears the failed \
-                      state and restarts)."
-                    .to_string(),
+                fix: if is_windows(h.host_id) {
+                    "See which automatic services are stopped and why, then Recover them \
+                     (starts the service)."
+                } else {
+                    "See which units failed and why, then Recover them (clears the failed \
+                     state and restarts)."
+                }
+                .to_string(),
             },
         })
         .collect();
@@ -1160,6 +1166,8 @@ struct HostAgg {
     mem: Option<f64>,
     disk: Option<f64>,
     failed_units: i32,
+    /// A Windows host's are services, not units.
+    windows: bool,
     error: Option<String>,
     last_seen: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -1305,6 +1313,7 @@ async fn build_fleet_view(
                 mem,
                 disk,
                 failed_units: hh.map(|x| x.failed_unit_count).unwrap_or(0),
+                windows: h.os.as_deref() == Some("windows"),
                 error: hh.and_then(|x| x.error.clone()),
                 last_seen: h.last_seen_at,
                 id: h.id,
@@ -1483,11 +1492,7 @@ fn attention_reason(a: &HostAgg) -> Option<String> {
     if let Some(e) = &a.error {
         Some(format!("unreachable: {e}"))
     } else if a.failed_units > 0 {
-        Some(format!(
-            "{} failed unit{}",
-            a.failed_units,
-            if a.failed_units == 1 { "" } else { "s" }
-        ))
+        Some(crate::common::failed_phrase(a.failed_units, a.windows))
     } else {
         None
     }
@@ -1834,6 +1839,7 @@ mod tests {
             mem: None,
             disk: None,
             failed_units: failed,
+            windows: false,
             error: None,
             last_seen: None,
         }
