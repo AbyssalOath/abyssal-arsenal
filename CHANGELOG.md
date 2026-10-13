@@ -8,7 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/). The
 the stable checkpoints built from it. See [README.md](README.md#releases-and-branches)
 for what that means for cloning and updating.
 
-## [Unreleased]
+## [0.2.4] - 2026-10-12
 
 ### Added
 
