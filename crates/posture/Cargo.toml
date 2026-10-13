@@ -1,0 +1,9 @@
+[package]
+name = "abyssal-posture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+abyssal-agent-protocol.workspace = true

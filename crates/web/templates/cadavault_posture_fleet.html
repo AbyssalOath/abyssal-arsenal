@@ -1,0 +1,67 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Cadavault Fleet Posture — Abyssal Arsenal{% endblock %}
+{% block heading %}Cadavault — Fleet Posture{% endblock %}
+{% block content %}
+
+<div class="page-crumbs">{% call macros::page_breadcrumb("Cadavault", "/arsenals/cadavault?all=1", "Fleet posture") %}</div>
+
+{% if hosts.is_empty() %}
+<div class="card">
+  <p style="margin:0;">No posture runs yet. Open a host in Cadavault and run its
+  <strong>Security Posture</strong> checks, or turn on daily runs in Settings.</p>
+</div>
+{% else %}
+<div class="card">
+  <h3 style="margin-top:0;">{% call macros::icon("warning") %} Failing on the most hosts</h3>
+  {% if top_failing.is_empty() %}
+  <p class="text-muted" style="margin:0;">Nothing is failing on any host's latest run.</p>
+  {% else %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Checks failing on the most hosts">
+    <table>
+      <thead><tr><th>Check</th><th>Hosts</th><th>Failing on</th></tr></thead>
+      <tbody>
+        {% for c in top_failing %}
+        <tr>
+          <td><code>{{ c.id }}</code><br><span class="text-muted" style="font-size:0.88em;">{{ c.title }}</span></td>
+          <td><strong>{{ c.count }}</strong></td>
+          <td>{% for (name, href) in c.hosts %}<a href="{{ href }}">{{ name }}</a>{% if !loop.last %}, {% endif %}{% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">{% call macros::icon("host") %} Hosts</h3>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Posture by host">
+    <table>
+      <thead><tr><th>Host</th><th>Score</th><th>Trend</th><th>Failed</th><th>Passed</th><th>N/A</th><th>Last run</th></tr></thead>
+      <tbody>
+        {% for h in hosts %}
+        <tr>
+          <td><a href="{{ h.href }}">{{ h.name }}</a><br><span class="text-muted" style="font-size:0.85em;">{{ h.platform }}</span></td>
+          <td><span class="badge {{ h.score_badge }}">{{ h.score }}</span></td>
+          <td>{{ h.trend }}</td>
+          <td>{{ h.failed }}</td>
+          <td>{{ h.passed }}</td>
+          <td>{{ h.not_applicable }}</td>
+          <td class="text-muted">{{ h.when }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if !never_run.is_empty() %}
+<div class="card">
+  <h3 style="margin-top:0;">Not checked yet</h3>
+  <p style="margin:0;">{% for (name, href) in never_run %}<a href="{{ href }}">{{ name }}</a>{% if !loop.last %}, {% endif %}{% endfor %}</p>
+</div>
+{% endif %}
+
+{% endblock %}

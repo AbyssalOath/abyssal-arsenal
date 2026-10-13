@@ -24,6 +24,7 @@ pub mod panopticon_topology;
 pub mod panopticon_traffic;
 pub mod password_resets;
 pub mod pinned_modules;
+pub mod posture;
 pub mod reliquary_backups;
 pub mod role_module_visibility;
 pub mod roles;

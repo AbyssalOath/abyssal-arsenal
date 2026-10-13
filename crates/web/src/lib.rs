@@ -30,6 +30,7 @@ mod panopticon_radius;
 mod panopticon_snmp;
 mod panopticon_topology;
 mod panopticon_traffic;
+pub mod posture_ops;
 pub mod public_ca;
 mod radius;
 pub mod reliquary_backup;

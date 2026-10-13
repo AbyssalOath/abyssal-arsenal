@@ -1644,3 +1644,42 @@ a.stat-tile:hover { border-color: var(--accent); }
   .row-menu-panel { position: static; box-shadow: none; margin-top: 6px; }
   .hosts-search input[type="search"] { min-width: 0; flex: 1; }
 }
+
+/* ---- Cadavault posture report --------------------------------------------- */
+.posture-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+.posture-score { font-size: 1.25rem; padding: 4px 12px; margin-right: 10px; }
+.posture-counts { font-size: 0.95rem; }
+.posture-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.posture-checks { display: flex; flex-direction: column; gap: 6px; }
+.posture-check {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--surface-solid);
+}
+.posture-check.posture-failed { border-left-color: var(--danger); }
+.posture-check.posture-passed { border-left-color: var(--success); }
+.posture-check > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.posture-check > summary::-webkit-details-marker { display: none; }
+.posture-check > summary:hover { background: var(--surface-raised); }
+.posture-id { font-size: 0.82rem; white-space: nowrap; }
+.posture-title { flex: 1 1 260px; }
+.posture-category { font-size: 0.82rem; }
+.posture-body { padding: 4px 14px 12px; border-top: 1px solid var(--border); }
+.posture-body p { margin: 8px 0; }
+.posture-command { display: flex; gap: 8px; align-items: flex-start; }
+.posture-command pre { flex: 1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }

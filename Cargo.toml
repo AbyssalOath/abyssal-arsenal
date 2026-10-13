@@ -16,6 +16,7 @@ members = [
     "crates/modules",
     "crates/workflows",
     "crates/web",
+    "crates/posture",
     "crates/arsenals/cystoolbox",
     "crates/arsenals/cadavault",
     "crates/arsenals/necrolink",
@@ -64,6 +65,7 @@ abyssal-web = { path = "crates/web" }
 abyssal-hosts = { path = "crates/hosts" }
 abyssal-agent-protocol = { path = "crates/agent-protocol" }
 abyssal-internal-ca = { path = "crates/internal-ca" }
+abyssal-posture = { path = "crates/posture" }
 
 arsenal-cystoolbox = { path = "crates/arsenals/cystoolbox" }
 arsenal-cadavault = { path = "crates/arsenals/cadavault" }

@@ -23,6 +23,7 @@ mod ops;
 mod ossuary;
 mod parish;
 mod postmortem;
+mod posture;
 mod process;
 mod reanimation;
 mod reliquary;

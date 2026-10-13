@@ -256,6 +256,7 @@ impl AgentOperation {
             Op::UninstallAgent { .. } | Op::NeighborTable => 42,
             Op::ThanatosStream { .. } => 44,
             Op::DhcpLeases => 45,
+            Op::PostureFacts => 46,
         }
     }
 }
@@ -267,6 +268,7 @@ const RELEASES: &[(u32, &str)] = &[
     (38, "0.2.0"),
     (42, "0.2.2"),
     (45, "0.2.3"),
+    (46, "0.2.4"),
 ];
 
 /// The first release whose agent speaks at least `protocol`, for messages
@@ -338,6 +340,7 @@ mod tests {
         // The newest entries, which a forgotten bump would push past it.
         for op in [
             AgentOperation::NeighborTable,
+            AgentOperation::PostureFacts,
             AgentOperation::SelfUpdate {
                 version: "1.0.0".into(),
                 from_control_plane: true,
@@ -354,6 +357,7 @@ mod tests {
         assert_eq!(agent_release_for_protocol(40), Some("0.2.2"));
         assert_eq!(agent_release_for_protocol(42), Some("0.2.2"));
         assert_eq!(agent_release_for_protocol(43), Some("0.2.3"));
+        assert_eq!(agent_release_for_protocol(46), Some("0.2.4"));
         assert_eq!(agent_release_for_protocol(1), Some("0.1.6"));
         assert_eq!(agent_release_for_protocol(999), None);
         assert!(

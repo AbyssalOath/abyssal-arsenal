@@ -916,6 +916,8 @@ pub struct SettingsTemplate {
     /// Settings > Resurrection: the operator's failed-service ignore list,
     /// one per line, and the agent's built-in Windows one (read-only).
     pub resurrection_ignored_services: String,
+    /// Settings > Security Posture: daily Cadavault posture runs.
+    pub posture_daily: bool,
     pub resurrection_builtin_ignored: String,
     pub thanatos_c2_ports: String,
     pub thanatos_auto_quarantine_ssh_keys_enabled: bool,
@@ -1426,6 +1428,128 @@ pub struct CadavaultTemplate {
     pub hosts: Vec<crate::host_picker::PickerHost>,
 }
 
+/// Cadavault's check-by-check posture report for one host
+/// (`routes::cadavault_posture::report`).
+#[derive(Template)]
+#[template(path = "cadavault_posture.html")]
+pub struct CadavaultPostureTemplate {
+    pub base: BaseCtx,
+    pub host_id: String,
+    pub host_name: String,
+    /// The run's platform (`linux` / `windows`).
+    pub platform: String,
+    pub has_run: bool,
+    pub run_id: String,
+    pub run_when: String,
+    pub run_by: String,
+    /// Showing the newest run (not one picked from the history).
+    pub viewing_latest: bool,
+    pub score: String,
+    pub score_badge: &'static str,
+    pub passed: i32,
+    pub failed: i32,
+    pub not_applicable: i32,
+    /// "Since <time>: score 70% → 75%; newly failing: ...; fixed: ...".
+    pub change: Option<String>,
+    pub filter_tabs: Vec<PostureFilterTab>,
+    pub status_filter: String,
+    pub q: String,
+    /// The `?run=` being shown, kept in the search form.
+    pub run_query: String,
+    /// After the filter and search, failed first.
+    pub rows: Vec<PostureCheckRow>,
+    pub runs: Vec<PostureRunLink>,
+    /// Some checks were not applicable only because the agent lacked root.
+    pub needs_root: bool,
+    pub online: bool,
+    /// Connected, but its agent is older than `PostureFacts`.
+    pub needs_update: bool,
+    pub control_plane: Option<crate::control_plane::PageNote>,
+    /// Why the last run attempt didn't happen.
+    pub error: Option<String>,
+}
+
+pub struct PostureFilterTab {
+    pub label: &'static str,
+    pub count: usize,
+    pub active: bool,
+    pub href: String,
+}
+
+/// One check's result, with its catalog text.
+pub struct PostureCheckRow {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+    /// passed, failed or na.
+    pub status: &'static str,
+    pub status_label: &'static str,
+    pub badge: &'static str,
+    pub evidence: String,
+    pub rationale: String,
+    pub remediation: String,
+    pub command: Option<String>,
+    /// (technique ID, its attack.mitre.org page).
+    pub mitre: Vec<(String, String)>,
+    /// An existing Cadavault action that fixes it (failed checks, for
+    /// `security.manage`).
+    pub fix: Option<PostureFixLink>,
+    /// Why that action would be refused on the control plane's server.
+    pub fix_refused: Option<String>,
+    /// For ordering: failed, passed, not applicable.
+    pub rank: abyssal_posture::Status,
+}
+
+pub struct PostureFixLink {
+    pub label: String,
+    pub href: String,
+    /// A form POST (with CSRF) rather than a link.
+    pub post: bool,
+}
+
+pub struct PostureRunLink {
+    pub href: String,
+    pub when: String,
+    pub by: String,
+    pub score: String,
+    pub current: bool,
+}
+
+/// Cadavault's posture fleet view (`routes::cadavault_posture::fleet`).
+#[derive(Template)]
+#[template(path = "cadavault_posture_fleet.html")]
+pub struct CadavaultPostureFleetTemplate {
+    pub base: BaseCtx,
+    /// Lowest score first.
+    pub hosts: Vec<PostureFleetHostRow>,
+    pub top_failing: Vec<PostureTopCheckRow>,
+    /// (name, report link) for active hosts with no run yet.
+    pub never_run: Vec<(String, String)>,
+}
+
+pub struct PostureFleetHostRow {
+    pub href: String,
+    pub name: String,
+    pub platform: String,
+    pub score: String,
+    pub score_value: i32,
+    pub score_badge: &'static str,
+    /// "▲ 5", "▼ 3", "—" or empty with no earlier run.
+    pub trend: String,
+    pub passed: i32,
+    pub failed: i32,
+    pub not_applicable: i32,
+    pub when: String,
+}
+
+pub struct PostureTopCheckRow {
+    pub id: String,
+    pub title: String,
+    pub count: usize,
+    /// (host name, link to its report filtered to this check).
+    pub hosts: Vec<(String, String)>,
+}
+
 #[derive(Template)]
 #[template(path = "cadavault_host.html")]
 pub struct CadavaultHostTemplate {
@@ -1453,39 +1577,6 @@ pub struct CadavaultHostTemplate {
     pub sysctl_posture: Vec<SysctlPostureRow>,
     pub suggested_actions: Vec<SuggestedActionView>,
     pub context: Vec<WorkflowContextRow>,
-}
-
-/// One row of Cadavault's aggregate Security Posture Report: a category
-/// (Firewall, SSH, Kernel/sysctl, Accounts, MAC, Updates) with its rolled-up
-/// status and a one-line summary.
-pub struct PostureCategoryRow {
-    pub name: String,
-    pub status_label: String,
-    pub status_badge_class: String,
-    pub summary: String,
-}
-
-#[derive(Template)]
-#[template(path = "cadavault_posture.html")]
-pub struct CadavaultPostureTemplate {
-    pub base: BaseCtx,
-    pub host_id: String,
-    pub host_name: String,
-    pub elevated: bool,
-    pub protocol_mismatch: bool,
-    /// Set when the host is the control plane's own server: what's
-    /// refused there (`control_plane::page_note`).
-    pub control_plane: Option<crate::control_plane::PageNote>,
-    /// Weighted score 0-100 (pass = 1, warn = 0.5, fail = 0; unavailable
-    /// categories are excluded from the denominator).
-    pub score_percent: u8,
-    pub score_label: String,
-    pub score_badge_class: String,
-    pub pass_count: usize,
-    pub warn_count: usize,
-    pub fail_count: usize,
-    pub categories: Vec<PostureCategoryRow>,
-    pub suggested_actions: Vec<SuggestedActionView>,
 }
 
 /// One row of Cadavault's kernel/sysctl security-posture table: a baseline

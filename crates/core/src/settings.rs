@@ -81,6 +81,11 @@ pub const THANATOS_EXTRA_FIM_PATHS: &str = "thanatos.extra_fim_paths";
 /// control plane, so it needs no agent change. Empty by default.
 pub const RESURRECTION_IGNORED_SERVICES: &str = "resurrection.ignored_services";
 
+/// Run Cadavault's posture checks once a day on every connected host
+/// (`posture_ops::spawn_posture_schedule`). Off by default: the on-demand
+/// button always works.
+pub const CADAVAULT_POSTURE_DAILY: &str = "cadavault.posture_daily";
+
 /// Gates autonomous, no-human-in-the-loop dispatch of `QuarantineFile`
 /// against a host the instant Thanatos's own FIM watch detects a changed
 /// *per-user* `authorized_keys` file (Phase 10) -- planting/altering an

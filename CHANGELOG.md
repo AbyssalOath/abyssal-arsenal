@@ -10,6 +10,54 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+### Added
+
+- **Cadavault's posture report checks each setting.** It replaces the six
+  category rows with 58 Linux and 47 Windows checks. Each has:
+  - a stable ID (`AA-LNX-SSH-002`, `AA-WIN-SMB-001`);
+  - a title and why it matters;
+  - what was actually found on the host;
+  - passed, failed or not applicable, with the reason;
+  - how to fix it, with a command or Group Policy path to copy (shown,
+    never run);
+  - MITRE ATT&CK references where one fits.
+
+  Coverage:
+  - **Linux:** SSH (root login, passwords, MaxAuthTries, weak ciphers, MACs
+    and key exchange, and more); kernel parameters; the firewall and its
+    default policy; password ageing, length and lockout; UID 0 and
+    empty-password accounts; file permissions on `/etc/passwd` and
+    `/etc/shadow`; world-writable files; SELinux/AppArmor; automatic
+    updates; `/tmp` and `/dev/shm` mounts; legacy services; auditd; time
+    sync.
+  - **Windows:** password and lockout policy; audit policy, read by
+    subcategory GUID so the display language doesn't matter; SMBv1 and SMB
+    signing; firewall profiles; Defender; BitLocker; UAC; LSA protection,
+    WDigest and NTLM settings; LLMNR and NetBIOS; RDP NLA; AutoPlay;
+    PowerShell logging; Windows Update; the Security log size.
+
+  The page:
+  - A summary shows the score, the counts, and what changed since the
+    previous run.
+  - Filter by status and search. Each check expands, with a Copy button
+    for its command.
+  - Where Cadavault already has a safe fix (SSH hardening, the kernel
+    baseline, enabling the firewall), the failed check links to it. On the
+    control plane's own server, a fix the guard would refuse says so.
+  - Runs are kept, so earlier runs can be opened.
+  - **Download CSV** exports a run.
+  - A new **fleet view** (`/arsenals/cadavault/posture`) shows each host's
+    score and trend, and the checks failing on the most hosts.
+  - Settings › Security Posture can run the checks **once a day** (off by
+    default).
+  - With the audit syslog export on, every failed check is also sent to
+    syslog with `scope=posture`.
+
+  The checks run on the control plane from facts the agent reports
+  through a new read-only operation, `PostureFacts` (protocol 46). Hosts
+  need agent 0.2.4, and improving a check later needs no agent update.
+  Migration 0048.
+
 ### Changed
 
 - **Windows hosts report failed services.** Until now the health check

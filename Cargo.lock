@@ -233,6 +233,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "abyssal-posture"
+version = "0.2.3"
+dependencies = [
+ "abyssal-agent-protocol",
+]
+
+[[package]]
 name = "abyssal-rbac"
 version = "0.2.3"
 dependencies = [
@@ -257,6 +264,7 @@ dependencies = [
  "abyssal-internal-ca",
  "abyssal-modules",
  "abyssal-notifications",
+ "abyssal-posture",
  "abyssal-rbac",
  "abyssal-workflows",
  "aes-gcm 0.10.3",

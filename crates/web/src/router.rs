@@ -227,6 +227,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_thanatos_correlation),
         )
         .route(
+            "/admin/settings/posture-daily",
+            post(routes::settings::set_posture_daily),
+        )
+        .route(
             "/admin/settings/resurrection-ignored-services",
             post(routes::settings::set_resurrection_ignored_services),
         )
@@ -425,9 +429,23 @@ pub fn build(state: AppState) -> Router {
             "/arsenals/cadavault/:host_id/recent-auth-log",
             post(routes::cadavault::recent_auth_log),
         )
+        // The posture report (abyssal-posture). The old POST
+        // /posture-report button target still runs it.
+        .route(
+            "/arsenals/cadavault/posture",
+            get(routes::cadavault_posture::fleet),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/posture",
+            get(routes::cadavault_posture::report).post(routes::cadavault_posture::run),
+        )
         .route(
             "/arsenals/cadavault/:host_id/posture-report",
-            post(routes::cadavault::posture_report),
+            post(routes::cadavault_posture::run),
+        )
+        .route(
+            "/arsenals/cadavault/:host_id/posture/:run_id/csv",
+            get(routes::cadavault_posture::csv),
         )
         .route(
             "/arsenals/cadavault/:host_id/sshd-config-audit",
