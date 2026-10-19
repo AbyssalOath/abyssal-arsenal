@@ -1362,6 +1362,203 @@ pub struct HaruspexTemplate {
     pub hosts: Vec<HaruspexHostRow>,
 }
 
+pub struct GravekeeperDomainRow {
+    pub id: String,
+    pub dns_name: String,
+    pub netbios_name: String,
+    pub forest_root: String,
+    /// The write-DC host's display name, or empty if none is set.
+    pub write_dc: String,
+    /// The delegated service account's UPN, or empty if none configured.
+    pub service_account: String,
+    /// True when the domain has a validated service account (writes allowed);
+    /// false means Gravekeeper is read-only for it.
+    pub writable: bool,
+    /// Human label for the delegation state ("Delegation verified", etc.).
+    pub delegation: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper.html")]
+pub struct GravekeeperTemplate {
+    pub base: BaseCtx,
+    /// Whether first-run setup has been completed at least once.
+    pub setup_completed: bool,
+    /// Whether the viewer can run setup (`directory.configure`).
+    pub can_configure: bool,
+    /// Whether the viewer can manage onboarding templates (`directory.manage`).
+    pub can_manage: bool,
+    pub domains: Vec<GravekeeperDomainRow>,
+}
+
+pub struct GravekeeperForestDomainView {
+    pub dns: String,
+    pub netbios: String,
+    pub pdc: String,
+    /// True when this domain is already configured (so the UI disables it).
+    pub already_configured: bool,
+}
+
+pub struct GravekeeperForestView {
+    /// The DC the discovery ran on (carried into the "add" form).
+    pub host_id: String,
+    pub forest_root: String,
+    pub upn_suffixes: Vec<String>,
+    pub domains: Vec<GravekeeperForestDomainView>,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_setup.html")]
+pub struct GravekeeperSetupTemplate {
+    pub base: BaseCtx,
+    /// Connected Windows hosts that can be used as a DC agent.
+    pub hosts: Vec<(String, String)>,
+    pub selected_host: String,
+    /// Present after a successful discovery run.
+    pub forest: Option<GravekeeperForestView>,
+    pub error: Option<String>,
+}
+
+pub struct GravekeeperDomainDetail {
+    pub id: String,
+    pub dns_name: String,
+    pub netbios: String,
+    pub forest_root: String,
+    pub write_dc: String,
+    pub service_account: String,
+    pub writable: bool,
+    pub delegation: String,
+    pub disabled_ou: String,
+    pub deletion_grace_days: i64,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_domain.html")]
+pub struct GravekeeperDomainTemplate {
+    pub base: BaseCtx,
+    pub domain: GravekeeperDomainDetail,
+    /// OUs the validated service account can manage (from the delegation check).
+    pub manageable_ous: Vec<String>,
+    /// The suggested default disabled-users OU DN for this domain.
+    pub default_disabled_ou: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct GravekeeperOuRow {
+    pub name: String,
+    pub dn: String,
+    /// Indent depth in the OU tree (0 = top-level OU).
+    pub depth: usize,
+}
+
+pub struct GravekeeperSearchRow {
+    /// `user` | `group` | `computer`.
+    pub kind: String,
+    pub name: String,
+    /// A secondary identifier (UPN or sAMAccountName).
+    pub sub: String,
+    pub dn: String,
+    /// `dn`, URL-encoded for the object-detail link's query string.
+    pub dn_encoded: String,
+    /// "Enabled"/"Disabled" for accounts, empty for groups.
+    pub state: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_browse.html")]
+pub struct GravekeeperBrowseTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub query: String,
+    pub ou_rows: Vec<GravekeeperOuRow>,
+    pub results: Vec<GravekeeperSearchRow>,
+    pub error: Option<String>,
+}
+
+pub struct GravekeeperObjectView {
+    /// `user` | `group` | `computer`.
+    pub kind: String,
+    pub name: String,
+    /// (label, value) attribute rows.
+    pub attrs: Vec<(String, String)>,
+    /// "Member of" (user) or "Members" (group); empty when there is no list.
+    pub list_title: String,
+    pub list: Vec<String>,
+    /// Account state, for the help-desk action buttons (users only).
+    pub enabled: Option<bool>,
+    pub locked: Option<bool>,
+}
+
+pub struct GravekeeperTemplateRow {
+    pub id: String,
+    pub name: String,
+    pub target_ou: String,
+    pub username_pattern: String,
+    pub mail_mode: String,
+    pub group_count: usize,
+    pub manager_required: bool,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_templates.html")]
+pub struct GravekeeperTemplatesTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub templates: Vec<GravekeeperTemplateRow>,
+}
+
+pub struct GravekeeperTemplateFormView {
+    pub name: String,
+    pub target_ou: String,
+    pub username_pattern: String,
+    pub upn_suffix: String,
+    pub email_pattern: String,
+    /// Group DNs, one per line.
+    pub groups: String,
+    /// Attribute defaults as `name=value`, one per line.
+    pub attributes: String,
+    pub mail_mode: String,
+    pub manager_required: bool,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_template_form.html")]
+pub struct GravekeeperTemplateFormTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    /// `Some(id)` when editing, `None` when creating.
+    pub template_id: Option<String>,
+    pub form: GravekeeperTemplateFormView,
+    pub mail_modes: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_object.html")]
+pub struct GravekeeperObjectTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    /// The target's DN, for the help-desk action forms.
+    pub target_dn: String,
+    /// Whether to offer the help-desk actions (viewer has `directory.helpdesk`
+    /// and the object is a user).
+    pub can_helpdesk: bool,
+    /// Whether the domain is writable (has a validated service account); the
+    /// action buttons are shown but note this when false.
+    pub writable: bool,
+    pub object: Option<GravekeeperObjectView>,
+    /// A success message from a help-desk action.
+    pub result: Option<String>,
+    /// A freshly generated temporary password, shown once after a reset.
+    pub new_password: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Template)]
 #[template(path = "haruspex_host.html")]
 pub struct HaruspexHostTemplate {

@@ -41,6 +41,10 @@ pub const SYSTEM_ADMIN: &str = "System Admin";
 pub const NETWORK_ADMIN: &str = "Network Admin";
 pub const SECURITY_ADMIN: &str = "Security / OPSEC Admin";
 pub const REGULAR_USER: &str = "Regular User";
+/// Front-line directory support: browse and the help-desk actions (unlock,
+/// reset password, enable/disable) only -- never create, delete or configure.
+/// Introduced with Gravekeeper (Active Directory management).
+pub const HELP_DESK: &str = "Help Desk";
 
 pub const BUILT_IN_ROLES: &[&str] = &[
     SUPER_ADMIN,
@@ -48,4 +52,5 @@ pub const BUILT_IN_ROLES: &[&str] = &[
     NETWORK_ADMIN,
     SECURITY_ADMIN,
     REGULAR_USER,
+    HELP_DESK,
 ];

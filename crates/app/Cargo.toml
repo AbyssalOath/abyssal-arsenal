@@ -48,6 +48,7 @@ arsenal-thanatos.workspace = true
 arsenal-panopticon.workspace = true
 arsenal-scourge.workspace = true
 arsenal-sepulchre.workspace = true
+arsenal-gravekeeper.workspace = true
 
 tokio.workspace = true
 axum.workspace = true

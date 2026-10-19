@@ -9,6 +9,7 @@ pub mod deploy_commands;
 pub mod error;
 pub mod extract;
 pub mod failed_services;
+pub mod gravekeeper_ops;
 pub mod health;
 mod health_ops;
 pub mod host_context;
@@ -50,6 +51,7 @@ pub mod theme;
 pub mod update_check;
 
 pub use audit_export::spawn_audit_syslog_sweep;
+pub use gravekeeper_ops::spawn_gravekeeper_delegation_recheck;
 pub use health_ops::spawn_health_sweep;
 pub use internal_tls::spawn_internal_tls_sweep;
 pub use mortiscope_ops::spawn_mortiscope_metrics_sweep;

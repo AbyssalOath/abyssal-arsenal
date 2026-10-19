@@ -575,3 +575,18 @@ pub const CONTROL_PLANE_BACKUP_OVERDUE_HOURS_DEFAULT: u32 = 48;
 /// Comma/newline-separated recipients for control-plane self-alerts (same
 /// format as the Mortiscope/Thanatos recipient lists).
 pub const CONTROL_PLANE_ALERT_RECIPIENTS: &str = "control_plane.alert_recipients";
+
+// --- Gravekeeper (Active Directory management) -----------------------------
+
+/// Whether Gravekeeper's first-run setup has been completed at least once.
+/// Off until an admin with `directory.configure` finishes (or deliberately
+/// dismisses) the setup wizard, which is when the arsenal shows the wizard
+/// versus the normal UI. Each domain still gates its own writes on having a
+/// validated service account, independently of this flag.
+pub const GRAVEKEEPER_SETUP_COMPLETED: &str = "gravekeeper.setup_completed";
+
+/// Per-job cap on a bulk directory import (CSV onboarding), a scope limit so
+/// one run can't create an unbounded number of accounts. Phase 4 enforces it;
+/// declared here with the rest of the arsenal's settings.
+pub const GRAVEKEEPER_BULK_IMPORT_CAP: &str = "gravekeeper.bulk_import_cap";
+pub const GRAVEKEEPER_BULK_IMPORT_CAP_DEFAULT: u32 = 200;

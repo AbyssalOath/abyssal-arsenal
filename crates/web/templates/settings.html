@@ -949,6 +949,29 @@
 </div>
 {% endif %}
 
+{% if access.gravekeeper %}
+<div class="settings-section" id="gravekeeper">
+  <h2 class="settings-section-title">Gravekeeper (Active Directory)</h2>
+  <div class="card settings-list">
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("shield") %} Domains &amp; service accounts</div>
+        <p class="settings-row-desc">
+          Pick a domain controller, discover the forest, add the domains to
+          manage, and validate a least-privilege delegated service account for
+          each. Each domain's disabled-users OU and deletion grace period are
+          set there too. Until a domain has a validated service account,
+          Gravekeeper stays read-only for it.
+        </p>
+      </div>
+      <div class="settings-row-control">
+        <a class="btn btn-secondary" href="/arsenals/gravekeeper/setup">Open Gravekeeper setup</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% if access.audit_export %}
 <div class="settings-section">
   <h2 class="settings-section-title">External Export</h2>

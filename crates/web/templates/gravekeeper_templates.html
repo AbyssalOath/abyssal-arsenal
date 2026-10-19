@@ -1,0 +1,46 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Templates — {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — {{ dns_name }} templates{% endblock %}
+{% block content %}
+
+<p>
+  <a href="/arsenals/gravekeeper">&larr; Back to Gravekeeper</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/browse">Browse this domain</a>
+</p>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h3 style="margin:0;">Onboarding templates <span class="badge badge-muted">{{ templates.len() }}</span></h3>
+    <a class="btn btn-primary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/templates/new">New template</a>
+  </div>
+  {% if templates.is_empty() %}
+  <p style="color:var(--text-muted);">
+    No templates yet. A template fixes where a new user lands (OU), the groups
+    and attribute defaults they get, how their username/UPN/email are formed, and
+    the mailbox type — so onboarding only needs a name.
+  </p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Username pattern</th><th>Target OU</th><th>Groups</th><th>Mail</th><th>Manager</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for t in templates %}
+      <tr>
+        <td><a href="/arsenals/gravekeeper/templates/{{ t.id }}">{{ t.name }}</a></td>
+        <td><code>{{ t.username_pattern }}</code></td>
+        <td>{% if t.target_ou.is_empty() %}<span class="badge badge-muted">default</span>{% else %}{{ t.target_ou }}{% endif %}</td>
+        <td>{{ t.group_count }}</td>
+        <td>{{ t.mail_mode }}</td>
+        <td>{% if t.manager_required %}required{% else %}—{% endif %}</td>
+        <td><a href="/arsenals/gravekeeper/templates/{{ t.id }}">Edit</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

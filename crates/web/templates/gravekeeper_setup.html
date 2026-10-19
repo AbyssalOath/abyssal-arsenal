@@ -1,0 +1,86 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Gravekeeper Setup — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — Set up a domain{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper">&larr; Back to Gravekeeper</a></p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>1. Pick a domain controller</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Discovery runs the <code>ActiveDirectory</code> PowerShell module on a
+    connected, Windows domain controller to read the forest. Only connected
+    Windows hosts are listed.
+  </p>
+  {% if hosts.is_empty() %}
+  <p style="color:var(--text-muted);">
+    No connected Windows hosts. Enroll and connect a domain controller from
+    <a href="/admin/hosts">Hosts</a> first.
+  </p>
+  {% else %}
+  <form method="post" action="/arsenals/gravekeeper/discover">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="host_id">Domain controller</label>
+    <select id="host_id" name="host_id" required>
+      <option value="">Choose a DC…</option>
+      {% for (id, name) in hosts %}
+      <option value="{{ id }}"{% if selected_host == id.as_str() %} selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Discover forest</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if let Some(f) = forest %}
+<div class="card">
+  <h3>2. Add domains to manage</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Forest root: <strong>{{ f.forest_root }}</strong>.
+    {% if !f.upn_suffixes.is_empty() %}
+    UPN suffixes: {% for s in f.upn_suffixes %}<code>{{ s }}</code>{% if !loop.last %}, {% endif %}{% endfor %}.
+    {% endif %}
+  </p>
+  {% if f.domains.is_empty() %}
+  <p style="color:var(--text-muted);">The DC reported no domains.</p>
+  {% else %}
+  <form method="post" action="/arsenals/gravekeeper/domains/add">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="host_id" value="{{ f.host_id }}">
+    <table>
+      <thead>
+        <tr><th></th><th>Domain</th><th>NetBIOS</th><th>PDC emulator</th></tr>
+      </thead>
+      <tbody>
+        {% for d in f.domains %}
+        <tr>
+          <td>
+            {% if d.already_configured %}
+            <span class="badge badge-muted" title="Already configured">Added</span>
+            {% else %}
+            <input type="checkbox" name="domains" value="{{ d.dns }}" id="dom-{{ loop.index }}">
+            {% endif %}
+          </td>
+          <td><label for="dom-{{ loop.index }}">{{ d.dns }}</label></td>
+          <td>{% if d.netbios.is_empty() %}—{% else %}{{ d.netbios }}{% endif %}</td>
+          <td>{% if d.pdc.is_empty() %}—{% else %}{{ d.pdc }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p style="color:var(--text-muted);">
+      Each added domain uses the DC above as its write DC to start with. Next,
+      open the domain to enter and validate a delegated service account.
+    </p>
+    <button type="submit" class="btn-primary">Add selected domains</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

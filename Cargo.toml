@@ -43,6 +43,7 @@ members = [
     "crates/arsenals/panopticon",
     "crates/arsenals/scourge",
     "crates/arsenals/sepulchre",
+    "crates/arsenals/gravekeeper",
 ]
 
 [workspace.package]
@@ -93,6 +94,7 @@ arsenal-thanatos = { path = "crates/arsenals/thanatos" }
 arsenal-panopticon = { path = "crates/arsenals/panopticon" }
 arsenal-scourge = { path = "crates/arsenals/scourge" }
 arsenal-sepulchre = { path = "crates/arsenals/sepulchre" }
+arsenal-gravekeeper = { path = "crates/arsenals/gravekeeper" }
 
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "ws"] }

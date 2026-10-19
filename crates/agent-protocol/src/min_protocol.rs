@@ -257,6 +257,17 @@ impl AgentOperation {
             Op::ThanatosStream { .. } => 44,
             Op::DhcpLeases => 45,
             Op::PostureFacts => 46,
+            // Gravekeeper (Active Directory management), new in 0.2.5. Every
+            // Gravekeeper operation shares this version for the whole 0.2.5
+            // dev cycle (later milestones' ops return 47 too, no further bump).
+            Op::DirectoryDiscoverForest
+            | Op::DirectoryTestDelegation { .. }
+            | Op::DirectoryOuTree { .. }
+            | Op::DirectorySearch { .. }
+            | Op::DirectoryGetObject { .. }
+            | Op::DirectoryUnlockAccount { .. }
+            | Op::DirectorySetEnabled { .. }
+            | Op::DirectorySetPassword { .. } => 47,
         }
     }
 }
@@ -269,6 +280,7 @@ const RELEASES: &[(u32, &str)] = &[
     (42, "0.2.2"),
     (45, "0.2.3"),
     (46, "0.2.4"),
+    (47, "0.2.5"),
 ];
 
 /// The first release whose agent speaks at least `protocol`, for messages

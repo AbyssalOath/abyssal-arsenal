@@ -118,6 +118,19 @@ pub enum AuditAction {
     ScourgePcapDeleted,
     ScourgeSensorRemoved,
     ScourgeEventScanRun,
+
+    /// Gravekeeper (Active Directory management). `metadata` carries the domain
+    /// and (for a delegation check) the service-account UPN and the result --
+    /// never the password. `DirectoryServiceAccountValidated` is recorded
+    /// whether the check passed or was refused (e.g. overprivileged).
+    DirectoryDomainConfigured,
+    DirectoryServiceAccountValidated,
+    DirectoryDomainRemoved,
+    /// Help-desk writes against a directory account. `metadata` carries the
+    /// target DN and (for enable/disable) the new state -- never any password.
+    DirectoryAccountUnlocked,
+    DirectoryAccountPasswordReset,
+    DirectoryAccountEnabledChanged,
 }
 
 impl AuditAction {
@@ -207,6 +220,12 @@ impl AuditAction {
             AuditAction::ScourgePcapDeleted => "SCOURGE_PCAP_DELETED",
             AuditAction::ScourgeSensorRemoved => "SCOURGE_SENSOR_REMOVED",
             AuditAction::ScourgeEventScanRun => "SCOURGE_EVENT_SCAN_RUN",
+            AuditAction::DirectoryDomainConfigured => "DIRECTORY_DOMAIN_CONFIGURED",
+            AuditAction::DirectoryServiceAccountValidated => "DIRECTORY_SERVICE_ACCOUNT_VALIDATED",
+            AuditAction::DirectoryDomainRemoved => "DIRECTORY_DOMAIN_REMOVED",
+            AuditAction::DirectoryAccountUnlocked => "DIRECTORY_ACCOUNT_UNLOCKED",
+            AuditAction::DirectoryAccountPasswordReset => "DIRECTORY_ACCOUNT_PASSWORD_RESET",
+            AuditAction::DirectoryAccountEnabledChanged => "DIRECTORY_ACCOUNT_ENABLED_CHANGED",
         }
     }
 
@@ -294,6 +313,12 @@ impl AuditAction {
         AuditAction::ScourgePcapDeleted,
         AuditAction::ScourgeSensorRemoved,
         AuditAction::ScourgeEventScanRun,
+        AuditAction::DirectoryDomainConfigured,
+        AuditAction::DirectoryServiceAccountValidated,
+        AuditAction::DirectoryDomainRemoved,
+        AuditAction::DirectoryAccountUnlocked,
+        AuditAction::DirectoryAccountPasswordReset,
+        AuditAction::DirectoryAccountEnabledChanged,
     ];
 }
 

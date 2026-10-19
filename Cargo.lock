@@ -65,6 +65,7 @@ dependencies = [
  "arsenal-cryptkeeper",
  "arsenal-cystoolbox",
  "arsenal-defleshing",
+ "arsenal-gravekeeper",
  "arsenal-grimoire",
  "arsenal-haruspex",
  "arsenal-incarnation",
@@ -542,6 +543,14 @@ dependencies = [
 
 [[package]]
 name = "arsenal-defleshing"
+version = "0.2.4"
+dependencies = [
+ "abyssal-core",
+ "abyssal-modules",
+]
+
+[[package]]
+name = "arsenal-gravekeeper"
 version = "0.2.4"
 dependencies = [
  "abyssal-core",
