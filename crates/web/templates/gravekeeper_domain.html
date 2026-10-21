@@ -1,0 +1,98 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}{{ domain.dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — {{ domain.dns_name }}{% endblock %}
+{% block content %}
+
+<p>
+  <a href="/arsenals/gravekeeper">&larr; Back to Gravekeeper</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain.id }}/browse">Browse this domain</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain.id }}/mail">Mail connection</a>
+</p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+{% if let Some(msg) = result %}
+<div class="info-banner">{% call macros::icon("shield") %} {{ msg }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>
+    {{ domain.dns_name }}
+    {% if domain.writable %}<span class="badge badge-success">Writable</span>{% else %}<span class="badge badge-muted">Read-only</span>{% endif %}
+  </h3>
+  <table>
+    <tr><th style="text-align:left;">NetBIOS</th><td>{% if domain.netbios.is_empty() %}—{% else %}{{ domain.netbios }}{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Forest</th><td>{% if domain.forest_root.is_empty() %}—{% else %}{{ domain.forest_root }}{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Write DC</th><td>{% if domain.write_dc.is_empty() %}<span class="badge badge-warning">None</span>{% else %}{{ domain.write_dc }}{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Service account</th><td>{% if domain.service_account.is_empty() %}—{% else %}{{ domain.service_account }}{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Delegation</th><td>{{ domain.delegation }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Delegated service account</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Enter a <strong>least-privilege</strong>, delegated account (its
+    userPrincipalName). It is validated on the write DC: it must be able to sign
+    in and must <strong>not</strong> be a member of Domain Admins, Enterprise or
+    Schema Admins, Administrators, or the Operators groups. Only after it passes
+    is the password sealed (AES-256-GCM, <code>ENCRYPTION_KEY</code>) and stored,
+    and the domain becomes writable. The password is sent once over the
+    authenticated channel, piped to PowerShell over stdin, and never logged.
+  </p>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain.id }}/service-account" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="upn">Service account (UPN)</label>
+    <input type="text" id="upn" name="upn" value="{{ domain.service_account }}" placeholder="svc-ad@{{ domain.dns_name }}" required>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="new-password" placeholder="Validated, never shown again" required>
+    <button type="submit" class="btn-primary">{% call macros::icon("shield") %} Validate &amp; store</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Offboarding settings</h3>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain.id }}/config">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="disabled_ou">Disabled-users OU</label>
+    {% if manageable_ous.is_empty() %}
+    <input type="text" id="disabled_ou" name="disabled_ou"
+           value="{% if domain.disabled_ou.is_empty() %}{{ default_disabled_ou }}{% else %}{{ domain.disabled_ou }}{% endif %}" required>
+    <p style="color:var(--text-muted);">
+      Validate a service account first to pick from the OUs it can manage. The
+      suggested default is <code>{{ default_disabled_ou }}</code>.
+    </p>
+    {% else %}
+    <select id="disabled_ou" name="disabled_ou" required>
+      {% for ou in manageable_ous %}
+      <option value="{{ ou }}"{% if domain.disabled_ou == ou.as_str() %} selected{% endif %}>{{ ou }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <label for="deletion_grace_days">Deletion grace period (days)</label>
+    <input type="number" id="deletion_grace_days" name="deletion_grace_days" min="0" max="3650" value="{{ domain.deletion_grace_days }}" required>
+    <p style="color:var(--text-muted);">
+      How long an offboarded account waits in the disabled OU before Delete is
+      offered. <code>0</code> offers it immediately (still a separate step).
+    </p>
+    <button type="submit" class="btn-secondary">Save settings</button>
+  </form>
+</div>
+
+<div class="card kind-destructive">
+  <h3>Remove domain</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Removes this domain from Gravekeeper and deletes its sealed service-account
+    credential. It does not change anything in Active Directory.
+  </p>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain.id }}/remove">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-danger">Remove {{ domain.dns_name }}</button>
+  </form>
+</div>
+
+{% endblock %}

@@ -4,9 +4,9 @@ use zeroize::Zeroizing;
 use crate::elevation::ElevationState;
 use crate::init_system::{self, InitSystem};
 use crate::{
-    apothecary, catacomb, cryptkeeper, defleshing, firewall, grimoire, haruspex, incarnation,
-    inquest, mortiscope, necropolis, necropsy, network, obituary, ossuary, parish, postmortem,
-    reanimation, reliquary, resurrection, scourge, sepulchre, thanatos, vivisection,
+    apothecary, catacomb, cryptkeeper, defleshing, firewall, gravekeeper, grimoire, haruspex,
+    incarnation, inquest, mortiscope, necropolis, necropsy, network, obituary, ossuary, parish,
+    postmortem, reanimation, reliquary, resurrection, scourge, sepulchre, thanatos, vivisection,
 };
 // `run_command` is only referenced by the Unix branches of the helpers below;
 // the Windows branches use `process::run_powershell` instead.
@@ -520,6 +520,264 @@ pub async fn run(
         }
         AgentOperation::AdDnsReport { domain } => haruspex::ad_dns_report(domain).await,
         AgentOperation::AdHealthReport { domain } => haruspex::ad_health_report(domain).await,
+        AgentOperation::DirectoryDiscoverForest => gravekeeper::discover_forest().await,
+        AgentOperation::DirectoryTestDelegation {
+            domain_dns,
+            service_account_upn,
+            password,
+        } => gravekeeper::test_delegation(domain_dns, service_account_upn, password).await,
+        AgentOperation::DirectoryOuTree { domain_dns } => gravekeeper::ou_tree(domain_dns).await,
+        AgentOperation::DirectorySearch { domain_dns, query } => {
+            gravekeeper::search(domain_dns, query).await
+        }
+        AgentOperation::DirectoryGetObject { domain_dns, dn } => {
+            gravekeeper::get_object(domain_dns, dn).await
+        }
+        AgentOperation::DirectoryStaleAccounts { domain_dns, days } => {
+            gravekeeper::stale_accounts(domain_dns, days).await
+        }
+        AgentOperation::DirectoryUnlockAccount {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            target_dn,
+            allow_privileged,
+        } => {
+            gravekeeper::unlock_account(
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                target_dn,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectorySetEnabled {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            target_dn,
+            enabled,
+            allow_privileged,
+        } => {
+            gravekeeper::set_enabled(
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                target_dn,
+                enabled,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectorySetPassword {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            target_dn,
+            new_password,
+            allow_privileged,
+        } => {
+            gravekeeper::set_password(
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                target_dn,
+                new_password,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::ExchangeTestConnection {
+            uri,
+            account_upn,
+            account_password,
+        } => gravekeeper::exchange_test_connection(uri, account_upn, account_password).await,
+        AgentOperation::ExchangeEnableMailbox {
+            uri,
+            account_upn,
+            account_password,
+            target_identity,
+            remote_routing_address,
+        } => {
+            gravekeeper::exchange_enable_mailbox(
+                uri,
+                account_upn,
+                account_password,
+                target_identity,
+                remote_routing_address,
+            )
+            .await
+        }
+        AgentOperation::DirectoryCreateGroup(r) => {
+            let r = *r;
+            gravekeeper::create_group(gravekeeper::CreateGroupArgs {
+                domain_dns: r.domain_dns,
+                service_account_upn: r.service_account_upn,
+                service_account_password: r.service_account_password,
+                name: r.name,
+                target_ou: r.target_ou,
+                scope: r.scope,
+                category: r.category,
+                description: r.description,
+            })
+            .await
+        }
+        AgentOperation::DirectoryDeleteGroup {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            target_dn,
+            allow_privileged,
+        } => {
+            gravekeeper::delete_group(
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                target_dn,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectoryAddGroupMember {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            group_dn,
+            member_dn,
+            allow_privileged,
+        } => {
+            gravekeeper::change_group_member(
+                gravekeeper::GroupMemberChange::Add,
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                group_dn,
+                member_dn,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectoryRemoveGroupMember {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            group_dn,
+            member_dn,
+            allow_privileged,
+        } => {
+            gravekeeper::change_group_member(
+                gravekeeper::GroupMemberChange::Remove,
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                group_dn,
+                member_dn,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectoryMove {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            target_dn,
+            new_parent_ou,
+            allow_privileged,
+        } => {
+            gravekeeper::move_object(
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                target_dn,
+                new_parent_ou,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectoryDeleteObject {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            target_dn,
+            allow_privileged,
+        } => {
+            gravekeeper::delete_object(
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                target_dn,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectoryOffboard {
+            domain_dns,
+            service_account_upn,
+            service_account_password,
+            target_dn,
+            disabled_ou,
+            allow_privileged,
+        } => {
+            gravekeeper::offboard(
+                domain_dns,
+                service_account_upn,
+                service_account_password,
+                target_dn,
+                disabled_ou,
+                allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectoryUndoOffboard(r) => {
+            let r = *r;
+            gravekeeper::undo_offboard(gravekeeper::UndoOffboardArgs {
+                domain_dns: r.domain_dns,
+                service_account_upn: r.service_account_upn,
+                service_account_password: r.service_account_password,
+                target_dn: r.target_dn,
+                original_ou: r.original_ou,
+                groups: r.groups,
+                allow_privileged: r.allow_privileged,
+            })
+            .await
+        }
+        AgentOperation::ExchangeSetMailboxOffboard {
+            uri,
+            account_upn,
+            account_password,
+            target_identity,
+            convert_to_shared,
+        } => {
+            gravekeeper::exchange_set_mailbox_offboard(
+                uri,
+                account_upn,
+                account_password,
+                target_identity,
+                convert_to_shared,
+            )
+            .await
+        }
+        AgentOperation::DirectoryCreateUser(r) => {
+            let r = *r;
+            gravekeeper::create_user(gravekeeper::CreateUserArgs {
+                domain_dns: r.domain_dns,
+                service_account_upn: r.service_account_upn,
+                service_account_password: r.service_account_password,
+                target_ou: r.target_ou,
+                sam_base: r.sam_base,
+                upn_suffix: r.upn_suffix,
+                given_name: r.given_name,
+                surname: r.surname,
+                display_name: r.display_name,
+                email: r.email,
+                password: r.password,
+                attributes: r.attributes,
+                groups: r.groups,
+                allow_privileged: r.allow_privileged,
+            })
+            .await
+        }
         AgentOperation::DetectPackageBackend => sepulchre::detect_package_backend(elevation).await,
         AgentOperation::RenderSepulchreConfig { target, content } => {
             sepulchre::render_sepulchre_config(target, content, elevation).await

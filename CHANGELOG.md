@@ -8,6 +8,48 @@ and this project follows [Semantic Versioning](https://semver.org/). The
 the stable checkpoints built from it. See [README.md](README.md#releases-and-branches)
 for what that means for cloning and updating.
 
+## [0.2.5] - 2026-10-21
+
+### Added
+
+- **Gravekeeper: Active Directory management.** A new domain-scoped arsenal
+  (`/arsenals/gravekeeper`, in the Operate group) that does the day-to-day of
+  ADUC from the web UI across a domain or forest. Directory changes run on each
+  domain's write DC through the existing **Haruspex** DC agent, under a
+  **required, delegated service account** validated for least privilege -- the
+  agent's SYSTEM identity is never used for writes. Windows-only (anything else
+  returns `platform_unsupported()`); agent protocol **47**. See
+  [docs/gravekeeper.md](docs/gravekeeper.md).
+  - **Setup & delegation.** Pick a connected DC, discover the forest, add the
+    domains to manage, and enter a service account that is validated with a
+    delegation check (refused if it can't bind or is a member of the privileged
+    groups). The account's password is sealed with `ENCRYPTION_KEY`. A daily
+    background re-check keeps each domain's writable/read-only state honest.
+  - **Browse & help desk.** OU tree, cross-domain search, user/group/computer
+    detail; unlock, reset password (shown once, must change at next logon),
+    enable/disable -- with the privileged-object guardrails (built-in accounts
+    untouchable; `adminCount=1` objects need `directory.privileged`).
+  - **Onboarding.** Department/role templates, create-a-user-from-template with
+    a change-set **preview**, and all four mail modes with Test connection:
+    none, Exchange on-premises/hybrid (remote PowerShell), and Microsoft 365
+    (Graph, certificate auth, group-based or direct licensing). Onboarding runs
+    as a job with a per-step **retry** (retry the mail step without re-creating
+    the account). **Bulk CSV** onboarding with a preview, a per-run cap and
+    retry-failed-rows.
+  - **Groups, moves, offboarding.** Create/delete groups and manage membership
+    (group-scope rules + privileged guard); move objects; delete under
+    `directory.delete` (respects *protect from accidental deletion*, reports the
+    Recycle Bin state); a one-flow **offboard** (disable, strip groups, move to
+    the disabled OU, hide the mailbox) with **undo**; and a **stale-accounts**
+    report with disable.
+  - **Permissions & roles.** Six new permissions
+    (`directory.view/helpdesk/manage/delete/privileged/configure`), a new
+    built-in **Help Desk** role (view + helpdesk), and role-defaults **v4** so
+    existing installs get sensible grants once (System Admin:
+    view/helpdesk/manage; Security / OPSEC Admin: view/configure;
+    `delete`/`privileged` are explicit grants). A Thanatos security alert now
+    offers an "Open in directory" button into Gravekeeper.
+
 ## [0.2.4] - 2026-10-12
 
 ### Added

@@ -1,0 +1,190 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Object — {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — {{ dns_name }}{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/browse">&larr; Back to browse</a></p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+{% if let Some(msg) = result %}
+<div class="info-banner">{% call macros::icon("shield") %} {{ msg }}</div>
+{% endif %}
+{% if let Some(pw) = new_password %}
+<div class="card kind-destructive">
+  <h3>{% call macros::icon("elevate") %} Temporary password (shown once)</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Copy this now and hand it to the user. It is not stored and won't be shown again.</p>
+  <pre class="cmd-output" style="font-size:1.1em;">{{ pw }}</pre>
+</div>
+{% endif %}
+
+{% if let Some(obj) = object %}
+<div class="card">
+  <h3>{% call macros::icon("user") %} {{ obj.name }} <span class="badge badge-muted">{{ obj.kind }}</span></h3>
+  <table>
+    {% for (label, value) in obj.attrs %}
+    <tr><th style="text-align:left; white-space:nowrap; vertical-align:top;">{{ label }}</th><td>{{ value }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% if can_helpdesk %}
+<div class="card">
+  <h3>Help-desk actions</h3>
+  {% if !writable %}
+  <div class="warning-banner">{% call macros::icon("warning") %} This domain is read-only — validate a delegated service account for it before these will work.</div>
+  {% endif %}
+  <div class="actions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+    {% if let Some(locked) = obj.locked %}{% if locked %}
+    <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/unlock">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <input type="hidden" name="dn" value="{{ target_dn }}">
+      <button type="submit" class="btn-secondary">{% call macros::icon("elevate") %} Unlock</button>
+    </form>
+    {% endif %}{% endif %}
+
+    {% if let Some(enabled) = obj.enabled %}
+    <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/set-enabled">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <input type="hidden" name="dn" value="{{ target_dn }}">
+      <input type="hidden" name="enabled" value="{% if enabled %}false{% else %}true{% endif %}">
+      <button type="submit" class="{% if enabled %}btn-warning{% else %}btn-secondary{% endif %}">
+        {% if enabled %}Disable account{% else %}Enable account{% endif %}
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/reset-password" autocomplete="off" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="dn" value="{{ target_dn }}">
+    <label for="new_password">Reset password</label>
+    <input type="password" id="new_password" name="new_password" autocomplete="new-password" placeholder="Leave blank to generate a strong one">
+    <p style="color:var(--text-muted);">The password is set with <strong>must change at next logon</strong>, shown once, and never stored or logged.</p>
+    <button type="submit" class="btn-primary">{% call macros::icon("elevate") %} Reset password</button>
+  </form>
+</div>
+{% endif %}
+
+{% if can_manage %}
+<div class="card">
+  <h3>Move</h3>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/move">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="dn" value="{{ target_dn }}">
+    <label for="new_parent_ou">Move to OU (distinguished name)</label>
+    <input type="text" id="new_parent_ou" name="new_parent_ou" placeholder="OU=Staff,DC=corp,DC=example,DC=com" required>
+    <button type="submit" class="btn-secondary">Move object</button>
+  </form>
+</div>
+{% endif %}
+
+{% if offboard_available %}
+<div class="card kind-destructive">
+  <h3>Offboard</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Disables the account, strips its groups (saved so it can be undone), moves it
+    to the domain's disabled OU, and hides its mailbox. Deleting it is a separate
+    step later.
+  </p>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/offboard">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="dn" value="{{ target_dn }}">
+    <button type="submit" class="btn-warning">Offboard user</button>
+  </form>
+</div>
+{% endif %}
+
+{% if let Some(sid) = undo_snapshot_id %}
+<div class="card">
+  <h3>Undo offboarding</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Re-enable, restore the stripped groups, and move back to the original OU.</p>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/offboard/{{ sid }}/undo">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">Undo offboarding</button>
+  </form>
+</div>
+{% endif %}
+
+{% if can_delete && obj.kind != "group" %}
+<div class="card kind-destructive">
+  <h3>Delete</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Removes this object. An object protected from accidental deletion is refused
+    (clear that flag in AD first). If the AD Recycle Bin is enabled, a restore is
+    possible.
+  </p>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/delete">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="dn" value="{{ target_dn }}">
+    <button type="submit" class="btn-danger">Delete {{ obj.kind }}</button>
+  </form>
+</div>
+{% endif %}
+
+{% if obj.kind == "group" %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h3 style="margin:0;">Members <span class="badge badge-muted">{{ obj.list.len() }}</span></h3>
+    {% if can_delete %}
+    <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/delete-group" class="confirm-type">
+      <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+      <input type="hidden" name="dn" value="{{ target_dn }}">
+      <button type="submit" class="btn-danger">Delete group</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if obj.list.is_empty() %}
+  <p class="results-empty">No members.</p>
+  {% else %}
+  <table>
+    <tbody>
+      {% for item in obj.list %}
+      <tr>
+        <td><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/object?dn={{ item.dn_encoded }}">{{ item.name }}</a></td>
+        <td style="text-align:right;">
+          {% if can_manage %}
+          <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/remove-member">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="group_dn" value="{{ target_dn }}">
+            <input type="hidden" name="member_dn" value="{{ item.dn }}">
+            <button type="submit" class="btn-secondary">Remove</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if can_manage %}
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/add-member" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="group_dn" value="{{ target_dn }}">
+    <label for="member_dn">Add member (distinguished name)</label>
+    <input type="text" id="member_dn" name="member_dn" placeholder="CN=Jane Doe,OU=Staff,DC=corp,DC=example,DC=com" required>
+    <button type="submit" class="btn-primary">Add member</button>
+    <p style="color:var(--text-muted);">Global groups accept members from this domain only; universal groups from any forest domain.</p>
+  </form>
+  {% endif %}
+</div>
+{% else if !obj.list_title.is_empty() %}
+<div class="card">
+  <h3>{{ obj.list_title }} <span class="badge badge-muted">{{ obj.list.len() }}</span></h3>
+  {% if obj.list.is_empty() %}
+  <p class="results-empty">None.</p>
+  {% else %}
+  <ul>
+    {% for item in obj.list %}
+    <li><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/object?dn={{ item.dn_encoded }}">{{ item.name }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
+{% endif %}
+
+{% endblock %}

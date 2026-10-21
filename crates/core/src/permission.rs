@@ -110,6 +110,25 @@ pub enum Permission {
     /// floor, not the only control.
     ScourgeView,
     ScourgeManage,
+
+    /// Gravekeeper (Active Directory management). The directory permissions
+    /// are finer-grained than a view/manage pair because AD work spans
+    /// front-line help desk through to destructive and privileged changes:
+    /// `View` browses/searches and reads attributes; `Helpdesk` unlocks,
+    /// resets passwords (always must-change) and enable/disables; `Manage`
+    /// creates/edits users, groups, membership, moves, onboarding/offboarding
+    /// and templates; `Delete` removes users, groups and computer objects;
+    /// `Privileged` lifts the protected-object guard (granted to nobody by
+    /// default); `Configure` owns domains, write DCs, service accounts and
+    /// mail connections. Destructive and privileged actions are additionally
+    /// gated by preview + type-to-confirm and the guardrails -- the
+    /// permission is the floor, not the only control.
+    DirectoryView,
+    DirectoryHelpdesk,
+    DirectoryManage,
+    DirectoryDelete,
+    DirectoryPrivileged,
+    DirectoryConfigure,
 }
 
 impl Permission {
@@ -168,6 +187,13 @@ impl Permission {
             Permission::StorageConnectionsManage => "storage_connections.manage",
             Permission::ScourgeView => "scourge.view",
             Permission::ScourgeManage => "scourge.manage",
+
+            Permission::DirectoryView => "directory.view",
+            Permission::DirectoryHelpdesk => "directory.helpdesk",
+            Permission::DirectoryManage => "directory.manage",
+            Permission::DirectoryDelete => "directory.delete",
+            Permission::DirectoryPrivileged => "directory.privileged",
+            Permission::DirectoryConfigure => "directory.configure",
         }
     }
 
@@ -216,6 +242,12 @@ impl Permission {
         Permission::StorageConnectionsManage,
         Permission::ScourgeView,
         Permission::ScourgeManage,
+        Permission::DirectoryView,
+        Permission::DirectoryHelpdesk,
+        Permission::DirectoryManage,
+        Permission::DirectoryDelete,
+        Permission::DirectoryPrivileged,
+        Permission::DirectoryConfigure,
     ];
 }
 

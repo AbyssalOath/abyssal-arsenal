@@ -76,6 +76,9 @@ pub struct SettingsAccess {
     pub resurrection: bool,
     /// Cadavault's daily posture runs: `security.manage`.
     pub posture: bool,
+    /// Gravekeeper (AD management) setup: domains, write DCs, service accounts.
+    /// `directory.configure`.
+    pub gravekeeper: bool,
 }
 
 impl SettingsAccess {
@@ -94,6 +97,7 @@ impl SettingsAccess {
             scourge: ctx.has(Permission::ScourgeManage),
             resurrection: ctx.has(Permission::SystemsManage),
             posture: ctx.has(Permission::SecurityManage),
+            gravekeeper: ctx.has(Permission::DirectoryConfigure),
         }
     }
 

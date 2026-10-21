@@ -1,0 +1,43 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Find — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — find across domains{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper">&larr; Back to Gravekeeper</a></p>
+
+{% if let Some(err) = error %}
+<div class="warning-banner">{% call macros::icon("warning") %} Some domains couldn't be searched: {{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Find a user, group or computer</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Searches every configured domain whose write DC is connected — handy from a Thanatos alert to jump straight to the account.</p>
+  <form method="get" action="/arsenals/gravekeeper/find">
+    <label for="q" class="sr-only">Search</label>
+    <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, logon name or UPN…">
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Search</button>
+  </form>
+
+  {% if !query.is_empty() %}
+  {% if results.is_empty() %}
+  <p class="results-empty" style="margin-top:12px;">Nothing matched &ldquo;{{ query }}&rdquo; in any connected domain.</p>
+  {% else %}
+  <table style="margin-top:12px;">
+    <thead><tr><th>Domain</th><th>Type</th><th>Name</th><th>Identifier</th></tr></thead>
+    <tbody>
+      {% for r in results %}
+      <tr>
+        <td>{{ r.domain_dns }}</td>
+        <td><span class="badge badge-muted">{{ r.kind }}</span></td>
+        <td><a href="/arsenals/gravekeeper/domains/{{ r.domain_id }}/object?dn={{ r.dn_encoded }}">{{ r.name }}</a></td>
+        <td>{% if r.sub.is_empty() %}—{% else %}{{ r.sub }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+</div>
+
+{% endblock %}

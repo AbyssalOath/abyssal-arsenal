@@ -1,0 +1,64 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Browse {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — {{ dns_name }}{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper">&larr; Back to Gravekeeper</a></p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+
+<p>
+  {% if can_manage %}<a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/groups/new">New group</a>{% endif %}
+  <a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/stale">Stale accounts</a>
+</p>
+
+<div class="card">
+  <h3>Search</h3>
+  <form method="get" action="/arsenals/gravekeeper/domains/{{ domain_id }}/browse">
+    <label for="q" class="sr-only">Search</label>
+    <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, logon name or UPN…">
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Search</button>
+  </form>
+
+  {% if !query.is_empty() %}
+  {% if results.is_empty() %}
+  <p class="results-empty" style="margin-top:12px;">No users, groups or computers matched &ldquo;{{ query }}&rdquo;.</p>
+  {% else %}
+  <table style="margin-top:12px;">
+    <thead>
+      <tr><th>Type</th><th>Name</th><th>Identifier</th><th>State</th></tr>
+    </thead>
+    <tbody>
+      {% for r in results %}
+      <tr>
+        <td><span class="badge badge-muted">{{ r.kind }}</span></td>
+        <td><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/object?dn={{ r.dn_encoded }}">{{ r.name }}</a></td>
+        <td>{% if r.sub.is_empty() %}—{% else %}{{ r.sub }}{% endif %}</td>
+        <td>{% if r.state.is_empty() %}—{% else %}{{ r.state }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Organizational units <span class="badge badge-muted">{{ ou_rows.len() }}</span></h3>
+  {% if ou_rows.is_empty() %}
+  <p class="results-empty">No OUs to show.</p>
+  {% else %}
+  <ul class="ou-tree" style="list-style:none; padding-left:0;">
+    {% for ou in ou_rows %}
+    <li style="padding:2px 0 2px calc({{ ou.depth }} * 20px);" title="{{ ou.dn }}">
+      {% call macros::icon("module") %} {{ ou.name }}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+{% endblock %}

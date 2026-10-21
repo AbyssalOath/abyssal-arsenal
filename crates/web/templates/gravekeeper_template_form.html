@@ -1,0 +1,87 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}{% if template_id.is_some() %}Edit{% else %}New{% endif %} template — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — {% if template_id.is_some() %}edit{% else %}new{% endif %} template{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/templates">&larr; Back to templates</a></p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+
+<div class="card">
+  {% if let Some(tid) = template_id %}
+  <form method="post" action="/arsenals/gravekeeper/templates/{{ tid }}">
+  {% else %}
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/templates">
+  {% endif %}
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+    <label for="name">Template name</label>
+    <input type="text" id="name" name="name" value="{{ form.name }}" placeholder="e.g. Sales — standard" required>
+
+    <label for="username_pattern">Username pattern (sAMAccountName)</label>
+    <input type="text" id="username_pattern" name="username_pattern" value="{{ form.username_pattern }}" required>
+    <p style="color:var(--text-muted);">
+      Tokens: <code>{first}</code> <code>{last}</code> <code>{f}</code> (first initial)
+      <code>{l}</code> (last initial). Lowercased and trimmed to a valid logon name.
+    </p>
+
+    <label for="upn_suffix">UPN suffix</label>
+    <input type="text" id="upn_suffix" name="upn_suffix" value="{{ form.upn_suffix }}" placeholder="blank = the domain's own DNS name">
+
+    <label for="email_pattern">Email pattern (mail attribute)</label>
+    <input type="text" id="email_pattern" name="email_pattern" value="{{ form.email_pattern }}" placeholder="e.g. {first}.{last}@example.com — blank for none">
+
+    <label for="target_ou">Target OU (distinguished name)</label>
+    <input type="text" id="target_ou" name="target_ou" value="{{ form.target_ou }}" placeholder="blank = the domain's default Users container">
+
+    <label for="groups">Groups (one DN per line)</label>
+    <textarea id="groups" name="groups" rows="4" placeholder="CN=Sales,OU=Groups,DC=corp,DC=example,DC=com">{{ form.groups }}</textarea>
+
+    <label for="attributes">Attribute defaults (name=value per line)</label>
+    <textarea id="attributes" name="attributes" rows="4" placeholder="department=Sales&#10;company=Example Inc">{{ form.attributes }}</textarea>
+
+    <label for="mail_mode">Mailbox type</label>
+    <select id="mail_mode" name="mail_mode">
+      {% for m in mail_modes %}
+      <option value="{{ m }}"{% if form.mail_mode == m.as_str() %} selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+    </select>
+    <p style="color:var(--text-muted);">
+      Exchange (on-prem/hybrid) and Microsoft 365 use the domain's
+      <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/mail">mail connection</a>.
+      The Microsoft 365 licensing below applies when the mode is Microsoft 365.
+    </p>
+
+    <fieldset style="margin-top:4px;">
+      <legend>Microsoft 365 licensing (for m365 mode)</legend>
+      <label for="m365_usage_location">Usage location (2-letter country)</label>
+      <input type="text" id="m365_usage_location" name="m365_usage_location" maxlength="2" value="{{ form.m365_usage_location }}" placeholder="US">
+      <label for="m365_licensing_group">Licensing group (Entra group id, group-based)</label>
+      <input type="text" id="m365_licensing_group" name="m365_licensing_group" value="{{ form.m365_licensing_group }}">
+      <label for="m365_license_sku">License SKU id (direct)</label>
+      <input type="text" id="m365_license_sku" name="m365_license_sku" value="{{ form.m365_license_sku }}">
+      <p style="color:var(--text-muted);">Which of these is used depends on the domain's licensing method (group / direct / both).</p>
+    </fieldset>
+
+    <label><input type="checkbox" name="manager_required" value="true"{% if form.manager_required %} checked{% endif %}> Require a manager at onboarding</label>
+
+    <div style="margin-top:14px;">
+      <button type="submit" class="btn-primary">{% if template_id.is_some() %}Save template{% else %}Create template{% endif %}</button>
+    </div>
+  </form>
+</div>
+
+{% if let Some(tid) = template_id %}
+<div class="card kind-destructive">
+  <h3>Delete template</h3>
+  <form method="post" action="/arsenals/gravekeeper/templates/{{ tid }}/delete">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-danger">Delete this template</button>
+  </form>
+</div>
+{% endif %}
+
+{% endblock %}

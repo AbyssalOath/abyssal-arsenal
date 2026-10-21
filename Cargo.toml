@@ -43,10 +43,11 @@ members = [
     "crates/arsenals/panopticon",
     "crates/arsenals/scourge",
     "crates/arsenals/sepulchre",
+    "crates/arsenals/gravekeeper",
 ]
 
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 authors = ["LordSodomiser <lordsodomiser@proton.me>"]
@@ -93,6 +94,7 @@ arsenal-thanatos = { path = "crates/arsenals/thanatos" }
 arsenal-panopticon = { path = "crates/arsenals/panopticon" }
 arsenal-scourge = { path = "crates/arsenals/scourge" }
 arsenal-sepulchre = { path = "crates/arsenals/sepulchre" }
+arsenal-gravekeeper = { path = "crates/arsenals/gravekeeper" }
 
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "ws"] }
@@ -126,9 +128,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
+sha1 = "0.10"
 md-5 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
+# RS256 signing of the Microsoft Graph client-assertion JWT (Gravekeeper M365).
+rsa = { version = "0.9", features = ["sha2"] }
+pem = "4"
 zeroize = "1"
 libc = "0.2"
 form_urlencoded = "1"

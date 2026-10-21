@@ -1,0 +1,82 @@
+{% extends "app_base.html" %}
+{% block title %}Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — Active Directory{% endblock %}
+{% block content %}
+
+{% if domains.is_empty() %}
+<div class="card">
+  <h3>No domains configured yet</h3>
+  <p style="color:var(--text-muted);">
+    Gravekeeper manages Active Directory users, groups and OUs across a domain
+    or forest. Changes run on each domain's write domain controller through the
+    Haruspex DC agent, under a delegated service account — so a connected
+    Windows domain controller and a service account are needed before it can do
+    anything.
+  </p>
+  {% if can_configure %}
+  <p style="color:var(--text-muted);">
+    Pick a connected DC, discover the forest, add the domains to manage, and
+    validate a least-privilege service account for each. Until a domain has a
+    validated service account, Gravekeeper stays read-only for it.
+  </p>
+  <a class="btn btn-primary" href="/arsenals/gravekeeper/setup">Set up a domain</a>
+  {% else %}
+  <p style="color:var(--text-muted);">
+    Setting up a domain needs the <code>directory.configure</code> permission.
+  </p>
+  {% endif %}
+</div>
+{% else %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h3 style="margin:0;">Managed domains <span class="badge badge-muted">{{ domains.len() }}</span></h3>
+    {% if can_configure %}
+    <a class="btn btn-secondary" href="/arsenals/gravekeeper/setup">Add a domain</a>
+    {% endif %}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Domain</th>
+        <th>NetBIOS</th>
+        <th>Forest</th>
+        <th>Write DC</th>
+        <th>Service account</th>
+        <th>State</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in domains %}
+      <tr>
+        <td><a href="/arsenals/gravekeeper/domains/{{ d.id }}/browse">{{ d.dns_name }}</a></td>
+        <td>{% if d.netbios_name.is_empty() %}—{% else %}{{ d.netbios_name }}{% endif %}</td>
+        <td>{% if d.forest_root.is_empty() %}—{% else %}{{ d.forest_root }}{% endif %}</td>
+        <td>{% if d.write_dc.is_empty() %}<span class="badge badge-warning">None</span>{% else %}{{ d.write_dc }}{% endif %}</td>
+        <td>{% if d.service_account.is_empty() %}—{% else %}{{ d.service_account }}{% endif %}</td>
+        <td>
+          {% if d.writable %}
+          <span class="badge badge-success">Writable</span>
+          {% else %}
+          <span class="badge badge-muted" title="{{ d.delegation }}">Read-only</span>
+          {% endif %}
+        </td>
+        <td>
+          <a href="/arsenals/gravekeeper/domains/{{ d.id }}/browse">Browse</a>
+          {% if can_manage %} · <a href="/arsenals/gravekeeper/domains/{{ d.id }}/onboard">Onboard</a>
+          · <a href="/arsenals/gravekeeper/domains/{{ d.id }}/templates">Templates</a>
+          · <a href="/arsenals/gravekeeper/domains/{{ d.id }}/jobs">Jobs</a>{% endif %}
+          {% if can_configure %} · <a href="/arsenals/gravekeeper/domains/{{ d.id }}">Configure</a>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p style="color:var(--text-muted); margin-bottom:0;">
+    Browsing OUs, user and group details, and the help-desk actions (unlock,
+    reset password, enable/disable) arrive in the following milestones.
+  </p>
+</div>
+{% endif %}
+
+{% endblock %}

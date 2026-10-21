@@ -7,6 +7,7 @@ mod dhcp;
 mod elevation;
 mod enroll;
 mod firewall;
+mod gravekeeper;
 mod grimoire;
 mod haruspex;
 mod incarnation;

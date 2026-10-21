@@ -35,6 +35,7 @@ pub mod names {
     pub const SELF_MONITOR_SWEEP: &str = "self_monitor_sweep";
     pub const INTERNAL_TLS_SWEEP: &str = "internal_tls_sweep";
     pub const POSTURE_SCHEDULE: &str = "posture_schedule";
+    pub const GRAVEKEEPER_DELEGATION_RECHECK: &str = "gravekeeper_delegation_recheck";
 }
 
 /// One task's most recent liveness state.

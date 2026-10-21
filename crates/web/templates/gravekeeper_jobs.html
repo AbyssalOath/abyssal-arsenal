@@ -1,0 +1,42 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Jobs — {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — jobs ({{ dns_name }}){% endblock %}
+{% block content %}
+
+<p>
+  <a href="/arsenals/gravekeeper">&larr; Back to Gravekeeper</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard">Onboard a user</a>
+</p>
+
+<div class="card">
+  <h3>Recent jobs <span class="badge badge-muted">{{ jobs.len() }}</span></h3>
+  {% if jobs.is_empty() %}
+  <p style="color:var(--text-muted);">No onboarding jobs yet.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Job</th><th>Kind</th><th>Account</th><th>Status</th><th>When</th></tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td><a href="/arsenals/gravekeeper/jobs/{{ j.id }}">{{ j.title }}</a></td>
+        <td>{{ j.kind }}</td>
+        <td>{% if j.target_sam.is_empty() %}—{% else %}<code>{{ j.target_sam }}</code>{% endif %}</td>
+        <td>
+          {% if j.status == "completed" %}<span class="badge badge-success">completed</span>
+          {% else if j.status == "failed" %}<span class="badge badge-danger">failed</span>
+          {% else if j.status == "partial" %}<span class="badge badge-warning">partial</span>
+          {% else %}<span class="badge badge-muted">{{ j.status }}</span>{% endif %}
+        </td>
+        <td>{{ j.created_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -40,6 +40,9 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::HostsEnroll,
             Permission::HostsManage,
             Permission::HostsElevate,
+            Permission::DirectoryView,
+            Permission::DirectoryHelpdesk,
+            Permission::DirectoryManage,
         ],
     )
     .await?;
@@ -82,6 +85,8 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::HostsElevate,
             Permission::ScourgeView,
             Permission::ScourgeManage,
+            Permission::DirectoryView,
+            Permission::DirectoryConfigure,
         ],
     )
     .await?;
@@ -104,6 +109,15 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
     )
     .await?;
 
+    seed_role(
+        pool,
+        role::HELP_DESK,
+        "Front-line directory support: browse Active Directory and run the \
+         help-desk actions (unlock, reset password, enable/disable) only.",
+        vec![Permission::DirectoryView, Permission::DirectoryHelpdesk],
+    )
+    .await?;
+
     upgrade_role_defaults(pool).await?;
 
     Ok(())
@@ -116,7 +130,7 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
 /// each version below is that change, applied exactly once.
 const ROLE_DEFAULTS_VERSION_KEY: &str = "rbac.role_defaults_version";
 /// Installs from before this tracking existed are at version 1.
-const ROLE_DEFAULTS_VERSION: u32 = 3;
+const ROLE_DEFAULTS_VERSION: u32 = 4;
 
 /// One built-in role's change in a defaults version.
 struct RoleDelta {
@@ -198,6 +212,32 @@ const V3_DELTAS: &[RoleDelta] = &[
     },
 ];
 
+/// v4: Gravekeeper (Active Directory management). System Admin runs it day to
+/// day (view/helpdesk/manage); Security / OPSEC Admin owns the service
+/// accounts and mail connections (view/configure). `directory.delete` and
+/// `directory.privileged` are deliberately granted to nobody -- they stay an
+/// explicit, per-person/per-role grant. Super Admin holds every directory
+/// permission through `seed_super_admin` (the `has_no_ceiling()` invariant
+/// requires it to hold all of `Permission::ALL`); the "granted to nobody by
+/// default" rule is about every *other* role. The new built-in **Help Desk**
+/// role (view + helpdesk) is created by `seed_role`, not a delta.
+const V4_DELTAS: &[RoleDelta] = &[
+    RoleDelta {
+        role: role::SYSTEM_ADMIN,
+        grant: &[
+            Permission::DirectoryView,
+            Permission::DirectoryHelpdesk,
+            Permission::DirectoryManage,
+        ],
+        revoke: &[],
+    },
+    RoleDelta {
+        role: role::SECURITY_ADMIN,
+        grant: &[Permission::DirectoryView, Permission::DirectoryConfigure],
+        revoke: &[],
+    },
+];
+
 /// Brings an existing install's roles up to the current defaults, once per
 /// version. Touches only the permissions a version names, so anything else an
 /// admin customized stays as it was. On a fresh install every step is a
@@ -232,6 +272,15 @@ async fn upgrade_role_defaults(pool: &DbPool) -> anyhow::Result<()> {
 
     if from < 3 {
         for delta in V3_DELTAS {
+            if let Some(role) = repo::roles::find_by_name(pool, delta.role).await? {
+                let current = repo::roles::permissions_for_role(pool, role.id).await?;
+                apply_delta(pool, role.id, &current, delta.grant, delta.revoke).await?;
+            }
+        }
+    }
+
+    if from < 4 {
+        for delta in V4_DELTAS {
             if let Some(role) = repo::roles::find_by_name(pool, delta.role).await? {
                 let current = repo::roles::permissions_for_role(pool, role.id).await?;
                 apply_delta(pool, role.id, &current, delta.grant, delta.revoke).await?;
@@ -381,7 +430,7 @@ mod tests {
 
     #[test]
     fn deltas_name_only_built_in_roles_and_never_grant_and_revoke_the_same_thing() {
-        for delta in V2_DELTAS.iter().chain(V3_DELTAS) {
+        for delta in V2_DELTAS.iter().chain(V3_DELTAS).chain(V4_DELTAS) {
             assert!(role::BUILT_IN_ROLES.contains(&delta.role), "{}", delta.role);
             assert_ne!(delta.role, role::SUPER_ADMIN);
             assert!(delta.grant.iter().all(|p| !delta.revoke.contains(p)));

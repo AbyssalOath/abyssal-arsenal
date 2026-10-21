@@ -278,6 +278,22 @@ control-plane camp if it's work the control plane does about its
 environment at large, and in the hybrid camp if it's per-host work whose
 *results* the control plane also needs to reason about over time.
 
+Gravekeeper (`crates/arsenals/gravekeeper`, Active Directory management) is
+a fourth shape: **domain-scoped**. Its page picks an AD *domain*, not a
+host, but each configured domain is bound to a write-DC host and every
+change is an ordinary `execute_on_host()` dispatch to that DC's agent (the
+same one Haruspex uses). Directory writes run under a per-domain
+**delegated service account** (sealed with `ENCRYPTION_KEY`, decrypted only
+to dispatch), never the agent's SYSTEM identity; a domain with no validated
+service account is read-only. The Microsoft 365 mail path is the one
+exception that leaves the agent model -- it calls Microsoft Graph directly
+from the control plane with certificate auth (`crates/web/src/gravekeeper_graph.rs`),
+because a cloud tenant has no host to dispatch to. Its guardrails
+(built-in accounts untouchable; `adminCount=1`/privileged objects behind
+`directory.privileged`; group-scope rules) are enforced agent-side at the
+execution boundary, re-checked from the control plane's own permission
+checks.
+
 ## Controlled execution
 
 Two different problems share one shape (permission check, then run, then
@@ -1076,6 +1092,15 @@ below for what that implies for toggling them).
 - **Scourge retention** (`abyssal_web::spawn_scourge_retention`): prunes
   cached alerts older than `scourge.event_retention_days` and enforces a row
   cap, keeping the Scourge cache a short window rather than a history store.
+- **Gravekeeper delegation re-check**
+  (`abyssal_web::spawn_gravekeeper_delegation_recheck`, daily): for each AD
+  domain with a stored service account, decrypts the sealed credential,
+  re-runs the delegation check on the write DC, and flips the domain back to
+  read-only if the account can no longer bind or has since become a member of
+  a privileged group -- so a domain that was writable doesn't stay trusted
+  after its service account drifts. Skips offline DCs and a control plane with
+  no `ENCRYPTION_KEY` rather than flapping the stored state. Registered with
+  `task_health` (`GRAVEKEEPER_DELEGATION_RECHECK`).
 - **Panopticon sweep** (`abyssal_web::spawn_panopticon_sweep`, two
   independent loops): a passive refresh every 60s, unconditional --
   re-reads the control plane's own kernel neighbor table (`ip neigh`,

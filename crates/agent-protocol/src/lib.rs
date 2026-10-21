@@ -31,7 +31,7 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
 
 /// `PostureFacts`'s answer, as JSON on stdout: every fact Cadavault's
 /// posture checks read, flat and stringly typed (`"sshd.permitrootlogin" ->
@@ -59,6 +59,56 @@ pub struct PostureFactsReport {
 pub struct WhoamiResponse {
     pub host_id: Uuid,
     pub name: String,
+}
+
+/// The payload of [`AgentOperation::DirectoryCreateUser`], boxed in the variant
+/// to keep `AgentOperation` small (it has far more fields than any other
+/// operation). See that variant's doc comment for the semantics. Its `Debug` is
+/// the enum's own hand-written, password-redacting impl -- this struct
+/// deliberately does not derive `Debug`, so a password can never be printed.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateUserRequest {
+    pub domain_dns: String,
+    pub service_account_upn: String,
+    pub service_account_password: String,
+    pub target_ou: String,
+    pub sam_base: String,
+    pub upn_suffix: String,
+    pub given_name: String,
+    pub surname: String,
+    pub display_name: String,
+    pub email: String,
+    pub password: String,
+    pub attributes: Vec<(String, String)>,
+    pub groups: Vec<String>,
+    pub allow_privileged: bool,
+}
+
+/// The payload of [`AgentOperation::DirectoryUndoOffboard`], boxed (it carries
+/// the stripped-groups list to restore).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UndoOffboardRequest {
+    pub domain_dns: String,
+    pub service_account_upn: String,
+    pub service_account_password: String,
+    pub target_dn: String,
+    pub original_ou: String,
+    pub groups: Vec<String>,
+    pub allow_privileged: bool,
+}
+
+/// The payload of [`AgentOperation::DirectoryCreateGroup`], boxed in the variant
+/// to keep `AgentOperation` small (same reason as [`CreateUserRequest`]).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateGroupRequest {
+    pub domain_dns: String,
+    pub service_account_upn: String,
+    pub service_account_password: String,
+    pub name: String,
+    pub target_ou: String,
+    pub scope: String,
+    pub category: String,
+    pub description: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1255,6 +1305,234 @@ pub enum AgentOperation {
     },
 
     // -------------------------------------------------------------
+    // Gravekeeper: Active Directory management (Windows DC agent).
+    // Runs the `ActiveDirectory` PowerShell module against the DC the
+    // agent is on. Reads run under the agent's own identity; anything
+    // that would change the directory runs the cmdlet with the delegated
+    // service account's `-Credential` (never the agent's SYSTEM
+    // identity -- Phase 1 ships only reads/validation). Every value is
+    // validated here and on the control plane and passed to cmdlets as
+    // single-quoted data (`process::ps_quote`), never interpolated as
+    // code; passwords cross over stdin, never argv, and are redacted in
+    // `Debug`. Linux returns `platform_unsupported()`.
+    // -------------------------------------------------------------
+    /// Discover the AD forest from the DC this agent runs on: the forest
+    /// root, every domain (DNS name, NetBIOS name, PDC emulator), the
+    /// UPN suffixes, and the global catalogs. Read-only; output is JSON
+    /// (`Get-ADForest`/`Get-ADDomain`). No arguments.
+    DirectoryDiscoverForest,
+    /// Validate a delegated service account for `domain_dns`: that it can
+    /// sign in, that it is **not** a member (directly or through nesting)
+    /// of the privileged groups (Domain/Enterprise/Schema Admins,
+    /// Administrators, Account/Server/Backup Operators), and which of the
+    /// domain's OUs it can actually create and modify users in. Changes
+    /// nothing, so it is a Read. `password` is supplied in the operation
+    /// (sent once over the authenticated, TLS channel), piped to
+    /// PowerShell over **stdin** by the agent -- never argv -- and
+    /// redacted in `Debug`. Output is JSON.
+    DirectoryTestDelegation {
+        domain_dns: String,
+        service_account_upn: String,
+        password: String,
+    },
+    /// The OU hierarchy of `domain_dns`: every organizational unit's
+    /// distinguished name and name, as JSON (`Get-ADOrganizationalUnit`). The
+    /// control plane builds the tree from the DNs. Read-only; runs under the
+    /// agent's own identity on the DC (browsing never needs the delegated
+    /// credential -- only writes do).
+    DirectoryOuTree {
+        domain_dns: String,
+    },
+    /// Search `domain_dns` for users, groups and computers matching `query`
+    /// (ambiguous name resolution), as JSON. Read-only. `query` is free text,
+    /// so the agent LDAP-escapes it before it reaches a filter; it is never
+    /// treated as filter syntax.
+    DirectorySearch {
+        domain_dns: String,
+        query: String,
+    },
+    /// Full detail of one directory object identified by its distinguished name
+    /// `dn` (a user, group or computer) in `domain_dns`, as JSON: its
+    /// attributes plus group memberships (user) or members (group). Read-only.
+    DirectoryGetObject {
+        domain_dns: String,
+        dn: String,
+    },
+    /// The enabled users in `domain_dns` whose last logon is older than `days`
+    /// (or who have never logged on), as JSON -- the stale-accounts report.
+    /// Read-only; runs under the agent's own identity.
+    DirectoryStaleAccounts {
+        domain_dns: String,
+        days: u32,
+    },
+    /// Help-desk WRITE: unlock the account at `target_dn`. Runs under the
+    /// delegated service account's `-Credential` (`service_account_upn` +
+    /// `service_account_password`, the latter sent once and piped over stdin,
+    /// never argv, redacted in `Debug`). The agent enforces the guardrails
+    /// before acting: built-in accounts (RID 500/501/502) are refused outright,
+    /// and an `adminCount=1` (privileged/protected) target is refused unless
+    /// `allow_privileged` is set (the control plane sets it only for a caller
+    /// holding `directory.privileged`).
+    DirectoryUnlockAccount {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        allow_privileged: bool,
+    },
+    /// Help-desk WRITE: enable or disable the account at `target_dn`. Same
+    /// credential, stdin and guardrail rules as `DirectoryUnlockAccount`.
+    DirectorySetEnabled {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        enabled: bool,
+        allow_privileged: bool,
+    },
+    /// Onboarding WRITE: create a user from a template's change-set. Runs under
+    /// the delegated service account's `-Credential` (same stdin/`Debug` rules
+    /// as the other writes: the service-account password is stdin line 1, the
+    /// new user's password stdin line 2, both redacted). The agent resolves a
+    /// free `sAMAccountName` from `sam_base` (appending 2, 3, ... on a
+    /// collision), builds the UPN as `<final-sam>@upn_suffix`, creates the user
+    /// in `target_ou` (empty = the domain's default Users container) with the
+    /// given name/attributes, sets the password with change-at-next-logon,
+    /// enables the account, and adds it to `groups`. Guardrail: adding the new
+    /// user to a protected group (adminCount=1 or a privileged well-known group)
+    /// is refused unless `allow_privileged`. Reserved attribute names
+    /// (sAMAccountName/userPrincipalName/givenName/sn/displayName) in
+    /// `attributes` are ignored (set from their own fields). Output is JSON with
+    /// the final sam and UPN.
+    DirectoryCreateUser(Box<CreateUserRequest>),
+    /// Help-desk WRITE: reset the password of the account at `target_dn` and
+    /// require a change at next logon. Two secrets travel, both piped over
+    /// stdin (service-account password, then the new password) and both
+    /// redacted in `Debug`; the new password is never argv, never logged.
+    /// Same guardrail rules as `DirectoryUnlockAccount`.
+    DirectorySetPassword {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        new_password: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper mail: test an on-premises/hybrid Exchange connection. Opens
+    /// an Exchange remote-PowerShell session to `uri` (Kerberos) with the
+    /// Recipient Management `account_upn`/`account_password` and reads the org
+    /// config. Read-only. The password is piped over stdin, never argv, and is
+    /// redacted in `Debug`. Runs on a domain-joined agent that can reach
+    /// Exchange. Output is JSON.
+    ExchangeTestConnection {
+        uri: String,
+        account_upn: String,
+        account_password: String,
+    },
+    /// Gravekeeper mail WRITE: give `target_identity` a mailbox through Exchange
+    /// remote PowerShell. When `remote_routing_address` is empty this is an
+    /// on-prem `Enable-Mailbox`; otherwise it is a hybrid `Enable-RemoteMailbox
+    /// -RemoteRoutingAddress <that>`. Same session/credential/stdin/`Debug`
+    /// rules as `ExchangeTestConnection`.
+    ExchangeEnableMailbox {
+        uri: String,
+        account_upn: String,
+        account_password: String,
+        target_identity: String,
+        remote_routing_address: String,
+    },
+    /// Gravekeeper mail WRITE (offboard): hide `target_identity`'s mailbox from
+    /// the address lists and, when `convert_to_shared`, convert it to a shared
+    /// mailbox, through Exchange remote PowerShell. Same session/credential/
+    /// stdin/`Debug` rules as `ExchangeEnableMailbox`.
+    ExchangeSetMailboxOffboard {
+        uri: String,
+        account_upn: String,
+        account_password: String,
+        target_identity: String,
+        convert_to_shared: bool,
+    },
+    /// Gravekeeper WRITE: create a group. `scope` is `global`|`universal`|
+    /// `domainlocal`, `category` is `security`|`distribution`. Created in
+    /// `target_ou` (empty = the default Users container). Runs under the
+    /// delegated `-Credential`; password over stdin, redacted. Output JSON with
+    /// the new group's DN.
+    DirectoryCreateGroup(Box<CreateGroupRequest>),
+    /// Gravekeeper WRITE: delete the group at `target_dn`. Guardrail: a protected
+    /// group (adminCount=1 or a privileged well-known group) is refused unless
+    /// `allow_privileged`.
+    DirectoryDeleteGroup {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE: add `member_dn` to the group at `group_dn`. Enforces
+    /// the group-scope rules (a global group only takes same-domain members; a
+    /// universal group any forest domain; a domain-local group any member) and
+    /// the privileged guard (membership of a protected group is refused unless
+    /// `allow_privileged`).
+    DirectoryAddGroupMember {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        group_dn: String,
+        member_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE: remove `member_dn` from the group at `group_dn`. Same
+    /// privileged guard as `DirectoryAddGroupMember`.
+    DirectoryRemoveGroupMember {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        group_dn: String,
+        member_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE: move the object at `target_dn` into `new_parent_ou`.
+    /// Guardrail: a built-in account (RID 500/501/502) is refused outright, and
+    /// a protected object (adminCount=1) unless `allow_privileged`.
+    DirectoryMove {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        new_parent_ou: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE (delete): remove the object at `target_dn` (user, group
+    /// or computer). Respects *Protect object from accidental deletion* (the
+    /// cmdlet refuses and the error is surfaced -- Gravekeeper never clears the
+    /// flag). Guardrail: built-in accounts refused outright, protected objects
+    /// unless `allow_privileged`. Output JSON notes whether the AD Recycle Bin
+    /// is enabled (so a restore is possible).
+    DirectoryDeleteObject {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE (offboard): disable the account at `target_dn`, remove
+    /// it from all its groups (capturing them), and move it to `disabled_ou`.
+    /// Guardrail: built-in refused outright, protected unless `allow_privileged`.
+    /// Output JSON `{ original_ou, groups: [..], new_dn }` so the control plane
+    /// can store an undo snapshot.
+    DirectoryOffboard {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        disabled_ou: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE (undo offboard): move the account back to
+    /// `original_ou`, re-add it to `groups`, and re-enable it.
+    DirectoryUndoOffboard(Box<UndoOffboardRequest>),
+
+    // -------------------------------------------------------------
     // Sepulchre: host-side SFTP/SMB share provisioning and mounts.
     // "Never edit the main sshd_config/smb.conf in place" -- every
     // write here touches only a Sepulchre-owned drop-in/include file,
@@ -1980,6 +2258,13 @@ impl AgentOperation {
                 | Op::ScanSecurityEvents { .. }
                 | Op::AdDnsReport { .. }
                 | Op::AdHealthReport { .. }
+                | Op::DirectoryDiscoverForest
+                | Op::DirectoryTestDelegation { .. }
+                | Op::DirectoryOuTree { .. }
+                | Op::DirectorySearch { .. }
+                | Op::DirectoryGetObject { .. }
+                | Op::DirectoryStaleAccounts { .. }
+                | Op::ExchangeTestConnection { .. }
                 | Op::DetectPackageBackend
                 | Op::CheckSepulchreConfigIncludeDirective { .. }
                 | Op::CheckMountStatus { .. }
@@ -2828,6 +3113,240 @@ impl fmt::Debug for AgentOperation {
             AgentOperation::ScanSecurityEvents { .. } => write!(f, "ScanSecurityEvents"),
             AgentOperation::AdDnsReport { .. } => write!(f, "AdDnsReport"),
             AgentOperation::AdHealthReport { .. } => write!(f, "AdHealthReport"),
+            AgentOperation::DirectoryDiscoverForest => write!(f, "DirectoryDiscoverForest"),
+            AgentOperation::DirectoryTestDelegation {
+                domain_dns,
+                service_account_upn,
+                ..
+            } => f
+                .debug_struct("DirectoryTestDelegation")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("password", &"[REDACTED]")
+                .finish(),
+            AgentOperation::DirectoryOuTree { domain_dns } => f
+                .debug_struct("DirectoryOuTree")
+                .field("domain_dns", domain_dns)
+                .finish(),
+            AgentOperation::DirectorySearch { domain_dns, query } => f
+                .debug_struct("DirectorySearch")
+                .field("domain_dns", domain_dns)
+                .field("query", query)
+                .finish(),
+            AgentOperation::DirectoryGetObject { domain_dns, dn } => f
+                .debug_struct("DirectoryGetObject")
+                .field("domain_dns", domain_dns)
+                .field("dn", dn)
+                .finish(),
+            AgentOperation::DirectoryStaleAccounts { domain_dns, days } => f
+                .debug_struct("DirectoryStaleAccounts")
+                .field("domain_dns", domain_dns)
+                .field("days", days)
+                .finish(),
+            AgentOperation::DirectoryUnlockAccount {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryUnlockAccount")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectorySetEnabled {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                enabled,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectorySetEnabled")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("enabled", enabled)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryCreateUser(r) => f
+                .debug_struct("DirectoryCreateUser")
+                .field("domain_dns", &r.domain_dns)
+                .field("service_account_upn", &r.service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_ou", &r.target_ou)
+                .field("sam_base", &r.sam_base)
+                .field("upn_suffix", &r.upn_suffix)
+                .field("password", &"[REDACTED]")
+                .field("allow_privileged", &r.allow_privileged)
+                .finish(),
+            AgentOperation::DirectorySetPassword {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectorySetPassword")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("new_password", &"[REDACTED]")
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::ExchangeTestConnection {
+                uri, account_upn, ..
+            } => f
+                .debug_struct("ExchangeTestConnection")
+                .field("uri", uri)
+                .field("account_upn", account_upn)
+                .field("account_password", &"[REDACTED]")
+                .finish(),
+            AgentOperation::ExchangeEnableMailbox {
+                uri,
+                account_upn,
+                target_identity,
+                remote_routing_address,
+                ..
+            } => f
+                .debug_struct("ExchangeEnableMailbox")
+                .field("uri", uri)
+                .field("account_upn", account_upn)
+                .field("account_password", &"[REDACTED]")
+                .field("target_identity", target_identity)
+                .field("remote_routing_address", remote_routing_address)
+                .finish(),
+            AgentOperation::DirectoryCreateGroup(r) => f
+                .debug_struct("DirectoryCreateGroup")
+                .field("domain_dns", &r.domain_dns)
+                .field("service_account_upn", &r.service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("name", &r.name)
+                .field("target_ou", &r.target_ou)
+                .field("scope", &r.scope)
+                .field("category", &r.category)
+                .finish(),
+            AgentOperation::DirectoryDeleteGroup {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryDeleteGroup")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryAddGroupMember {
+                domain_dns,
+                service_account_upn,
+                group_dn,
+                member_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryAddGroupMember")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("group_dn", group_dn)
+                .field("member_dn", member_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryRemoveGroupMember {
+                domain_dns,
+                service_account_upn,
+                group_dn,
+                member_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryRemoveGroupMember")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("group_dn", group_dn)
+                .field("member_dn", member_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryMove {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                new_parent_ou,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryMove")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("new_parent_ou", new_parent_ou)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryDeleteObject {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryDeleteObject")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryOffboard {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                disabled_ou,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryOffboard")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("disabled_ou", disabled_ou)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryUndoOffboard(r) => f
+                .debug_struct("DirectoryUndoOffboard")
+                .field("domain_dns", &r.domain_dns)
+                .field("service_account_upn", &r.service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", &r.target_dn)
+                .field("original_ou", &r.original_ou)
+                .field("groups", &r.groups.len())
+                .field("allow_privileged", &r.allow_privileged)
+                .finish(),
+            AgentOperation::ExchangeSetMailboxOffboard {
+                uri,
+                account_upn,
+                target_identity,
+                convert_to_shared,
+                ..
+            } => f
+                .debug_struct("ExchangeSetMailboxOffboard")
+                .field("uri", uri)
+                .field("account_upn", account_upn)
+                .field("account_password", &"[REDACTED]")
+                .field("target_identity", target_identity)
+                .field("convert_to_shared", convert_to_shared)
+                .finish(),
             AgentOperation::DetectPackageBackend => write!(f, "DetectPackageBackend"),
             AgentOperation::RenderSepulchreConfig { target, content } => f
                 .debug_struct("RenderSepulchreConfig")
@@ -3252,6 +3771,225 @@ pub fn is_valid_windows_absolute_path(path: &str) -> bool {
     path.len() <= 4096
         && !path.split(['\\', '/']).any(|segment| segment == "..")
         && path.chars().all(|c| !c.is_control())
+}
+
+// --- Gravekeeper (Active Directory management) validators ------------------
+//
+// Shared the same way every validator above is: the control plane checks them
+// for a clean error before dispatch, and the Gravekeeper DC agent re-checks
+// them as the real execution boundary before running any `ActiveDirectory`
+// cmdlet (see `docs/roadmap/ad-management.md`). Values are also passed to
+// PowerShell as single-quoted literals (`process::ps_quote`), never
+// interpolated as code -- these validators are the second layer, rejecting
+// values that are malformed or carry control characters (the LDAP/PowerShell
+// injection vectors) rather than relying on quoting alone.
+
+/// An Active Directory `sAMAccountName` (the pre-Windows-2000 logon name).
+/// Microsoft's rules: 1-20 characters, and none of
+/// `" / \ [ ] : ; | = , + * ? < > @` or control characters; it also cannot be
+/// made up only of spaces/periods, cannot end with a period, and cannot have
+/// a leading or trailing space.
+pub fn is_valid_sam_account_name(name: &str) -> bool {
+    const FORBIDDEN: &[char] = &[
+        '"', '/', '\\', '[', ']', ':', ';', '|', '=', ',', '+', '*', '?', '<', '>', '@',
+    ];
+    if name.is_empty() || name.chars().count() > 20 {
+        return false;
+    }
+    if name.starts_with(' ') || name.ends_with(' ') || name.ends_with('.') {
+        return false;
+    }
+    if name.chars().all(|c| c == '.' || c == ' ') {
+        return false;
+    }
+    name.chars()
+        .all(|c| !c.is_control() && !FORBIDDEN.contains(&c))
+}
+
+/// A UPN suffix: the domain-shaped right-hand side of a userPrincipalName
+/// (e.g. `corp.example.com`). Format only -- the arsenal still checks it
+/// against the forest's actual suffix list at runtime. Same shape as a
+/// hostname.
+pub fn is_valid_upn_suffix(suffix: &str) -> bool {
+    is_valid_hostname(suffix)
+}
+
+/// A full userPrincipalName, `local@suffix` (e.g. `jane.doe@corp.example.com`).
+/// The local part is conservative (letters, digits and
+/// `. _ - +`), 1-64 characters, no leading/trailing dot; the suffix must be a
+/// valid UPN suffix. Rejects anything with more than one `@`.
+pub fn is_valid_user_principal_name(upn: &str) -> bool {
+    let Some((local, suffix)) = upn.split_once('@') else {
+        return false;
+    };
+    if local.is_empty()
+        || local.len() > 64
+        || local.contains('@')
+        || local.starts_with('.')
+        || local.ends_with('.')
+    {
+        return false;
+    }
+    let local_ok = local
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'));
+    local_ok && is_valid_upn_suffix(suffix)
+}
+
+/// A distinguished name (e.g. `OU=Disabled Users,DC=corp,DC=example,DC=com`),
+/// used for OUs and the parent container of an object. Deliberately
+/// conservative: 1-2048 characters, no control characters (newlines and nulls
+/// are the LDAP-injection vectors), and it must parse as one or more
+/// comma-separated RDNs, each `type=value` whose *type* is a short ASCII
+/// alphanumeric attribute (`CN`, `OU`, `DC`, `O`, ...) and whose *value* is
+/// non-empty. Escaped commas (`\,`) inside a value are tolerated and don't
+/// split an RDN. Safety against the value becoming code comes from
+/// `ps_quote`; this just rejects a malformed or hostile DN up front.
+pub fn is_valid_ldap_dn(dn: &str) -> bool {
+    if dn.is_empty() || dn.len() > 2048 || dn.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    // Split on unescaped commas into RDNs.
+    let mut rdns: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for c in dn.chars() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            current.push(c);
+            escaped = true;
+        } else if c == ',' {
+            rdns.push(std::mem::take(&mut current));
+        } else {
+            current.push(c);
+        }
+    }
+    if escaped {
+        return false; // dangling escape
+    }
+    rdns.push(current);
+
+    rdns.iter().all(|rdn| {
+        let Some((attr, value)) = rdn.split_once('=') else {
+            return false;
+        };
+        let attr = attr.trim();
+        !attr.is_empty()
+            && attr.len() <= 32
+            && attr.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !value.trim().is_empty()
+    })
+}
+
+/// The allowlist of Active Directory user attributes Gravekeeper will write.
+/// Anything not here is refused rather than passed through to `Set-ADUser` --
+/// so a template or form can never set, say, `userAccountControl` or
+/// `memberOf` as a free-form attribute (those have their own typed
+/// operations). Names are matched case-insensitively against this list.
+pub const WRITABLE_AD_USER_ATTRIBUTES: &[&str] = &[
+    "givenName",
+    "sn",
+    "initials",
+    "displayName",
+    "description",
+    "mail",
+    "department",
+    "company",
+    "title",
+    "manager",
+    "physicalDeliveryOfficeName",
+    "telephoneNumber",
+    "mobile",
+    "streetAddress",
+    "l",
+    "st",
+    "postalCode",
+    "co",
+    "employeeID",
+    "employeeNumber",
+];
+
+/// Whether `attr` is an AD user attribute Gravekeeper is allowed to write
+/// (case-insensitive match against [`WRITABLE_AD_USER_ATTRIBUTES`]).
+pub fn is_writable_ad_user_attribute(attr: &str) -> bool {
+    WRITABLE_AD_USER_ATTRIBUTES
+        .iter()
+        .any(|a| a.eq_ignore_ascii_case(attr))
+}
+
+/// Expands an onboarding name pattern against a first/last name. Tokens
+/// (case-insensitive): `{first}`, `{last}`, `{f}` (first initial), `{l}` (last
+/// initial). Everything else is literal. Pure substitution only -- the caller
+/// sanitizes the result for its context (see [`sanitize_sam_account_name`]).
+pub fn expand_name_pattern(pattern: &str, first: &str, last: &str) -> String {
+    let first = first.trim();
+    let last = last.trim();
+    let fi = first
+        .chars()
+        .next()
+        .map(|c| c.to_string())
+        .unwrap_or_default();
+    let li = last
+        .chars()
+        .next()
+        .map(|c| c.to_string())
+        .unwrap_or_default();
+    // Replace longer tokens first so `{first}` isn't partially eaten by `{f}`.
+    let mut out = pattern.to_string();
+    for (token, value) in [
+        ("{first}", first),
+        ("{last}", last),
+        ("{f}", fi.as_str()),
+        ("{l}", li.as_str()),
+    ] {
+        // Case-insensitive token replacement.
+        out = replace_ci(&out, token, value);
+    }
+    out
+}
+
+/// Case-insensitive literal replacement of `needle` with `value` in `haystack`.
+fn replace_ci(haystack: &str, needle: &str, value: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let lower_h = haystack.to_lowercase();
+    let lower_n = needle.to_lowercase();
+    let mut out = String::with_capacity(haystack.len());
+    let mut i = 0;
+    while i < haystack.len() {
+        if lower_h[i..].starts_with(&lower_n) {
+            out.push_str(value);
+            i += needle.len();
+        } else {
+            // Advance one char (respecting UTF-8 boundaries).
+            let ch = haystack[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// Turns an expanded pattern into a candidate `sAMAccountName`: lowercased,
+/// restricted to `[a-z0-9._-]`, with other characters (spaces, accents,
+/// punctuation) dropped, collapsed leading/trailing dots removed, and truncated
+/// to AD's 20-character limit. The result still goes through
+/// [`is_valid_sam_account_name`] before use (it can be empty if the inputs were
+/// all stripped).
+pub fn sanitize_sam_account_name(raw: &str) -> String {
+    let mut s: String = raw
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    while s.len() > 20 {
+        s.pop();
+    }
+    s.trim_matches('.').to_string()
 }
 
 /// A systemd unit name (e.g. `"sshd.service"`, `"nginx"`,
@@ -4381,5 +5119,106 @@ mod tests {
     fn rejects_malformed_cron_commands() {
         assert!(!is_valid_cron_command(""));
         assert!(!is_valid_cron_command("echo hi\nrm -rf /"));
+    }
+
+    #[test]
+    fn sam_account_name_accepts_real_names_rejects_hostile() {
+        assert!(is_valid_sam_account_name("jdoe"));
+        assert!(is_valid_sam_account_name("jane.doe"));
+        assert!(is_valid_sam_account_name("svc-backup_01"));
+        assert!(is_valid_sam_account_name("a"));
+
+        assert!(is_valid_sam_account_name("jane doe")); // internal spaces allowed
+
+        assert!(!is_valid_sam_account_name("")); // empty
+        assert!(!is_valid_sam_account_name("thisnameiswaytoolong21")); // 22 chars
+        assert!(!is_valid_sam_account_name(" jdoe")); // leading space
+        assert!(!is_valid_sam_account_name("jdoe ")); // trailing space
+        assert!(!is_valid_sam_account_name("jdoe.")); // trailing dot
+        assert!(!is_valid_sam_account_name("...")); // only dots
+        assert!(!is_valid_sam_account_name("jane@doe")); // @ forbidden
+        assert!(!is_valid_sam_account_name("jane,doe")); // , forbidden
+        assert!(!is_valid_sam_account_name("jane=doe")); // = forbidden
+        assert!(!is_valid_sam_account_name("jane\\doe")); // backslash
+        assert!(!is_valid_sam_account_name("jane\ndoe")); // control char
+    }
+
+    #[test]
+    fn upn_validation() {
+        assert!(is_valid_user_principal_name("jane.doe@corp.example.com"));
+        assert!(is_valid_user_principal_name("j+tag@example.org"));
+        assert!(is_valid_upn_suffix("corp.example.com"));
+
+        assert!(!is_valid_user_principal_name("no-at-sign"));
+        assert!(!is_valid_user_principal_name("two@at@signs.com"));
+        assert!(!is_valid_user_principal_name("@example.com")); // empty local
+        assert!(!is_valid_user_principal_name(".bad@example.com")); // leading dot
+        assert!(!is_valid_user_principal_name("jane@")); // empty suffix
+        assert!(!is_valid_user_principal_name("jane@-bad.com")); // bad suffix label
+        assert!(!is_valid_upn_suffix("")); // empty
+    }
+
+    #[test]
+    fn ldap_dn_validation() {
+        assert!(is_valid_ldap_dn("DC=corp,DC=example,DC=com"));
+        assert!(is_valid_ldap_dn(
+            "OU=Disabled Users,DC=corp,DC=example,DC=com"
+        ));
+        assert!(is_valid_ldap_dn("CN=Jane Doe,OU=Staff,DC=corp,DC=com"));
+        // An escaped comma inside a value doesn't split the RDN.
+        assert!(is_valid_ldap_dn("CN=Doe\\, Jane,OU=Staff,DC=corp,DC=com"));
+
+        assert!(!is_valid_ldap_dn("")); // empty
+        assert!(!is_valid_ldap_dn("not a dn")); // no '='
+        assert!(!is_valid_ldap_dn("OU=,DC=corp,DC=com")); // empty value
+        assert!(!is_valid_ldap_dn("=value,DC=corp")); // empty attr
+        assert!(!is_valid_ldap_dn("OU=Staff\ninjection,DC=corp")); // control char
+        assert!(!is_valid_ldap_dn("OU=Staff,DC=corp\\")); // dangling escape
+    }
+
+    #[test]
+    fn writable_attribute_allowlist() {
+        assert!(is_writable_ad_user_attribute("givenName"));
+        assert!(is_writable_ad_user_attribute("givenname")); // case-insensitive
+        assert!(is_writable_ad_user_attribute("telephoneNumber"));
+
+        assert!(!is_writable_ad_user_attribute("userAccountControl"));
+        assert!(!is_writable_ad_user_attribute("memberOf"));
+        assert!(!is_writable_ad_user_attribute("unixHomeDirectory"));
+        assert!(!is_writable_ad_user_attribute(""));
+    }
+
+    #[test]
+    fn expands_name_patterns() {
+        assert_eq!(
+            expand_name_pattern("{first}.{last}", "Jane", "Doe"),
+            "Jane.Doe"
+        );
+        assert_eq!(expand_name_pattern("{f}{last}", "Jane", "Doe"), "JDoe");
+        assert_eq!(expand_name_pattern("{last}{f}", "Jane", "Doe"), "DoeJ");
+        // Case-insensitive tokens, literal text preserved.
+        assert_eq!(
+            expand_name_pattern("svc-{FIRST}_{L}", "Jane", "Doe"),
+            "svc-Jane_D"
+        );
+        // Empty name parts collapse cleanly.
+        assert_eq!(expand_name_pattern("{first}.{last}", "Jane", ""), "Jane.");
+    }
+
+    #[test]
+    fn sanitizes_sam_account_names() {
+        assert_eq!(sanitize_sam_account_name("Jane.Doe"), "jane.doe");
+        assert_eq!(sanitize_sam_account_name("Jörg Müller"), "jrgmller"); // accents dropped
+        assert_eq!(sanitize_sam_account_name("a@b c!d"), "abcd"); // specials/space dropped
+        assert_eq!(sanitize_sam_account_name(".jane."), "jane"); // edge dots trimmed
+        assert_eq!(sanitize_sam_account_name(""), "");
+        // Truncated to 20 and still valid.
+        let long = sanitize_sam_account_name("abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(long.len(), 20);
+        assert!(is_valid_sam_account_name(&long));
+        // An expanded-then-sanitized real name is a valid sAMAccountName.
+        let sam = sanitize_sam_account_name(&expand_name_pattern("{first}.{last}", "Jane", "Doe"));
+        assert_eq!(sam, "jane.doe");
+        assert!(is_valid_sam_account_name(&sam));
     }
 }

@@ -1,0 +1,56 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}{{ title }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — {{ title }}{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/jobs">&larr; Back to jobs</a></p>
+
+<div class="card">
+  <table>
+    <tr><th style="text-align:left;">Domain</th><td>{{ dns_name }}</td></tr>
+    <tr><th style="text-align:left;">Kind</th><td>{{ kind }}</td></tr>
+    <tr><th style="text-align:left;">Account</th><td>{% if target_sam.is_empty() %}—{% else %}<code>{{ target_sam }}</code>{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Status</th><td>
+      {% if status == "completed" %}<span class="badge badge-success">completed</span>
+      {% else if status == "failed" %}<span class="badge badge-danger">failed</span>
+      {% else if status == "partial" %}<span class="badge badge-warning">partial</span>
+      {% else %}<span class="badge badge-muted">{{ status }}</span>{% endif %}
+    </td></tr>
+    <tr><th style="text-align:left;">When</th><td>{{ created_at }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Steps</h3>
+  {% if steps.is_empty() %}
+  <p style="color:var(--text-muted);">No steps recorded.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Step</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for s in steps %}
+      <tr>
+        <td>{{ s.name }}</td>
+        <td>
+          {% if s.status == "ok" %}<span class="badge badge-success">ok</span>
+          {% else if s.status == "failed" %}<span class="badge badge-danger">failed</span>
+          {% else if s.status == "skipped" %}<span class="badge badge-muted">skipped</span>
+          {% else %}<span class="badge badge-muted">{{ s.status }}</span>{% endif %}
+        </td>
+        <td>{% if s.detail.is_empty() %}—{% else %}{{ s.detail }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if can_retry_mail %}
+  <form method="post" action="/arsenals/gravekeeper/jobs/{{ job_id }}/retry-mail" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">{% call macros::icon("backup") %} Retry mail step</button>
+    <span style="color:var(--text-muted); margin-left:8px;">Re-runs mailbox provisioning for this user; the AD account is untouched.</span>
+  </form>
+  {% endif %}
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Preview — onboard — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — review before creating{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard">&larr; Back</a></p>
+
+<div class="card">
+  <h3>This will be created in {{ dns_name }}</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    From template <strong>{{ template_name }}</strong> for <strong>{{ first_name }} {{ last_name }}</strong>.
+  </p>
+  <table>
+    <tr><th style="text-align:left;">Logon name (sAMAccountName)</th><td><code>{{ plan.sam_base }}</code> <span class="badge badge-muted" title="A number is appended if the name is already taken">may get a suffix if taken</span></td></tr>
+    <tr><th style="text-align:left;">UPN</th><td>{{ plan.upn }}</td></tr>
+    <tr><th style="text-align:left;">Display name</th><td>{{ plan.display_name }}</td></tr>
+    <tr><th style="text-align:left;">Email</th><td>{% if plan.email.is_empty() %}—{% else %}{{ plan.email }}{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Target OU</th><td>{% if plan.target_ou.is_empty() %}<span class="badge badge-muted">default Users container</span>{% else %}{{ plan.target_ou }}{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Mailbox</th><td>{{ plan.mail_mode }}{% if plan.mail_mode != "none" %} <span class="badge badge-warning">not wired yet</span>{% endif %}</td></tr>
+  </table>
+
+  {% if !plan.attributes.is_empty() %}
+  <h4>Attributes</h4>
+  <table>
+    {% for (k, v) in plan.attributes %}
+    <tr><th style="text-align:left;">{{ k }}</th><td>{{ v }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if !plan.groups.is_empty() %}
+  <h4>Groups</h4>
+  <ul>
+    {% for g in plan.groups %}<li>{{ g }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <p style="color:var(--text-muted);">
+    The account is created enabled, with a generated temporary password shown
+    once and <strong>must change at next logon</strong>.
+  </p>
+
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/create">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="template_id" value="{{ template_id }}">
+    <input type="hidden" name="first_name" value="{{ first_name }}">
+    <input type="hidden" name="last_name" value="{{ last_name }}">
+    <button type="submit" class="btn-primary">{% call macros::icon("user") %} Create user</button>
+    <a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard">Cancel</a>
+  </form>
+</div>
+
+{% endblock %}

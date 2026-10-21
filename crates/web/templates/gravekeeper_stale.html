@@ -1,0 +1,52 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Stale accounts — {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — stale accounts ({{ dns_name }}){% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/browse">&larr; Back to browse</a></p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="get" action="/arsenals/gravekeeper/domains/{{ domain_id }}/stale">
+    <label for="days">Enabled accounts with no logon in (days)</label>
+    <input type="number" id="days" name="days" min="1" max="3650" value="{{ days }}" style="max-width:100px;">
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Run report</button>
+  </form>
+  <p style="color:var(--text-muted);">Based on the replicated <em>LastLogonDate</em> (lastLogonTimestamp), which can lag real logons by up to ~14 days.</p>
+</div>
+
+<div class="card">
+  <h3>Stale accounts <span class="badge badge-muted">{{ rows.len() }}</span></h3>
+  {% if rows.is_empty() %}
+  <p class="results-empty">No enabled accounts are stale by this threshold.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Name</th><th>Logon</th><th>Last logon</th>{% if can_disable %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/object?dn={{ r.dn_encoded }}">{{ r.name }}</a></td>
+        <td>{% if r.sam.is_empty() %}—{% else %}<code>{{ r.sam }}</code>{% endif %}</td>
+        <td>{{ r.last_logon }}</td>
+        {% if can_disable %}
+        <td style="text-align:right;">
+          <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/stale/disable">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="dn" value="{{ r.dn }}">
+            <input type="hidden" name="days" value="{{ days }}">
+            <button type="submit" class="btn-warning">Disable</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% endblock %}

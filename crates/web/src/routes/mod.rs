@@ -12,6 +12,7 @@ pub mod cryptkeeper;
 pub mod cystoolbox;
 pub mod dashboard;
 pub mod defleshing;
+pub mod gravekeeper;
 pub mod grimoire;
 pub mod haruspex;
 pub mod host_context;

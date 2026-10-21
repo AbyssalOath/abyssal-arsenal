@@ -118,6 +118,33 @@ pub enum AuditAction {
     ScourgePcapDeleted,
     ScourgeSensorRemoved,
     ScourgeEventScanRun,
+
+    /// Gravekeeper (Active Directory management). `metadata` carries the domain
+    /// and (for a delegation check) the service-account UPN and the result --
+    /// never the password. `DirectoryServiceAccountValidated` is recorded
+    /// whether the check passed or was refused (e.g. overprivileged).
+    DirectoryDomainConfigured,
+    DirectoryServiceAccountValidated,
+    DirectoryDomainRemoved,
+    /// Help-desk writes against a directory account. `metadata` carries the
+    /// target DN and (for enable/disable) the new state -- never any password.
+    DirectoryAccountUnlocked,
+    DirectoryAccountPasswordReset,
+    DirectoryAccountEnabledChanged,
+    /// A user created from an onboarding template. `metadata` carries the new
+    /// sAMAccountName/UPN and the template -- never the password.
+    DirectoryAccountCreated,
+    /// Group lifecycle and membership (Phase 3). `metadata` carries the group /
+    /// member DNs.
+    DirectoryGroupCreated,
+    DirectoryGroupMembershipChanged,
+    /// A directory object (user/group/computer) deleted under `directory.delete`.
+    DirectoryObjectDeleted,
+    /// A directory object moved to another OU.
+    DirectoryObjectMoved,
+    /// An account offboarded (disabled, stripped, moved) or that offboarding
+    /// undone. `metadata` carries the DN and whether it was an undo.
+    DirectoryAccountOffboarded,
 }
 
 impl AuditAction {
@@ -207,6 +234,18 @@ impl AuditAction {
             AuditAction::ScourgePcapDeleted => "SCOURGE_PCAP_DELETED",
             AuditAction::ScourgeSensorRemoved => "SCOURGE_SENSOR_REMOVED",
             AuditAction::ScourgeEventScanRun => "SCOURGE_EVENT_SCAN_RUN",
+            AuditAction::DirectoryDomainConfigured => "DIRECTORY_DOMAIN_CONFIGURED",
+            AuditAction::DirectoryServiceAccountValidated => "DIRECTORY_SERVICE_ACCOUNT_VALIDATED",
+            AuditAction::DirectoryDomainRemoved => "DIRECTORY_DOMAIN_REMOVED",
+            AuditAction::DirectoryAccountUnlocked => "DIRECTORY_ACCOUNT_UNLOCKED",
+            AuditAction::DirectoryAccountPasswordReset => "DIRECTORY_ACCOUNT_PASSWORD_RESET",
+            AuditAction::DirectoryAccountEnabledChanged => "DIRECTORY_ACCOUNT_ENABLED_CHANGED",
+            AuditAction::DirectoryAccountCreated => "DIRECTORY_ACCOUNT_CREATED",
+            AuditAction::DirectoryGroupCreated => "DIRECTORY_GROUP_CREATED",
+            AuditAction::DirectoryGroupMembershipChanged => "DIRECTORY_GROUP_MEMBERSHIP_CHANGED",
+            AuditAction::DirectoryObjectDeleted => "DIRECTORY_OBJECT_DELETED",
+            AuditAction::DirectoryObjectMoved => "DIRECTORY_OBJECT_MOVED",
+            AuditAction::DirectoryAccountOffboarded => "DIRECTORY_ACCOUNT_OFFBOARDED",
         }
     }
 
@@ -294,6 +333,18 @@ impl AuditAction {
         AuditAction::ScourgePcapDeleted,
         AuditAction::ScourgeSensorRemoved,
         AuditAction::ScourgeEventScanRun,
+        AuditAction::DirectoryDomainConfigured,
+        AuditAction::DirectoryServiceAccountValidated,
+        AuditAction::DirectoryDomainRemoved,
+        AuditAction::DirectoryAccountUnlocked,
+        AuditAction::DirectoryAccountPasswordReset,
+        AuditAction::DirectoryAccountEnabledChanged,
+        AuditAction::DirectoryAccountCreated,
+        AuditAction::DirectoryGroupCreated,
+        AuditAction::DirectoryGroupMembershipChanged,
+        AuditAction::DirectoryObjectDeleted,
+        AuditAction::DirectoryObjectMoved,
+        AuditAction::DirectoryAccountOffboarded,
     ];
 }
 

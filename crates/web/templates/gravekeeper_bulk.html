@@ -1,0 +1,39 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Bulk onboard — {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — bulk onboard ({{ dns_name }}){% endblock %}
+{% block content %}
+
+<p>
+  <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard">&larr; Single onboard</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/jobs">Jobs</a>
+</p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>CSV onboarding</h3>
+  {% if templates.is_empty() %}
+  <p style="color:var(--text-muted);">Create a <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/templates/new">template</a> first.</p>
+  {% else %}
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/bulk/preview">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="template_id">Template</label>
+    <select id="template_id" name="template_id" required>
+      <option value="">Choose a template…</option>
+      {% for (tid, tname) in templates %}
+      <option value="{{ tid }}">{{ tname }}</option>
+      {% endfor %}
+    </select>
+    <label for="csv">Rows (one <code>First,Last</code> per line; a header row is skipped)</label>
+    <textarea id="csv" name="csv" rows="12" placeholder="Jane,Doe&#10;John,Smith" required></textarea>
+    <p style="color:var(--text-muted);">Up to {{ cap }} rows per run (the import cap, set in settings).</p>
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Preview</button>
+  </form>
+  {% endif %}
+</div>
+
+{% endblock %}

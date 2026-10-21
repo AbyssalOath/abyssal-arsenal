@@ -2,358 +2,607 @@
   {
     "source_arsenal": "cystoolbox",
     "source_action": "resource_usage_disk",
-    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "usage_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "catacomb",
     "target_action": "directory_usage_breakdown",
     "label": "Investigate {mount_point} with Catacomb",
-    "context_fields": ["mount_point", "usage_percent"]
+    "context_fields": [
+      "mount_point",
+      "usage_percent"
+    ]
   },
   {
     "source_arsenal": "cystoolbox",
     "source_action": "resource_usage_disk",
-    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "usage_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "defleshing",
     "target_action": "clear_tmp_confirm",
     "label": "Clean {mount_point} with Defleshing",
-    "context_fields": ["mount_point", "usage_percent"]
+    "context_fields": [
+      "mount_point",
+      "usage_percent"
+    ]
   },
   {
     "source_arsenal": "cystoolbox",
     "source_action": "resource_usage_disk",
-    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "usage_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "ossuary",
     "target_action": "show_host",
     "label": "Inspect Storage with Ossuary",
-    "context_fields": ["mount_point", "usage_percent"]
+    "context_fields": [
+      "mount_point",
+      "usage_percent"
+    ]
   },
   {
     "source_arsenal": "necropsy",
     "source_action": "disk_health",
-    "condition": { "field": "health_status", "operator": "equals", "value": "FAILED" },
+    "condition": {
+      "field": "health_status",
+      "operator": "equals",
+      "value": "FAILED"
+    },
     "target_arsenal": "ossuary",
     "target_action": "show_host",
     "label": "Inspect Storage with Ossuary",
-    "context_fields": ["device"]
+    "context_fields": [
+      "device"
+    ]
   },
   {
     "source_arsenal": "necropsy",
     "source_action": "disk_health",
-    "condition": { "field": "health_status", "operator": "equals", "value": "FAILED" },
+    "condition": {
+      "field": "health_status",
+      "operator": "equals",
+      "value": "FAILED"
+    },
     "target_arsenal": "resurrection",
     "target_action": "read_only_filesystems",
     "label": "Check Read-Only Filesystems with Resurrection",
-    "context_fields": ["device"]
+    "context_fields": [
+      "device"
+    ]
   },
   {
     "source_arsenal": "necropsy",
     "source_action": "disk_health",
-    "condition": { "field": "health_status", "operator": "equals", "value": "FAILED" },
+    "condition": {
+      "field": "health_status",
+      "operator": "equals",
+      "value": "FAILED"
+    },
     "target_arsenal": "mortiscope",
     "target_action": "disk_io_stats",
     "label": "Check Disk I/O with Mortiscope",
-    "context_fields": ["device"]
+    "context_fields": [
+      "device"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "top_process_by_cpu",
-    "condition": { "field": "cpu_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "cpu_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "vivisection",
     "target_action": "vm_statistics",
     "label": "Profile with Vivisection",
-    "context_fields": ["pid", "comm", "cpu_percent"]
+    "context_fields": [
+      "pid",
+      "comm",
+      "cpu_percent"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "top_process_by_cpu",
-    "condition": { "field": "cpu_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "cpu_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "reanimation",
     "target_action": "process_detail",
     "label": "Investigate PID {pid} with Reanimation",
-    "context_fields": ["pid", "comm", "cpu_percent"]
+    "context_fields": [
+      "pid",
+      "comm",
+      "cpu_percent"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "load_average",
-    "condition": { "field": "load_per_core", "operator": "greater_than_or_equal", "value": 2 },
+    "condition": {
+      "field": "load_per_core",
+      "operator": "greater_than_or_equal",
+      "value": 2
+    },
     "target_arsenal": "vivisection",
     "target_action": "vm_statistics",
     "label": "Profile with Vivisection",
-    "context_fields": ["load_per_core"]
+    "context_fields": [
+      "load_per_core"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "memory_detail",
-    "condition": { "field": "mem_used_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "mem_used_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "vivisection",
     "target_action": "vm_statistics",
     "label": "Check VM statistics with Vivisection",
-    "context_fields": ["mem_used_percent"]
+    "context_fields": [
+      "mem_used_percent"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "memory_detail",
-    "condition": { "field": "swap_used_percent", "operator": "greater_than_or_equal", "value": 50 },
+    "condition": {
+      "field": "swap_used_percent",
+      "operator": "greater_than_or_equal",
+      "value": 50
+    },
     "target_arsenal": "vivisection",
     "target_action": "tuning_parameters_status",
     "label": "Tune swappiness with Vivisection",
-    "context_fields": ["swap_used_percent"]
+    "context_fields": [
+      "swap_used_percent"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "top_process_by_memory",
-    "condition": { "field": "mem_percent", "operator": "greater_than_or_equal", "value": 50 },
+    "condition": {
+      "field": "mem_percent",
+      "operator": "greater_than_or_equal",
+      "value": 50
+    },
     "target_arsenal": "reanimation",
     "target_action": "process_detail",
     "label": "Investigate PID {pid} with Reanimation",
-    "context_fields": ["pid", "comm", "mem_percent"]
+    "context_fields": [
+      "pid",
+      "comm",
+      "mem_percent"
+    ]
   },
   {
     "source_arsenal": "reanimation",
     "source_action": "list_processes",
-    "condition": { "field": "zombie_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "zombie_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate defunct processes with Postmortem",
-    "context_fields": ["zombie_count"]
+    "context_fields": [
+      "zombie_count"
+    ]
   },
   {
     "source_arsenal": "reanimation",
     "source_action": "zombie_report",
-    "condition": { "field": "zombie_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "zombie_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate defunct processes with Postmortem",
-    "context_fields": ["zombie_count"]
+    "context_fields": [
+      "zombie_count"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "cpu_utilization",
-    "condition": { "field": "cpu_busy_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "cpu_busy_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "vivisection",
     "target_action": "vm_statistics",
     "label": "Profile with Vivisection",
-    "context_fields": ["cpu_busy_percent"]
+    "context_fields": [
+      "cpu_busy_percent"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "cpu_utilization",
-    "condition": { "field": "cpu_iowait_percent", "operator": "greater_than_or_equal", "value": 30 },
+    "condition": {
+      "field": "cpu_iowait_percent",
+      "operator": "greater_than_or_equal",
+      "value": 30
+    },
     "target_arsenal": "necropsy",
     "target_action": "disk_health",
     "label": "Check disk health with Necropsy",
-    "context_fields": ["cpu_iowait_percent"]
+    "context_fields": [
+      "cpu_iowait_percent"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "thermal_sensors",
-    "condition": { "field": "max_temp_c", "operator": "greater_than_or_equal", "value": 80 },
+    "condition": {
+      "field": "max_temp_c",
+      "operator": "greater_than_or_equal",
+      "value": 80
+    },
     "target_arsenal": "necropsy",
     "target_action": "show_host",
     "label": "Inspect hardware with Necropsy",
-    "context_fields": ["max_temp_c"]
+    "context_fields": [
+      "max_temp_c"
+    ]
   },
   {
     "source_arsenal": "mortiscope",
     "source_action": "memory_pressure",
-    "condition": { "field": "mem_pressure_some_avg10", "operator": "greater_than_or_equal", "value": 20 },
+    "condition": {
+      "field": "mem_pressure_some_avg10",
+      "operator": "greater_than_or_equal",
+      "value": 20
+    },
     "target_arsenal": "vivisection",
     "target_action": "vm_statistics",
     "label": "Check VM statistics with Vivisection",
-    "context_fields": ["mem_pressure_some_avg10"]
+    "context_fields": [
+      "mem_pressure_some_avg10"
+    ]
   },
   {
     "source_arsenal": "thanatos",
     "source_action": "scan_security_events",
-    "condition": { "field": "alerted", "operator": "equals", "value": true },
+    "condition": {
+      "field": "alerted",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "inquest",
     "target_action": "show_host",
     "label": "Respond with Inquest",
-    "context_fields": ["persisted_count"]
+    "context_fields": [
+      "persisted_count"
+    ]
   },
   {
     "source_arsenal": "thanatos",
     "source_action": "scan_security_events",
-    "condition": { "field": "alerted", "operator": "equals", "value": true },
+    "condition": {
+      "field": "alerted",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate with Postmortem",
-    "context_fields": ["persisted_count"]
+    "context_fields": [
+      "persisted_count"
+    ]
   },
   {
     "source_arsenal": "thanatos",
     "source_action": "scan_security_events",
-    "condition": { "field": "alerted", "operator": "equals", "value": true },
+    "condition": {
+      "field": "alerted",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "cadavault",
     "target_action": "show_host",
     "label": "Harden host with Cadavault",
-    "context_fields": ["persisted_count"]
+    "context_fields": [
+      "persisted_count"
+    ]
   },
   {
     "source_arsenal": "postmortem",
     "source_action": "failed_login_attempts",
-    "condition": { "field": "failed_login_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "failed_login_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "thanatos",
     "target_action": "show_host",
     "label": "Correlate with Thanatos",
-    "context_fields": ["failed_login_count"]
+    "context_fields": [
+      "failed_login_count"
+    ]
   },
   {
     "source_arsenal": "postmortem",
     "source_action": "failed_login_attempts",
-    "condition": { "field": "failed_login_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "failed_login_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "cadavault",
     "target_action": "show_host",
     "label": "Harden SSH with Cadavault",
-    "context_fields": ["failed_login_count"]
+    "context_fields": [
+      "failed_login_count"
+    ]
   },
   {
     "source_arsenal": "postmortem",
     "source_action": "core_dumps",
-    "condition": { "field": "core_dump_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "core_dump_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "inquest",
     "target_action": "show_host",
     "label": "Investigate with Inquest",
-    "context_fields": ["core_dump_count"]
+    "context_fields": [
+      "core_dump_count"
+    ]
   },
   {
     "source_arsenal": "postmortem",
     "source_action": "oom_kill_events",
-    "condition": { "field": "oom_kill_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "oom_kill_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "inquest",
     "target_action": "show_host",
     "label": "Investigate with Inquest",
-    "context_fields": ["oom_kill_count"]
+    "context_fields": [
+      "oom_kill_count"
+    ]
   },
   {
     "source_arsenal": "inquest",
     "source_action": "isolate_host",
-    "condition": { "field": "isolated", "operator": "equals", "value": true },
+    "condition": {
+      "field": "isolated",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate with Postmortem",
-    "context_fields": ["isolated"]
+    "context_fields": [
+      "isolated"
+    ]
   },
   {
     "source_arsenal": "inquest",
     "source_action": "block_remote_ip",
-    "condition": { "field": "blocked", "operator": "equals", "value": true },
+    "condition": {
+      "field": "blocked",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "thanatos",
     "target_action": "show_host",
     "label": "Re-scan with Thanatos",
-    "context_fields": ["blocked"]
+    "context_fields": [
+      "blocked"
+    ]
   },
   {
     "source_arsenal": "inquest",
     "source_action": "quarantine_file",
-    "condition": { "field": "quarantined", "operator": "equals", "value": true },
+    "condition": {
+      "field": "quarantined",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "thanatos",
     "target_action": "show_host",
     "label": "Re-scan with Thanatos",
-    "context_fields": ["quarantined"]
+    "context_fields": [
+      "quarantined"
+    ]
   },
   {
     "source_arsenal": "obituary",
     "source_action": "journal_disk_usage",
-    "condition": { "field": "usage_bytes", "operator": "greater_than_or_equal", "value": 1073741824 },
+    "condition": {
+      "field": "usage_bytes",
+      "operator": "greater_than_or_equal",
+      "value": 1073741824
+    },
     "target_arsenal": "defleshing",
     "target_action": "show_host",
     "label": "Manage Logs with Defleshing",
-    "context_fields": ["usage_bytes"]
+    "context_fields": [
+      "usage_bytes"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "system_running_state",
-    "condition": { "field": "is_degraded", "operator": "equals", "value": true },
+    "condition": {
+      "field": "is_degraded",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate degraded state with Postmortem",
-    "context_fields": ["system_state"]
+    "context_fields": [
+      "system_state"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "system_running_state",
-    "condition": { "field": "is_degraded", "operator": "equals", "value": true },
+    "condition": {
+      "field": "is_degraded",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "incarnation",
     "target_action": "list_services",
     "label": "Manage services with Incarnation",
-    "context_fields": ["system_state"]
+    "context_fields": [
+      "system_state"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "previous_boot_errors",
-    "condition": { "field": "boot_error_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "boot_error_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate the previous boot with Postmortem",
-    "context_fields": ["boot_error_count"]
+    "context_fields": [
+      "boot_error_count"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "list_failed_units",
-    "condition": { "field": "failed_unit_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "failed_unit_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "incarnation",
     "target_action": "list_services",
     "label": "Manage services with Incarnation",
-    "context_fields": ["failed_unit_count"]
+    "context_fields": [
+      "failed_unit_count"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "disk_space_critical",
-    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "usage_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "defleshing",
     "target_action": "show_host",
     "label": "Free space on {mount_point} with Defleshing",
-    "context_fields": ["mount_point", "usage_percent"]
+    "context_fields": [
+      "mount_point",
+      "usage_percent"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "disk_space_critical",
-    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "usage_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "obituary",
     "target_action": "show_host",
     "label": "Manage logs on {mount_point} with Obituary",
-    "context_fields": ["mount_point", "usage_percent"]
+    "context_fields": [
+      "mount_point",
+      "usage_percent"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "disk_space_critical",
-    "condition": { "field": "usage_percent", "operator": "greater_than_or_equal", "value": 90 },
+    "condition": {
+      "field": "usage_percent",
+      "operator": "greater_than_or_equal",
+      "value": 90
+    },
     "target_arsenal": "ossuary",
     "target_action": "show_host",
     "label": "Inspect storage with Ossuary",
-    "context_fields": ["mount_point", "usage_percent"]
+    "context_fields": [
+      "mount_point",
+      "usage_percent"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "list_failed_units",
-    "condition": { "field": "failed_unit_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "failed_unit_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate the failures with Postmortem",
-    "context_fields": ["failed_unit_count"]
+    "context_fields": [
+      "failed_unit_count"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "read_only_filesystems",
-    "condition": { "field": "mount_point", "operator": "exists" },
+    "condition": {
+      "field": "mount_point",
+      "operator": "exists"
+    },
     "target_arsenal": "necropsy",
     "target_action": "disk_health",
     "label": "Check Disk Health with Necropsy",
-    "context_fields": ["mount_point", "source"]
+    "context_fields": [
+      "mount_point",
+      "source"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "read_only_filesystems",
-    "condition": { "field": "mount_point", "operator": "exists" },
+    "condition": {
+      "field": "mount_point",
+      "operator": "exists"
+    },
     "target_arsenal": "reliquary",
     "target_action": "show_host",
     "label": "Check Backups with Reliquary",
-    "context_fields": ["mount_point"]
+    "context_fields": [
+      "mount_point"
+    ]
   },
   {
     "source_arsenal": "reliquary",
     "source_action": "backup_write_failed",
-    "condition": { "field": "error_message", "operator": "contains", "value": "Read-only file system" },
+    "condition": {
+      "field": "error_message",
+      "operator": "contains",
+      "value": "Read-only file system"
+    },
     "target_arsenal": "resurrection",
     "target_action": "read_only_filesystems",
     "label": "Check Read-Only Filesystems with Resurrection",
@@ -362,19 +611,34 @@
   {
     "source_arsenal": "cryptkeeper",
     "source_action": "certificate_detail",
-    "condition": { "field": "days_until_expiry", "operator": "less_than", "value": 30 },
+    "condition": {
+      "field": "days_until_expiry",
+      "operator": "less_than",
+      "value": 30
+    },
     "target_arsenal": "incarnation",
     "target_action": "list_services",
     "label": "Restart the Affected Service with Incarnation",
-    "context_fields": ["path", "days_until_expiry"]
+    "context_fields": [
+      "path",
+      "days_until_expiry"
+    ]
   },
   {
     "source_arsenal": "sepulchre",
     "source_action": "connection_validation",
     "condition": {
       "all": [
-        { "field": "error_kind", "operator": "equals", "value": "auth_failed" },
-        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+        {
+          "field": "error_kind",
+          "operator": "equals",
+          "value": "auth_failed"
+        },
+        {
+          "field": "origin",
+          "operator": "equals",
+          "value": "host_side_managed"
+        }
       ]
     },
     "target_arsenal": "cryptkeeper",
@@ -387,8 +651,16 @@
     "source_action": "connection_validation",
     "condition": {
       "all": [
-        { "field": "error_kind", "operator": "equals", "value": "host_key_mismatch" },
-        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+        {
+          "field": "error_kind",
+          "operator": "equals",
+          "value": "host_key_mismatch"
+        },
+        {
+          "field": "origin",
+          "operator": "equals",
+          "value": "host_side_managed"
+        }
       ]
     },
     "target_arsenal": "cryptkeeper",
@@ -401,8 +673,16 @@
     "source_action": "connection_validation",
     "condition": {
       "all": [
-        { "field": "error_kind", "operator": "equals", "value": "method_unavailable" },
-        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+        {
+          "field": "error_kind",
+          "operator": "equals",
+          "value": "method_unavailable"
+        },
+        {
+          "field": "origin",
+          "operator": "equals",
+          "value": "host_side_managed"
+        }
       ]
     },
     "target_arsenal": "sepulchre",
@@ -415,8 +695,16 @@
     "source_action": "connection_validation",
     "condition": {
       "all": [
-        { "field": "error_kind", "operator": "equals", "value": "read_only" },
-        { "field": "origin", "operator": "equals", "value": "host_side_managed" }
+        {
+          "field": "error_kind",
+          "operator": "equals",
+          "value": "read_only"
+        },
+        {
+          "field": "origin",
+          "operator": "equals",
+          "value": "host_side_managed"
+        }
       ]
     },
     "target_arsenal": "resurrection",
@@ -427,30 +715,50 @@
   {
     "source_arsenal": "sepulchre",
     "source_action": "mount_status",
-    "condition": { "field": "read_only", "operator": "equals", "value": true },
+    "condition": {
+      "field": "read_only",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "resurrection",
     "target_action": "read_only_filesystems",
     "label": "Check Read-Only Filesystems with Resurrection",
-    "context_fields": ["mount_point", "source"]
+    "context_fields": [
+      "mount_point",
+      "source"
+    ]
   },
   {
     "source_arsenal": "resurrection",
     "source_action": "read_only_filesystems",
     "condition": {
       "all": [
-        { "field": "mount_point", "operator": "exists" },
-        { "field": "fstype", "operator": "matches", "value": "^(nfs4?|cifs|smb3|fuse\\.sshfs)$" }
+        {
+          "field": "mount_point",
+          "operator": "exists"
+        },
+        {
+          "field": "fstype",
+          "operator": "matches",
+          "value": "^(nfs4?|cifs|smb3|fuse\\.sshfs)$"
+        }
       ]
     },
     "target_arsenal": "sepulchre",
     "target_action": "show_host",
     "label": "Check Network Storage with Sepulchre",
-    "context_fields": ["mount_point"]
+    "context_fields": [
+      "mount_point"
+    ]
   },
   {
     "source_arsenal": "cadavault",
     "source_action": "sshd_config_audit",
-    "condition": { "field": "password_authentication", "operator": "equals", "value": true },
+    "condition": {
+      "field": "password_authentication",
+      "operator": "equals",
+      "value": true
+    },
     "target_arsenal": "cryptkeeper",
     "target_action": "show_host",
     "label": "Review authorized keys with Cryptkeeper before disabling password auth",
@@ -459,28 +767,48 @@
   {
     "source_arsenal": "cadavault",
     "source_action": "sysctl_posture",
-    "condition": { "field": "failing_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "failing_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "grimoire",
     "target_action": "show_host",
     "label": "Manage all sysctls with Grimoire",
-    "context_fields": ["failing_count"]
+    "context_fields": [
+      "failing_count"
+    ]
   },
   {
     "source_arsenal": "grimoire",
     "source_action": "sysctl_drift",
-    "condition": { "field": "drift_count", "operator": "greater_than_or_equal", "value": 1 },
+    "condition": {
+      "field": "drift_count",
+      "operator": "greater_than_or_equal",
+      "value": 1
+    },
     "target_arsenal": "postmortem",
     "target_action": "show_host",
     "label": "Investigate config drift with Postmortem",
-    "context_fields": ["drift_count"]
+    "context_fields": [
+      "drift_count"
+    ]
   },
   {
     "source_arsenal": "cadavault",
     "source_action": "account_policy_audit",
     "condition": {
       "any": [
-        { "field": "extra_uid0_count", "operator": "greater_than_or_equal", "value": 1 },
-        { "field": "empty_password_count", "operator": "greater_than_or_equal", "value": 1 }
+        {
+          "field": "extra_uid0_count",
+          "operator": "greater_than_or_equal",
+          "value": 1
+        },
+        {
+          "field": "empty_password_count",
+          "operator": "greater_than_or_equal",
+          "value": 1
+        }
       ]
     },
     "target_arsenal": "parish",
@@ -493,8 +821,16 @@
     "source_action": "mac_status",
     "condition": {
       "all": [
-        { "field": "mac_present", "operator": "equals", "value": true },
-        { "field": "mac_enforcing", "operator": "equals", "value": false }
+        {
+          "field": "mac_present",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "mac_enforcing",
+          "operator": "equals",
+          "value": false
+        }
       ]
     },
     "target_arsenal": "grimoire",
@@ -505,7 +841,11 @@
   {
     "source_arsenal": "cadavault",
     "source_action": "automatic_updates_status",
-    "condition": { "field": "automatic_updates", "operator": "equals", "value": "disabled" },
+    "condition": {
+      "field": "automatic_updates",
+      "operator": "equals",
+      "value": "disabled"
+    },
     "target_arsenal": "apothecary",
     "target_action": "show_host",
     "label": "Configure automatic updates with Apothecary",
@@ -518,17 +858,30 @@
       "all": [
         {
           "any": [
-            { "field": "severity", "operator": "equals", "value": "high" },
-            { "field": "severity", "operator": "equals", "value": "critical" }
+            {
+              "field": "severity",
+              "operator": "equals",
+              "value": "high"
+            },
+            {
+              "field": "severity",
+              "operator": "equals",
+              "value": "critical"
+            }
           ]
         },
-        { "field": "src_ip", "operator": "exists" }
+        {
+          "field": "src_ip",
+          "operator": "exists"
+        }
       ]
     },
     "target_arsenal": "inquest",
     "target_action": "block_ip",
     "label": "Block {src_ip} with Inquest",
-    "context_fields": ["src_ip"]
+    "context_fields": [
+      "src_ip"
+    ]
   },
   {
     "source_arsenal": "scourge",
@@ -537,25 +890,46 @@
       "all": [
         {
           "any": [
-            { "field": "severity", "operator": "equals", "value": "high" },
-            { "field": "severity", "operator": "equals", "value": "critical" }
+            {
+              "field": "severity",
+              "operator": "equals",
+              "value": "high"
+            },
+            {
+              "field": "severity",
+              "operator": "equals",
+              "value": "critical"
+            }
           ]
         },
-        { "field": "src_ip", "operator": "exists" }
+        {
+          "field": "src_ip",
+          "operator": "exists"
+        }
       ]
     },
     "target_arsenal": "thanatos",
     "target_action": "scan_security_events",
     "label": "Correlate {src_ip} in Thanatos",
-    "context_fields": ["src_ip"]
+    "context_fields": [
+      "src_ip"
+    ]
   },
   {
     "source_arsenal": "scourge",
     "source_action": "alerts",
     "condition": {
       "any": [
-        { "field": "severity", "operator": "equals", "value": "high" },
-        { "field": "severity", "operator": "equals", "value": "critical" }
+        {
+          "field": "severity",
+          "operator": "equals",
+          "value": "high"
+        },
+        {
+          "field": "severity",
+          "operator": "equals",
+          "value": "critical"
+        }
       ]
     },
     "target_arsenal": "postmortem",
@@ -568,13 +942,34 @@
     "source_action": "alerts",
     "condition": {
       "any": [
-        { "field": "signature", "operator": "matches", "value": "(?i)brute[ -]?force|ssh" },
-        { "field": "category", "operator": "matches", "value": "(?i)scan|brute" }
+        {
+          "field": "signature",
+          "operator": "matches",
+          "value": "(?i)brute[ -]?force|ssh"
+        },
+        {
+          "field": "category",
+          "operator": "matches",
+          "value": "(?i)scan|brute"
+        }
       ]
     },
     "target_arsenal": "cadavault",
     "target_action": "sshd_config_audit",
     "label": "Harden exposed services with Cadavault",
+    "context_fields": []
+  },
+  {
+    "source_arsenal": "thanatos",
+    "source_action": "scan_security_events",
+    "condition": {
+      "field": "alerted",
+      "operator": "equals",
+      "value": true
+    },
+    "target_arsenal": "gravekeeper",
+    "target_action": "show_host",
+    "label": "Open in directory (Gravekeeper)",
     "context_fields": []
   }
 ]
