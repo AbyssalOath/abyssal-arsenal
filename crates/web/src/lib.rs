@@ -9,6 +9,7 @@ pub mod deploy_commands;
 pub mod error;
 pub mod extract;
 pub mod failed_services;
+pub mod gravekeeper_graph;
 pub mod gravekeeper_ops;
 pub mod health;
 mod health_ops;

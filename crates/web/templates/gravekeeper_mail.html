@@ -1,0 +1,98 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Mail — {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — mail connection ({{ dns_name }}){% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}">&larr; Back to domain</a></p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+{% if let Some(msg) = result %}
+<div class="info-banner">{% call macros::icon("shield") %} {{ msg }}</div>
+{% endif %}
+
+{% if let Some(t) = last_test %}
+<div class="card">
+  <strong>Last test:</strong>
+  {% if t.ok %}<span class="badge badge-success">OK</span>{% else %}<span class="badge badge-danger">Failed</span>{% endif %}
+  {{ t.when }} — <span style="color:var(--text-muted);">{{ t.detail }}</span>
+</div>
+{% endif %}
+
+<div class="card">
+  <h3>Mail connection</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    How onboarding provisions a mailbox for this domain's users. Exchange modes
+    run remote PowerShell from a domain-joined agent; Microsoft 365 uses Graph
+    (that path arrives in the next milestone).
+  </p>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/mail" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+
+    <label for="mode">Mode</label>
+    <select id="mode" name="mode">
+      <option value="none"{% if form.mode == "none" %} selected{% endif %}>None (set the mail attribute only)</option>
+      <option value="exchange_onprem"{% if form.mode == "exchange_onprem" %} selected{% endif %}>Exchange on-premises</option>
+      <option value="exchange_hybrid"{% if form.mode == "exchange_hybrid" %} selected{% endif %}>Exchange hybrid</option>
+      <option value="m365"{% if form.mode == "m365" %} selected{% endif %}>Microsoft 365 (cloud-only)</option>
+    </select>
+
+    <fieldset style="margin-top:14px;">
+      <legend>Exchange (on-premises / hybrid)</legend>
+      <label for="exchange_version">Version</label>
+      <select id="exchange_version" name="exchange_version">
+        <option value="2016"{% if form.exchange_version == "2016" %} selected{% endif %}>2016</option>
+        <option value="2019"{% if form.exchange_version == "2019" %} selected{% endif %}>2019</option>
+        <option value="se"{% if form.exchange_version == "se" %} selected{% endif %}>Subscription Edition</option>
+      </select>
+      <label for="exchange_uri">Connection URI</label>
+      <input type="text" id="exchange_uri" name="exchange_uri" value="{{ form.exchange_uri }}" placeholder="http://exch01/PowerShell/">
+      <label for="exchange_account_upn">Recipient Management account (UPN)</label>
+      <input type="text" id="exchange_account_upn" name="exchange_account_upn" value="{{ form.exchange_account_upn }}" placeholder="svc-recipient@corp.example.com">
+      <label for="exchange_account_password">Account password</label>
+      <input type="password" id="exchange_account_password" name="exchange_account_password" autocomplete="new-password" placeholder="{% if has_exchange_account %}leave blank to keep the stored password{% else %}required{% endif %}">
+      <label for="exchange_agent_host_id">Agent host (reaches Exchange)</label>
+      <select id="exchange_agent_host_id" name="exchange_agent_host_id">
+        <option value="">Choose a host…</option>
+        {% for (hid, hname) in agent_hosts %}
+        <option value="{{ hid }}"{% if form.exchange_agent_host_id == hid.as_str() %} selected{% endif %}>{{ hname }}</option>
+        {% endfor %}
+      </select>
+      <label for="remote_routing_domain">Remote routing domain (hybrid only)</label>
+      <input type="text" id="remote_routing_domain" name="remote_routing_domain" value="{{ form.remote_routing_domain }}" placeholder="tenant.mail.onmicrosoft.com">
+    </fieldset>
+
+    <fieldset style="margin-top:14px;">
+      <legend>Microsoft 365 (Graph) — provisioning arrives in the next milestone</legend>
+      <label for="m365_tenant_id">Tenant ID</label>
+      <input type="text" id="m365_tenant_id" name="m365_tenant_id" value="{{ form.m365_tenant_id }}">
+      <label for="m365_app_id">Application (client) ID</label>
+      <input type="text" id="m365_app_id" name="m365_app_id" value="{{ form.m365_app_id }}">
+      <label for="m365_cert">Certificate (PEM, private key)</label>
+      <textarea id="m365_cert" name="m365_cert" rows="4" placeholder="{% if has_m365_cert %}leave blank to keep the stored certificate{% else %}-----BEGIN PRIVATE KEY-----{% endif %}"></textarea>
+      <label for="m365_licensing_method">Licensing method</label>
+      <select id="m365_licensing_method" name="m365_licensing_method">
+        <option value="group"{% if form.m365_licensing_method == "group" %} selected{% endif %}>Group-based</option>
+        <option value="direct"{% if form.m365_licensing_method == "direct" %} selected{% endif %}>Direct</option>
+        <option value="both"{% if form.m365_licensing_method == "both" %} selected{% endif %}>Both</option>
+      </select>
+    </fieldset>
+
+    <div style="margin-top:14px;">
+      <button type="submit" class="btn-primary">Save mail connection</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Test connection</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Opens an Exchange remote session from the agent host and reads the org config. (Microsoft 365 test arrives next milestone.)</p>
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/mail/test">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Test connection</button>
+  </form>
+</div>
+
+{% endblock %}

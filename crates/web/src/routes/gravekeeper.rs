@@ -167,9 +167,18 @@ struct ObjectInfo {
     #[serde(default)]
     dns: Option<String>,
     #[serde(default, deserialize_with = "one_or_many")]
-    groups: Vec<String>,
+    groups: Vec<NameDn>,
     #[serde(default, deserialize_with = "one_or_many")]
-    members: Vec<String>,
+    members: Vec<NameDn>,
+}
+
+/// A directory object's name + distinguished name (group members / memberships).
+#[derive(Deserialize, Clone)]
+struct NameDn {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    dn: String,
 }
 
 /// Parses an agent JSON list that may be empty (no stdout), a single object (a
@@ -1047,6 +1056,7 @@ pub async fn browse(
         query: q,
         ou_rows,
         results,
+        can_manage: ctx.has(Permission::DirectoryManage),
         error,
     };
     Ok(respond(&jar, new_cookie, tpl))
@@ -1171,6 +1181,9 @@ async fn render_object(
     }
 
     let is_user = object.as_ref().is_some_and(|o| o.kind == "user");
+    // An active offboard snapshot means this account can be un-offboarded.
+    let snapshot = repo::directory::active_snapshot_for_dn(&state.pool, domain.id, dn).await?;
+    let can_manage = ctx.has(Permission::DirectoryManage);
     let tpl = crate::templates::GravekeeperObjectTemplate {
         base,
         domain_id: domain.id.to_string(),
@@ -1178,6 +1191,10 @@ async fn render_object(
         target_dn: dn.to_string(),
         can_helpdesk: ctx.has(Permission::DirectoryHelpdesk) && is_user,
         writable: domain.has_service_account && domain.last_delegation_ok == Some(true),
+        can_manage,
+        can_delete: ctx.has(Permission::DirectoryDelete),
+        offboard_available: is_user && can_manage && snapshot.is_none(),
+        undo_snapshot_id: snapshot.filter(|_| can_manage).map(|s| s.id.to_string()),
         object,
         result,
         new_password,
@@ -1217,13 +1234,25 @@ fn object_view(info: ObjectInfo) -> crate::templates::GravekeeperObjectView {
     push("Last logon", info.last_logon.clone());
     push("Distinguished name", Some(info.dn.clone()));
 
-    let (list_title, list) = if !info.groups.is_empty() {
-        ("Member of".to_string(), info.groups)
-    } else if !info.members.is_empty() {
+    let (list_title, source) = if info.kind == "group" {
         ("Members".to_string(), info.members)
+    } else if !info.groups.is_empty() {
+        ("Member of".to_string(), info.groups)
     } else {
         (String::new(), Vec::new())
     };
+    let list = source
+        .into_iter()
+        .map(|nd| crate::templates::GravekeeperListItem {
+            name: if nd.name.is_empty() {
+                nd.dn.clone()
+            } else {
+                nd.name
+            },
+            dn: nd.dn.clone(),
+            dn_encoded: crate::common::urlencoding_encode(&nd.dn),
+        })
+        .collect();
 
     crate::templates::GravekeeperObjectView {
         enabled: info.enabled,
@@ -1292,13 +1321,16 @@ async fn helpdesk_prepare(state: &AppState, id: Uuid) -> Result<HelpdeskContext,
     })
 }
 
-/// Dispatches a help-desk WRITE op to the write DC and returns its stdout (a
-/// success line) or a human error.
+/// Dispatches a directory WRITE op to the write DC and returns its stdout (a
+/// success line / JSON) or a human error. `required_permission` is the floor
+/// the executor checks (`directory.helpdesk` for the help-desk actions,
+/// `directory.manage` for onboarding).
 async fn dispatch_write(
     state: &AppState,
     ctx: &AuthContext,
     hc: &HelpdeskContext,
     operation: AgentOperation,
+    required_permission: Permission,
 ) -> Result<String, String> {
     state
         .executor
@@ -1308,7 +1340,7 @@ async fn dispatch_write(
             hc.write_dc_id,
             &hc.write_dc_name,
             operation,
-            Permission::DirectoryHelpdesk,
+            required_permission,
             OperationKind::Write,
             false,
             WRITE_TIMEOUT,
@@ -1375,7 +1407,7 @@ pub async fn unlock_account(
                 target_dn: dn.clone(),
                 allow_privileged: allow_privileged(&ctx),
             };
-            match dispatch_write(&state, &ctx, &hc, op).await {
+            match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryHelpdesk).await {
                 Ok(msg) => {
                     record_audit(
                         &state,
@@ -1433,7 +1465,7 @@ pub async fn set_enabled(
                 enabled: form.enabled,
                 allow_privileged: allow_privileged(&ctx),
             };
-            match dispatch_write(&state, &ctx, &hc, op).await {
+            match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryHelpdesk).await {
                 Ok(msg) => {
                     record_audit(
                         &state,
@@ -1513,7 +1545,7 @@ pub async fn reset_password(
                 new_password: new_password.clone(),
                 allow_privileged: allow_privileged(&ctx),
             };
-            match dispatch_write(&state, &ctx, &hc, op).await {
+            match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryHelpdesk).await {
                 Ok(_) => {
                     record_audit(
                         &state,
@@ -1541,6 +1573,1541 @@ pub async fn reset_password(
         Err(e) => (None, None, Some(e)),
     };
     render_object(&state, &jar, &ctx, id, &dn, result, shown, error).await
+}
+
+// --- Groups: create / delete / membership (directory.manage / .delete) ------
+
+const GROUP_SCOPES: &[&str] = &["global", "universal", "domainlocal"];
+const GROUP_CATEGORIES: &[&str] = &["security", "distribution"];
+
+/// GET the new-group form. `directory.manage`.
+pub async fn new_group(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let tpl = crate::templates::GravekeeperGroupFormTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        error: None,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+#[derive(Deserialize)]
+pub struct CreateGroupForm {
+    csrf_token: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    target_ou: String,
+}
+
+/// POST: create a group. `directory.manage`.
+pub async fn create_group(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<CreateGroupForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let group_form_err = |state: &AppState, jar: &CookieJar, ctx: &AuthContext, msg: String| {
+        let state = state.clone();
+        let jar = jar.clone();
+        let ctx = ctx.clone();
+        let dns = domain.dns_name.clone();
+        async move {
+            let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+            let tpl = crate::templates::GravekeeperGroupFormTemplate {
+                base,
+                domain_id: id.to_string(),
+                dns_name: dns,
+                error: Some(msg),
+            };
+            Ok::<_, WebError>(respond(&jar, new_cookie, tpl))
+        }
+    };
+
+    let name = abyssal_agent_protocol::sanitize_sam_account_name(&form.name);
+    if !abyssal_agent_protocol::is_valid_sam_account_name(&name) {
+        return group_form_err(&state, &jar, &ctx, "Enter a valid group name.".into()).await;
+    }
+    if !GROUP_SCOPES.contains(&form.scope.as_str()) {
+        return group_form_err(&state, &jar, &ctx, "Pick a group scope.".into()).await;
+    }
+    if !GROUP_CATEGORIES.contains(&form.category.as_str()) {
+        return group_form_err(&state, &jar, &ctx, "Pick a group category.".into()).await;
+    }
+    let target_ou = form.target_ou.trim();
+    if !target_ou.is_empty() && !abyssal_agent_protocol::is_valid_ldap_dn(target_ou) {
+        return group_form_err(
+            &state,
+            &jar,
+            &ctx,
+            "The target OU must be a distinguished name, or blank.".into(),
+        )
+        .await;
+    }
+
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return group_form_err(&state, &jar, &ctx, e).await,
+    };
+    let op = AgentOperation::DirectoryCreateGroup(Box::new(
+        abyssal_agent_protocol::CreateGroupRequest {
+            domain_dns: hc.domain_dns.clone(),
+            service_account_upn: hc.upn.clone(),
+            service_account_password: hc.password.clone(),
+            name: name.clone(),
+            target_ou: target_ou.to_string(),
+            scope: form.scope.clone(),
+            category: form.category.clone(),
+            description: form.description.trim().to_string(),
+        },
+    ));
+    match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryManage).await {
+        Ok(stdout) => {
+            #[derive(Deserialize)]
+            struct Created {
+                #[serde(default)]
+                dn: String,
+            }
+            let created: Created =
+                serde_json::from_str(stdout.trim()).unwrap_or(Created { dn: String::new() });
+            record_audit(
+                &state,
+                &ctx,
+                AuditAction::DirectoryGroupCreated,
+                &domain.dns_name,
+                serde_json::json!({ "name": name, "dn": created.dn }),
+            )
+            .await;
+            if created.dn.is_empty() {
+                return group_form_err(
+                    &state,
+                    &jar,
+                    &ctx,
+                    "Group created, but its DN wasn't returned.".into(),
+                )
+                .await;
+            }
+            let dn_q = crate::common::urlencoding_encode(&created.dn);
+            Ok(Redirect::to(&format!(
+                "/arsenals/gravekeeper/domains/{id}/object?dn={dn_q}"
+            ))
+            .into_response())
+        }
+        Err(e) => {
+            group_form_err(
+                &state,
+                &jar,
+                &ctx,
+                format!("Creating the group failed: {e}"),
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct MemberForm {
+    csrf_token: String,
+    /// The group whose membership changes, and the member, both DNs.
+    group_dn: String,
+    member_dn: String,
+}
+
+/// POST: add a member to a group. `directory.manage`.
+pub async fn add_member(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<MemberForm>,
+) -> Result<Response, WebError> {
+    change_member(state, jar, ctx, id, form, true).await
+}
+
+/// POST: remove a member from a group. `directory.manage`.
+pub async fn remove_member(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<MemberForm>,
+) -> Result<Response, WebError> {
+    change_member(state, jar, ctx, id, form, false).await
+}
+
+async fn change_member(
+    state: AppState,
+    jar: CookieJar,
+    ctx: AuthContext,
+    id: Uuid,
+    form: MemberForm,
+    add: bool,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let group_dn = form.group_dn.trim().to_string();
+    let member_dn = form.member_dn.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_ldap_dn(&group_dn)
+        || !abyssal_agent_protocol::is_valid_ldap_dn(&member_dn)
+    {
+        return Err(WebError(AppError::Validation(
+            "Both the group and member must be distinguished names.".into(),
+        )));
+    }
+
+    let (result, error) = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => {
+            let (upn, password) = (hc.upn.clone(), hc.password.clone());
+            let op = if add {
+                AgentOperation::DirectoryAddGroupMember {
+                    domain_dns: hc.domain_dns.clone(),
+                    service_account_upn: upn,
+                    service_account_password: password,
+                    group_dn: group_dn.clone(),
+                    member_dn: member_dn.clone(),
+                    allow_privileged: allow_privileged(&ctx),
+                }
+            } else {
+                AgentOperation::DirectoryRemoveGroupMember {
+                    domain_dns: hc.domain_dns.clone(),
+                    service_account_upn: upn,
+                    service_account_password: password,
+                    group_dn: group_dn.clone(),
+                    member_dn: member_dn.clone(),
+                    allow_privileged: allow_privileged(&ctx),
+                }
+            };
+            match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryManage).await {
+                Ok(msg) => {
+                    record_audit(
+                        &state,
+                        &ctx,
+                        AuditAction::DirectoryGroupMembershipChanged,
+                        &hc.domain_dns,
+                        serde_json::json!({ "group": group_dn, "member": member_dn, "add": add }),
+                    )
+                    .await;
+                    (
+                        Some(if msg.is_empty() { "Done.".into() } else { msg }),
+                        None,
+                    )
+                }
+                Err(e) => (None, Some(e)),
+            }
+        }
+        Err(e) => (None, Some(e)),
+    };
+    render_object(&state, &jar, &ctx, id, &group_dn, result, None, error).await
+}
+
+/// POST: delete a group. `directory.delete`.
+pub async fn delete_group(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<TargetForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryDelete)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let dn = form.dn.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_ldap_dn(&dn) {
+        return Err(WebError(AppError::Validation("Invalid group DN.".into())));
+    }
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return render_object(&state, &jar, &ctx, id, &dn, None, None, Some(e)).await,
+    };
+    let op = AgentOperation::DirectoryDeleteGroup {
+        domain_dns: hc.domain_dns.clone(),
+        service_account_upn: hc.upn.clone(),
+        service_account_password: hc.password.clone(),
+        target_dn: dn.clone(),
+        allow_privileged: allow_privileged(&ctx),
+    };
+    match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryDelete).await {
+        Ok(_) => {
+            record_audit(
+                &state,
+                &ctx,
+                AuditAction::DirectoryObjectDeleted,
+                &hc.domain_dns,
+                serde_json::json!({ "dn": dn, "kind": "group" }),
+            )
+            .await;
+            Ok(Redirect::to(&format!("/arsenals/gravekeeper/domains/{id}/browse")).into_response())
+        }
+        Err(e) => {
+            render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &dn,
+                None,
+                None,
+                Some(format!("Deleting the group failed: {e}")),
+            )
+            .await
+        }
+    }
+}
+
+// --- Move / delete objects (directory.manage / .delete) ---------------------
+
+#[derive(Deserialize)]
+pub struct MoveForm {
+    csrf_token: String,
+    dn: String,
+    new_parent_ou: String,
+}
+
+/// POST: move an object to another OU. `directory.manage`.
+pub async fn move_object(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<MoveForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let dn = form.dn.trim().to_string();
+    let new_parent_ou = form.new_parent_ou.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_ldap_dn(&dn)
+        || !abyssal_agent_protocol::is_valid_ldap_dn(&new_parent_ou)
+    {
+        return Err(WebError(AppError::Validation(
+            "The object and destination OU must be distinguished names.".into(),
+        )));
+    }
+    let (result, error) = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => {
+            let op = AgentOperation::DirectoryMove {
+                domain_dns: hc.domain_dns.clone(),
+                service_account_upn: hc.upn.clone(),
+                service_account_password: hc.password.clone(),
+                target_dn: dn.clone(),
+                new_parent_ou: new_parent_ou.clone(),
+                allow_privileged: allow_privileged(&ctx),
+            };
+            match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryManage).await {
+                Ok(msg) => {
+                    record_audit(
+                        &state,
+                        &ctx,
+                        AuditAction::DirectoryObjectMoved,
+                        &hc.domain_dns,
+                        serde_json::json!({ "dn": dn, "new_parent_ou": new_parent_ou }),
+                    )
+                    .await;
+                    (
+                        Some(if msg.is_empty() {
+                            "Object moved.".into()
+                        } else {
+                            msg
+                        }),
+                        None,
+                    )
+                }
+                Err(e) => (None, Some(e)),
+            }
+        }
+        Err(e) => (None, Some(e)),
+    };
+    // After a move the object's DN changed; if it succeeded, re-read at the new
+    // DN (leaf RDN + new parent); otherwise re-render at the old DN.
+    let show_dn = if error.is_none() {
+        move_new_dn(&dn, &new_parent_ou)
+    } else {
+        dn.clone()
+    };
+    render_object(&state, &jar, &ctx, id, &show_dn, result, None, error).await
+}
+
+/// The DN an object has after moving under `new_parent`: its leaf RDN + the new
+/// parent.
+fn move_new_dn(dn: &str, new_parent: &str) -> String {
+    match dn.split_once(',') {
+        Some((rdn, _)) => format!("{rdn},{new_parent}"),
+        None => dn.to_string(),
+    }
+}
+
+/// POST: delete a user/computer object. `directory.delete`. (Groups use
+/// `delete_group`.)
+pub async fn delete_object(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<TargetForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryDelete)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let dn = form.dn.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_ldap_dn(&dn) {
+        return Err(WebError(AppError::Validation("Invalid object DN.".into())));
+    }
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return render_object(&state, &jar, &ctx, id, &dn, None, None, Some(e)).await,
+    };
+    let op = AgentOperation::DirectoryDeleteObject {
+        domain_dns: hc.domain_dns.clone(),
+        service_account_upn: hc.upn.clone(),
+        service_account_password: hc.password.clone(),
+        target_dn: dn.clone(),
+        allow_privileged: allow_privileged(&ctx),
+    };
+    match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryDelete).await {
+        Ok(_) => {
+            record_audit(
+                &state,
+                &ctx,
+                AuditAction::DirectoryObjectDeleted,
+                &hc.domain_dns,
+                serde_json::json!({ "dn": dn }),
+            )
+            .await;
+            Ok(Redirect::to(&format!("/arsenals/gravekeeper/domains/{id}/browse")).into_response())
+        }
+        Err(e) => {
+            render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &dn,
+                None,
+                None,
+                Some(format!("Deleting the object failed: {e}")),
+            )
+            .await
+        }
+    }
+}
+
+// --- Offboarding + undo (directory.manage) ----------------------------------
+
+/// Hides (and optionally converts) a departing user's mailbox per the domain's
+/// mail connection. Returns `(step_status, detail)`.
+async fn offboard_mailbox(
+    state: &AppState,
+    ctx: &AuthContext,
+    domain_id: Uuid,
+    upn: &str,
+) -> (&'static str, String) {
+    let conn = match repo::directory::find_mail_connection(&state.pool, domain_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return ("skipped", "No mail connection configured.".into()),
+        Err(e) => return ("failed", format!("Couldn't read the mail connection: {e}")),
+    };
+    match conn.mode.as_str() {
+        "none" => ("skipped", "Mail mode is none.".into()),
+        "m365" => (
+            "skipped",
+            "Microsoft 365 mailbox offboarding (Exchange Online app-only PowerShell) is not wired yet.".into(),
+        ),
+        "exchange_onprem" | "exchange_hybrid" => {
+            let creds = match repo::directory::exchange_credentials(&state.pool, domain_id).await {
+                Ok(Some(c)) => c,
+                Ok(None) => return ("failed", "Exchange account not configured.".into()),
+                Err(e) => return ("failed", format!("Couldn't read the Exchange account: {e}")),
+            };
+            let Some(host_id) = creds.agent_host_id else {
+                return ("failed", "No Exchange agent host is set.".into());
+            };
+            if !state.hosts.is_connected(host_id) {
+                return ("failed", "The Exchange agent host isn't connected.".into());
+            }
+            let Some(key) = state.encryption_key.clone() else {
+                return ("failed", "This control plane has no ENCRYPTION_KEY set.".into());
+            };
+            let password = match key.decrypt(&creds.sealed) {
+                Ok(p) => p.to_string(),
+                Err(e) => return ("failed", format!("Couldn't decrypt the Exchange account: {e}")),
+            };
+            let host = match repo::hosts::find_by_id(&state.pool, host_id).await {
+                Ok(Some(h)) => h,
+                _ => return ("failed", "The Exchange agent host no longer exists.".into()),
+            };
+            let op = AgentOperation::ExchangeSetMailboxOffboard {
+                uri: creds.uri,
+                account_upn: creds.account_upn,
+                account_password: password,
+                target_identity: upn.to_string(),
+                convert_to_shared: false,
+            };
+            match state
+                .executor
+                .execute_on_host(
+                    ctx,
+                    &state.hosts,
+                    host_id,
+                    &host.name,
+                    op,
+                    Permission::DirectoryManage,
+                    OperationKind::Write,
+                    false,
+                    MAIL_TIMEOUT,
+                    None,
+                    false,
+                )
+                .await
+            {
+                Ok(_) => ("ok", "Mailbox hidden from address lists.".into()),
+                Err(e) => ("failed", format!("Mailbox offboarding failed: {e}")),
+            }
+        }
+        other => ("failed", format!("Unknown mail mode: {other}")),
+    }
+}
+
+/// POST: offboard a user (disable, strip groups, move to the disabled OU, hide
+/// the mailbox), recording an undo snapshot. `directory.manage`.
+pub async fn offboard(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<TargetForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let dn = form.dn.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_ldap_dn(&dn) {
+        return Err(WebError(AppError::Validation("Invalid object DN.".into())));
+    }
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let disabled_ou = match domain.disabled_ou.clone() {
+        Some(ou) if !ou.is_empty() => ou,
+        _ => {
+            return render_object(&state, &jar, &ctx, id, &dn, None, None, Some(
+                "Set this domain's disabled-users OU (in its configure page) before offboarding.".into(),
+            ))
+            .await;
+        }
+    };
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return render_object(&state, &jar, &ctx, id, &dn, None, None, Some(e)).await,
+    };
+
+    // Read the account to capture its UPN/SAM and confirm it is a user.
+    let (upn, sam) = match read_object(&state, &ctx, id, &dn).await {
+        Ok(Some(info)) if info.kind == "user" => (
+            info.upn.clone().unwrap_or_default(),
+            info.sam.clone().unwrap_or_default(),
+        ),
+        Ok(Some(_)) => {
+            return render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &dn,
+                None,
+                None,
+                Some("Offboarding applies to user accounts.".into()),
+            )
+            .await;
+        }
+        Ok(None) | Err(_) => {
+            return render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &dn,
+                None,
+                None,
+                Some("Couldn't read the account to offboard.".into()),
+            )
+            .await;
+        }
+    };
+
+    let job_id = repo::directory::create_job(
+        &state.pool,
+        id,
+        "offboard",
+        &format!(
+            "Offboard {}",
+            if sam.is_empty() {
+                dn.clone()
+            } else {
+                sam.clone()
+            }
+        ),
+        None,
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    let op = AgentOperation::DirectoryOffboard {
+        domain_dns: hc.domain_dns.clone(),
+        service_account_upn: hc.upn.clone(),
+        service_account_password: hc.password.clone(),
+        target_dn: dn.clone(),
+        disabled_ou,
+        allow_privileged: allow_privileged(&ctx),
+    };
+    let stdout = match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryManage).await {
+        Ok(s) => s,
+        Err(e) => {
+            repo::directory::add_job_step(
+                &state.pool,
+                job_id,
+                1,
+                "Disable, strip groups, move",
+                "failed",
+                Some(&e),
+            )
+            .await?;
+            repo::directory::finish_job(&state.pool, job_id, "failed", Some(&sam), Some(&upn))
+                .await?;
+            return render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &dn,
+                None,
+                None,
+                Some(format!("Offboarding failed: {e}")),
+            )
+            .await;
+        }
+    };
+
+    #[derive(Deserialize)]
+    struct OffboardResult {
+        #[serde(default)]
+        original_ou: String,
+        #[serde(default, deserialize_with = "one_or_many")]
+        groups: Vec<String>,
+        #[serde(default)]
+        new_dn: String,
+    }
+    let r: OffboardResult = serde_json::from_str(stdout.trim()).unwrap_or(OffboardResult {
+        original_ou: String::new(),
+        groups: Vec::new(),
+        new_dn: dn.clone(),
+    });
+    let new_dn = if r.new_dn.is_empty() {
+        dn.clone()
+    } else {
+        r.new_dn.clone()
+    };
+    repo::directory::add_job_step(
+        &state.pool,
+        job_id,
+        1,
+        "Disable, strip groups, move",
+        "ok",
+        Some(&format!(
+            "Moved to the disabled OU; stripped {} group(s).",
+            r.groups.len()
+        )),
+    )
+    .await?;
+    // Store the undo snapshot.
+    let _ = repo::directory::create_offboard_snapshot(
+        &state.pool,
+        id,
+        Some(&sam),
+        Some(&upn),
+        &new_dn,
+        &r.original_ou,
+        &serde_json::to_string(&r.groups).unwrap_or_else(|_| "[]".into()),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    // Mailbox step.
+    let mut final_status = "completed";
+    if !upn.is_empty() {
+        let (status, detail) = offboard_mailbox(&state, &ctx, id, &upn).await;
+        repo::directory::add_job_step(&state.pool, job_id, 2, "Mailbox", status, Some(&detail))
+            .await?;
+        if status == "failed" {
+            final_status = "partial";
+        }
+    }
+    repo::directory::finish_job(&state.pool, job_id, final_status, Some(&sam), Some(&upn)).await?;
+    record_audit(
+        &state,
+        &ctx,
+        AuditAction::DirectoryAccountOffboarded,
+        &domain.dns_name,
+        serde_json::json!({ "dn": dn, "new_dn": new_dn, "stripped_groups": r.groups.len(), "undo": false }),
+    )
+    .await;
+
+    render_object(
+        &state,
+        &jar,
+        &ctx,
+        id,
+        &new_dn,
+        Some("Account offboarded (disabled, groups stripped, moved to the disabled OU). Undo is available below.".into()),
+        None,
+        None,
+    )
+    .await
+}
+
+/// Reads one object's detail (helper for offboard). `None` if not found.
+async fn read_object(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: Uuid,
+    dn: &str,
+) -> Result<Option<ObjectInfo>, String> {
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("unknown domain")?;
+    let Some(hid) = domain
+        .write_dc_host_id
+        .filter(|h| state.hosts.is_connected(*h))
+    else {
+        return Err("the domain's write DC isn't connected".into());
+    };
+    let host = repo::hosts::find_by_id(&state.pool, hid)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("write DC host missing")?;
+    let stdout = dispatch_directory(
+        state,
+        ctx,
+        host.id,
+        &host.name,
+        AgentOperation::DirectoryGetObject {
+            domain_dns: domain.dns_name.clone(),
+            dn: dn.to_string(),
+        },
+        Permission::DirectoryView,
+        BROWSE_TIMEOUT,
+    )
+    .await?;
+    serde_json::from_str::<ObjectInfo>(stdout.trim())
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// POST: undo an offboarding from its snapshot. `directory.manage`.
+pub async fn undo_offboard(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path((id, sid)): Path<(Uuid, Uuid)>,
+    Form(form): Form<RemoveForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let snapshot = repo::directory::find_snapshot(&state.pool, sid)
+        .await?
+        .ok_or_else(|| {
+            WebError(AppError::Validation(
+                "That offboarding snapshot is gone or already undone.".into(),
+            ))
+        })?;
+    if snapshot.domain_id != id {
+        return Err(WebError(AppError::NotFound));
+    }
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => {
+            return render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &snapshot.current_dn,
+                None,
+                None,
+                Some(e),
+            )
+            .await;
+        }
+    };
+    let op = AgentOperation::DirectoryUndoOffboard(Box::new(
+        abyssal_agent_protocol::UndoOffboardRequest {
+            domain_dns: hc.domain_dns.clone(),
+            service_account_upn: hc.upn.clone(),
+            service_account_password: hc.password.clone(),
+            target_dn: snapshot.current_dn.clone(),
+            original_ou: snapshot.original_ou.clone(),
+            groups: snapshot.groups.clone(),
+            allow_privileged: allow_privileged(&ctx),
+        },
+    ));
+    match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryManage).await {
+        Ok(_) => {
+            repo::directory::mark_snapshot_undone(&state.pool, sid).await?;
+            if let Some(domain) = repo::directory::find_by_id(&state.pool, id).await? {
+                record_audit(
+                    &state,
+                    &ctx,
+                    AuditAction::DirectoryAccountOffboarded,
+                    &domain.dns_name,
+                    serde_json::json!({ "dn": snapshot.current_dn, "undo": true }),
+                )
+                .await;
+            }
+            // The restored DN: leaf RDN + original OU.
+            let restored = move_new_dn(&snapshot.current_dn, &snapshot.original_ou);
+            render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &restored,
+                Some("Offboarding undone: re-enabled, groups restored, moved back.".into()),
+                None,
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            render_object(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                &snapshot.current_dn,
+                None,
+                None,
+                Some(format!("Undo failed: {e}")),
+            )
+            .await
+        }
+    }
+}
+
+// --- Bulk (CSV) onboarding (directory.manage) -------------------------------
+
+/// Parses pasted CSV into `(first, last)` rows: first two comma-separated
+/// columns per non-empty line, skipping a `first[,last]` / `first_name` header.
+fn parse_csv_rows(csv: &str) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    for (i, line) in csv.lines().enumerate() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        let mut parts = l.splitn(2, ',');
+        let first = parts.next().unwrap_or("").trim().to_string();
+        let last = parts.next().unwrap_or("").trim().to_string();
+        if i == 0
+            && (first.eq_ignore_ascii_case("first")
+                || first.eq_ignore_ascii_case("first_name")
+                || first.eq_ignore_ascii_case("firstname"))
+        {
+            continue; // header row
+        }
+        if first.is_empty() && last.is_empty() {
+            continue;
+        }
+        rows.push((first, last));
+    }
+    rows
+}
+
+/// Builds and dispatches `DirectoryCreateUser` for a computed plan + password,
+/// returning the created sam/upn (used by single and bulk onboarding).
+async fn create_user_from_plan(
+    state: &AppState,
+    ctx: &AuthContext,
+    hc: &HelpdeskContext,
+    plan: &OnboardPlan,
+    password: &str,
+) -> Result<CreatedUser, String> {
+    let op =
+        AgentOperation::DirectoryCreateUser(Box::new(abyssal_agent_protocol::CreateUserRequest {
+            domain_dns: hc.domain_dns.clone(),
+            service_account_upn: hc.upn.clone(),
+            service_account_password: hc.password.clone(),
+            target_ou: plan.target_ou.clone(),
+            sam_base: plan.sam_base.clone(),
+            upn_suffix: plan.upn_suffix.clone(),
+            given_name: plan.given_name.clone(),
+            surname: plan.surname.clone(),
+            display_name: plan.display_name.clone(),
+            email: plan.email.clone(),
+            password: password.to_string(),
+            attributes: plan.attributes.clone(),
+            groups: plan.groups.clone(),
+            allow_privileged: allow_privileged(ctx),
+        }));
+    let stdout = dispatch_write(state, ctx, hc, op, Permission::DirectoryManage).await?;
+    Ok(
+        serde_json::from_str::<CreatedUser>(stdout.trim()).unwrap_or(CreatedUser {
+            sam: plan.sam_base.clone(),
+            upn: plan.upn.clone(),
+        }),
+    )
+}
+
+async fn bulk_cap(state: &AppState) -> u32 {
+    repo::settings::get_u32(
+        &state.pool,
+        abyssal_core::settings::GRAVEKEEPER_BULK_IMPORT_CAP,
+        abyssal_core::settings::GRAVEKEEPER_BULK_IMPORT_CAP_DEFAULT,
+    )
+    .await
+    .unwrap_or(abyssal_core::settings::GRAVEKEEPER_BULK_IMPORT_CAP_DEFAULT)
+}
+
+/// GET the bulk onboarding form. `directory.manage`.
+pub async fn bulk_form(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let templates = repo::directory::list_templates(&state.pool, id)
+        .await?
+        .into_iter()
+        .map(|t| (t.id.to_string(), t.name))
+        .collect();
+    let tpl = crate::templates::GravekeeperBulkTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        templates,
+        cap: bulk_cap(&state).await,
+        error: None,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+#[derive(Deserialize)]
+pub struct BulkForm {
+    csrf_token: String,
+    #[serde(default)]
+    template_id: String,
+    #[serde(default)]
+    csv: String,
+}
+
+async fn bulk_form_error(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    id: Uuid,
+    error: String,
+) -> Result<Response, WebError> {
+    let (base, new_cookie) = build_base(state, jar, ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let templates = repo::directory::list_templates(&state.pool, id)
+        .await?
+        .into_iter()
+        .map(|t| (t.id.to_string(), t.name))
+        .collect();
+    let tpl = crate::templates::GravekeeperBulkTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        templates,
+        cap: bulk_cap(state).await,
+        error: Some(error),
+    };
+    Ok(respond(jar, new_cookie, tpl))
+}
+
+/// POST: preview the parsed CSV against the chosen template. `directory.manage`.
+pub async fn bulk_preview(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<BulkForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let template = match load_template_for_domain(&state, id, &form.template_id).await {
+        Ok(t) => t,
+        Err(e) => return bulk_form_error(&state, &jar, &ctx, id, e).await,
+    };
+    let rows = parse_csv_rows(&form.csv);
+    if rows.is_empty() {
+        return bulk_form_error(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            "No rows found. Paste one 'First,Last' per line.".into(),
+        )
+        .await;
+    }
+    let cap = bulk_cap(&state).await;
+    let over_cap = rows.len() as u32 > cap;
+
+    let mut row_views = Vec::new();
+    let mut valid_count = 0usize;
+    for (first, last) in &rows {
+        let plan = compute_plan(&template, &domain.dns_name, first, last);
+        let valid = !first.is_empty()
+            && !last.is_empty()
+            && abyssal_agent_protocol::is_valid_sam_account_name(&plan.sam_base);
+        if valid {
+            valid_count += 1;
+        }
+        row_views.push(crate::templates::GravekeeperBulkRowView {
+            first: first.clone(),
+            last: last.clone(),
+            sam: plan.sam_base.clone(),
+            upn: plan.upn.clone(),
+            valid,
+            reason: if valid {
+                String::new()
+            } else {
+                "Needs a first and last name that yield a valid logon name".into()
+            },
+        });
+    }
+
+    let tpl = crate::templates::GravekeeperBulkPreviewTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        template_id: template.id.to_string(),
+        template_name: template.name,
+        csv: form.csv,
+        rows: row_views,
+        valid_count,
+        cap,
+        over_cap,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+/// POST: create all valid rows. `directory.manage`.
+pub async fn bulk_create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<BulkForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let template = match load_template_for_domain(&state, id, &form.template_id).await {
+        Ok(t) => t,
+        Err(e) => return bulk_form_error(&state, &jar, &ctx, id, e).await,
+    };
+    let rows = parse_csv_rows(&form.csv);
+    let cap = bulk_cap(&state).await;
+    if rows.is_empty() {
+        return bulk_form_error(&state, &jar, &ctx, id, "No rows to create.".into()).await;
+    }
+    if rows.len() as u32 > cap {
+        return bulk_form_error(&state, &jar, &ctx, id, format!("Too many rows ({}); the cap is {cap}. Reduce the list or raise the cap in settings.", rows.len())).await;
+    }
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return bulk_form_error(&state, &jar, &ctx, id, e).await,
+    };
+
+    let job_id = repo::directory::create_job(
+        &state.pool,
+        id,
+        "bulk",
+        &format!("Bulk onboard ({} rows)", rows.len()),
+        Some(template.id),
+        Some(ctx.user.id),
+    )
+    .await?;
+    // Store the rows so failed ones can be retried later.
+    let payload = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    let _ = repo::directory::set_job_payload(&state.pool, job_id, &payload).await;
+
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let (mut created, mut failed) = (Vec::new(), Vec::new());
+    let mut any_fail = false;
+    for (idx, (first, last)) in rows.iter().enumerate() {
+        let seq = (idx + 1) as i64;
+        let step_name = format!("{first} {last}");
+        let plan = compute_plan(&template, &domain.dns_name, first, last);
+        if first.is_empty()
+            || last.is_empty()
+            || !abyssal_agent_protocol::is_valid_sam_account_name(&plan.sam_base)
+        {
+            any_fail = true;
+            repo::directory::add_job_step(
+                &state.pool,
+                job_id,
+                seq,
+                &step_name,
+                "failed",
+                Some("invalid name/logon"),
+            )
+            .await?;
+            failed.push(crate::templates::GravekeeperBulkFailedView {
+                first: first.clone(),
+                last: last.clone(),
+                reason: "invalid name".into(),
+            });
+            continue;
+        }
+        let password = generate_temp_password();
+        match create_user_from_plan(&state, &ctx, &hc, &plan, &password).await {
+            Ok(c) => {
+                repo::directory::add_job_step(
+                    &state.pool,
+                    job_id,
+                    seq,
+                    &step_name,
+                    "ok",
+                    Some(&format!("Created {} ({})", c.sam, c.upn)),
+                )
+                .await?;
+                created.push(crate::templates::GravekeeperBulkCreatedView {
+                    sam: c.sam,
+                    upn: c.upn,
+                    password,
+                });
+            }
+            Err(e) => {
+                any_fail = true;
+                repo::directory::add_job_step(
+                    &state.pool,
+                    job_id,
+                    seq,
+                    &step_name,
+                    "failed",
+                    Some(&e),
+                )
+                .await?;
+                failed.push(crate::templates::GravekeeperBulkFailedView {
+                    first: first.clone(),
+                    last: last.clone(),
+                    reason: e,
+                });
+            }
+        }
+    }
+    repo::directory::finish_job(
+        &state.pool,
+        job_id,
+        if any_fail { "partial" } else { "completed" },
+        None,
+        None,
+    )
+    .await?;
+    record_audit(
+        &state,
+        &ctx,
+        AuditAction::DirectoryAccountCreated,
+        &domain.dns_name,
+        serde_json::json!({ "action": "bulk_onboard", "created": created.len(), "failed": failed.len() }),
+    )
+    .await;
+
+    let tpl = crate::templates::GravekeeperBulkResultTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        job_id: job_id.to_string(),
+        created,
+        failed,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+/// POST: retry the failed rows of a bulk job. `directory.manage`.
+pub async fn bulk_retry(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(jid): Path<Uuid>,
+    Form(form): Form<RemoveForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let job = repo::directory::find_job(&state.pool, jid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let id = job.domain_id;
+    let (Some(template_id), Some(payload)) = (job.template_id, job.payload_json.clone()) else {
+        return Err(WebError(AppError::Validation(
+            "This job has no retry context.".into(),
+        )));
+    };
+    let template = repo::directory::find_template(&state.pool, template_id)
+        .await?
+        .ok_or_else(|| {
+            WebError(AppError::Validation(
+                "The template this job used no longer exists.".into(),
+            ))
+        })?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let rows: Vec<(String, String)> = serde_json::from_str(&payload).unwrap_or_default();
+    let steps = repo::directory::job_steps(&state.pool, jid).await?;
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return Err(WebError(AppError::Validation(e))),
+    };
+
+    let mut still_failing = false;
+    for step in &steps {
+        if step.status != "failed" {
+            continue;
+        }
+        let Some((first, last)) = rows.get((step.seq - 1) as usize) else {
+            continue;
+        };
+        let plan = compute_plan(&template, &domain.dns_name, first, last);
+        if first.is_empty()
+            || last.is_empty()
+            || !abyssal_agent_protocol::is_valid_sam_account_name(&plan.sam_base)
+        {
+            still_failing = true;
+            continue;
+        }
+        let password = generate_temp_password();
+        match create_user_from_plan(&state, &ctx, &hc, &plan, &password).await {
+            Ok(c) => {
+                repo::directory::update_job_step_by_seq(
+                    &state.pool,
+                    jid,
+                    step.seq,
+                    "ok",
+                    Some(&format!("Created {} ({}) on retry", c.sam, c.upn)),
+                )
+                .await?;
+            }
+            Err(e) => {
+                still_failing = true;
+                repo::directory::update_job_step_by_seq(
+                    &state.pool,
+                    jid,
+                    step.seq,
+                    "failed",
+                    Some(&e),
+                )
+                .await?;
+            }
+        }
+    }
+    repo::directory::set_job_status(
+        &state.pool,
+        jid,
+        if still_failing {
+            "partial"
+        } else {
+            "completed"
+        },
+    )
+    .await?;
+    Ok(Redirect::to(&format!("/arsenals/gravekeeper/jobs/{jid}")).into_response())
+}
+
+// --- Cross-domain find + Thanatos workflow landing (directory.view) ----------
+
+#[derive(Deserialize)]
+pub struct FindQuery {
+    #[serde(default)]
+    q: String,
+    /// The registry/Thanatos button may pass an account name as context.
+    #[serde(default)]
+    account: String,
+}
+
+/// The workflow-registry button points at `/arsenals/gravekeeper/{host_id}`
+/// (the Thanatos event's host, which Gravekeeper doesn't use). This landing
+/// ignores it and sends the operator to the cross-domain find, pre-filling an
+/// `account` if the event supplied one. `directory.view`.
+pub async fn workflow_landing(
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(_host_id): Path<Uuid>,
+    axum::extract::Query(query): axum::extract::Query<FindQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryView)?;
+    let _ = &jar;
+    let account = if !query.account.is_empty() {
+        query.account
+    } else {
+        query.q
+    };
+    let target = if account.trim().is_empty() {
+        "/arsenals/gravekeeper/find".to_string()
+    } else {
+        format!(
+            "/arsenals/gravekeeper/find?q={}",
+            crate::common::urlencoding_encode(account.trim())
+        )
+    };
+    Ok(Redirect::to(&target).into_response())
+}
+
+/// GET the cross-domain find page: searches every configured domain whose write
+/// DC is connected and merges the results. `directory.view`.
+pub async fn find(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    axum::extract::Query(query): axum::extract::Query<FindQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryView)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let q = query.q.trim().to_string();
+
+    let mut results: Vec<crate::templates::GravekeeperFindRow> = Vec::new();
+    let mut error = None;
+    if !q.is_empty() {
+        for domain in repo::directory::list(&state.pool).await? {
+            let Some(hid) = domain
+                .write_dc_host_id
+                .filter(|h| state.hosts.is_connected(*h))
+            else {
+                continue;
+            };
+            let host = match repo::hosts::find_by_id(&state.pool, hid).await? {
+                Some(h) => h,
+                None => continue,
+            };
+            match dispatch_directory(
+                &state,
+                &ctx,
+                host.id,
+                &host.name,
+                AgentOperation::DirectorySearch {
+                    domain_dns: domain.dns_name.clone(),
+                    query: q.clone(),
+                },
+                Permission::DirectoryView,
+                BROWSE_TIMEOUT,
+            )
+            .await
+            {
+                Ok(stdout) => {
+                    if let Ok(hits) = parse_list::<SearchHit>(&stdout) {
+                        for h in hits {
+                            let sub = h
+                                .upn
+                                .filter(|s| !s.is_empty())
+                                .or(h.sam)
+                                .unwrap_or_default();
+                            results.push(crate::templates::GravekeeperFindRow {
+                                domain_id: domain.id.to_string(),
+                                domain_dns: domain.dns_name.clone(),
+                                kind: h.kind,
+                                name: h.name,
+                                sub,
+                                dn_encoded: crate::common::urlencoding_encode(&h.dn),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    error.get_or_insert(format!("{}: {e}", domain.dns_name));
+                }
+            }
+        }
+    }
+
+    let tpl = crate::templates::GravekeeperFindTemplate {
+        base,
+        query: q,
+        results,
+        error,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+// --- Stale-accounts report (directory.view; disable = directory.helpdesk) ----
+
+#[derive(Deserialize)]
+struct StaleAccount {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    sam: Option<String>,
+    #[serde(default)]
+    upn: Option<String>,
+    #[serde(default)]
+    dn: String,
+    #[serde(default)]
+    last_logon: String,
+}
+
+#[derive(Deserialize)]
+pub struct StaleQuery {
+    #[serde(default)]
+    days: Option<u32>,
+}
+
+/// GET the stale-accounts report. `directory.view`.
+pub async fn stale_report(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    axum::extract::Query(query): axum::extract::Query<StaleQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryView)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let days = query.days.unwrap_or(90).clamp(1, 3650);
+
+    let mut error = None;
+    let mut rows: Vec<crate::templates::GravekeeperStaleRow> = Vec::new();
+    match domain.write_dc_host_id {
+        Some(hid) if state.hosts.is_connected(hid) => {
+            let host = repo::hosts::find_by_id(&state.pool, hid)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            match dispatch_directory(
+                &state,
+                &ctx,
+                host.id,
+                &host.name,
+                AgentOperation::DirectoryStaleAccounts {
+                    domain_dns: domain.dns_name.clone(),
+                    days,
+                },
+                Permission::DirectoryView,
+                BROWSE_TIMEOUT,
+            )
+            .await
+            {
+                Ok(stdout) => match parse_list::<StaleAccount>(&stdout) {
+                    Ok(accts) => {
+                        rows = accts
+                            .into_iter()
+                            .map(|a| crate::templates::GravekeeperStaleRow {
+                                name: a.name,
+                                sam: a.sam.unwrap_or_default(),
+                                upn: a.upn.unwrap_or_default(),
+                                dn_encoded: crate::common::urlencoding_encode(&a.dn),
+                                dn: a.dn,
+                                last_logon: if a.last_logon.is_empty() {
+                                    "never".into()
+                                } else {
+                                    a.last_logon
+                                },
+                            })
+                            .collect()
+                    }
+                    Err(e) => error = Some(format!("Couldn't read the report: {e}")),
+                },
+                Err(e) => error = Some(e),
+            }
+        }
+        Some(_) => error = Some("The domain's write DC isn't connected right now.".into()),
+        None => error = Some("This domain has no write DC set yet.".into()),
+    }
+
+    let tpl = crate::templates::GravekeeperStaleTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        days,
+        can_disable: ctx.has(Permission::DirectoryHelpdesk),
+        rows,
+        error,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+#[derive(Deserialize)]
+pub struct StaleDisableForm {
+    csrf_token: String,
+    dn: String,
+    #[serde(default)]
+    days: u32,
+}
+
+/// POST: disable a stale account and return to the report. `directory.helpdesk`.
+pub async fn stale_disable(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<StaleDisableForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryHelpdesk)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let dn = form.dn.trim().to_string();
+    if !abyssal_agent_protocol::is_valid_ldap_dn(&dn) {
+        return Err(WebError(AppError::Validation("Invalid account DN.".into())));
+    }
+    if let Ok(hc) = helpdesk_prepare(&state, id).await {
+        let op = AgentOperation::DirectorySetEnabled {
+            domain_dns: hc.domain_dns.clone(),
+            service_account_upn: hc.upn.clone(),
+            service_account_password: hc.password.clone(),
+            target_dn: dn.clone(),
+            enabled: false,
+            allow_privileged: allow_privileged(&ctx),
+        };
+        if dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryHelpdesk)
+            .await
+            .is_ok()
+        {
+            record_audit(
+                &state,
+                &ctx,
+                AuditAction::DirectoryAccountEnabledChanged,
+                &hc.domain_dns,
+                serde_json::json!({ "target_dn": dn, "enabled": false, "from": "stale_report" }),
+            )
+            .await;
+        }
+    }
+    let days = form.days.clamp(1, 3650);
+    Ok(Redirect::to(&format!(
+        "/arsenals/gravekeeper/domains/{id}/stale?days={days}"
+    ))
+    .into_response())
 }
 
 // --- Onboarding templates (directory.manage) -------------------------------
@@ -1652,6 +3219,12 @@ pub struct TemplateForm {
     #[serde(default)]
     mail_mode: String,
     #[serde(default)]
+    m365_usage_location: String,
+    #[serde(default)]
+    m365_licensing_group: String,
+    #[serde(default)]
+    m365_license_sku: String,
+    #[serde(default)]
     manager_required: bool,
 }
 
@@ -1665,6 +3238,7 @@ struct ParsedTemplate {
     groups_json: String,
     attributes_json: String,
     mail_mode: String,
+    mail_settings_json: Option<String>,
     manager_required: bool,
 }
 
@@ -1748,6 +3322,26 @@ fn parse_template_form(form: &TemplateForm) -> Result<ParsedTemplate, String> {
         "none".to_string()
     };
 
+    // Microsoft 365 licensing settings (stored as the template's mail_settings).
+    let usage = form.m365_usage_location.trim().to_uppercase();
+    if !usage.is_empty() && !(usage.len() == 2 && usage.chars().all(|c| c.is_ascii_alphabetic())) {
+        return Err("Usage location must be a 2-letter country code (e.g. US), or blank.".into());
+    }
+    let group = form.m365_licensing_group.trim().to_string();
+    let sku = form.m365_license_sku.trim().to_string();
+    let mail_settings_json = if usage.is_empty() && group.is_empty() && sku.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::json!({
+                "usage_location": usage,
+                "licensing_group": group,
+                "license_sku": sku,
+            })
+            .to_string(),
+        )
+    };
+
     Ok(ParsedTemplate {
         name,
         target_ou,
@@ -1757,6 +3351,7 @@ fn parse_template_form(form: &TemplateForm) -> Result<ParsedTemplate, String> {
         groups_json: serde_json::to_string(&groups).unwrap_or_else(|_| "[]".into()),
         attributes_json: serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".into()),
         mail_mode,
+        mail_settings_json,
         manager_required: form.manager_required,
     })
 }
@@ -1788,6 +3383,7 @@ pub async fn create_template(
                     groups_json: &p.groups_json,
                     attributes_json: &p.attributes_json,
                     mail_mode: &p.mail_mode,
+                    mail_settings_json: p.mail_settings_json.as_deref(),
                     manager_required: p.manager_required,
                     created_by: Some(ctx.user.id),
                 },
@@ -1853,6 +3449,7 @@ pub async fn update_template(
                     groups_json: &p.groups_json,
                     attributes_json: &p.attributes_json,
                     mail_mode: &p.mail_mode,
+                    mail_settings_json: p.mail_settings_json.as_deref(),
                     manager_required: p.manager_required,
                     created_by: None,
                 },
@@ -1929,6 +3526,9 @@ fn default_template_form() -> crate::templates::GravekeeperTemplateFormView {
         groups: String::new(),
         attributes: String::new(),
         mail_mode: "none".to_string(),
+        m365_usage_location: String::new(),
+        m365_licensing_group: String::new(),
+        m365_license_sku: String::new(),
         manager_required: false,
     }
 }
@@ -1951,6 +3551,9 @@ fn template_to_form(
         groups: t.groups.join("\n"),
         attributes,
         mail_mode: t.mail_mode.clone(),
+        m365_usage_location: t.m365_usage_location.clone(),
+        m365_licensing_group: t.m365_licensing_group.clone(),
+        m365_license_sku: t.m365_license_sku.clone(),
         manager_required: t.manager_required,
     }
 }
@@ -1965,7 +3568,1335 @@ fn form_echo(form: &TemplateForm) -> crate::templates::GravekeeperTemplateFormVi
         groups: form.groups.clone(),
         attributes: form.attributes.clone(),
         mail_mode: form.mail_mode.clone(),
+        m365_usage_location: form.m365_usage_location.clone(),
+        m365_licensing_group: form.m365_licensing_group.clone(),
+        m365_license_sku: form.m365_license_sku.clone(),
         manager_required: form.manager_required,
+    }
+}
+
+// --- Onboarding: create a user from a template (directory.manage) ----------
+
+/// The computed change-set an onboarding run will apply, for the preview and
+/// the create.
+struct OnboardPlan {
+    sam_base: String,
+    upn: String,
+    email: String,
+    target_ou: String,
+    upn_suffix: String,
+    given_name: String,
+    surname: String,
+    display_name: String,
+    attributes: Vec<(String, String)>,
+    groups: Vec<String>,
+    mail_mode: String,
+}
+
+/// Builds the change-set from a template and a first/last name. Pure: the DB is
+/// only read by the caller to fetch the template and domain.
+fn compute_plan(
+    template: &repo::directory::DirectoryTemplate,
+    domain_dns: &str,
+    first: &str,
+    last: &str,
+) -> OnboardPlan {
+    let first = first.trim();
+    let last = last.trim();
+    let sam_base = abyssal_agent_protocol::sanitize_sam_account_name(
+        &abyssal_agent_protocol::expand_name_pattern(&template.username_pattern, first, last),
+    );
+    let upn_suffix = template
+        .upn_suffix
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| domain_dns.to_string());
+    let upn = format!("{sam_base}@{upn_suffix}");
+    let email = template
+        .email_pattern
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|p| abyssal_agent_protocol::expand_name_pattern(p, first, last).to_lowercase())
+        .unwrap_or_default();
+    let display_name = match (first.is_empty(), last.is_empty()) {
+        (false, false) => format!("{first} {last}"),
+        (false, true) => first.to_string(),
+        (true, false) => last.to_string(),
+        (true, true) => sam_base.clone(),
+    };
+    OnboardPlan {
+        sam_base,
+        upn,
+        email,
+        target_ou: template.target_ou.clone().unwrap_or_default(),
+        upn_suffix,
+        given_name: first.to_string(),
+        surname: last.to_string(),
+        display_name,
+        attributes: template.attributes.clone(),
+        groups: template.groups.clone(),
+        mail_mode: template.mail_mode.clone(),
+    }
+}
+
+/// GET the onboarding form: pick a template, enter a name. `directory.manage`.
+pub async fn onboard_form(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let templates = repo::directory::list_templates(&state.pool, id)
+        .await?
+        .into_iter()
+        .map(|t| (t.id.to_string(), t.name))
+        .collect();
+    let tpl = crate::templates::GravekeeperOnboardTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        templates,
+        error: None,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+#[derive(Deserialize)]
+pub struct OnboardForm {
+    csrf_token: String,
+    #[serde(default)]
+    template_id: String,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+}
+
+async fn load_template_for_domain(
+    state: &AppState,
+    domain_id: Uuid,
+    template_id: &str,
+) -> Result<repo::directory::DirectoryTemplate, String> {
+    let tid = Uuid::parse_str(template_id.trim()).map_err(|_| "Pick a template.".to_string())?;
+    let t = repo::directory::find_template(&state.pool, tid)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Unknown template.")?;
+    if t.domain_id != domain_id {
+        return Err("That template belongs to a different domain.".into());
+    }
+    Ok(t)
+}
+
+/// POST: compute and show the change-set preview. `directory.manage`.
+pub async fn onboard_preview(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<OnboardForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let first = form.first_name.trim().to_string();
+    let last = form.last_name.trim().to_string();
+    let template = match load_template_for_domain(&state, id, &form.template_id).await {
+        Ok(t) => t,
+        Err(e) => return onboard_form_error(&state, &jar, new_cookie, base, &domain, e).await,
+    };
+    if first.is_empty() || last.is_empty() {
+        return onboard_form_error(
+            &state,
+            &jar,
+            new_cookie,
+            base,
+            &domain,
+            "Enter both a first and last name.".into(),
+        )
+        .await;
+    }
+
+    let plan = compute_plan(&template, &domain.dns_name, &first, &last);
+    if !abyssal_agent_protocol::is_valid_sam_account_name(&plan.sam_base) {
+        return onboard_form_error(
+            &state,
+            &jar,
+            new_cookie,
+            base,
+            &domain,
+            "That name doesn't produce a valid logon name with this template's pattern.".into(),
+        )
+        .await;
+    }
+
+    let tpl = crate::templates::GravekeeperOnboardPreviewTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        template_id: template.id.to_string(),
+        template_name: template.name,
+        first_name: first,
+        last_name: last,
+        plan: plan_view(&plan),
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+async fn onboard_form_error(
+    state: &AppState,
+    jar: &CookieJar,
+    new_cookie: Option<axum_extra::extract::cookie::Cookie<'static>>,
+    base: BaseCtx,
+    domain: &repo::directory::DirectoryDomain,
+    error: String,
+) -> Result<Response, WebError> {
+    let templates = repo::directory::list_templates(&state.pool, domain.id)
+        .await?
+        .into_iter()
+        .map(|t| (t.id.to_string(), t.name))
+        .collect();
+    let tpl = crate::templates::GravekeeperOnboardTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name.clone(),
+        templates,
+        error: Some(error),
+    };
+    Ok(respond(jar, new_cookie, tpl))
+}
+
+fn plan_view(plan: &OnboardPlan) -> crate::templates::GravekeeperPlanView {
+    crate::templates::GravekeeperPlanView {
+        sam_base: plan.sam_base.clone(),
+        upn: plan.upn.clone(),
+        email: plan.email.clone(),
+        target_ou: plan.target_ou.clone(),
+        display_name: plan.display_name.clone(),
+        attributes: plan.attributes.clone(),
+        groups: plan.groups.clone(),
+        mail_mode: plan.mail_mode.clone(),
+    }
+}
+
+/// POST: create the user. Recomputes the plan from the template + name (never
+/// trusting a client-submitted change-set), dispatches `DirectoryCreateUser`,
+/// records a job, and shows the result (final name + temp password once).
+pub async fn onboard_create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<OnboardForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let first = form.first_name.trim().to_string();
+    let last = form.last_name.trim().to_string();
+
+    let template = match load_template_for_domain(&state, id, &form.template_id).await {
+        Ok(t) => t,
+        Err(e) => return onboard_form_error(&state, &jar, new_cookie, base, &domain, e).await,
+    };
+    if first.is_empty() || last.is_empty() {
+        return onboard_form_error(
+            &state,
+            &jar,
+            new_cookie,
+            base,
+            &domain,
+            "Enter both a first and last name.".into(),
+        )
+        .await;
+    }
+    let plan = compute_plan(&template, &domain.dns_name, &first, &last);
+    if !abyssal_agent_protocol::is_valid_sam_account_name(&plan.sam_base) {
+        return onboard_form_error(
+            &state,
+            &jar,
+            new_cookie,
+            base,
+            &domain,
+            "That name doesn't produce a valid logon name with this template's pattern.".into(),
+        )
+        .await;
+    }
+
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return onboard_form_error(&state, &jar, new_cookie, base, &domain, e).await,
+    };
+
+    let password = generate_temp_password();
+    let op =
+        AgentOperation::DirectoryCreateUser(Box::new(abyssal_agent_protocol::CreateUserRequest {
+            domain_dns: hc.domain_dns.clone(),
+            service_account_upn: hc.upn.clone(),
+            service_account_password: hc.password.clone(),
+            target_ou: plan.target_ou.clone(),
+            sam_base: plan.sam_base.clone(),
+            upn_suffix: plan.upn_suffix.clone(),
+            given_name: plan.given_name.clone(),
+            surname: plan.surname.clone(),
+            display_name: plan.display_name.clone(),
+            email: plan.email.clone(),
+            password: password.clone(),
+            attributes: plan.attributes.clone(),
+            groups: plan.groups.clone(),
+            allow_privileged: allow_privileged(&ctx),
+        }));
+
+    // Record a job up front so the attempt is visible even if it fails.
+    let job_id = repo::directory::create_job(
+        &state.pool,
+        id,
+        "onboard",
+        &format!("Onboard {} {}", first, last),
+        Some(template.id),
+        Some(ctx.user.id),
+    )
+    .await?;
+
+    let dispatch = dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryManage).await;
+
+    match dispatch {
+        Ok(stdout) => {
+            let created: CreatedUser = serde_json::from_str(stdout.trim()).unwrap_or(CreatedUser {
+                sam: plan.sam_base.clone(),
+                upn: plan.upn.clone(),
+            });
+            repo::directory::add_job_step(
+                &state.pool,
+                job_id,
+                1,
+                "Create AD account",
+                "ok",
+                Some(&format!("Created {} ({})", created.sam, created.upn)),
+            )
+            .await?;
+            // Mail step: provision a mailbox when the template asks for one. A
+            // mail failure never rolls back the AD account -- the job ends
+            // "partial" and the mail step can be retried (P2-M4).
+            let mut final_status = "completed";
+            if plan.mail_mode != "none" {
+                let (step_status, detail) =
+                    provision_mailbox(&state, &ctx, id, &created.upn, &created.sam, &template)
+                        .await;
+                repo::directory::add_job_step(
+                    &state.pool,
+                    job_id,
+                    2,
+                    "Mailbox",
+                    step_status,
+                    Some(&detail),
+                )
+                .await?;
+                if step_status == "failed" {
+                    final_status = "partial";
+                }
+            }
+            repo::directory::finish_job(
+                &state.pool,
+                job_id,
+                final_status,
+                Some(&created.sam),
+                Some(&created.upn),
+            )
+            .await?;
+            record_audit(
+                &state,
+                &ctx,
+                AuditAction::DirectoryAccountCreated,
+                &domain.dns_name,
+                serde_json::json!({ "sam": created.sam, "upn": created.upn, "template": template.name }),
+            )
+            .await;
+
+            let tpl = crate::templates::GravekeeperOnboardResultTemplate {
+                base,
+                domain_id: domain.id.to_string(),
+                dns_name: domain.dns_name,
+                job_id: job_id.to_string(),
+                sam: created.sam,
+                upn: created.upn,
+                new_password: password,
+            };
+            Ok(respond(&jar, new_cookie, tpl))
+        }
+        Err(e) => {
+            repo::directory::add_job_step(
+                &state.pool,
+                job_id,
+                1,
+                "Create AD account",
+                "failed",
+                Some(&e),
+            )
+            .await?;
+            repo::directory::finish_job(&state.pool, job_id, "failed", None, None).await?;
+            onboard_form_error(
+                &state,
+                &jar,
+                new_cookie,
+                base,
+                &domain,
+                format!("Onboarding failed: {e}"),
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CreatedUser {
+    #[serde(default)]
+    sam: String,
+    #[serde(default)]
+    upn: String,
+}
+
+// --- Jobs (directory.manage) -----------------------------------------------
+
+/// GET a domain's onboarding/offboarding jobs. `directory.manage`.
+pub async fn jobs(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let rows = repo::directory::list_jobs(&state.pool, id, 100)
+        .await?
+        .into_iter()
+        .map(|j| crate::templates::GravekeeperJobRow {
+            id: j.id.to_string(),
+            title: j.title,
+            kind: j.kind,
+            target_sam: j.target_sam.unwrap_or_default(),
+            status: j.status,
+            created_at: crate::common::format_in_tz(j.created_at, &ctx.user.timezone),
+        })
+        .collect();
+    let tpl = crate::templates::GravekeeperJobsTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        jobs: rows,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+/// GET one job's detail (its steps). `directory.manage`.
+pub async fn job_detail(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(jid): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    let (base, new_cookie) = build_base(&state, &jar, &ctx).await?;
+    let job = repo::directory::find_job(&state.pool, jid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let domain = repo::directory::find_by_id(&state.pool, job.domain_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let raw_steps = repo::directory::job_steps(&state.pool, jid).await?;
+    // The mail step is retryable when it exists and didn't succeed, the job
+    // still knows the account's UPN, and the template is still around.
+    let can_retry_mail = job.kind == "onboard"
+        && job.target_upn.is_some()
+        && job.template_id.is_some()
+        && raw_steps
+            .iter()
+            .any(|s| s.name == "Mailbox" && s.status != "ok");
+    let steps = raw_steps
+        .into_iter()
+        .map(|s| crate::templates::GravekeeperStepView {
+            name: s.name,
+            status: s.status,
+            detail: s.detail.unwrap_or_default(),
+        })
+        .collect();
+    let tpl = crate::templates::GravekeeperJobTemplate {
+        base,
+        job_id: job.id.to_string(),
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        title: job.title,
+        kind: job.kind,
+        target_sam: job.target_sam.unwrap_or_default(),
+        status: job.status,
+        created_at: crate::common::format_in_tz(job.created_at, &ctx.user.timezone),
+        steps,
+        can_retry_mail,
+    };
+    Ok(respond(&jar, new_cookie, tpl))
+}
+
+/// POST: retry a job's mail step without re-creating the AD account.
+/// `directory.manage`.
+pub async fn retry_mail_step(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(jid): Path<Uuid>,
+    Form(form): Form<RemoveForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let job = repo::directory::find_job(&state.pool, jid)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let (Some(upn), Some(template_id)) = (job.target_upn.clone(), job.template_id) else {
+        return Err(WebError(AppError::Validation(
+            "This job can't retry mail (it has no stored account UPN or template).".into(),
+        )));
+    };
+    let template = repo::directory::find_template(&state.pool, template_id)
+        .await?
+        .ok_or_else(|| {
+            WebError(AppError::Validation(
+                "The template this job used no longer exists.".into(),
+            ))
+        })?;
+    let sam = job.target_sam.clone().unwrap_or_default();
+
+    let (status, detail) =
+        provision_mailbox(&state, &ctx, job.domain_id, &upn, &sam, &template).await;
+    repo::directory::update_job_step_by_name(&state.pool, jid, "Mailbox", status, Some(&detail))
+        .await?;
+    // Recompute the job's overall status from the mail outcome.
+    let job_status = if status == "ok" {
+        "completed"
+    } else {
+        "partial"
+    };
+    repo::directory::set_job_status(&state.pool, jid, job_status).await?;
+    if let Some(domain) = repo::directory::find_by_id(&state.pool, job.domain_id).await? {
+        record_audit(
+            &state,
+            &ctx,
+            AuditAction::DirectoryAccountCreated,
+            &domain.dns_name,
+            serde_json::json!({ "action": "mail_step_retried", "upn": upn, "result": status }),
+        )
+        .await;
+    }
+    Ok(Redirect::to(&format!("/arsenals/gravekeeper/jobs/{jid}")).into_response())
+}
+
+// --- Mail connections (directory.configure) --------------------------------
+
+const MAIL_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Provisions a mailbox for a freshly created user, per the domain's mail
+/// connection. Returns `(step_status, detail)` for the onboarding job. A failure
+/// here is reported, never fatal to the already-created AD account.
+async fn provision_mailbox(
+    state: &AppState,
+    ctx: &AuthContext,
+    domain_id: Uuid,
+    created_upn: &str,
+    created_sam: &str,
+    template: &repo::directory::DirectoryTemplate,
+) -> (&'static str, String) {
+    let conn = match repo::directory::find_mail_connection(&state.pool, domain_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return (
+                "failed",
+                "The template asks for a mailbox, but this domain has no mail connection configured.".into(),
+            );
+        }
+        Err(e) => return ("failed", format!("Couldn't read the mail connection: {e}")),
+    };
+    match conn.mode.as_str() {
+        "none" => (
+            "skipped",
+            "The domain's mail connection is set to none.".into(),
+        ),
+        "m365" => provision_m365_mailbox(state, domain_id, created_upn, template).await,
+        "exchange_onprem" | "exchange_hybrid" => {
+            let hybrid = conn.mode == "exchange_hybrid";
+            let creds = match repo::directory::exchange_credentials(&state.pool, domain_id).await {
+                Ok(Some(c)) => c,
+                Ok(None) => return ("failed", "Exchange account not configured.".into()),
+                Err(e) => return ("failed", format!("Couldn't read the Exchange account: {e}")),
+            };
+            let (uri, account_upn, sealed, agent_host_id, remote_routing_domain) = (
+                creds.uri,
+                creds.account_upn,
+                creds.sealed,
+                creds.agent_host_id,
+                creds.remote_routing_domain,
+            );
+            let Some(host_id) = agent_host_id else {
+                return (
+                    "failed",
+                    "No Exchange agent host is set for this domain.".into(),
+                );
+            };
+            if !state.hosts.is_connected(host_id) {
+                return ("failed", "The Exchange agent host isn't connected.".into());
+            }
+            let Some(key) = state.encryption_key.clone() else {
+                return (
+                    "failed",
+                    "This control plane has no ENCRYPTION_KEY set.".into(),
+                );
+            };
+            let password = match key.decrypt(&sealed) {
+                Ok(p) => p.to_string(),
+                Err(e) => {
+                    return (
+                        "failed",
+                        format!("Couldn't decrypt the Exchange account: {e}"),
+                    );
+                }
+            };
+            let remote_routing_address = if hybrid {
+                match remote_routing_domain {
+                    Some(d) if !d.is_empty() => format!("{created_sam}@{d}"),
+                    _ => {
+                        return (
+                            "failed",
+                            "Hybrid mode needs a remote routing domain.".into(),
+                        );
+                    }
+                }
+            } else {
+                String::new()
+            };
+            let host = match repo::hosts::find_by_id(&state.pool, host_id).await {
+                Ok(Some(h)) => h,
+                _ => return ("failed", "The Exchange agent host no longer exists.".into()),
+            };
+            let op = AgentOperation::ExchangeEnableMailbox {
+                uri,
+                account_upn,
+                account_password: password,
+                target_identity: created_upn.to_string(),
+                remote_routing_address,
+            };
+            match state
+                .executor
+                .execute_on_host(
+                    ctx,
+                    &state.hosts,
+                    host_id,
+                    &host.name,
+                    op,
+                    Permission::DirectoryManage,
+                    OperationKind::Write,
+                    false,
+                    MAIL_TIMEOUT,
+                    None,
+                    false,
+                )
+                .await
+            {
+                Ok(_) => (
+                    "ok",
+                    if hybrid {
+                        "Remote mailbox enabled (Exchange hybrid).".into()
+                    } else {
+                        "Mailbox enabled (on-premises Exchange).".into()
+                    },
+                ),
+                Err(e) => ("failed", format!("Enable mailbox failed: {e}")),
+            }
+        }
+        other => ("failed", format!("Unknown mail mode: {other}")),
+    }
+}
+
+/// The Microsoft 365 branch of [`provision_mailbox`]: license the synced user
+/// via Graph using the domain's app credentials and the template's licensing
+/// choices.
+async fn provision_m365_mailbox(
+    state: &AppState,
+    domain_id: Uuid,
+    created_upn: &str,
+    template: &repo::directory::DirectoryTemplate,
+) -> (&'static str, String) {
+    let creds = match repo::directory::m365_credentials(&state.pool, domain_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return (
+                "failed",
+                "Microsoft 365 isn't fully configured (tenant, app and certificate).".into(),
+            );
+        }
+        Err(e) => return ("failed", format!("Couldn't read the M365 config: {e}")),
+    };
+    let Some(key) = state.encryption_key.clone() else {
+        return (
+            "failed",
+            "This control plane has no ENCRYPTION_KEY set.".into(),
+        );
+    };
+    let cert_pem = match key.decrypt(&creds.cert_sealed) {
+        Ok(p) => p.to_string(),
+        Err(e) => {
+            return (
+                "failed",
+                format!("Couldn't decrypt the M365 certificate: {e}"),
+            );
+        }
+    };
+    let cfg = crate::gravekeeper_graph::GraphConfig {
+        tenant_id: creds.tenant_id,
+        app_id: creds.app_id,
+        cert_pem,
+        licensing_method: creds.licensing_method,
+    };
+    let lic = crate::gravekeeper_graph::M365Licensing {
+        usage_location: template.m365_usage_location.clone(),
+        licensing_group: template.m365_licensing_group.clone(),
+        license_sku: template.m365_license_sku.clone(),
+    };
+    match crate::gravekeeper_graph::provision_user(&cfg, created_upn, &lic).await {
+        Ok(detail) => ("ok", detail),
+        Err(e) => ("failed", e),
+    }
+}
+
+/// GET the mail-connection config page for a domain. `directory.configure`.
+pub async fn mail_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryConfigure)?;
+    render_mail(&state, &jar, &ctx, id, None, None).await
+}
+
+async fn render_mail(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    id: Uuid,
+    result: Option<String>,
+    error: Option<String>,
+) -> Result<Response, WebError> {
+    let (base, new_cookie) = build_base(state, jar, ctx).await?;
+    let domain = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let conn = repo::directory::find_mail_connection(&state.pool, id).await?;
+    let agent_hosts = connected_windows_hosts(state).await?;
+
+    let form = match &conn {
+        Some(c) => crate::templates::GravekeeperMailFormView {
+            mode: c.mode.clone(),
+            exchange_version: c.exchange_version.clone().unwrap_or_else(|| "2019".into()),
+            exchange_uri: c.exchange_uri.clone().unwrap_or_default(),
+            exchange_account_upn: c.exchange_account_upn.clone().unwrap_or_default(),
+            exchange_agent_host_id: c
+                .exchange_agent_host_id
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+            remote_routing_domain: c.remote_routing_domain.clone().unwrap_or_default(),
+            m365_tenant_id: c.m365_tenant_id.clone().unwrap_or_default(),
+            m365_app_id: c.m365_app_id.clone().unwrap_or_default(),
+            m365_licensing_method: c
+                .m365_licensing_method
+                .clone()
+                .unwrap_or_else(|| "group".into()),
+        },
+        None => crate::templates::GravekeeperMailFormView {
+            mode: "none".into(),
+            exchange_version: "2019".into(),
+            exchange_uri: String::new(),
+            exchange_account_upn: String::new(),
+            exchange_agent_host_id: String::new(),
+            remote_routing_domain: String::new(),
+            m365_tenant_id: String::new(),
+            m365_app_id: String::new(),
+            m365_licensing_method: "group".into(),
+        },
+    };
+    let last_test = conn.as_ref().and_then(|c| {
+        c.last_test_ok
+            .map(|ok| crate::templates::GravekeeperMailTest {
+                ok,
+                detail: c.last_test_detail.clone().unwrap_or_default(),
+                when: c
+                    .last_test_at
+                    .map(|t| crate::common::format_in_tz(t, &ctx.user.timezone))
+                    .unwrap_or_default(),
+            })
+    });
+
+    let tpl = crate::templates::GravekeeperMailTemplate {
+        base,
+        domain_id: domain.id.to_string(),
+        dns_name: domain.dns_name,
+        form,
+        agent_hosts,
+        has_exchange_account: conn.as_ref().is_some_and(|c| c.has_exchange_account),
+        has_m365_cert: conn.as_ref().is_some_and(|c| c.has_m365_cert),
+        last_test,
+        result,
+        error,
+    };
+    Ok(respond(jar, new_cookie, tpl))
+}
+
+#[derive(Deserialize)]
+pub struct MailForm {
+    csrf_token: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    exchange_version: String,
+    #[serde(default)]
+    exchange_uri: String,
+    #[serde(default)]
+    exchange_account_upn: String,
+    #[serde(default)]
+    exchange_account_password: String,
+    #[serde(default)]
+    exchange_agent_host_id: String,
+    #[serde(default)]
+    remote_routing_domain: String,
+    #[serde(default)]
+    m365_tenant_id: String,
+    #[serde(default)]
+    m365_app_id: String,
+    #[serde(default)]
+    m365_cert: String,
+    #[serde(default)]
+    m365_licensing_method: String,
+}
+
+const MAIL_MODES_ALL: &[&str] = &["none", "exchange_onprem", "exchange_hybrid", "m365"];
+
+/// POST: save the domain's mail connection. `directory.configure`.
+pub async fn save_mail_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<MailForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryConfigure)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let _ = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    if !MAIL_MODES_ALL.contains(&form.mode.as_str()) {
+        return render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some("Pick a valid mail mode.".into()),
+        )
+        .await;
+    }
+    let existing = repo::directory::find_mail_connection(&state.pool, id).await?;
+
+    let blank_to_none = |s: &str| -> Option<String> {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+
+    // Per-mode validation.
+    if form.mode == "exchange_onprem" || form.mode == "exchange_hybrid" {
+        let uri = form.exchange_uri.trim();
+        if !(uri.starts_with("http://") || uri.starts_with("https://")) || uri.len() > 512 {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("Enter the Exchange connection URI (http(s)://…/PowerShell/).".into()),
+            )
+            .await;
+        }
+        let acct = form.exchange_account_upn.trim();
+        if !abyssal_agent_protocol::is_valid_user_principal_name(acct) {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("Enter the Recipient Management account as a UPN.".into()),
+            )
+            .await;
+        }
+        if !["2016", "2019", "se"].contains(&form.exchange_version.as_str()) {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("Pick an Exchange version.".into()),
+            )
+            .await;
+        }
+        if Uuid::parse_str(form.exchange_agent_host_id.trim()).is_err() {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("Pick the agent host that reaches Exchange.".into()),
+            )
+            .await;
+        }
+        // The agent host must be one we actually manage and can reach -- never
+        // an arbitrary id. The stored Exchange credential is later shipped to
+        // this host, so binding to an unconnected or non-Windows host is refused
+        // here.
+        let agent_hosts = connected_windows_hosts(&state).await?;
+        if !agent_hosts
+            .iter()
+            .any(|(hid, _)| hid == form.exchange_agent_host_id.trim())
+        {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some(
+                    "That agent host isn't a connected Windows host. Pick one from the list."
+                        .into(),
+                ),
+            )
+            .await;
+        }
+        // Credential re-targeting guard: a blank password keeps the stored
+        // secret, so changing a *destination* (URI, account or agent host) while
+        // leaving the password blank would re-point the stored Recipient
+        // Management credential at a new target. Require re-entering it.
+        if form.exchange_account_password.is_empty()
+            && let Some(c) = &existing
+            && c.has_exchange_account
+        {
+            let changed = c.exchange_uri.as_deref().unwrap_or_default() != form.exchange_uri.trim()
+                || c.exchange_account_upn.as_deref().unwrap_or_default()
+                    != form.exchange_account_upn.trim()
+                || c.exchange_agent_host_id
+                    .map(|u| u.to_string())
+                    .unwrap_or_default()
+                    != form.exchange_agent_host_id.trim();
+            if changed {
+                return render_mail(
+                    &state,
+                    &jar,
+                    &ctx,
+                    id,
+                    None,
+                    Some("Re-enter the Recipient Management account's password when changing the Exchange URI, account or agent host.".into()),
+                )
+                .await;
+            }
+        }
+        if form.mode == "exchange_hybrid"
+            && !abyssal_agent_protocol::is_valid_hostname(form.remote_routing_domain.trim())
+        {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some(
+                    "Hybrid mode needs a remote routing domain (e.g. tenant.mail.onmicrosoft.com)."
+                        .into(),
+                ),
+            )
+            .await;
+        }
+        // No stored account and no entered password -> require one.
+        let has_existing = existing.as_ref().is_some_and(|c| c.has_exchange_account);
+        if form.exchange_account_password.is_empty() && !has_existing {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("Enter the Recipient Management account's password.".into()),
+            )
+            .await;
+        }
+    }
+
+    // Same credential re-targeting guard for the Microsoft 365 certificate: a
+    // blank cert keeps the stored one, so changing the tenant or app id while
+    // leaving it blank would re-point the stored certificate at a new tenant/app.
+    if form.mode == "m365"
+        && form.m365_cert.trim().is_empty()
+        && let Some(c) = &existing
+        && c.has_m365_cert
+    {
+        let changed = c.m365_tenant_id.as_deref().unwrap_or_default() != form.m365_tenant_id.trim()
+            || c.m365_app_id.as_deref().unwrap_or_default() != form.m365_app_id.trim();
+        if changed {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("Re-upload the certificate when changing the Microsoft 365 tenant or application id.".into()),
+            )
+            .await;
+        }
+    }
+
+    // Resolve secrets: a blank secret field keeps the stored one.
+    let exchange_sealed: Option<String> = if form.exchange_account_password.is_empty() {
+        // keep existing: read the raw sealed value back
+        repo::directory::exchange_credentials(&state.pool, id)
+            .await?
+            .map(|c| c.sealed)
+    } else {
+        let Some(key) = state.encryption_key.clone() else {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("No ENCRYPTION_KEY is set, so secrets can't be stored.".into()),
+            )
+            .await;
+        };
+        Some(key.encrypt(&form.exchange_account_password).map_err(|e| {
+            WebError(AppError::Validation(format!(
+                "Couldn't seal the password: {e}"
+            )))
+        })?)
+    };
+
+    // A blank certificate field keeps the stored one; a filled one is sealed.
+    let m365_cert_to_store: Option<String> = if form.m365_cert.trim().is_empty() {
+        existing_m365_cert(&state, id).await?
+    } else {
+        let Some(key) = state.encryption_key.clone() else {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some("No ENCRYPTION_KEY is set, so the certificate can't be stored.".into()),
+            )
+            .await;
+        };
+        Some(key.encrypt(form.m365_cert.trim()).map_err(|e| {
+            WebError(AppError::Validation(format!(
+                "Couldn't seal the certificate: {e}"
+            )))
+        })?)
+    };
+
+    repo::directory::upsert_mail_connection(
+        &state.pool,
+        &repo::directory::NewMailConnection {
+            domain_id: id,
+            mode: &form.mode,
+            exchange_version: blank_to_none(&form.exchange_version).as_deref(),
+            exchange_uri: blank_to_none(&form.exchange_uri).as_deref(),
+            exchange_account_upn: blank_to_none(&form.exchange_account_upn).as_deref(),
+            exchange_account_sealed: exchange_sealed.as_deref(),
+            exchange_agent_host_id: Uuid::parse_str(form.exchange_agent_host_id.trim()).ok(),
+            remote_routing_domain: blank_to_none(&form.remote_routing_domain).as_deref(),
+            m365_tenant_id: blank_to_none(&form.m365_tenant_id).as_deref(),
+            m365_app_id: blank_to_none(&form.m365_app_id).as_deref(),
+            m365_cert_sealed: m365_cert_to_store.as_deref(),
+            m365_licensing_method: blank_to_none(&form.m365_licensing_method).as_deref(),
+            created_by: Some(ctx.user.id),
+        },
+    )
+    .await?;
+
+    // Keep the domain's own mail_mode in step with the connection mode.
+    if let Some(domain) = repo::directory::find_by_id(&state.pool, id).await? {
+        record_audit(
+            &state,
+            &ctx,
+            AuditAction::DirectoryDomainConfigured,
+            &domain.dns_name,
+            serde_json::json!({ "action": "mail_connection_saved", "mode": form.mode }),
+        )
+        .await;
+    }
+    render_mail(
+        &state,
+        &jar,
+        &ctx,
+        id,
+        Some("Mail connection saved.".into()),
+        None,
+    )
+    .await
+}
+
+/// Reads the stored (sealed) M365 cert so a blank form field preserves it.
+async fn existing_m365_cert(state: &AppState, domain_id: Uuid) -> Result<Option<String>, WebError> {
+    let sealed: Option<Option<String>> = sqlx_scalar_m365_cert(&state.pool, domain_id)
+        .await
+        .map_err(|e| {
+            WebError(AppError::Validation(format!(
+                "Couldn't read the stored certificate: {e}"
+            )))
+        })?;
+    Ok(sealed.flatten())
+}
+
+async fn sqlx_scalar_m365_cert(
+    pool: &abyssal_database::DbPool,
+    domain_id: Uuid,
+) -> anyhow::Result<Option<Option<String>>> {
+    Ok(sqlx::query_scalar(
+        "SELECT m365_cert_sealed FROM directory_mail_connections WHERE domain_id = ?",
+    )
+    .bind(domain_id.to_string())
+    .fetch_optional(pool)
+    .await?)
+}
+
+#[derive(Deserialize)]
+pub struct MailTestForm {
+    csrf_token: String,
+}
+
+/// POST: test the saved Exchange connection. `directory.configure`.
+pub async fn test_mail_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<MailTestForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryConfigure)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let _ = repo::directory::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let conn = repo::directory::find_mail_connection(&state.pool, id).await?;
+    let Some(conn) = conn else {
+        return render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some("Save a mail connection first.".into()),
+        )
+        .await;
+    };
+    if conn.mode == "m365" {
+        let (ok, detail) = match repo::directory::m365_credentials(&state.pool, id).await? {
+            Some(c) => {
+                let Some(key) = state.encryption_key.clone() else {
+                    return render_mail(
+                        &state,
+                        &jar,
+                        &ctx,
+                        id,
+                        None,
+                        Some("No ENCRYPTION_KEY is set.".into()),
+                    )
+                    .await;
+                };
+                match key.decrypt(&c.cert_sealed) {
+                    Ok(cert_pem) => {
+                        let cfg = crate::gravekeeper_graph::GraphConfig {
+                            tenant_id: c.tenant_id,
+                            app_id: c.app_id,
+                            cert_pem: cert_pem.to_string(),
+                            licensing_method: c.licensing_method,
+                        };
+                        match crate::gravekeeper_graph::test_connection(&cfg).await {
+                            Ok(d) => (true, d),
+                            Err(e) => (false, e),
+                        }
+                    }
+                    Err(e) => (false, format!("Couldn't decrypt the certificate: {e}")),
+                }
+            }
+            None => (
+                false,
+                "Microsoft 365 isn't fully configured (tenant, app and certificate).".to_string(),
+            ),
+        };
+        let _ = repo::directory::update_mail_test_result(&state.pool, id, ok, &detail).await;
+        return if ok {
+            render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                Some(format!("Test connection succeeded. {detail}")),
+                None,
+            )
+            .await
+        } else {
+            render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some(format!("Test connection failed: {detail}")),
+            )
+            .await
+        };
+    }
+    if conn.mode == "none" {
+        return render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            Some("Mail mode is none -- nothing to test.".into()),
+            None,
+        )
+        .await;
+    }
+
+    let Some(creds) = repo::directory::exchange_credentials(&state.pool, id).await? else {
+        return render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some("The Exchange account isn't fully configured.".into()),
+        )
+        .await;
+    };
+    let Some(host_id) = creds.agent_host_id else {
+        return render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some("No Exchange agent host is set.".into()),
+        )
+        .await;
+    };
+    if !state.hosts.is_connected(host_id) {
+        return render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some("The Exchange agent host isn't connected.".into()),
+        )
+        .await;
+    }
+    let Some(key) = state.encryption_key.clone() else {
+        return render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some("No ENCRYPTION_KEY is set.".into()),
+        )
+        .await;
+    };
+    let password = match key.decrypt(&creds.sealed) {
+        Ok(p) => p.to_string(),
+        Err(e) => {
+            return render_mail(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                None,
+                Some(format!("Couldn't decrypt the Exchange account: {e}")),
+            )
+            .await;
+        }
+    };
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            host_id,
+            &host.name,
+            AgentOperation::ExchangeTestConnection {
+                uri: creds.uri,
+                account_upn: creds.account_upn,
+                account_password: password,
+            },
+            Permission::DirectoryConfigure,
+            OperationKind::Read,
+            false,
+            MAIL_TIMEOUT,
+            None,
+            false,
+        )
+        .await;
+
+    let (ok, detail) = match result {
+        Ok(out) => (true, format!("Connected. {}", out.stdout.trim())),
+        Err(e) => (false, e.to_string()),
+    };
+    let _ = repo::directory::update_mail_test_result(&state.pool, id, ok, &detail).await;
+    if ok {
+        render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            Some(format!("Test connection succeeded. {detail}")),
+            None,
+        )
+        .await
+    } else {
+        render_mail(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some(format!("Test connection failed: {detail}")),
+        )
+        .await
     }
 }
 
@@ -2133,5 +5064,82 @@ mod tests {
         }
         // Two draws should (overwhelmingly) differ.
         assert_ne!(generate_temp_password(), generate_temp_password());
+    }
+
+    #[test]
+    fn compute_plan_builds_the_change_set() {
+        let t = repo::directory::DirectoryTemplate {
+            id: Uuid::new_v4(),
+            domain_id: Uuid::new_v4(),
+            name: "Sales".into(),
+            target_ou: Some("OU=Sales,DC=corp,DC=example,DC=com".into()),
+            username_pattern: "{f}{last}".into(),
+            upn_suffix: None, // falls back to the domain DNS
+            email_pattern: Some("{first}.{last}@example.com".into()),
+            groups: vec!["CN=Sales,OU=Groups,DC=corp,DC=example,DC=com".into()],
+            attributes: vec![("department".into(), "Sales".into())],
+            mail_mode: "none".into(),
+            m365_usage_location: String::new(),
+            m365_licensing_group: String::new(),
+            m365_license_sku: String::new(),
+            manager_required: false,
+        };
+        let plan = compute_plan(&t, "corp.example.com", "Jane", "Doe");
+        assert_eq!(plan.sam_base, "jdoe");
+        assert_eq!(plan.upn, "jdoe@corp.example.com"); // suffix from domain
+        assert_eq!(plan.email, "jane.doe@example.com"); // lowercased
+        assert_eq!(plan.display_name, "Jane Doe");
+        assert_eq!(plan.given_name, "Jane");
+        assert_eq!(plan.surname, "Doe");
+        assert_eq!(plan.target_ou, "OU=Sales,DC=corp,DC=example,DC=com");
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(
+            plan.attributes,
+            vec![("department".to_string(), "Sales".to_string())]
+        );
+
+        // An explicit UPN suffix on the template wins over the domain DNS.
+        let mut t2 = t.clone();
+        t2.upn_suffix = Some("mail.example.com".into());
+        let plan2 = compute_plan(&t2, "corp.example.com", "Jane", "Doe");
+        assert_eq!(plan2.upn, "jdoe@mail.example.com");
+    }
+
+    #[test]
+    fn csv_parsing_skips_header_and_blanks() {
+        let rows = parse_csv_rows("first_name,last_name\nJane,Doe\n\nJohn , Smith \nMononym\n");
+        assert_eq!(
+            rows,
+            vec![
+                ("Jane".to_string(), "Doe".to_string()),
+                ("John".to_string(), "Smith".to_string()),
+                ("Mononym".to_string(), String::new()),
+            ]
+        );
+        // A non-header first line is kept.
+        let rows2 = parse_csv_rows("Ada,Lovelace");
+        assert_eq!(rows2, vec![("Ada".to_string(), "Lovelace".to_string())]);
+    }
+
+    #[test]
+    fn thanatos_alert_suggests_gravekeeper() {
+        let registry = abyssal_workflows::WorkflowRegistry::load_builtin();
+        let alerted = serde_json::json!({ "persisted_count": 5, "alerted": true });
+        let targets: Vec<String> = registry
+            .evaluate("thanatos", "scan_security_events", &alerted)
+            .matches
+            .iter()
+            .map(|m| m.target_arsenal.clone())
+            .collect();
+        assert!(targets.contains(&"gravekeeper".to_string()));
+
+        let quiet = serde_json::json!({ "persisted_count": 0, "alerted": false });
+        let quiet_targets: Vec<String> = registry
+            .evaluate("thanatos", "scan_security_events", &quiet)
+            .matches
+            .iter()
+            .map(|m| m.target_arsenal.clone())
+            .collect();
+        assert!(!quiet_targets.contains(&"gravekeeper".to_string()));
     }
 }

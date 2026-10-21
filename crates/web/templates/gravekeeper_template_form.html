@@ -50,9 +50,21 @@
       {% endfor %}
     </select>
     <p style="color:var(--text-muted);">
-      Only <code>none</code> (set the mail attribute) takes effect today; the
-      Exchange/Microsoft&nbsp;365 mail steps are wired in the next milestone.
+      Exchange (on-prem/hybrid) and Microsoft 365 use the domain's
+      <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/mail">mail connection</a>.
+      The Microsoft 365 licensing below applies when the mode is Microsoft 365.
     </p>
+
+    <fieldset style="margin-top:4px;">
+      <legend>Microsoft 365 licensing (for m365 mode)</legend>
+      <label for="m365_usage_location">Usage location (2-letter country)</label>
+      <input type="text" id="m365_usage_location" name="m365_usage_location" maxlength="2" value="{{ form.m365_usage_location }}" placeholder="US">
+      <label for="m365_licensing_group">Licensing group (Entra group id, group-based)</label>
+      <input type="text" id="m365_licensing_group" name="m365_licensing_group" value="{{ form.m365_licensing_group }}">
+      <label for="m365_license_sku">License SKU id (direct)</label>
+      <input type="text" id="m365_license_sku" name="m365_license_sku" value="{{ form.m365_license_sku }}">
+      <p style="color:var(--text-muted);">Which of these is used depends on the domain's licensing method (group / direct / both).</p>
+    </fieldset>
 
     <label><input type="checkbox" name="manager_required" value="true"{% if form.manager_required %} checked{% endif %}> Require a manager at onboarding</label>
 

@@ -1,0 +1,39 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}New group — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — new group ({{ dns_name }}){% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/browse">&larr; Back to browse</a></p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/groups">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="name">Group name (sAMAccountName)</label>
+    <input type="text" id="name" name="name" required>
+    <label for="scope">Scope</label>
+    <select id="scope" name="scope">
+      <option value="global">Global (members from this domain only)</option>
+      <option value="universal">Universal (members from any forest domain)</option>
+      <option value="domainlocal">Domain local (any member)</option>
+    </select>
+    <label for="category">Category</label>
+    <select id="category" name="category">
+      <option value="security">Security</option>
+      <option value="distribution">Distribution</option>
+    </select>
+    <label for="description">Description</label>
+    <input type="text" id="description" name="description">
+    <label for="target_ou">Target OU (distinguished name)</label>
+    <input type="text" id="target_ou" name="target_ou" placeholder="blank = default Users container">
+    <div style="margin-top:14px;">
+      <button type="submit" class="btn-primary">Create group</button>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

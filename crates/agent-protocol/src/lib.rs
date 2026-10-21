@@ -61,6 +61,56 @@ pub struct WhoamiResponse {
     pub name: String,
 }
 
+/// The payload of [`AgentOperation::DirectoryCreateUser`], boxed in the variant
+/// to keep `AgentOperation` small (it has far more fields than any other
+/// operation). See that variant's doc comment for the semantics. Its `Debug` is
+/// the enum's own hand-written, password-redacting impl -- this struct
+/// deliberately does not derive `Debug`, so a password can never be printed.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateUserRequest {
+    pub domain_dns: String,
+    pub service_account_upn: String,
+    pub service_account_password: String,
+    pub target_ou: String,
+    pub sam_base: String,
+    pub upn_suffix: String,
+    pub given_name: String,
+    pub surname: String,
+    pub display_name: String,
+    pub email: String,
+    pub password: String,
+    pub attributes: Vec<(String, String)>,
+    pub groups: Vec<String>,
+    pub allow_privileged: bool,
+}
+
+/// The payload of [`AgentOperation::DirectoryUndoOffboard`], boxed (it carries
+/// the stripped-groups list to restore).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UndoOffboardRequest {
+    pub domain_dns: String,
+    pub service_account_upn: String,
+    pub service_account_password: String,
+    pub target_dn: String,
+    pub original_ou: String,
+    pub groups: Vec<String>,
+    pub allow_privileged: bool,
+}
+
+/// The payload of [`AgentOperation::DirectoryCreateGroup`], boxed in the variant
+/// to keep `AgentOperation` small (same reason as [`CreateUserRequest`]).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateGroupRequest {
+    pub domain_dns: String,
+    pub service_account_upn: String,
+    pub service_account_password: String,
+    pub name: String,
+    pub target_ou: String,
+    pub scope: String,
+    pub category: String,
+    pub description: String,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentOperation {
     /// Pure connectivity/liveness check — no work performed.
@@ -1308,6 +1358,13 @@ pub enum AgentOperation {
         domain_dns: String,
         dn: String,
     },
+    /// The enabled users in `domain_dns` whose last logon is older than `days`
+    /// (or who have never logged on), as JSON -- the stale-accounts report.
+    /// Read-only; runs under the agent's own identity.
+    DirectoryStaleAccounts {
+        domain_dns: String,
+        days: u32,
+    },
     /// Help-desk WRITE: unlock the account at `target_dn`. Runs under the
     /// delegated service account's `-Credential` (`service_account_upn` +
     /// `service_account_password`, the latter sent once and piped over stdin,
@@ -1333,6 +1390,21 @@ pub enum AgentOperation {
         enabled: bool,
         allow_privileged: bool,
     },
+    /// Onboarding WRITE: create a user from a template's change-set. Runs under
+    /// the delegated service account's `-Credential` (same stdin/`Debug` rules
+    /// as the other writes: the service-account password is stdin line 1, the
+    /// new user's password stdin line 2, both redacted). The agent resolves a
+    /// free `sAMAccountName` from `sam_base` (appending 2, 3, ... on a
+    /// collision), builds the UPN as `<final-sam>@upn_suffix`, creates the user
+    /// in `target_ou` (empty = the domain's default Users container) with the
+    /// given name/attributes, sets the password with change-at-next-logon,
+    /// enables the account, and adds it to `groups`. Guardrail: adding the new
+    /// user to a protected group (adminCount=1 or a privileged well-known group)
+    /// is refused unless `allow_privileged`. Reserved attribute names
+    /// (sAMAccountName/userPrincipalName/givenName/sn/displayName) in
+    /// `attributes` are ignored (set from their own fields). Output is JSON with
+    /// the final sam and UPN.
+    DirectoryCreateUser(Box<CreateUserRequest>),
     /// Help-desk WRITE: reset the password of the account at `target_dn` and
     /// require a change at next logon. Two secrets travel, both piped over
     /// stdin (service-account password, then the new password) and both
@@ -1346,6 +1418,119 @@ pub enum AgentOperation {
         new_password: String,
         allow_privileged: bool,
     },
+    /// Gravekeeper mail: test an on-premises/hybrid Exchange connection. Opens
+    /// an Exchange remote-PowerShell session to `uri` (Kerberos) with the
+    /// Recipient Management `account_upn`/`account_password` and reads the org
+    /// config. Read-only. The password is piped over stdin, never argv, and is
+    /// redacted in `Debug`. Runs on a domain-joined agent that can reach
+    /// Exchange. Output is JSON.
+    ExchangeTestConnection {
+        uri: String,
+        account_upn: String,
+        account_password: String,
+    },
+    /// Gravekeeper mail WRITE: give `target_identity` a mailbox through Exchange
+    /// remote PowerShell. When `remote_routing_address` is empty this is an
+    /// on-prem `Enable-Mailbox`; otherwise it is a hybrid `Enable-RemoteMailbox
+    /// -RemoteRoutingAddress <that>`. Same session/credential/stdin/`Debug`
+    /// rules as `ExchangeTestConnection`.
+    ExchangeEnableMailbox {
+        uri: String,
+        account_upn: String,
+        account_password: String,
+        target_identity: String,
+        remote_routing_address: String,
+    },
+    /// Gravekeeper mail WRITE (offboard): hide `target_identity`'s mailbox from
+    /// the address lists and, when `convert_to_shared`, convert it to a shared
+    /// mailbox, through Exchange remote PowerShell. Same session/credential/
+    /// stdin/`Debug` rules as `ExchangeEnableMailbox`.
+    ExchangeSetMailboxOffboard {
+        uri: String,
+        account_upn: String,
+        account_password: String,
+        target_identity: String,
+        convert_to_shared: bool,
+    },
+    /// Gravekeeper WRITE: create a group. `scope` is `global`|`universal`|
+    /// `domainlocal`, `category` is `security`|`distribution`. Created in
+    /// `target_ou` (empty = the default Users container). Runs under the
+    /// delegated `-Credential`; password over stdin, redacted. Output JSON with
+    /// the new group's DN.
+    DirectoryCreateGroup(Box<CreateGroupRequest>),
+    /// Gravekeeper WRITE: delete the group at `target_dn`. Guardrail: a protected
+    /// group (adminCount=1 or a privileged well-known group) is refused unless
+    /// `allow_privileged`.
+    DirectoryDeleteGroup {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE: add `member_dn` to the group at `group_dn`. Enforces
+    /// the group-scope rules (a global group only takes same-domain members; a
+    /// universal group any forest domain; a domain-local group any member) and
+    /// the privileged guard (membership of a protected group is refused unless
+    /// `allow_privileged`).
+    DirectoryAddGroupMember {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        group_dn: String,
+        member_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE: remove `member_dn` from the group at `group_dn`. Same
+    /// privileged guard as `DirectoryAddGroupMember`.
+    DirectoryRemoveGroupMember {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        group_dn: String,
+        member_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE: move the object at `target_dn` into `new_parent_ou`.
+    /// Guardrail: a built-in account (RID 500/501/502) is refused outright, and
+    /// a protected object (adminCount=1) unless `allow_privileged`.
+    DirectoryMove {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        new_parent_ou: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE (delete): remove the object at `target_dn` (user, group
+    /// or computer). Respects *Protect object from accidental deletion* (the
+    /// cmdlet refuses and the error is surfaced -- Gravekeeper never clears the
+    /// flag). Guardrail: built-in accounts refused outright, protected objects
+    /// unless `allow_privileged`. Output JSON notes whether the AD Recycle Bin
+    /// is enabled (so a restore is possible).
+    DirectoryDeleteObject {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE (offboard): disable the account at `target_dn`, remove
+    /// it from all its groups (capturing them), and move it to `disabled_ou`.
+    /// Guardrail: built-in refused outright, protected unless `allow_privileged`.
+    /// Output JSON `{ original_ou, groups: [..], new_dn }` so the control plane
+    /// can store an undo snapshot.
+    DirectoryOffboard {
+        domain_dns: String,
+        service_account_upn: String,
+        service_account_password: String,
+        target_dn: String,
+        disabled_ou: String,
+        allow_privileged: bool,
+    },
+    /// Gravekeeper WRITE (undo offboard): move the account back to
+    /// `original_ou`, re-add it to `groups`, and re-enable it.
+    DirectoryUndoOffboard(Box<UndoOffboardRequest>),
 
     // -------------------------------------------------------------
     // Sepulchre: host-side SFTP/SMB share provisioning and mounts.
@@ -2078,6 +2263,8 @@ impl AgentOperation {
                 | Op::DirectoryOuTree { .. }
                 | Op::DirectorySearch { .. }
                 | Op::DirectoryGetObject { .. }
+                | Op::DirectoryStaleAccounts { .. }
+                | Op::ExchangeTestConnection { .. }
                 | Op::DetectPackageBackend
                 | Op::CheckSepulchreConfigIncludeDirective { .. }
                 | Op::CheckMountStatus { .. }
@@ -2951,6 +3138,11 @@ impl fmt::Debug for AgentOperation {
                 .field("domain_dns", domain_dns)
                 .field("dn", dn)
                 .finish(),
+            AgentOperation::DirectoryStaleAccounts { domain_dns, days } => f
+                .debug_struct("DirectoryStaleAccounts")
+                .field("domain_dns", domain_dns)
+                .field("days", days)
+                .finish(),
             AgentOperation::DirectoryUnlockAccount {
                 domain_dns,
                 service_account_upn,
@@ -2981,6 +3173,17 @@ impl fmt::Debug for AgentOperation {
                 .field("enabled", enabled)
                 .field("allow_privileged", allow_privileged)
                 .finish(),
+            AgentOperation::DirectoryCreateUser(r) => f
+                .debug_struct("DirectoryCreateUser")
+                .field("domain_dns", &r.domain_dns)
+                .field("service_account_upn", &r.service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_ou", &r.target_ou)
+                .field("sam_base", &r.sam_base)
+                .field("upn_suffix", &r.upn_suffix)
+                .field("password", &"[REDACTED]")
+                .field("allow_privileged", &r.allow_privileged)
+                .finish(),
             AgentOperation::DirectorySetPassword {
                 domain_dns,
                 service_account_upn,
@@ -2995,6 +3198,154 @@ impl fmt::Debug for AgentOperation {
                 .field("target_dn", target_dn)
                 .field("new_password", &"[REDACTED]")
                 .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::ExchangeTestConnection {
+                uri, account_upn, ..
+            } => f
+                .debug_struct("ExchangeTestConnection")
+                .field("uri", uri)
+                .field("account_upn", account_upn)
+                .field("account_password", &"[REDACTED]")
+                .finish(),
+            AgentOperation::ExchangeEnableMailbox {
+                uri,
+                account_upn,
+                target_identity,
+                remote_routing_address,
+                ..
+            } => f
+                .debug_struct("ExchangeEnableMailbox")
+                .field("uri", uri)
+                .field("account_upn", account_upn)
+                .field("account_password", &"[REDACTED]")
+                .field("target_identity", target_identity)
+                .field("remote_routing_address", remote_routing_address)
+                .finish(),
+            AgentOperation::DirectoryCreateGroup(r) => f
+                .debug_struct("DirectoryCreateGroup")
+                .field("domain_dns", &r.domain_dns)
+                .field("service_account_upn", &r.service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("name", &r.name)
+                .field("target_ou", &r.target_ou)
+                .field("scope", &r.scope)
+                .field("category", &r.category)
+                .finish(),
+            AgentOperation::DirectoryDeleteGroup {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryDeleteGroup")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryAddGroupMember {
+                domain_dns,
+                service_account_upn,
+                group_dn,
+                member_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryAddGroupMember")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("group_dn", group_dn)
+                .field("member_dn", member_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryRemoveGroupMember {
+                domain_dns,
+                service_account_upn,
+                group_dn,
+                member_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryRemoveGroupMember")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("group_dn", group_dn)
+                .field("member_dn", member_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryMove {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                new_parent_ou,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryMove")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("new_parent_ou", new_parent_ou)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryDeleteObject {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryDeleteObject")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryOffboard {
+                domain_dns,
+                service_account_upn,
+                target_dn,
+                disabled_ou,
+                allow_privileged,
+                ..
+            } => f
+                .debug_struct("DirectoryOffboard")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", target_dn)
+                .field("disabled_ou", disabled_ou)
+                .field("allow_privileged", allow_privileged)
+                .finish(),
+            AgentOperation::DirectoryUndoOffboard(r) => f
+                .debug_struct("DirectoryUndoOffboard")
+                .field("domain_dns", &r.domain_dns)
+                .field("service_account_upn", &r.service_account_upn)
+                .field("service_account_password", &"[REDACTED]")
+                .field("target_dn", &r.target_dn)
+                .field("original_ou", &r.original_ou)
+                .field("groups", &r.groups.len())
+                .field("allow_privileged", &r.allow_privileged)
+                .finish(),
+            AgentOperation::ExchangeSetMailboxOffboard {
+                uri,
+                account_upn,
+                target_identity,
+                convert_to_shared,
+                ..
+            } => f
+                .debug_struct("ExchangeSetMailboxOffboard")
+                .field("uri", uri)
+                .field("account_upn", account_upn)
+                .field("account_password", &"[REDACTED]")
+                .field("target_identity", target_identity)
+                .field("convert_to_shared", convert_to_shared)
                 .finish(),
             AgentOperation::DetectPackageBackend => write!(f, "DetectPackageBackend"),
             AgentOperation::RenderSepulchreConfig { target, content } => f

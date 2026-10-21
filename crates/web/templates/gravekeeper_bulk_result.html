@@ -1,0 +1,46 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Bulk result — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — bulk onboard result{% endblock %}
+{% block content %}
+
+<div class="info-banner">{% call macros::icon("shield") %} Created {{ created.len() }} user(s){% if !failed.is_empty() %}, {{ failed.len() }} failed{% endif %} in {{ dns_name }}.
+  <a href="/arsenals/gravekeeper/jobs/{{ job_id }}">View job</a>.
+</div>
+
+{% if !created.is_empty() %}
+<div class="card kind-destructive">
+  <h3>{% call macros::icon("elevate") %} Temporary passwords (shown once)</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Copy these now — they are not stored and won't be shown again. Each user must change their password at next logon.</p>
+  <table>
+    <thead><tr><th>Logon</th><th>UPN</th><th>Temporary password</th></tr></thead>
+    <tbody>
+      {% for u in created %}
+      <tr><td><code>{{ u.sam }}</code></td><td>{{ u.upn }}</td><td><code>{{ u.password }}</code></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if !failed.is_empty() %}
+<div class="card">
+  <h3>Failed rows <span class="badge badge-danger">{{ failed.len() }}</span></h3>
+  <table>
+    <thead><tr><th>Name</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for f in failed %}
+      <tr><td>{{ f.first }} {{ f.last }}</td><td>{{ f.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/arsenals/gravekeeper/jobs/{{ job_id }}/retry-rows" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">{% call macros::icon("backup") %} Retry failed rows</button>
+  </form>
+</div>
+{% endif %}
+
+<p><a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/bulk">Onboard more</a></p>
+
+{% endblock %}

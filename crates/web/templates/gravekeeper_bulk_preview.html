@@ -1,0 +1,41 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Bulk preview — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — bulk onboard preview{% endblock %}
+{% block content %}
+
+<p><a href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/bulk">&larr; Back</a></p>
+
+{% if over_cap %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ rows.len() }} rows exceed the import cap of {{ cap }}. Reduce the list (or raise the cap in settings) before creating.</div>
+{% endif %}
+
+<div class="card">
+  <h3>{{ valid_count }} of {{ rows.len() }} rows will be created</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Template <strong>{{ template_name }}</strong> in {{ dns_name }}. Each account gets a generated temporary password (shown once on the next screen) and must change it at next logon. A logon-name collision gets a numeric suffix.</p>
+  <table>
+    <thead><tr><th>Name</th><th>Logon</th><th>UPN</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.first }} {{ r.last }}</td>
+        <td>{% if r.valid %}<code>{{ r.sam }}</code>{% else %}—{% endif %}</td>
+        <td>{% if r.valid %}{{ r.upn }}{% else %}—{% endif %}</td>
+        <td>{% if r.valid %}<span class="badge badge-success">will create</span>{% else %}<span class="badge badge-danger" title="{{ r.reason }}">skip</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if !over_cap && valid_count > 0 %}
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/bulk/create">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="template_id" value="{{ template_id }}">
+    <input type="hidden" name="csv" value="{{ csv }}">
+    <button type="submit" class="btn-primary">{% call macros::icon("user") %} Create {{ valid_count }} user(s)</button>
+    <a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/bulk">Cancel</a>
+  </form>
+  {% endif %}
+</div>
+
+{% endblock %}

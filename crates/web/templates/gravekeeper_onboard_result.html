@@ -1,0 +1,28 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Created — onboard — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — user created{% endblock %}
+{% block content %}
+
+<div class="info-banner">{% call macros::icon("shield") %} Account created in {{ dns_name }}.</div>
+
+<div class="card">
+  <table>
+    <tr><th style="text-align:left;">Logon name</th><td><code>{{ sam }}</code></td></tr>
+    <tr><th style="text-align:left;">UPN</th><td>{{ upn }}</td></tr>
+  </table>
+</div>
+
+<div class="card kind-destructive">
+  <h3>{% call macros::icon("elevate") %} Temporary password (shown once)</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Copy this now and hand it to the user. It is not stored and won't be shown again. They must change it at next logon.</p>
+  <pre class="cmd-output" style="font-size:1.1em;">{{ new_password }}</pre>
+</div>
+
+<p>
+  <a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard">Onboard another</a>
+  <a class="btn btn-secondary" href="/arsenals/gravekeeper/jobs/{{ job_id }}">View job</a>
+  <a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/browse">Browse</a>
+</p>
+
+{% endblock %}

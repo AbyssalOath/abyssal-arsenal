@@ -131,6 +131,20 @@ pub enum AuditAction {
     DirectoryAccountUnlocked,
     DirectoryAccountPasswordReset,
     DirectoryAccountEnabledChanged,
+    /// A user created from an onboarding template. `metadata` carries the new
+    /// sAMAccountName/UPN and the template -- never the password.
+    DirectoryAccountCreated,
+    /// Group lifecycle and membership (Phase 3). `metadata` carries the group /
+    /// member DNs.
+    DirectoryGroupCreated,
+    DirectoryGroupMembershipChanged,
+    /// A directory object (user/group/computer) deleted under `directory.delete`.
+    DirectoryObjectDeleted,
+    /// A directory object moved to another OU.
+    DirectoryObjectMoved,
+    /// An account offboarded (disabled, stripped, moved) or that offboarding
+    /// undone. `metadata` carries the DN and whether it was an undo.
+    DirectoryAccountOffboarded,
 }
 
 impl AuditAction {
@@ -226,6 +240,12 @@ impl AuditAction {
             AuditAction::DirectoryAccountUnlocked => "DIRECTORY_ACCOUNT_UNLOCKED",
             AuditAction::DirectoryAccountPasswordReset => "DIRECTORY_ACCOUNT_PASSWORD_RESET",
             AuditAction::DirectoryAccountEnabledChanged => "DIRECTORY_ACCOUNT_ENABLED_CHANGED",
+            AuditAction::DirectoryAccountCreated => "DIRECTORY_ACCOUNT_CREATED",
+            AuditAction::DirectoryGroupCreated => "DIRECTORY_GROUP_CREATED",
+            AuditAction::DirectoryGroupMembershipChanged => "DIRECTORY_GROUP_MEMBERSHIP_CHANGED",
+            AuditAction::DirectoryObjectDeleted => "DIRECTORY_OBJECT_DELETED",
+            AuditAction::DirectoryObjectMoved => "DIRECTORY_OBJECT_MOVED",
+            AuditAction::DirectoryAccountOffboarded => "DIRECTORY_ACCOUNT_OFFBOARDED",
         }
     }
 
@@ -319,6 +339,12 @@ impl AuditAction {
         AuditAction::DirectoryAccountUnlocked,
         AuditAction::DirectoryAccountPasswordReset,
         AuditAction::DirectoryAccountEnabledChanged,
+        AuditAction::DirectoryAccountCreated,
+        AuditAction::DirectoryGroupCreated,
+        AuditAction::DirectoryGroupMembershipChanged,
+        AuditAction::DirectoryObjectDeleted,
+        AuditAction::DirectoryObjectMoved,
+        AuditAction::DirectoryAccountOffboarded,
     ];
 }
 

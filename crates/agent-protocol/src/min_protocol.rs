@@ -267,7 +267,20 @@ impl AgentOperation {
             | Op::DirectoryGetObject { .. }
             | Op::DirectoryUnlockAccount { .. }
             | Op::DirectorySetEnabled { .. }
-            | Op::DirectorySetPassword { .. } => 47,
+            | Op::DirectorySetPassword { .. }
+            | Op::DirectoryCreateUser(..)
+            | Op::ExchangeTestConnection { .. }
+            | Op::ExchangeEnableMailbox { .. }
+            | Op::DirectoryCreateGroup(..)
+            | Op::DirectoryDeleteGroup { .. }
+            | Op::DirectoryAddGroupMember { .. }
+            | Op::DirectoryRemoveGroupMember { .. }
+            | Op::DirectoryMove { .. }
+            | Op::DirectoryDeleteObject { .. }
+            | Op::DirectoryOffboard { .. }
+            | Op::DirectoryUndoOffboard(..)
+            | Op::ExchangeSetMailboxOffboard { .. }
+            | Op::DirectoryStaleAccounts { .. } => 47,
         }
     }
 }

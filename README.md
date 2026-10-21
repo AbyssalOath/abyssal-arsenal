@@ -45,6 +45,7 @@ admin opt-in on top of the usual confirmation. Grouped by function:
 | Apothecary | Linux package management (apt/dnf/yum/pacman/zypper, auto-detected) |
 | Cystoolbox | General Linux administration and misc sysadmin utilities |
 | Defleshing | System cleanup and routine maintenance |
+| Gravekeeper | Active Directory management (users, groups, OUs, onboarding/offboarding, bulk) across a domain or forest, through the Haruspex DC agents under a delegated service account (Windows) |
 | Grimoire | Configuration management and repeatable system configuration |
 | Incarnation | Application and service deployment/provisioning |
 | Necrolink | Network interfaces, routes, DNS, sockets, connectivity diagnostics |

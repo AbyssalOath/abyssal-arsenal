@@ -1474,7 +1474,17 @@ pub struct GravekeeperBrowseTemplate {
     pub query: String,
     pub ou_rows: Vec<GravekeeperOuRow>,
     pub results: Vec<GravekeeperSearchRow>,
+    /// Whether the viewer can create groups (`directory.manage`).
+    pub can_manage: bool,
     pub error: Option<String>,
+}
+
+/// One entry in an object's membership list (a user's group, or a group member).
+pub struct GravekeeperListItem {
+    pub name: String,
+    pub dn: String,
+    /// `dn`, URL-encoded for an object-detail link.
+    pub dn_encoded: String,
 }
 
 pub struct GravekeeperObjectView {
@@ -1485,10 +1495,19 @@ pub struct GravekeeperObjectView {
     pub attrs: Vec<(String, String)>,
     /// "Member of" (user) or "Members" (group); empty when there is no list.
     pub list_title: String,
-    pub list: Vec<String>,
+    pub list: Vec<GravekeeperListItem>,
     /// Account state, for the help-desk action buttons (users only).
     pub enabled: Option<bool>,
     pub locked: Option<bool>,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_group_form.html")]
+pub struct GravekeeperGroupFormTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub error: Option<String>,
 }
 
 pub struct GravekeeperTemplateRow {
@@ -1521,6 +1540,10 @@ pub struct GravekeeperTemplateFormView {
     /// Attribute defaults as `name=value`, one per line.
     pub attributes: String,
     pub mail_mode: String,
+    /// Microsoft 365 licensing (used when mail_mode is m365).
+    pub m365_usage_location: String,
+    pub m365_licensing_group: String,
+    pub m365_license_sku: String,
     pub manager_required: bool,
 }
 
@@ -1537,6 +1560,227 @@ pub struct GravekeeperTemplateFormTemplate {
     pub error: Option<String>,
 }
 
+pub struct GravekeeperMailFormView {
+    pub mode: String,
+    pub exchange_version: String,
+    pub exchange_uri: String,
+    pub exchange_account_upn: String,
+    pub exchange_agent_host_id: String,
+    pub remote_routing_domain: String,
+    pub m365_tenant_id: String,
+    pub m365_app_id: String,
+    pub m365_licensing_method: String,
+}
+
+pub struct GravekeeperMailTest {
+    pub ok: bool,
+    pub detail: String,
+    pub when: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_mail.html")]
+pub struct GravekeeperMailTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub form: GravekeeperMailFormView,
+    /// Connected Windows hosts usable as the Exchange remote-PS agent.
+    pub agent_hosts: Vec<(String, String)>,
+    pub has_exchange_account: bool,
+    pub has_m365_cert: bool,
+    pub last_test: Option<GravekeeperMailTest>,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct GravekeeperFindRow {
+    pub domain_id: String,
+    pub domain_dns: String,
+    pub kind: String,
+    pub name: String,
+    pub sub: String,
+    pub dn_encoded: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_find.html")]
+pub struct GravekeeperFindTemplate {
+    pub base: BaseCtx,
+    pub query: String,
+    pub results: Vec<GravekeeperFindRow>,
+    pub error: Option<String>,
+}
+
+pub struct GravekeeperStaleRow {
+    pub name: String,
+    pub sam: String,
+    pub upn: String,
+    pub dn: String,
+    pub dn_encoded: String,
+    pub last_logon: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_stale.html")]
+pub struct GravekeeperStaleTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub days: u32,
+    pub can_disable: bool,
+    pub rows: Vec<GravekeeperStaleRow>,
+    pub error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_bulk.html")]
+pub struct GravekeeperBulkTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub templates: Vec<(String, String)>,
+    pub cap: u32,
+    pub error: Option<String>,
+}
+
+pub struct GravekeeperBulkRowView {
+    pub first: String,
+    pub last: String,
+    pub sam: String,
+    pub upn: String,
+    pub valid: bool,
+    pub reason: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_bulk_preview.html")]
+pub struct GravekeeperBulkPreviewTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub template_id: String,
+    pub template_name: String,
+    pub csv: String,
+    pub rows: Vec<GravekeeperBulkRowView>,
+    pub valid_count: usize,
+    pub cap: u32,
+    pub over_cap: bool,
+}
+
+pub struct GravekeeperBulkCreatedView {
+    pub sam: String,
+    pub upn: String,
+    pub password: String,
+}
+
+pub struct GravekeeperBulkFailedView {
+    pub first: String,
+    pub last: String,
+    pub reason: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_bulk_result.html")]
+pub struct GravekeeperBulkResultTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub job_id: String,
+    pub created: Vec<GravekeeperBulkCreatedView>,
+    pub failed: Vec<GravekeeperBulkFailedView>,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_onboard.html")]
+pub struct GravekeeperOnboardTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    /// `(template_id, name)` for the picker.
+    pub templates: Vec<(String, String)>,
+    pub error: Option<String>,
+}
+
+pub struct GravekeeperPlanView {
+    pub sam_base: String,
+    pub upn: String,
+    pub email: String,
+    pub target_ou: String,
+    pub display_name: String,
+    pub attributes: Vec<(String, String)>,
+    pub groups: Vec<String>,
+    pub mail_mode: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_onboard_preview.html")]
+pub struct GravekeeperOnboardPreviewTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub template_id: String,
+    pub template_name: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub plan: GravekeeperPlanView,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_onboard_result.html")]
+pub struct GravekeeperOnboardResultTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub job_id: String,
+    pub sam: String,
+    pub upn: String,
+    /// The temporary password, shown once.
+    pub new_password: String,
+}
+
+pub struct GravekeeperJobRow {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub target_sam: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_jobs.html")]
+pub struct GravekeeperJobsTemplate {
+    pub base: BaseCtx,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub jobs: Vec<GravekeeperJobRow>,
+}
+
+pub struct GravekeeperStepView {
+    pub name: String,
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Template)]
+#[template(path = "gravekeeper_job.html")]
+pub struct GravekeeperJobTemplate {
+    pub base: BaseCtx,
+    pub job_id: String,
+    pub domain_id: String,
+    pub dns_name: String,
+    pub title: String,
+    pub kind: String,
+    pub target_sam: String,
+    pub status: String,
+    pub created_at: String,
+    pub steps: Vec<GravekeeperStepView>,
+    /// Whether the mail step can be retried (it exists, didn't succeed, and the
+    /// job still has the account UPN + template).
+    pub can_retry_mail: bool,
+}
+
 #[derive(Template)]
 #[template(path = "gravekeeper_object.html")]
 pub struct GravekeeperObjectTemplate {
@@ -1551,6 +1795,14 @@ pub struct GravekeeperObjectTemplate {
     /// Whether the domain is writable (has a validated service account); the
     /// action buttons are shown but note this when false.
     pub writable: bool,
+    /// Whether the viewer can manage groups/membership (`directory.manage`).
+    pub can_manage: bool,
+    /// Whether the viewer can delete objects (`directory.delete`).
+    pub can_delete: bool,
+    /// Whether to offer Offboard (a user, manageable, not already offboarded).
+    pub offboard_available: bool,
+    /// The active offboard snapshot id, if this account can be un-offboarded.
+    pub undo_snapshot_id: Option<String>,
     pub object: Option<GravekeeperObjectView>,
     /// A success message from a help-desk action.
     pub result: Option<String>,

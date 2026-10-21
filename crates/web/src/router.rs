@@ -367,6 +367,11 @@ pub fn build(state: AppState) -> Router {
         .route("/admin/hosts/:id/remove", post(routes::hosts::remove))
         .route("/admin/hosts/:id/update", post(routes::hosts::update_agent))
         .route("/arsenals/gravekeeper", get(routes::gravekeeper::show))
+        .route("/arsenals/gravekeeper/find", get(routes::gravekeeper::find))
+        .route(
+            "/arsenals/gravekeeper/:host_id",
+            get(routes::gravekeeper::workflow_landing),
+        )
         .route(
             "/arsenals/gravekeeper/setup",
             get(routes::gravekeeper::setup),
@@ -404,6 +409,42 @@ pub fn build(state: AppState) -> Router {
             post(routes::gravekeeper::reset_password),
         )
         .route(
+            "/arsenals/gravekeeper/domains/:id/groups/new",
+            get(routes::gravekeeper::new_group),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/groups",
+            post(routes::gravekeeper::create_group),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/object/add-member",
+            post(routes::gravekeeper::add_member),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/object/remove-member",
+            post(routes::gravekeeper::remove_member),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/object/delete-group",
+            post(routes::gravekeeper::delete_group),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/object/move",
+            post(routes::gravekeeper::move_object),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/object/delete",
+            post(routes::gravekeeper::delete_object),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/object/offboard",
+            post(routes::gravekeeper::offboard),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/offboard/:sid/undo",
+            post(routes::gravekeeper::undo_offboard),
+        )
+        .route(
             "/arsenals/gravekeeper/domains/:id/templates",
             get(routes::gravekeeper::templates).post(routes::gravekeeper::create_template),
         )
@@ -418,6 +459,62 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/gravekeeper/templates/:tid/delete",
             post(routes::gravekeeper::delete_template),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/onboard",
+            get(routes::gravekeeper::onboard_form),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/onboard/preview",
+            post(routes::gravekeeper::onboard_preview),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/onboard/create",
+            post(routes::gravekeeper::onboard_create),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/onboard/bulk",
+            get(routes::gravekeeper::bulk_form),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/onboard/bulk/preview",
+            post(routes::gravekeeper::bulk_preview),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/onboard/bulk/create",
+            post(routes::gravekeeper::bulk_create),
+        )
+        .route(
+            "/arsenals/gravekeeper/jobs/:jid/retry-rows",
+            post(routes::gravekeeper::bulk_retry),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/stale",
+            get(routes::gravekeeper::stale_report),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/stale/disable",
+            post(routes::gravekeeper::stale_disable),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/jobs",
+            get(routes::gravekeeper::jobs),
+        )
+        .route(
+            "/arsenals/gravekeeper/jobs/:jid",
+            get(routes::gravekeeper::job_detail),
+        )
+        .route(
+            "/arsenals/gravekeeper/jobs/:jid/retry-mail",
+            post(routes::gravekeeper::retry_mail_step),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/mail",
+            get(routes::gravekeeper::mail_config).post(routes::gravekeeper::save_mail_config),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/mail/test",
+            post(routes::gravekeeper::test_mail_config),
         )
         .route(
             "/arsenals/gravekeeper/domains/:id/service-account",

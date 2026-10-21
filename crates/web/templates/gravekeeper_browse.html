@@ -10,6 +10,11 @@
 <div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
 {% endif %}
 
+<p>
+  {% if can_manage %}<a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/groups/new">New group</a>{% endif %}
+  <a class="btn btn-secondary" href="/arsenals/gravekeeper/domains/{{ domain_id }}/stale">Stale accounts</a>
+</p>
+
 <div class="card">
   <h3>Search</h3>
   <form method="get" action="/arsenals/gravekeeper/domains/{{ domain_id }}/browse">

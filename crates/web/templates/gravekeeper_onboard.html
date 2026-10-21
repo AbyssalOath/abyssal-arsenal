@@ -1,0 +1,49 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Onboard — {{ dns_name }} — Gravekeeper — Abyssal Arsenal{% endblock %}
+{% block heading %}Gravekeeper — onboard a user ({{ dns_name }}){% endblock %}
+{% block content %}
+
+<p>
+  <a href="/arsenals/gravekeeper">&larr; Back to Gravekeeper</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/templates">Templates</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/bulk">Bulk (CSV)</a>
+  &nbsp;·&nbsp;
+  <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/jobs">Jobs</a>
+</p>
+
+{% if let Some(err) = error %}
+<div class="error-banner">{% call macros::icon("warning") %} {{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>New user</h3>
+  {% if templates.is_empty() %}
+  <p style="color:var(--text-muted);">
+    No templates yet. <a href="/arsenals/gravekeeper/domains/{{ domain_id }}/templates/new">Create one</a>
+    first — it sets where the user lands, their groups, attributes and username pattern.
+  </p>
+  {% else %}
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/onboard/preview">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="template_id">Template</label>
+    <select id="template_id" name="template_id" required>
+      <option value="">Choose a template…</option>
+      {% for (tid, tname) in templates %}
+      <option value="{{ tid }}">{{ tname }}</option>
+      {% endfor %}
+    </select>
+    <label for="first_name">First name</label>
+    <input type="text" id="first_name" name="first_name" required>
+    <label for="last_name">Last name</label>
+    <input type="text" id="last_name" name="last_name" required>
+    <div style="margin-top:14px;">
+      <button type="submit" class="btn-primary">{% call macros::icon("scan") %} Preview</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+{% endblock %}

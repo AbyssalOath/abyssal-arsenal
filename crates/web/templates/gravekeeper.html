@@ -63,7 +63,9 @@
         </td>
         <td>
           <a href="/arsenals/gravekeeper/domains/{{ d.id }}/browse">Browse</a>
-          {% if can_manage %} · <a href="/arsenals/gravekeeper/domains/{{ d.id }}/templates">Templates</a>{% endif %}
+          {% if can_manage %} · <a href="/arsenals/gravekeeper/domains/{{ d.id }}/onboard">Onboard</a>
+          · <a href="/arsenals/gravekeeper/domains/{{ d.id }}/templates">Templates</a>
+          · <a href="/arsenals/gravekeeper/domains/{{ d.id }}/jobs">Jobs</a>{% endif %}
           {% if can_configure %} · <a href="/arsenals/gravekeeper/domains/{{ d.id }}">Configure</a>{% endif %}
         </td>
       </tr>
