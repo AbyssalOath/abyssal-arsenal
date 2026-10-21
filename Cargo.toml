@@ -150,7 +150,7 @@ tar = "0.4"
 zstd = "0.13"
 snmp2 = { version = "0.5", default-features = false, features = ["tokio", "heap_buffers", "crypto-rust"] }
 pnet_datalink = { version = "0.35", default-features = false, features = ["std"] }
-russh = { version = "0.63", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "rsa"] }
 russh-sftp = "3.0"
 # `ssh-key`: control-plane-held SFTP keypair generation/import (Sepulchre) --
 # already an indirect dependency of `russh` itself (pinned to the exact
