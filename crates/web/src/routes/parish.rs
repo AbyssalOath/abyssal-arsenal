@@ -35,6 +35,7 @@ pub async fn show(
     if !picker_query.show_list()
         && let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "parish", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/parish/{host_id}")).into_response());
     }
@@ -51,7 +52,7 @@ pub async fn show(
     )
     .await?;
 
-    let hosts = host_picker::hosts(&state).await?;
+    let hosts = host_picker::hosts(&state, "parish").await?;
     if !picker_query.show_list()
         && let Some(only) = host_picker::sole_online_host(&hosts)
     {
@@ -95,6 +96,7 @@ async fn render_host(
     let tpl = ParishHostTemplate {
         can_manage: ctx.has(Permission::HostUsersManage),
         elevated: state.elevation.is_elevated(host_id),
+        platform: crate::platform::HostPlatform::for_host(state, host_id, host.os.as_deref()),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         control_plane: crate::control_plane::page_note(&state.hosts, host_id),
         base,

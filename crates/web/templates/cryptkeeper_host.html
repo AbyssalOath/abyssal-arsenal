@@ -4,7 +4,7 @@
 {% block heading %}Cryptkeeper — {{ host_name }}{% endblock %}
 {% block content %}
 
-<div class="page-crumbs">{% call macros::host_breadcrumb("Cryptkeeper", "/arsenals/cryptkeeper?all=1", "/arsenals/cryptkeeper/", host_id, host_name, base.available_hosts) %}</div>
+<div class="page-crumbs">{% call macros::host_breadcrumb("Cryptkeeper", "/arsenals/cryptkeeper?all=1", "/arsenals/cryptkeeper/", host_id, host_name, base.hosts_for("/arsenals/cryptkeeper/")) %}</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

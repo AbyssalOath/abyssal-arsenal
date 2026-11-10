@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Security configuration, system hardening, security checks, and defensive operations.
 pub struct CadavaultArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for CadavaultArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SecurityView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Both
     }
 }

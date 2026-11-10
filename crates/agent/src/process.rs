@@ -187,7 +187,7 @@ fn finish(program: &str, output: std::process::Output) -> Result<OperationOutput
 /// doubling `'` is sufficient. See `crates/agent/src/inquest.rs`'s
 /// `windows` module doc comment for the fuller reasoning this was first
 /// written for.
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
@@ -201,7 +201,7 @@ pub fn ps_quote(s: &str) -> String {
 /// come back as Ok with empty-looking output -- silently reporting
 /// success for something that didn't happen"). Every Windows write/
 /// destructive action in this crate goes through this.
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn ps_checked(body: &str) -> String {
     format!("$ErrorActionPreference = 'Stop'; try {{ {body} }} catch {{ Write-Error $_; exit 1 }}")
 }

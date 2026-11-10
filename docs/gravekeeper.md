@@ -77,13 +77,15 @@ of the app uses; there is no hand-written client-side JavaScript.
 
 ## The agent-operation whitelist
 
-New in protocol **47**. All are Windows-only (Unix returns
-`platform_unsupported()`); `Debug` redacts every password.
+New in protocol **47**, except `DirectoryRotateServiceAccountPassword` (protocol
+**48**, 0.2.6). All are Windows-only (Unix returns `platform_unsupported()`);
+`Debug` redacts every password.
 
 | Operation | Kind | What it does |
 | --- | --- | --- |
 | `DirectoryDiscoverForest` | Read | Forest root, domains (DNS/NetBIOS/PDC), UPN suffixes, GCs |
-| `DirectoryTestDelegation` | Read | Validate a service account: can bind, not privileged, which OUs it can manage |
+| `DirectoryTestDelegation` | Read | Validate a service account: can bind, not privileged, which OUs it can manage, when its password expires |
+| `DirectoryRotateServiceAccountPassword` | Write | The service account changes its own password (`-OldPassword`) |
 | `DirectoryOuTree` | Read | The domain's OU hierarchy |
 | `DirectorySearch` | Read | ANR search for users/groups/computers (query LDAP-escaped) |
 | `DirectoryGetObject` | Read | One object's detail (+ memberships / members, with DNs) |
@@ -146,6 +148,25 @@ role-defaults **v4**):
   re-runs the check for each domain, flipping it back to read-only if the
   account later drifts into a privileged group or stops binding (see
   ARCHITECTURE's Background tasks).
+- **Password expiry warning.** Every delegation check (on save and daily) also
+  reads the account's `PasswordNeverExpires` and
+  `msDS-UserPasswordExpiryTimeComputed`. The domain page shows when the
+  password expires, and both the domain page and the Gravekeeper landing page
+  warn from **14 days** before (and once it has expired). Agents older than
+  0.2.6 don't report it, so it shows as "Not known yet".
+- **Rotation.** *Rotate password* on the domain page (`directory.configure`):
+  the control plane generates a random 32-character password that nobody sees,
+  and the account changes its own password to it on the write DC
+  (`Set-ADAccountPassword -OldPassword`, so the domain's history and
+  minimum-age rules apply). The new password is sealed and stored as
+  **pending** before AD is asked, and replaces the stored one only once AD
+  confirms. If the outcome is unclear (a timeout), Gravekeeper tries the new
+  password, then the old one, and keeps whichever signs in -- straight away,
+  and again in the daily check -- so a password AD accepted is never lost. The
+  new one is tried first because Windows can briefly keep accepting an old
+  password after a change. An account whose password has **already expired**
+  can't sign in to change it: reset it in ADUC and enter it on the domain page
+  instead. Needs a 0.2.6 agent on the write DC.
 - **Credential re-targeting is refused.** A stored credential is tied to a
   specific write DC / Exchange host. Changing a domain's write DC clears the
   stored service-account credential (forcing re-validation on the new DC), and
@@ -224,6 +245,14 @@ A mail failure never rolls back the AD account: the onboarding job ends
   user/computer (`directory.delete`) -- which **respects *protect from
   accidental deletion*** (the cmdlet refuses and the message is surfaced; the
   flag is never cleared) and reports whether the **AD Recycle Bin** is enabled.
+  **Disable before delete:** a user can only be deleted once it's disabled, and
+  a user Gravekeeper offboarded only once the domain's **deletion grace
+  period** (30 days by default; 0 allows it straight away) has passed since,
+  so the offboarding can still be undone until then. The object page says
+  when Delete becomes available instead of showing the button, and the server
+  re-reads the object and checks again before deleting. A user disabled outside
+  Gravekeeper has no offboarding date, so only the disabled check applies.
+  Computers aren't held. Deleting an offboarded user retires its undo snapshot.
 - **Offboard** a user in one flow (`directory.manage`): disable, strip its
   groups (captured in a snapshot), move it to the domain's disabled OU, and hide
   its mailbox -- recorded as an offboard job. **Undo** re-enables it, restores
@@ -239,16 +268,32 @@ never logged on), with an inline **Disable** (`directory.helpdesk`).
 
 A Thanatos security-scan alert surfaces an **"Open in directory (Gravekeeper)"**
 button through the workflow registry, which lands on Gravekeeper's cross-domain
-Find so an operator can jump from an alert straight to the account and act.
-(Thanatos's suggestion carries only a count + alerted flag, not the specific
-locked-out account, so there is no pre-filled account or one-click Unlock yet --
-that would need Thanatos to surface the account; see *Known limitations*.)
+Find. That suggestion is per scan, so it carries no account.
+
+**Lockouts.** Each *Windows account locked out* event (4740) in Thanatos's event
+lists (fleet dashboard, host page, search) gets an **Unlock in Gravekeeper**
+button for viewers with `directory.view`. The agent already reports the
+locked-out account as the event's `Account=` field. The button goes to
+`/arsenals/gravekeeper/lockout?host=<event host>&account=<name>`, which:
+
+1. searches the domain whose write DC logged the event, or every domain if that
+   host isn't a write DC (a lockout is often logged on another DC);
+2. keeps only users whose sAMAccountName is exactly that name;
+3. opens that user's object page if there is exactly one, where **Unlock** is
+   shown while the account is locked (`directory.helpdesk`); otherwise it lands
+   on Find with the name filled in.
+
+Following the link never unlocks anything by itself; the unlock is still the
+object page's own POST, audited as before. A lockout of a *local* account on a
+member server also logs 4740; its search finds no AD user and lands on Find.
+Privileged-group change events don't get a button yet: their `Account=` field is
+a member DN, not a sAMAccountName.
 
 ## Data model
 
 - `directory_domains` -- the managed domains: DNS/NetBIOS/forest, write DC,
-  sealed service account, disabled OU, deletion grace period, mail mode, last
-  delegation result.
+  sealed service account (and a pending one during a rotation), its password
+  expiry, disabled OU, deletion grace period, mail mode, last delegation result.
 - `directory_mail_connections` -- one per domain: Exchange version/URI/sealed
   account/agent host/routing domain, or the M365 tenant/app/sealed certificate/
   licensing method.
@@ -278,8 +323,6 @@ shown once and never stored.
   conversion, address-list hiding for cloud-only) are not wired yet: the
   offboard mail step records a clear "skipped" for `m365` domains. On-prem and
   hybrid Exchange hide/convert do work.
-- The **deletion grace period** is surfaced but not strictly enforced on the
-  delete path (delete isn't yet blocked until the grace window elapses).
 - Windows is required; there is no Linux/macOS directory backend.
 - A group-managed service account (gMSA) isn't usable with `-Credential`; a
   standard delegated account is required.
@@ -293,6 +336,12 @@ environment.
    service account. Confirm an **overprivileged** account (in Domain Admins) is
    refused, and a correctly delegated one is accepted and the domain becomes
    writable. Change the write DC and confirm the stored credential is cleared.
+   Confirm the domain page shows when the account's password expires, and that
+   it warns once the expiry is under 14 days away (set the account's password
+   to expire soon, or use a fine-grained policy). **Rotate** the password and
+   confirm Gravekeeper still writes afterwards and the old password no longer
+   signs in; rotate again the same day under a minimum password age and
+   confirm it's refused with the stored password unchanged.
 2. **Browse.** Confirm the OU tree, search, and user/group detail render; cross-
    domain Find returns results from both domains.
 3. **Help desk.** Unlock, reset a password (shown once, must-change), and
@@ -310,8 +359,15 @@ environment.
    group and confirm it's refused; confirm protected-group membership needs
    `directory.privileged`.
 8. **Move/delete.** Move an object; delete a user (confirm accidental-deletion
-   protection is respected and the Recycle Bin state is reported).
+   protection is respected and the Recycle Bin state is reported). Confirm an
+   enabled user can't be deleted, a user offboarded today can't be deleted
+   until the grace period ends (set it to 0 to check it then can), and a user
+   disabled by hand in ADUC can be.
 9. **Offboard.** Offboard a user (disabled, stripped, moved, mailbox hidden),
    then **undo** and confirm it is re-enabled, re-grouped and moved back.
 10. **Stale + Thanatos.** Run the stale report and disable from it; from a
-    Thanatos alert, confirm the "Open in directory" button lands on Find.
+    Thanatos alert, confirm the "Open in directory" button lands on Find. Lock
+    an account out (repeated bad passwords), scan the PDC emulator in Thanatos,
+    and confirm the lockout event's **Unlock in Gravekeeper** opens that user
+    with **Unlock** shown, and that unlocking works. Repeat with a name that
+    exists in both lab domains and confirm it lands on Find instead.

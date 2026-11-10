@@ -9,6 +9,11 @@
 <div class="info-banner" role="status">{{ n }}</div>
 {% endif %}
 
+{% let selected_os = base.selected_os() %}
+{% if let Some(host) = base.selected_host_name %}{% if selected_os != abyssal_agent_protocol::HostOs::Unknown %}
+<p class="text-muted" style="margin-top:0;">Showing the arsenals for {{ host }} ({{ selected_os.label() }}). Clear the host selection at the top to see them all.</p>
+{% endif %}{% endif %}
+
 <div class="dashboard-topline">
   {% if update_notice.update_available %}
   <a href="{{ update_notice.release_url }}" class="update-notice update-notice-alert" target="_blank" rel="noopener noreferrer">

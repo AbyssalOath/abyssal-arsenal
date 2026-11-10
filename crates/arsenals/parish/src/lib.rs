@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// User, group, account, permission, and access management -- on managed
 /// hosts (Linux accounts/groups via `useradd`/`usermod`/`groupadd`/...),
@@ -27,5 +27,9 @@ impl Arsenal for ParishArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::HostUsersView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Both
     }
 }

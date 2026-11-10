@@ -5,7 +5,7 @@
 {% block content %}
 
 <div class="page-crumbs">
-  {% call macros::host_breadcrumb("Cadavault", "/arsenals/cadavault?all=1", "/arsenals/cadavault/", host_id, host_name, base.available_hosts) %}
+  {% call macros::host_breadcrumb("Cadavault", "/arsenals/cadavault?all=1", "/arsenals/cadavault/", host_id, host_name, base.hosts_for("/arsenals/cadavault/")) %}
   <a href="/arsenals/cadavault/posture">{% call macros::icon("route") %} Fleet posture</a>
 </div>
 
@@ -13,10 +13,11 @@
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
     {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
-    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+    {% else if platform.linux %}<span class="badge badge-muted">Apotheosis: Not elevated</span>
+    {% else %}<span class="badge badge-muted" title="The Windows agent runs as SYSTEM, so there's nothing to elevate">Runs as SYSTEM</span>{% endif %}
   </div>
 
-  {% if !elevated && base.can_hosts_elevate %}
+  {% if !elevated && base.can_hosts_elevate && platform.linux %}
   <form method="post" action="/arsenals/cadavault/{{ host_id }}/elevate" class="elevate-form">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label for="elevate-password" class="sr-only">Sudo password</label>
@@ -95,10 +96,12 @@
 <div class="card">
   <h3>Read</h3>
   <div class="action-grid">
+    {% if platform.linux %}
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/firewall-status">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} Firewall Status</button>
     </form>
+    {% endif %}
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/listening-ports">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("socket") %} Listening Ports</button>
@@ -107,26 +110,36 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Recent Auth Log</button>
     </form>
+    {% if platform.linux %}
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/sshd-config-audit">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} SSH Config Audit</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/sysctl-posture">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} Sysctl Posture</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/account-policy-audit">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Account Policy Audit</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/mac-status">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("firewall") %} MAC Status</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/cadavault/{{ host_id }}/automatic-updates">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("generate") %} Automatic Updates</button>
     </form>
+    {% endif %}
   </div>
 </div>
 
@@ -174,7 +187,8 @@
 </div>
 {% endif %}
 
-{% if can_manage %}
+{# The firewall and SSH hardening controls are Linux-only. #}
+{% if can_manage && platform.linux %}
 <div class="card">
   <h3>Firewall</h3>
   {% if let Some(cp) = control_plane %}<p class="cp-hint" style="color:var(--text-muted); margin:0 0 8px;">{% call macros::icon("shield") %} On this server, ports {{ cp.ports }} can't be closed or have their rule removed.</p>{% endif %}

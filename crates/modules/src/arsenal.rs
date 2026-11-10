@@ -1,3 +1,4 @@
+use abyssal_agent_protocol::Platforms;
 use abyssal_core::{ModuleCategory, Permission};
 
 /// The metadata contract every arsenal crate implements. Deliberately minimal:
@@ -14,4 +15,9 @@ pub trait Arsenal: Send + Sync {
     /// The permission(s) that gate viewing this arsenal's page. Empty means
     /// visible to any authenticated user.
     fn view_permissions(&self) -> &'static [Permission];
+    /// The host operating systems this arsenal's host pages are for. Hosts
+    /// on any other OS are left out of its picker and switcher, and its host
+    /// pages redirect away from them. An arsenal with some actions per OS is
+    /// `Both`; its pages hide the individual actions.
+    fn platforms(&self) -> Platforms;
 }

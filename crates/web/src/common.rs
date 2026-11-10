@@ -568,8 +568,13 @@ pub async fn suggested_actions_for(
     if !failures.is_empty() {
         record_workflow_evaluation_failures(&state.pool, &failures).await;
     }
+    // Never point the host at an arsenal that isn't for its OS.
+    let os = state.hosts.host_os(host_id);
     matches
         .into_iter()
+        .filter(|matched| {
+            crate::platform::arsenal_platforms(state, &matched.target_arsenal).allows(os)
+        })
         .map(|matched| workflow_suggested_action_view(matched, host_id))
         .collect()
 }

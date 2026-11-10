@@ -29,6 +29,9 @@ mod stubs {
     pub async fn pcap_list() -> CommandOutcome {
         crate::process::platform_unsupported()
     }
+    pub async fn pcap_read(_name: String, _offset: u64, _len: u32) -> CommandOutcome {
+        crate::process::platform_unsupported()
+    }
     pub async fn install(_e: &ElevationState) -> CommandOutcome {
         crate::process::platform_unsupported()
     }
@@ -89,15 +92,15 @@ mod stubs {
 #[cfg(not(target_os = "linux"))]
 pub use stubs::{
     apply_config, capture_cancel, capture_start, capture_status, collect_events, install,
-    ips_status, list_rules, pcap_delete, pcap_list, rule_test, sensor_status, service_action,
-    set_mode, set_sid_action, set_sid_enabled, suppress_sid, update_rules,
+    ips_status, list_rules, pcap_delete, pcap_list, pcap_read, rule_test, sensor_status,
+    service_action, set_mode, set_sid_action, set_sid_enabled, suppress_sid, update_rules,
 };
 
 #[cfg(target_os = "linux")]
 pub use linux::{
     apply_config, capture_cancel, capture_start, capture_status, collect_events, install,
-    ips_status, list_rules, pcap_delete, pcap_list, rule_test, sensor_status, service_action,
-    set_mode, set_sid_action, set_sid_enabled, suppress_sid, update_rules,
+    ips_status, list_rules, pcap_delete, pcap_list, pcap_read, rule_test, sensor_status,
+    service_action, set_mode, set_sid_action, set_sid_enabled, suppress_sid, update_rules,
 };
 
 #[cfg(target_os = "linux")]
@@ -211,48 +214,108 @@ mod linux {
             }
         ));
 
-        // Monitored interfaces (best-effort grep of the config).
-        let interfaces = run_command_allow_failure("grep", &["-E", "interface:", SURICATA_YAML])
+        // Things to fix, collected as the checks below find them.
+        let mut problems: Vec<String> = Vec::new();
+
+        // Monitored interfaces: the AF_PACKET list Scourge's override sets,
+        // else the main config's -- only real entries, not comments or the
+        // `default` template -- each checked against this host's NICs.
+        let host_nics = host_interfaces().await;
+        let override_yaml = tokio::fs::read_to_string(OVERRIDE_FILE)
             .await
-            .map(|o| {
-                o.stdout
-                    .lines()
-                    .filter_map(|l| l.split(':').nth(1))
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        let (configured, source) = match af_packet_interfaces(&override_yaml) {
+            set if !set.is_empty() => (set, " (set by Scourge)"),
+            _ => (
+                af_packet_interfaces(
+                    &tokio::fs::read_to_string(SURICATA_YAML)
+                        .await
+                        .unwrap_or_default(),
+                ),
+                "",
+            ),
+        };
+        let missing: Vec<&String> = configured
+            .iter()
+            .filter(|i| !host_nics.is_empty() && !host_nics.contains(i))
+            .collect();
+        out.push_str(&format!(
+            "Interfaces: {}{source}\n",
+            if configured.is_empty() {
+                "none configured".to_string()
+            } else {
+                configured
+                    .iter()
+                    .map(|i| {
+                        if missing.contains(&i) {
+                            format!("{i} (NOT on this host)")
+                        } else {
+                            i.clone()
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
-            })
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "Interfaces: {}\n",
-            if interfaces.is_empty() {
-                "unknown (see config)".to_string()
-            } else {
-                interfaces
             }
         ));
+        if !host_nics.is_empty() {
+            out.push_str(&format!(
+                "This host's interfaces: {}\n",
+                host_nics.join(", ")
+            ));
+        }
+        if configured.is_empty() {
+            problems.push(
+                "No capture interface is configured. Set one under Sensor configuration.".into(),
+            );
+        } else if !missing.is_empty() {
+            problems.push(format!(
+                "Suricata is set to listen on {}, which this host doesn't have, so it can't \
+                 start. Set the interface to one of: {} (Sensor configuration).",
+                missing
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                host_nics.join(", ")
+            ));
+        }
 
-        // Rule count (lines beginning with a rule action) + last update.
-        let rule_count = run_command_allow_failure(
-            "grep",
-            &["-cE", "^(alert|drop|reject|pass|log)", RULES_FILE],
-        )
-        .await
-        .map(|o| o.stdout.trim().to_string())
-        .unwrap_or_default();
-        out.push_str(&format!(
-            "Rules loaded: {}\n",
-            if rule_count.is_empty() || rule_count == "0" {
-                "0 (rules file missing or unreadable)".to_string()
-            } else {
-                rule_count
+        // Rules: missing (never downloaded), unreadable, or loaded.
+        match tokio::fs::read_to_string(RULES_FILE).await {
+            Ok(text) => {
+                let n = count_rules(&text);
+                out.push_str(&format!("Rules loaded: {n}\n"));
+                if n == 0 {
+                    problems.push(format!(
+                        "{RULES_FILE} has no rules in it. Run Update rules."
+                    ));
+                }
             }
-        ));
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                out.push_str("Rules loaded: 0 (no rules downloaded yet)\n");
+                problems.push(
+                    "No rules have been downloaded, so Suricata can't detect anything. Run \
+                     Update rules (suricata-update)."
+                        .into(),
+                );
+            }
+            Err(e) => {
+                out.push_str(&format!(
+                    "Rules loaded: unknown ({RULES_FILE} unreadable: {e})\n"
+                ));
+            }
+        }
         if let Ok(o) = run_command_allow_failure("stat", &["-c", "%y", RULES_FILE]).await
             && !o.stdout.trim().is_empty()
         {
             out.push_str(&format!("Last rule update: {}\n", o.stdout.trim()));
+        }
+
+        if running == "failed" || running == "inactive" {
+            problems.push(format!(
+                "The suricata service is {running}. Fix the problems above, then Start it \
+                 (Service controls)."
+            ));
         }
 
         // EVE log readability -- the thing the unattended sweep depends on.
@@ -280,7 +343,88 @@ mod linux {
             out.push_str(&format!("{label} usage: {usage}\n"));
         }
 
+        // Why it stopped, in the service's own words.
+        if running == "failed" {
+            let log = run_command_allow_failure(
+                "journalctl",
+                &["-u", "suricata", "-n", "12", "--no-pager", "-o", "cat"],
+            )
+            .await
+            .map(|o| o.stdout.trim().to_string())
+            .unwrap_or_default();
+            if !log.is_empty() {
+                out.push_str(&format!("\nLast service log lines:\n{log}\n"));
+            }
+        }
+
+        if !problems.is_empty() {
+            out.push_str("\nWhat to fix:\n");
+            for p in &problems {
+                out.push_str(&format!("- {p}\n"));
+            }
+        }
+
         ok(out)
+    }
+
+    /// The interfaces in the top-level `af-packet:` list of a Suricata YAML
+    /// file: real entries only, never commented-out examples or the
+    /// `default` template entry other sections' settings fall back to.
+    fn af_packet_interfaces(yaml: &str) -> Vec<String> {
+        let mut in_section = false;
+        let mut found = Vec::new();
+        for line in yaml.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            // A top-level key starts or ends the section.
+            if !line.starts_with([' ', '\t', '-']) {
+                in_section = trimmed.starts_with("af-packet:");
+                continue;
+            }
+            if !in_section {
+                continue;
+            }
+            if let Some(value) = trimmed.strip_prefix("- interface:") {
+                let value = value
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches(['"', '\'']);
+                if !value.is_empty() && value != "default" && !found.iter().any(|f| f == value) {
+                    found.push(value.to_string());
+                }
+            }
+        }
+        found
+    }
+
+    /// Lines that are rules (start with a rule action), not comments.
+    fn count_rules(text: &str) -> usize {
+        text.lines()
+            .filter(|l| {
+                ["alert ", "drop ", "reject ", "pass ", "log "]
+                    .iter()
+                    .any(|a| l.starts_with(a))
+            })
+            .count()
+    }
+
+    /// This host's network interfaces, loopback left out.
+    async fn host_interfaces() -> Vec<String> {
+        let mut names = Vec::new();
+        if let Ok(mut dir) = tokio::fs::read_dir("/sys/class/net").await {
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name != "lo" {
+                    names.push(name);
+                }
+            }
+        }
+        names.sort();
+        names
     }
 
     // ---- Event collection (the sweep op) -------------------------------
@@ -457,6 +601,54 @@ mod linux {
         ok(rows.join("\n"))
     }
 
+    /// One chunk of a capture, for the control plane's download:
+    /// `size\t<file size>\n<base64>`. Reads the file directly (the agent
+    /// runs as root, and the capture directory is root-only), refusing
+    /// anything that isn't a plain file named as `pcap_list` lists them.
+    pub async fn pcap_read(pcap_name: String, offset: u64, len: u32) -> CommandOutcome {
+        pcap_read_in(PCAP_DIR, &pcap_name, offset, len).await
+    }
+
+    async fn pcap_read_in(dir: &str, pcap_name: &str, offset: u64, len: u32) -> CommandOutcome {
+        use base64::Engine;
+        use tokio::io::AsyncReadExt;
+
+        if !valid_pcap_name(pcap_name) {
+            return CommandOutcome::Err(format!("invalid capture name: {pcap_name}"));
+        }
+        let path = format!("{dir}/{pcap_name}");
+        let meta = match tokio::fs::symlink_metadata(&path).await {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return CommandOutcome::Err(format!("no capture named {pcap_name}"));
+            }
+            Err(e) => return CommandOutcome::Err(format!("cannot read {pcap_name}: {e}")),
+        };
+        if !meta.file_type().is_file() {
+            return CommandOutcome::Err(format!("{pcap_name} isn't a regular file"));
+        }
+        let size = meta.len();
+        let want = u64::from(len.min(abyssal_agent_protocol::SCOURGE_PCAP_CHUNK_BYTES))
+            .min(size.saturating_sub(offset));
+        let mut buf = vec![0u8; want as usize];
+        if want > 0 {
+            let mut file = match tokio::fs::File::open(&path).await {
+                Ok(f) => f,
+                Err(e) => return CommandOutcome::Err(format!("cannot open {pcap_name}: {e}")),
+            };
+            if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)).await {
+                return CommandOutcome::Err(format!("cannot seek in {pcap_name}: {e}"));
+            }
+            if let Err(e) = file.read_exact(&mut buf).await {
+                return CommandOutcome::Err(format!("cannot read {pcap_name}: {e}"));
+            }
+        }
+        ok(format!(
+            "size\t{size}\n{}",
+            base64::engine::general_purpose::STANDARD.encode(&buf)
+        ))
+    }
+
     // ---- EVE parsing (pure, unit-tested) -------------------------------
 
     /// Replaces field-separator and control characters with spaces and caps the
@@ -600,13 +792,17 @@ mod linux {
             .map(|_| ())
     }
 
-    /// Reloads the sensor, preferring a rules-reload-in-place and falling back to
-    /// a service reload.
+    /// Puts a new config or ruleset into effect: a reload while Suricata is
+    /// running, a start when it isn't. A plain `reload` fails on a stopped or
+    /// failed service, which made every config change on a sensor that had
+    /// never started (wrong interface, no rules) roll itself back.
     async fn reload(elevation: &ElevationState) -> Result<OperationOutput, String> {
         if init_system::detect().await != InitSystem::Systemd {
             return Err("service reload requires systemd on this host".to_string());
         }
-        elevation.run("systemctl", &["reload", "suricata"]).await
+        elevation
+            .run("systemctl", &["reload-or-restart", "suricata"])
+            .await
     }
 
     async fn validate_config(elevation: &ElevationState) -> Result<OperationOutput, String> {
@@ -1735,6 +1931,95 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// Modelled on the stock suricata.yaml's capture sections (not a
+        /// verbatim copy): the af-packet list with its `default` template,
+        /// commented-out examples, and the other capture sections' own
+        /// `interface:` keys -- what made the old grep report "eth0, default,
+        /// default, 0000, default, eth0, ..." on a real 7.0.3 sensor.
+        const STOCK_YAML: &str = r#"%YAML 1.1
+---
+vars:
+  address-groups:
+    HOME_NET: "[192.168.0.0/16,10.0.0.0/8,172.16.0.0/12]"
+af-packet:
+  - interface: eth0
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+  # Put default values here. These will be used for an interface that is not
+  # in the list above.
+  - interface: default
+    #threads: auto
+#  - interface: eth2
+#    cluster-id: 98
+af-xdp:
+  - interface: default
+dpdk:
+  interfaces:
+    - interface: 0000:3b:00.0
+    - interface: default
+pcap:
+  - interface: eth0
+  - interface: default
+pfring:
+  - interface: eth0
+    threads: auto
+#  - interface: eth3
+netmap:
+  - interface: eth2
+  - interface: default
+"#;
+
+        #[test]
+        fn reads_only_real_af_packet_interfaces() {
+            assert_eq!(af_packet_interfaces(STOCK_YAML), vec!["eth0".to_string()]);
+            let ours = "%YAML 1.1\n---\n# Managed by Abyssal Arsenal\naf-packet:\n  - interface: ens18\n  - interface: \"ens19\"\noutputs:\n  - eve-log:\n";
+            assert_eq!(af_packet_interfaces(ours), vec!["ens18", "ens19"]);
+            assert!(af_packet_interfaces("vars:\n  x: 1\n").is_empty());
+        }
+
+        #[tokio::test]
+        async fn reads_a_capture_in_chunks_and_refuses_links() {
+            let dir = std::env::temp_dir().join(format!("scourge-pcap-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let data: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
+            std::fs::write(dir.join("c.pcap"), &data).unwrap();
+            std::os::unix::fs::symlink("/etc/hostname", dir.join("link.pcap")).unwrap();
+            let d = dir.to_str().unwrap();
+
+            let read = |offset, len| pcap_read_in(d, "c.pcap", offset, len);
+            let decode = |out: CommandOutcome| -> (u64, Vec<u8>) {
+                use base64::Engine;
+                let CommandOutcome::Ok(o) = out else {
+                    panic!("{out:?}")
+                };
+                let (h, b) = o.stdout.split_once('\n').unwrap();
+                (
+                    h.strip_prefix("size\t").unwrap().parse().unwrap(),
+                    base64::engine::general_purpose::STANDARD.decode(b).unwrap(),
+                )
+            };
+            assert_eq!(decode(read(0, 600).await), (1000, data[..600].to_vec()));
+            assert_eq!(decode(read(600, 600).await), (1000, data[600..].to_vec()));
+            assert_eq!(decode(read(1000, 600).await), (1000, vec![]));
+            assert!(matches!(
+                pcap_read_in(d, "link.pcap", 0, 10).await,
+                CommandOutcome::Err(_)
+            ));
+            assert!(matches!(
+                pcap_read_in(d, "../c.pcap", 0, 10).await,
+                CommandOutcome::Err(_)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn counts_rules_not_comments() {
+            let rules = "# header\nalert tcp any any -> any any (sid:1;)\n#alert udp disabled\ndrop ip any any -> any any (sid:2;)\n\n";
+            assert_eq!(count_rules(rules), 2);
+            assert_eq!(count_rules(""), 0);
+        }
 
         fn alert_json() -> &'static str {
             r#"{"timestamp":"2026-01-02T03:04:05.000Z","event_type":"alert","proto":"TCP","src_ip":"10.0.0.5","src_port":44321,"dest_ip":"203.0.113.9","dest_port":443,"alert":{"severity":1,"signature_id":2001,"signature":"ET SCAN Potential SSH Scan","category":"Attempted Information Leak"}}"#

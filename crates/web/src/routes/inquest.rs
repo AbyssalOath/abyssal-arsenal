@@ -70,6 +70,7 @@ pub async fn show(
 
     if let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "inquest", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/inquest/{host_id}")).into_response());
     }
@@ -246,6 +247,7 @@ async fn render_host_with_context(
         can_manage: ctx.has(Permission::IncidentsRespond),
         host_isolation_enabled,
         elevated: state.elevation.is_elevated(host_id),
+        platform: crate::platform::HostPlatform::for_host(state, host_id, host.os.as_deref()),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         control_plane: crate::control_plane::page_note(&state.hosts, host_id),
         isolate_refusal: crate::control_plane::refusal(

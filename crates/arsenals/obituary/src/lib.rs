@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Historical logging and audit record management.
 pub struct ObituaryArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for ObituaryArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::AuditView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

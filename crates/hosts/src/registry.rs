@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use abyssal_agent_protocol::{AgentOperation, CommandOutcome, ServerMessage};
+use abyssal_agent_protocol::{AgentOperation, CommandOutcome, HostOs, ServerMessage};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -30,6 +30,17 @@ pub enum DispatchError {
         needed: u32,
         /// `None`: an agent too old to report its protocol at all.
         has: Option<u32>,
+    },
+    /// Never sent: the operation doesn't run on the host's OS
+    /// (`AgentOperation::platforms`).
+    #[error(
+        "{operation} isn't supported on {os} hosts (it runs on {} only). Nothing was sent to the host.",
+        platforms.label()
+    )]
+    UnsupportedPlatform {
+        operation: String,
+        os: &'static str,
+        platforms: abyssal_agent_protocol::Platforms,
     },
 }
 
@@ -62,6 +73,8 @@ fn operation_name(operation: &AgentOperation) -> String {
 struct Connection {
     sender: mpsc::Sender<ServerMessage>,
     protocol_version: Option<u32>,
+    /// The OS the agent reported when it connected.
+    os: HostOs,
     /// Which connection this is (`connection_epoch`).
     epoch: u64,
 }
@@ -107,7 +120,8 @@ impl HostConnectionRegistry {
         host_id: Uuid,
         sender: mpsc::Sender<ServerMessage>,
         protocol_version: Option<u32>,
-    ) {
+        os: HostOs,
+    ) -> u64 {
         let epoch = self
             .next_epoch
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -117,9 +131,11 @@ impl HostConnectionRegistry {
             Connection {
                 sender,
                 protocol_version,
+                os,
                 epoch,
             },
         );
+        epoch
     }
 
     /// Identifies the host's current connection: it changes whenever the
@@ -142,6 +158,33 @@ impl HostConnectionRegistry {
     /// because it can't deserialize a newer `AgentOperation` variant)
     /// surface as a clear, fast "host disconnected before responding"
     /// instead of a confusing multi-second timeout.
+    /// Ends the connection `epoch` (from `register`) -- only if it's still
+    /// this host's current one. An agent that reconnects is registered
+    /// before its old, dead connection is noticed and cleaned up (that can
+    /// take minutes); a plain `unregister` from that old connection would
+    /// remove the new, healthy one, leaving a connected agent shown offline
+    /// until something made it reconnect again. Returns whether it removed
+    /// anything.
+    pub fn unregister_connection(&self, host_id: Uuid, epoch: u64) -> bool {
+        let removed = {
+            let mut connections = self.connections.lock().unwrap();
+            match connections.get(&host_id) {
+                Some(c) if c.epoch == epoch => {
+                    connections.remove(&host_id);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if removed {
+            self.pending
+                .lock()
+                .unwrap()
+                .retain(|_, (pending_host_id, _)| *pending_host_id != host_id);
+        }
+        removed
+    }
+
     pub fn unregister(&self, host_id: Uuid) {
         self.connections.lock().unwrap().remove(&host_id);
         self.pending
@@ -184,10 +227,23 @@ impl HostConnectionRegistry {
     }
 
     /// Whether `host_id` is connected with an agent new enough for
-    /// `operation` -- for sweeps to skip hosts, and pages to explain a
-    /// missing feature, ahead of `dispatch` refusing it.
+    /// `operation`, on an OS that runs it -- for sweeps to skip hosts, and
+    /// pages to hide or explain a missing feature, ahead of `dispatch`
+    /// refusing it.
     pub fn supports(&self, host_id: Uuid, operation: &AgentOperation) -> bool {
         self.agent_supports(host_id, operation.min_protocol())
+            && operation.platforms().allows(self.host_os(host_id))
+    }
+
+    /// The OS the host's live connection reported; `Unknown` while it's
+    /// disconnected or for an agent too old to say.
+    pub fn host_os(&self, host_id: Uuid) -> HostOs {
+        self.connections
+            .lock()
+            .unwrap()
+            .get(&host_id)
+            .map(|c| c.os)
+            .unwrap_or_default()
     }
 
     /// True only while connected -- an offline host already shows as
@@ -259,13 +315,22 @@ impl HostConnectionRegistry {
             tracing::warn!(%host_id, ?operation, "refused on the control plane's own server: {reason}");
             return Err(DispatchError::Refused(reason));
         }
-        let (sender, has) = {
+        let (sender, has, os) = {
             let connections = self.connections.lock().unwrap();
             connections
                 .get(&host_id)
-                .map(|c| (c.sender.clone(), c.protocol_version))
+                .map(|c| (c.sender.clone(), c.protocol_version, c.os))
         }
         .ok_or(DispatchError::NotConnected)?;
+        // Before the version check: a newer agent wouldn't help.
+        let platforms = operation.platforms();
+        if !platforms.allows(os) {
+            return Err(DispatchError::UnsupportedPlatform {
+                operation: operation_name(&operation),
+                os: os.label(),
+                platforms,
+            });
+        }
         let needed = operation.min_protocol();
         if has.unwrap_or(0) < needed {
             return Err(DispatchError::AgentTooOld {
@@ -328,7 +393,12 @@ mod tests {
         let registry = HostConnectionRegistry::new();
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(1);
-        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
+        registry.register(
+            host_id,
+            tx,
+            Some(abyssal_agent_protocol::PROTOCOL_VERSION),
+            HostOs::Unknown,
+        );
 
         // Drain the command so the channel doesn't fill up, but never reply.
         tokio::spawn(async move {
@@ -346,7 +416,12 @@ mod tests {
         let registry = std::sync::Arc::new(HostConnectionRegistry::new());
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(1);
-        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
+        registry.register(
+            host_id,
+            tx,
+            Some(abyssal_agent_protocol::PROTOCOL_VERSION),
+            HostOs::Unknown,
+        );
 
         let registry_clone = registry.clone();
         tokio::spawn(async move {
@@ -373,7 +448,12 @@ mod tests {
         let registry = std::sync::Arc::new(HostConnectionRegistry::new());
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(1);
-        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
+        registry.register(
+            host_id,
+            tx,
+            Some(abyssal_agent_protocol::PROTOCOL_VERSION),
+            HostOs::Unknown,
+        );
 
         let registry_clone = registry.clone();
         tokio::spawn(async move {
@@ -404,12 +484,12 @@ mod tests {
         let host_id = Uuid::new_v4();
         assert_eq!(registry.connection_epoch(host_id), None);
         let (tx, _rx) = mpsc::channel(1);
-        registry.register(host_id, tx, Some(1));
+        registry.register(host_id, tx, Some(1), HostOs::Unknown);
         let first = registry.connection_epoch(host_id).unwrap();
         registry.unregister(host_id);
         assert_eq!(registry.connection_epoch(host_id), None);
         let (tx, _rx) = mpsc::channel(1);
-        registry.register(host_id, tx, Some(1));
+        registry.register(host_id, tx, Some(1), HostOs::Unknown);
         assert!(registry.connection_epoch(host_id).unwrap() > first);
     }
 
@@ -418,7 +498,7 @@ mod tests {
         let registry = HostConnectionRegistry::new();
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(4);
-        registry.register(host_id, tx, Some(39));
+        registry.register(host_id, tx, Some(39), HostOs::Unknown);
 
         let result = registry
             .dispatch(
@@ -451,7 +531,7 @@ mod tests {
 
         // An agent that reports no version is older than any versioned one.
         let (tx, mut rx) = mpsc::channel(4);
-        registry.register(host_id, tx, None);
+        registry.register(host_id, tx, None, HostOs::Unknown);
         let err = registry
             .dispatch(
                 host_id,
@@ -471,10 +551,10 @@ mod tests {
         let host_id = Uuid::new_v4();
         assert!(!registry.agent_supports(host_id, 1), "not connected");
         let (tx, _rx) = mpsc::channel(1);
-        registry.register(host_id, tx, None);
+        registry.register(host_id, tx, None, HostOs::Unknown);
         assert!(!registry.agent_supports(host_id, 1), "unreported version");
         let (tx, _rx) = mpsc::channel(1);
-        registry.register(host_id, tx, Some(40));
+        registry.register(host_id, tx, Some(40), HostOs::Unknown);
         assert!(registry.agent_supports(host_id, 40));
         assert!(registry.agent_supports(host_id, 39));
         assert!(!registry.agent_supports(host_id, 41));
@@ -485,7 +565,12 @@ mod tests {
         let registry = HostConnectionRegistry::new();
         let host_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(4);
-        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
+        registry.register(
+            host_id,
+            tx,
+            Some(abyssal_agent_protocol::PROTOCOL_VERSION),
+            HostOs::Unknown,
+        );
 
         // Not flagged: sent (and times out, since nothing answers).
         let result = registry
@@ -538,7 +623,7 @@ mod tests {
         assert!(!registry.agent_protocol_mismatch(host_id));
 
         let (tx, _rx) = mpsc::channel(1);
-        registry.register(host_id, tx, None);
+        registry.register(host_id, tx, None, HostOs::Unknown);
         assert_eq!(
             registry.agent_protocol_status(host_id),
             AgentProtocolStatus::Unknown
@@ -553,15 +638,104 @@ mod tests {
             host_id,
             tx,
             Some(abyssal_agent_protocol::PROTOCOL_VERSION + 1),
+            HostOs::Unknown,
         );
         assert!(registry.agent_protocol_mismatch(host_id));
 
         let (tx, _rx) = mpsc::channel(1);
-        registry.register(host_id, tx, Some(abyssal_agent_protocol::PROTOCOL_VERSION));
+        registry.register(
+            host_id,
+            tx,
+            Some(abyssal_agent_protocol::PROTOCOL_VERSION),
+            HostOs::Unknown,
+        );
         assert_eq!(
             registry.agent_protocol_status(host_id),
             AgentProtocolStatus::Version(abyssal_agent_protocol::PROTOCOL_VERSION)
         );
         assert!(!registry.agent_protocol_mismatch(host_id));
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_an_operation_the_hosts_os_cant_run() {
+        let registry = HostConnectionRegistry::new();
+        let cases = [
+            (HostOs::Windows, AgentOperation::LoadAverage, "Linux"),
+            (
+                HostOs::Linux,
+                AgentOperation::AdHealthReport {
+                    domain: "corp.example".into(),
+                },
+                "Windows",
+            ),
+        ];
+        for (os, op, runs_on) in cases {
+            let host_id = Uuid::new_v4();
+            let (tx, mut rx) = mpsc::channel(1);
+            registry.register(
+                host_id,
+                tx,
+                Some(abyssal_agent_protocol::PROTOCOL_VERSION),
+                os,
+            );
+            assert!(!registry.supports(host_id, &op));
+            let err = registry
+                .dispatch(host_id, op, Duration::from_millis(50))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DispatchError::UnsupportedPlatform { .. }));
+            let message = err.to_string();
+            assert!(message.contains(os.label()), "{message}");
+            assert!(
+                message.contains(&format!("runs on {runs_on} only")),
+                "{message}"
+            );
+            assert!(message.ends_with("Nothing was sent to the host."));
+            assert!(rx.try_recv().is_err(), "nothing may be sent");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_os_and_cross_platform_operations_are_sent() {
+        let registry = HostConnectionRegistry::new();
+        for (os, op) in [
+            (HostOs::Unknown, AgentOperation::LoadAverage),
+            (HostOs::Windows, AgentOperation::MemoryDetail),
+            (HostOs::Linux, AgentOperation::LoadAverage),
+        ] {
+            let host_id = Uuid::new_v4();
+            let (tx, mut rx) = mpsc::channel(1);
+            registry.register(
+                host_id,
+                tx,
+                Some(abyssal_agent_protocol::PROTOCOL_VERSION),
+                os,
+            );
+            assert!(registry.supports(host_id, &op));
+            let result = registry
+                .dispatch(host_id, op, Duration::from_millis(20))
+                .await;
+            assert!(matches!(result, Err(DispatchError::Timeout)));
+            assert!(rx.try_recv().is_ok(), "the command should have been sent");
+        }
+    }
+
+    #[test]
+    fn an_old_connection_ending_late_leaves_the_new_one_registered() {
+        let registry = HostConnectionRegistry::new();
+        let host_id = Uuid::new_v4();
+        let (old_tx, _old_rx) = mpsc::channel(1);
+        let old = registry.register(host_id, old_tx, None, HostOs::Unknown);
+        // The agent reconnects before the old connection is noticed dead.
+        let (new_tx, _new_rx) = mpsc::channel(1);
+        let new = registry.register(host_id, new_tx, None, HostOs::Unknown);
+        assert_ne!(old, new);
+
+        assert!(!registry.unregister_connection(host_id, old));
+        assert!(registry.is_connected(host_id), "the new connection stays");
+        assert_eq!(registry.connection_epoch(host_id), Some(new));
+
+        assert!(registry.unregister_connection(host_id, new));
+        assert!(!registry.is_connected(host_id));
     }
 }

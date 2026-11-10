@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Network visibility and access control: discovery, device identification,
 /// MAC/IP inventory, service and OS fingerprinting, topology mapping, NAC
@@ -51,5 +51,9 @@ impl Arsenal for PanopticonArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::NetworkView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Both
     }
 }

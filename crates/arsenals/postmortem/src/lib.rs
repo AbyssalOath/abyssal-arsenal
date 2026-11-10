@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Forensic examination of systems after failures, incidents, or suspected compromise.
 pub struct PostmortemArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for PostmortemArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SecurityView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

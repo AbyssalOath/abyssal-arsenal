@@ -45,6 +45,7 @@ pub async fn show(
 
     if let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "postmortem", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/postmortem/{host_id}")).into_response());
     }
@@ -65,7 +66,11 @@ pub async fn show(
 
     let mut connected_hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
-        if host.is_active() && state.hosts.is_connected(host.id) {
+        // Only hosts this (Linux-only) arsenal is for.
+        if host.is_active()
+            && state.hosts.is_connected(host.id)
+            && crate::platform::arsenal_runs_on(&state, "postmortem", host.id)
+        {
             connected_hosts.push(host);
         }
     }

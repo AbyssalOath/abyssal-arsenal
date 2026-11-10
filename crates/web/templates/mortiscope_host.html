@@ -5,7 +5,7 @@
 {% block content %}
 
 <div class="page-crumbs">
-  {% call macros::host_breadcrumb("Mortiscope", "/arsenals/mortiscope?all=1", "/arsenals/mortiscope/", host_id, host_name, base.available_hosts) %}
+  {% call macros::host_breadcrumb("Mortiscope", "/arsenals/mortiscope?all=1", "/arsenals/mortiscope/", host_id, host_name, base.hosts_for("/arsenals/mortiscope/")) %}
   <span style="display:flex; gap:14px;">
     <a href="/arsenals/mortiscope/overview">{% call macros::icon("route") %} Fleet overview</a>
     <a href="/arsenals/mortiscope/thresholds">{% call macros::icon("route") %} Monitoring &amp; thresholds</a>
@@ -16,10 +16,11 @@
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
     {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
-    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+    {% else if platform.linux %}<span class="badge badge-muted">Apotheosis: Not elevated</span>
+    {% else %}<span class="badge badge-muted" title="The Windows agent runs as SYSTEM, so there's nothing to elevate">Runs as SYSTEM</span>{% endif %}
   </div>
 
-  {% if !elevated && base.can_hosts_elevate %}
+  {% if !elevated && base.can_hosts_elevate && platform.linux %}
   <form method="post" action="/arsenals/mortiscope/{{ host_id }}/elevate" class="elevate-form">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label for="elevate-password" class="sr-only">Sudo password</label>
@@ -112,18 +113,24 @@
 <div class="card kind-read">
   <h3>Read</h3>
   <div class="action-grid">
+    {% if platform.linux %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/load-average">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("reboot") %} Load Average</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/top-cpu">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Top Processes (CPU)</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/top-memory">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Top Processes (Memory)</button>
     </form>
+    {% endif %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/memory-detail">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Memory Detail</button>
@@ -132,22 +139,30 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} CPU Utilization</button>
     </form>
+    {% if platform.linux %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/network-throughput">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("socket") %} Network Throughput</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/memory-pressure">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Memory Pressure</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/thermal-sensors">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("warning") %} Thermal Sensors</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/disk-io">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("socket") %} Disk I/O Stats</button>
     </form>
+    {% endif %}
     <form method="post" action="/arsenals/mortiscope/{{ host_id }}/failed-services">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} Failed Services</button>

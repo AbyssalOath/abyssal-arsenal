@@ -3,8 +3,12 @@
 //!
 //! ```text
 //! abyssal-agent.exe /install /quiet /norestart SERVER=https://arsenal.corp AAT=AAT1-...
+//! abyssal-agent.exe /install /quiet /norestart SERVER=https://arsenal.corp AAT_FILE=C:\path\aat.txt
 //! abyssal-agent.exe /uninstall /quiet [PURGE=1]
 //! ```
+//!
+//! `AAT_FILE=` names a file holding the token, which the install reads and
+//! deletes, so the token itself never appears on a command line.
 //!
 //! [`translate`] rewrites that form into the ordinary `install` / `uninstall`
 //! subcommands before clap sees it, so there's exactly one implementation of
@@ -23,7 +27,7 @@ impl std::fmt::Display for InvalidInstallerArgs {
         write!(
             f,
             "{} -- usage: abyssal-agent /install /quiet /norestart SERVER=<url> AAT=<token> \
-             [NAME=<hostname>], or abyssal-agent /uninstall /quiet [PURGE=1]",
+             (or AAT_FILE=<path>) [NAME=<hostname>], or abyssal-agent /uninstall /quiet [PURGE=1]",
             self.0
         )
     }
@@ -53,7 +57,11 @@ pub fn translate(args: &[OsString]) -> Option<Result<Vec<OsString>, InvalidInsta
 fn property(arg: &str) -> Option<(String, &str)> {
     let (key, value) = arg.split_once('=')?;
     let key = key.to_ascii_uppercase();
-    matches!(key.as_str(), "SERVER" | "AAT" | "NAME" | "PURGE").then_some((key, value))
+    matches!(
+        key.as_str(),
+        "SERVER" | "AAT" | "AAT_FILE" | "NAME" | "PURGE"
+    )
+    .then_some((key, value))
 }
 
 fn translate_rest(argv0: OsString, rest: &[String]) -> Result<Vec<OsString>, InvalidInstallerArgs> {
@@ -62,6 +70,7 @@ fn translate_rest(argv0: OsString, rest: &[String]) -> Result<Vec<OsString>, Inv
     let mut quiet = false;
     let mut server = None;
     let mut aat = None;
+    let mut aat_file = None;
     let mut name = None;
     let mut purge = false;
 
@@ -84,6 +93,7 @@ fn translate_rest(argv0: OsString, rest: &[String]) -> Result<Vec<OsString>, Inv
                 match key.as_str() {
                     "SERVER" => server = Some(value),
                     "AAT" => aat = Some(value),
+                    "AAT_FILE" => aat_file = Some(value),
                     "NAME" => name = Some(value),
                     "PURGE" => purge = matches!(value.as_str(), "1" | "true" | "yes"),
                     _ => unreachable!("property() only returns known keys"),
@@ -101,9 +111,9 @@ fn translate_rest(argv0: OsString, rest: &[String]) -> Result<Vec<OsString>, Inv
 
     let mut out = vec![argv0];
     if uninstall {
-        if server.is_some() || aat.is_some() || name.is_some() {
+        if server.is_some() || aat.is_some() || aat_file.is_some() || name.is_some() {
             return Err(InvalidInstallerArgs(
-                "SERVER=, AAT= and NAME= only apply to /install".into(),
+                "SERVER=, AAT=, AAT_FILE= and NAME= only apply to /install".into(),
             ));
         }
         out.push("uninstall".into());
@@ -121,6 +131,7 @@ fn translate_rest(argv0: OsString, rest: &[String]) -> Result<Vec<OsString>, Inv
         for (flag, value) in [
             ("--control-plane-url", server),
             ("--aat", aat),
+            ("--aat-file", aat_file),
             ("--name", name),
         ] {
             if let Some(value) = value.filter(|v| !v.is_empty()) {
@@ -206,6 +217,29 @@ mod tests {
     }
 
     #[test]
+    fn aat_file_becomes_aat_file_flag() {
+        let out = run(&[
+            "/install",
+            "/quiet",
+            "SERVER=https://x",
+            r#"aat_file="C:\ProgramData\Abyssal\d1\aat.txt""#,
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            out,
+            [
+                "install",
+                "--control-plane-url",
+                "https://x",
+                "--aat-file",
+                r"C:\ProgramData\Abyssal\d1\aat.txt",
+                "--non-interactive"
+            ]
+        );
+    }
+
+    #[test]
     fn empty_values_are_dropped() {
         // What an MSI passes for a property that wasn't set.
         let out = run(&["/install", "SERVER=", "AAT="]).unwrap().unwrap();
@@ -226,6 +260,7 @@ mod tests {
         assert!(run(&["/install", "FOO=bar"]).unwrap().is_err());
         assert!(run(&["/install", "/uninstall"]).unwrap().is_err());
         assert!(run(&["/uninstall", "AAT=x"]).unwrap().is_err());
+        assert!(run(&["/uninstall", "AAT_FILE=x"]).unwrap().is_err());
         assert!(run(&["/install", "PURGE=1"]).unwrap().is_err());
     }
 }

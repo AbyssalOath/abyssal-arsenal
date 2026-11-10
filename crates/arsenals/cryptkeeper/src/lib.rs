@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Secrets, credentials, certificates, keys, and sensitive configuration.
 pub struct CryptkeeperArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for CryptkeeperArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SecurityView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

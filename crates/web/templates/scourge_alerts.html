@@ -73,6 +73,8 @@
     <div class="actions">
       <button type="submit" class="btn-secondary">{% call macros::icon("scan") %} Filter</button>
       <a class="btn btn-secondary" href="/arsenals/scourge/alerts">Clear</a>
+      <a class="btn btn-secondary" href="{{ view.export_csv_href }}" title="Every alert matching these filters (up to 50,000), not just this page">Export CSV</a>
+      <a class="btn btn-secondary" href="{{ view.export_json_href }}" title="Every alert matching these filters (up to 50,000), not just this page">Export JSON</a>
     </div>
   </form>
 </div>

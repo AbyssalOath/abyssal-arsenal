@@ -63,9 +63,17 @@ pub async fn test_delegation(
 
     // The two untrusted values become single-quoted PowerShell literals. The
     // password is NOT in the script -- it is read from stdin at runtime.
-    let upn_lit = crate::process::ps_quote(&service_account_upn);
-    let server_lit = crate::process::ps_quote(&domain_dns);
-    let body = format!(
+    let script = delegation_script(&service_account_upn, &domain_dns);
+    run_powershell_with_password(&script, &password).await
+}
+
+/// The `DirectoryTestDelegation` script; the password arrives on stdin. Built
+/// on every target so its syntax is checked in CI (see the tests).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn delegation_script(service_account_upn: &str, domain_dns: &str) -> String {
+    let upn_lit = crate::process::ps_quote(service_account_upn);
+    let server_lit = crate::process::ps_quote(domain_dns);
+    crate::process::ps_checked(&format!(
         "$pw = [Console]::In.ReadLine(); \
          $sec = ConvertTo-SecureString -String $pw -AsPlainText -Force; \
          $upn = {upn_lit}; \
@@ -73,7 +81,7 @@ pub async fn test_delegation(
          $cred = New-Object System.Management.Automation.PSCredential($upn, $sec); \
          $dom = Get-ADDomain -Server $server -Credential $cred; \
          $domSid = $dom.DomainSID.Value; \
-         $acct = Get-ADUser -Server $server -Credential $cred -LDAPFilter \"(&(objectClass=user)(userPrincipalName=$upn))\" -Properties objectSid; \
+         $acct = Get-ADUser -Server $server -Credential $cred -LDAPFilter \"(&(objectClass=user)(userPrincipalName=$upn))\" -Properties objectSid,PasswordNeverExpires,'msDS-UserPasswordExpiryTimeComputed'; \
          if (-not $acct) {{ \
            $out = [ordered]@{{ ok = $false; domain = $dom.DNSRoot; account_found = $false; overprivileged_groups = @(); manageable_ous = @() }}; \
            $out | ConvertTo-Json -Compress -Depth 5; return \
@@ -99,11 +107,34 @@ pub async fn test_delegation(
              }} \
            }} catch {{ }} \
          }}; \
-         $out = [ordered]@{{ ok = ($over.Count -eq 0); domain = $dom.DNSRoot; account_found = $true; overprivileged_groups = @($over); manageable_ous = @($manageable) }}; \
+         $out = [ordered]@{{ ok = ($over.Count -eq 0); domain = $dom.DNSRoot; account_found = $true; overprivileged_groups = @($over); manageable_ous = @($manageable); password_never_expires = [bool]$acct.PasswordNeverExpires; password_expiry_filetime = [int64]$acct.'msDS-UserPasswordExpiryTimeComputed' }}; \
          $out | ConvertTo-Json -Compress -Depth 5"
-    );
-    let script = crate::process::ps_checked(&body);
-    run_powershell_with_password(&script, &password).await
+    ))
+}
+
+/// The `DirectoryRotateServiceAccountPassword` script; both passwords arrive
+/// on stdin. Built on every target so its syntax is checked in CI.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn rotate_script(service_account_upn: &str, domain_dns: &str) -> String {
+    let upn_lit = crate::process::ps_quote(service_account_upn);
+    let server_lit = crate::process::ps_quote(domain_dns);
+    crate::process::ps_checked(&format!(
+        "$cur = [Console]::In.ReadLine(); \
+         $new = [Console]::In.ReadLine(); \
+         $csec = ConvertTo-SecureString -String $cur -AsPlainText -Force; \
+         $nsec = ConvertTo-SecureString -String $new -AsPlainText -Force; \
+         $upn = {upn_lit}; \
+         $server = {server_lit}; \
+         $cred = New-Object System.Management.Automation.PSCredential($upn, $csec); \
+         $acct = Get-ADUser -Server $server -Credential $cred -LDAPFilter \"(&(objectClass=user)(userPrincipalName=$upn))\"; \
+         if (-not $acct) {{ throw \"service account not found: $upn\" }}; \
+         Set-ADAccountPassword -Server $server -Credential $cred -Identity $acct.DistinguishedName -OldPassword $csec -NewPassword $nsec; \
+         $ncred = New-Object System.Management.Automation.PSCredential($upn, $nsec); \
+         $after = $null; \
+         try {{ $after = Get-ADUser -Server $server -Credential $ncred -Identity $acct.DistinguishedName -Properties PasswordNeverExpires,'msDS-UserPasswordExpiryTimeComputed' }} catch {{ }}; \
+         $out = [ordered]@{{ ok = $true; verified = [bool]$after; password_never_expires = $(if ($after) {{ [bool]$after.PasswordNeverExpires }} else {{ $null }}); password_expiry_filetime = $(if ($after) {{ [int64]$after.'msDS-UserPasswordExpiryTimeComputed' }} else {{ $null }}) }}; \
+         $out | ConvertTo-Json -Compress"
+    ))
 }
 
 /// `DirectoryOuTree`: the domain's OUs (DN + name) as JSON. Read-only, runs
@@ -737,6 +768,39 @@ pub async fn set_password(
     .await
 }
 
+/// `DirectoryRotateServiceAccountPassword`: the service account changes its own
+/// password (`-OldPassword`, so history and minimum-age rules apply), then the
+/// new password's expiry is read back under the new password. Two secrets on
+/// stdin: the current password, then the new one.
+#[cfg(windows)]
+pub async fn rotate_service_account_password(
+    domain_dns: String,
+    service_account_upn: String,
+    current_password: String,
+    new_password: String,
+) -> CommandOutcome {
+    if !is_valid_hostname(&domain_dns) {
+        return CommandOutcome::Err(format!("refusing invalid AD domain: {domain_dns}"));
+    }
+    if !is_valid_user_principal_name(&service_account_upn) {
+        return CommandOutcome::Err(format!(
+            "refusing invalid service-account UPN: {service_account_upn}"
+        ));
+    }
+    // Each secret is one stdin line, so neither may contain a line break.
+    for secret in [&current_password, &new_password] {
+        if secret.is_empty() || secret.contains(['\n', '\r']) {
+            return CommandOutcome::Err(
+                "refusing an empty password or one containing a line break".to_string(),
+            );
+        }
+    }
+    let script = rotate_script(&service_account_upn, &domain_dns);
+    // Current password first, the new one second -- the script's two
+    // ReadLine() calls consume them in that order. Neither is ever argv.
+    run_ps_stdin(&script, &format!("{current_password}\n{new_password}\n")).await
+}
+
 /// Arguments for [`create_user`] -- a struct to keep the op's many fields
 /// together (and the dispatch arm readable). The fields are read only in the
 /// Windows implementation; the Unix stub ignores them.
@@ -1129,6 +1193,16 @@ pub async fn set_password(
 }
 
 #[cfg(not(windows))]
+pub async fn rotate_service_account_password(
+    _domain_dns: String,
+    _service_account_upn: String,
+    _current_password: String,
+    _new_password: String,
+) -> CommandOutcome {
+    crate::process::platform_unsupported()
+}
+
+#[cfg(not(windows))]
 pub async fn create_user(_args: CreateUserArgs) -> CommandOutcome {
     crate::process::platform_unsupported()
 }
@@ -1232,4 +1306,72 @@ pub async fn exchange_set_mailbox_offboard(
     _convert_to_shared: bool,
 ) -> CommandOutcome {
     crate::process::platform_unsupported()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses `script` with PowerShell's own parser. Needs `pwsh`: skipped
+    /// without it locally, required in CI (the same rule as the other
+    /// Windows script tests).
+    fn assert_parses(name: &str, script: &str) {
+        if std::process::Command::new("pwsh")
+            .arg("-Version")
+            .output()
+            .is_err()
+        {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "pwsh is required for this test in CI"
+            );
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("{name}-{}.ps1", std::process::id()));
+        std::fs::write(&path, script).unwrap();
+        let out = std::process::Command::new("pwsh")
+            .args(["-NoProfile", "-NonInteractive", "-Command",
+                "$t=$null; $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:SCRIPT, [ref]$t, [ref]$e); foreach ($x in $e) { $x.Message }; if ($e.Count) { exit 1 }"])
+            .env("SCRIPT", &path)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            out.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    #[test]
+    fn the_delegation_script_parses_as_powershell() {
+        assert_parses(
+            "gk-delegation",
+            &delegation_script("svc-gk@corp.example.com", "corp.example.com"),
+        );
+    }
+
+    #[test]
+    fn the_rotate_script_parses_as_powershell() {
+        assert_parses(
+            "gk-rotate",
+            &rotate_script("svc-gk@corp.example.com", "corp.example.com"),
+        );
+    }
+
+    #[test]
+    fn the_delegation_script_reports_password_expiry() {
+        let script = delegation_script("svc-gk@corp.example.com", "corp.example.com");
+        assert!(script.contains("password_never_expires"));
+        assert!(script.contains("password_expiry_filetime"));
+        assert!(script.contains("msDS-UserPasswordExpiryTimeComputed"));
+    }
+
+    #[test]
+    fn the_rotate_script_never_holds_a_password() {
+        // Both passwords come from stdin; the script only names the account.
+        let script = rotate_script("svc-gk@corp.example.com", "corp.example.com");
+        assert!(script.contains("-OldPassword $csec -NewPassword $nsec"));
+        assert_eq!(script.matches("[Console]::In.ReadLine()").count(), 2);
+    }
 }

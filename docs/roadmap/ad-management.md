@@ -333,7 +333,11 @@ not create or delete.
    - a stale-accounts report (no logon in N days), with disable from it;
    - Thanatos integration: a lockout or a privileged-group change event
      gets **Unlock** and **Open in directory** buttons through the workflow
-     registry.
+     registry. *As built:* lockout events (4740) get a per-event **Unlock in
+     Gravekeeper** button on Thanatos's event rows rather than a registry
+     entry, since the registry evaluates a whole scan, not one event.
+     Privileged-group change events don't have one yet (their `Account=` is a
+     member DN).
 
 ## Testing
 

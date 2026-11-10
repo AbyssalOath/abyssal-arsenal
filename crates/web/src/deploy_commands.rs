@@ -1,5 +1,5 @@
 //! The copy-paste agent install commands `/admin/hosts` generates, for both
-//! single-use enrollment tokens and reusable deployment tokens.
+//! single-use enrollment tokens and install tokens.
 //!
 //! When the control plane has an internal CA (`public_ca`), every command
 //! first fetches `/ca.crt` without trusting the connection, checks the bytes

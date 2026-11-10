@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Performance analysis, profiling, and system tuning.
 pub struct VivisectionArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for VivisectionArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SystemsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

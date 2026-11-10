@@ -383,16 +383,7 @@ pub async fn run(
     Ok(Redirect::to(&target).into_response())
 }
 
-/// Quotes a CSV field, and defuses spreadsheet formulas (a cell starting
-/// with `=`, `+`, `-` or `@` would otherwise run when opened).
-fn csv_field(value: &str) -> String {
-    let value = if value.starts_with(['=', '+', '-', '@']) {
-        format!("'{value}")
-    } else {
-        value.to_string()
-    };
-    format!("\"{}\"", value.replace('"', "\"\""))
-}
+use crate::export::csv_field;
 
 /// `GET /arsenals/cadavault/{host}/posture/{run}/csv`: one run's results.
 pub async fn csv(

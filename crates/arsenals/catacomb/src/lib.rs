@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Filesystem inspection, maintenance, traversal, and repair utilities.
 pub struct CatacombArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for CatacombArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::StorageView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

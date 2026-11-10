@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Scourge -- the network intrusion detection/prevention (IDS/IPS) arsenal.
 /// A per-host sensor and detector (Suricata today, behind an engine
@@ -29,5 +29,9 @@ impl Arsenal for ScourgeArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::ScourgeView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

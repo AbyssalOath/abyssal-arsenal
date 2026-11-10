@@ -280,8 +280,12 @@ async fn evaluate_host_metric(
 
 /// Dispatches one read op and returns its stdout, or `None` if the host is
 /// unreachable or the op failed -- a missing sample is fine, the next tick
-/// tries again.
+/// tries again. A metric the host's OS doesn't have (load average on Windows)
+/// is skipped without asking.
 async fn dispatch(state: &AppState, host_id: Uuid, op: AgentOperation) -> Option<String> {
+    if !state.hosts.supports(host_id, &op) {
+        return None;
+    }
     match state.hosts.dispatch(host_id, op, DISPATCH_TIMEOUT).await {
         Ok(CommandOutcome::Ok(output)) => Some(output.stdout),
         _ => None,

@@ -44,15 +44,47 @@ impl PickerQuery {
     }
 }
 
-/// Every enrolled host (revoked and awaiting-approval ones left out),
-/// online hosts first, then by name.
-pub async fn hosts(state: &AppState) -> anyhow::Result<Vec<PickerHost>> {
+/// An arsenal landing page's host list, plus a note for any hosts left out
+/// because the arsenal isn't for their OS. Derefs to the hosts, so it reads
+/// like the list it replaced.
+pub struct PickerList {
+    pub hosts: Vec<PickerHost>,
+    pub hidden_note: Option<String>,
+}
+
+impl std::ops::Deref for PickerList {
+    type Target = [PickerHost];
+    fn deref(&self) -> &[PickerHost] {
+        &self.hosts
+    }
+}
+
+impl<'a> IntoIterator for &'a PickerList {
+    type Item = &'a PickerHost;
+    type IntoIter = std::slice::Iter<'a, PickerHost>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.hosts.iter()
+    }
+}
+
+/// Every enrolled host the arsenal `arsenal` is for (revoked and
+/// awaiting-approval ones left out, and hosts on an OS the arsenal doesn't
+/// support), online hosts first, then by name.
+pub async fn hosts(state: &AppState, arsenal: &str) -> anyhow::Result<PickerList> {
     let now = Utc::now();
-    let mut rows: Vec<PickerHost> = repo::hosts::list(&state.pool)
-        .await?
-        .into_iter()
-        .filter(|h| h.is_active() && !h.pending_approval)
-        .map(|h| PickerHost {
+    let platforms = crate::platform::arsenal_platforms(state, arsenal);
+    let mut hidden = Vec::new();
+    let mut rows: Vec<PickerHost> = Vec::new();
+    for h in repo::hosts::list(&state.pool).await? {
+        if !h.is_active() || h.pending_approval {
+            continue;
+        }
+        let os = crate::platform::host_os(&state.hosts, h.id, h.os.as_deref());
+        if !platforms.allows(os) {
+            hidden.push(os);
+            continue;
+        }
+        rows.push(PickerHost {
             online: state.hosts.is_connected(h.id),
             os: os_label(h.os.as_deref()),
             last_seen: match h.last_seen_at {
@@ -62,14 +94,22 @@ pub async fn hosts(state: &AppState) -> anyhow::Result<Vec<PickerHost>> {
             is_control_plane: h.is_control_plane,
             id: h.id.to_string(),
             name: h.name,
-        })
-        .collect();
+        });
+    }
     rows.sort_by(|a, b| {
         b.online
             .cmp(&a.online)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    Ok(rows)
+    let name = state
+        .modules
+        .find(arsenal)
+        .map(|a| a.display_name())
+        .unwrap_or(arsenal);
+    Ok(PickerList {
+        hosts: rows,
+        hidden_note: crate::platform::hidden_hosts_note(name, platforms, &hidden),
+    })
 }
 
 /// The host to go straight to when the fleet is exactly one host and it's

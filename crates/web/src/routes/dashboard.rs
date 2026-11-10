@@ -94,23 +94,25 @@ pub async fn show(
     .await?;
 
     let search = q.q.trim().to_lowercase();
-    // The same rule as the top bar's Arsenals menu (`crate::nav`).
-    let visible: Vec<ModuleTile> = crate::nav::visible_modules(&state.modules, &state.pool, &ctx)
-        .await?
-        .into_iter()
-        .filter(|m| {
-            search.is_empty()
-                || m.display_name.to_lowercase().contains(&search)
-                || m.description.to_lowercase().contains(&search)
-        })
-        .map(|m| ModuleTile {
-            key: m.key,
-            display_name: m.display_name,
-            description: m.description,
-            category: m.category.to_string(),
-            pinned: m.pinned,
-        })
-        .collect();
+    // The same rule as the top bar's Arsenals menu (`crate::nav`), including
+    // leaving out arsenals that aren't for the selected host's OS.
+    let visible: Vec<ModuleTile> =
+        crate::nav::visible_modules(&state.modules, &state.pool, &ctx, base.selected_os())
+            .await?
+            .into_iter()
+            .filter(|m| {
+                search.is_empty()
+                    || m.display_name.to_lowercase().contains(&search)
+                    || m.description.to_lowercase().contains(&search)
+            })
+            .map(|m| ModuleTile {
+                key: m.key,
+                display_name: m.display_name,
+                description: m.description,
+                category: m.category.to_string(),
+                pinned: m.pinned,
+            })
+            .collect();
 
     let pinned: Vec<ModuleTile> = visible.iter().filter(|t| t.pinned).cloned().collect();
 

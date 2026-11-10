@@ -32,6 +32,8 @@
   <form method="post" action="/arsenals/panopticon/deploy/confirm" style="margin-top:14px;">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <input type="hidden" name="confirm" value="true">
+    {% if windows %}<input type="hidden" name="target_os" value="windows">{% endif %}
+    <input type="hidden" name="concurrency" value="{{ concurrency }}">
     <input type="hidden" name="shared_username" value="{{ shared_username }}">
     <input type="hidden" name="shared_auth_method" value="{{ shared_auth_method }}">
     <input type="hidden" name="shared_password" value="{{ shared_password }}">

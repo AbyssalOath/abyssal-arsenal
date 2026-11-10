@@ -13,6 +13,7 @@ pub struct ModuleView {
     pub description: &'static str,
     pub category: ModuleCategory,
     pub view_permissions: &'static [Permission],
+    pub platforms: crate::Platforms,
     pub enabled: bool,
 }
 
@@ -61,6 +62,7 @@ impl ModuleRegistry {
                 description: a.description(),
                 category: a.category(),
                 view_permissions: a.view_permissions(),
+                platforms: a.platforms(),
                 enabled: enabled.contains(a.key()),
             })
             .collect())

@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Network interfaces, routes, DNS, connectivity diagnostics, sockets, and network configuration.
 pub struct NecrolinkArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for NecrolinkArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::NetworkView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

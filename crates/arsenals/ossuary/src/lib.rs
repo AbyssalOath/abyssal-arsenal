@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Disk, partition, LVM, RAID, volume, mount, and storage management.
 pub struct OssuaryArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for OssuaryArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::StorageView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

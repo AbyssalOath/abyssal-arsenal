@@ -99,6 +99,105 @@ pub(crate) struct DelegationResult {
     pub(crate) overprivileged_groups: Vec<String>,
     #[serde(default, deserialize_with = "one_or_many")]
     pub(crate) manageable_ous: Vec<String>,
+    /// The account's password expiry (agents from 0.2.6 on; absent before).
+    #[serde(default)]
+    pub(crate) password_never_expires: Option<bool>,
+    #[serde(default)]
+    pub(crate) password_expiry_filetime: Option<i64>,
+}
+
+impl DelegationResult {
+    pub(crate) fn password_expiry(&self) -> repo::directory::PasswordExpiry {
+        password_expiry(self.password_never_expires, self.password_expiry_filetime)
+    }
+}
+
+/// What `DirectoryRotateServiceAccountPassword` reports: the change went
+/// through, and (if the new password could be read back) its expiry.
+#[derive(Deserialize)]
+struct RotateResult {
+    #[serde(default)]
+    verified: bool,
+    #[serde(default)]
+    password_never_expires: Option<bool>,
+    #[serde(default)]
+    password_expiry_filetime: Option<i64>,
+}
+
+/// Warn this many days before the service account's password expires.
+pub(crate) const SA_PASSWORD_WARN_DAYS: i64 = 14;
+
+/// Converts AD's `PasswordNeverExpires` and `msDS-UserPasswordExpiryTimeComputed`
+/// (a Windows FILETIME: 100 ns ticks since 1601) into an expiry. AD uses
+/// `i64::MAX` for "never" and 0 for "must change at next logon", which counts
+/// as already expired. Neither value known: an agent older than 0.2.6.
+pub(crate) fn password_expiry(
+    never_expires: Option<bool>,
+    filetime: Option<i64>,
+) -> repo::directory::PasswordExpiry {
+    use repo::directory::PasswordExpiry;
+    const FILETIME_UNIX_EPOCH_SECS: i64 = 11_644_473_600;
+    let never = PasswordExpiry {
+        expires_at: None,
+        never_expires: Some(true),
+    };
+    if never_expires == Some(true) {
+        return never;
+    }
+    let at = |t: chrono::DateTime<chrono::Utc>| PasswordExpiry {
+        expires_at: Some(t),
+        never_expires: Some(false),
+    };
+    match filetime {
+        None => PasswordExpiry::default(),
+        Some(i64::MAX) => never,
+        Some(ft) if ft <= 0 => at(chrono::DateTime::UNIX_EPOCH),
+        Some(ft) => {
+            match chrono::DateTime::from_timestamp(ft / 10_000_000 - FILETIME_UNIX_EPOCH_SECS, 0) {
+                Some(t) => at(t),
+                None => PasswordExpiry::default(),
+            }
+        }
+    }
+}
+
+/// The service-account password's expiry as shown on the domain pages, and
+/// whether it deserves a warning (expired, or within
+/// [`SA_PASSWORD_WARN_DAYS`]).
+pub(crate) fn password_expiry_notice(
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    never_expires: Option<bool>,
+    now: chrono::DateTime<chrono::Utc>,
+    tz: &str,
+) -> (String, bool) {
+    if never_expires == Some(true) {
+        return ("Never expires".into(), false);
+    }
+    let Some(at) = expires_at else {
+        return ("Not known yet".into(), false);
+    };
+    if at <= now {
+        // AD's "must change at next logon" comes through as the epoch.
+        if at == chrono::DateTime::UNIX_EPOCH {
+            return ("Expired: AD requires it to be changed".into(), true);
+        }
+        return (
+            format!("Expired on {}", crate::common::format_in_tz(at, tz)),
+            true,
+        );
+    }
+    let days = (at - now).num_days();
+    let when = crate::common::format_in_tz(at, tz);
+    if days <= SA_PASSWORD_WARN_DAYS {
+        let left = match days {
+            0 => "today".to_string(),
+            1 => "in 1 day".to_string(),
+            n => format!("in {n} days"),
+        };
+        (format!("Expires {when} ({left})"), true)
+    } else {
+        (format!("Expires {when}"), false)
+    }
 }
 
 /// One OU from `DirectoryOuTree` (`Select-Object Name, DistinguishedName`).
@@ -310,6 +409,14 @@ pub async fn show(
         .map(|d| {
             let delegation = delegation_label(d.has_service_account, d.last_delegation_ok);
             let writable = d.is_writable();
+            let (expiry, warn) = password_expiry_notice(
+                d.sa_password_expires_at,
+                d.sa_password_never_expires,
+                chrono::Utc::now(),
+                &ctx.user.timezone,
+            );
+            let password_warning = (d.has_service_account && warn)
+                .then(|| format!("Service-account password: {expiry}"));
             GravekeeperDomainRow {
                 id: d.id.to_string(),
                 dns_name: d.dns_name,
@@ -319,6 +426,7 @@ pub async fn show(
                 service_account: d.service_account_upn.unwrap_or_default(),
                 writable,
                 delegation,
+                password_warning,
             }
         })
         .collect();
@@ -603,7 +711,17 @@ async fn render_domain(
         None => Vec::new(),
     };
 
+    let (password_expiry, password_expiry_warn) = password_expiry_notice(
+        domain.sa_password_expires_at,
+        domain.sa_password_never_expires,
+        chrono::Utc::now(),
+        &ctx.user.timezone,
+    );
     let detail = GravekeeperDomainDetail {
+        can_rotate: domain.is_writable() && !domain.has_pending_password,
+        rotation_pending: domain.has_pending_password,
+        password_expiry,
+        password_expiry_warn,
         id: domain.id.to_string(),
         dns_name: domain.dns_name.clone(),
         netbios: domain.netbios_name.unwrap_or_default(),
@@ -817,6 +935,7 @@ pub async fn set_service_account(
         &upn,
         &sealed,
         &detail.to_string(),
+        result.password_expiry(),
     )
     .await?;
     record_audit(
@@ -841,6 +960,151 @@ pub async fn set_service_account(
         None,
     )
     .await
+}
+
+/// POST: rotate the domain's service-account password. `directory.configure`.
+///
+/// The control plane generates the new password (nobody sees it), seals it and
+/// stores it as *pending* before asking AD for anything; the account then
+/// changes its own password on the write DC. Only once AD confirms does the
+/// pending password replace the stored one. If the outcome is unclear, the
+/// pending password is resolved straight away (and again by the daily check),
+/// so a password AD accepted is never lost.
+pub async fn rotate_service_account_password(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RemoveForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryConfigure)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let hc = match helpdesk_prepare(&state, id).await {
+        Ok(hc) => hc,
+        Err(e) => return render_domain(&state, &jar, &ctx, id, None, Some(e)).await,
+    };
+    let Some(key) = state.encryption_key.clone() else {
+        return render_domain(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some("This control plane has no ENCRYPTION_KEY set.".into()),
+        )
+        .await;
+    };
+
+    let new_password = generate_password(32);
+    let sealed = key.encrypt(&new_password).map_err(|e| {
+        WebError(AppError::Validation(format!(
+            "Couldn't seal the new password: {e}"
+        )))
+    })?;
+    if !repo::directory::begin_password_rotation(&state.pool, id, &sealed).await? {
+        return render_domain(
+            &state,
+            &jar,
+            &ctx,
+            id,
+            None,
+            Some(
+                "An earlier rotation's outcome isn't settled yet. The daily check settles it; \
+                 try again after that."
+                    .into(),
+            ),
+        )
+        .await;
+    }
+
+    let op = AgentOperation::DirectoryRotateServiceAccountPassword {
+        domain_dns: hc.domain_dns.clone(),
+        service_account_upn: hc.upn.clone(),
+        current_password: hc.password.clone(),
+        new_password,
+    };
+    let audit = |result: &str, detail: Option<String>| {
+        record_audit(
+            &state,
+            &ctx,
+            AuditAction::DirectoryDomainConfigured,
+            &hc.domain_dns,
+            serde_json::json!({
+                "action": "service_account_password_rotated",
+                "upn": hc.upn,
+                "result": result,
+                "detail": detail,
+            }),
+        )
+    };
+
+    match dispatch_write(&state, &ctx, &hc, op, Permission::DirectoryConfigure).await {
+        Ok(stdout) => {
+            repo::directory::complete_password_rotation(&state.pool, id).await?;
+            let rotated: Option<RotateResult> = serde_json::from_str(&stdout).ok();
+            if let Some(r) = &rotated {
+                repo::directory::record_password_expiry(
+                    &state.pool,
+                    id,
+                    password_expiry(r.password_never_expires, r.password_expiry_filetime),
+                )
+                .await?;
+            }
+            audit("ok", None).await;
+            let note = if rotated.is_some_and(|r| r.verified) {
+                ""
+            } else {
+                " (AD accepted it, but reading it back failed; the daily check will confirm it)"
+            };
+            render_domain(
+                &state,
+                &jar,
+                &ctx,
+                id,
+                Some(format!(
+                    "Service-account password rotated and stored{note}. Nobody has seen the new \
+                     password."
+                )),
+                None,
+            )
+            .await
+        }
+        Err(e) => {
+            use crate::gravekeeper_ops::PendingPassword;
+            let (result, message) =
+                match crate::gravekeeper_ops::resolve_pending_password(&state, id).await {
+                    PendingPassword::Promoted => (
+                        "ok_after_error",
+                        format!(
+                            "The rotation reported an error ({e}), but AD accepted the new \
+                             password, so it is now the stored one."
+                        ),
+                    ),
+                    PendingPassword::Abandoned => (
+                        "refused",
+                        format!(
+                            "AD didn't change the password: {e}. The stored password is \
+                             unchanged. (A domain's minimum password age can block a second \
+                             change on the same day.)"
+                        ),
+                    ),
+                    PendingPassword::None | PendingPassword::Unresolved => (
+                        "unresolved",
+                        format!(
+                            "The rotation failed ({e}) and it isn't clear yet whether AD \
+                             changed the password. Both passwords are kept; the daily check \
+                             keeps whichever one works."
+                        ),
+                    ),
+                };
+            audit(result, Some(e)).await;
+            if result == "ok_after_error" {
+                render_domain(&state, &jar, &ctx, id, Some(message), None).await
+            } else {
+                render_domain(&state, &jar, &ctx, id, None, Some(message)).await
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1184,6 +1448,16 @@ async fn render_object(
     // An active offboard snapshot means this account can be un-offboarded.
     let snapshot = repo::directory::active_snapshot_for_dn(&state.pool, domain.id, dn).await?;
     let can_manage = ctx.has(Permission::DirectoryManage);
+    let delete_hold = object.as_ref().and_then(|o| {
+        delete_hold(
+            &o.kind,
+            o.enabled,
+            snapshot.as_ref().map(|s| s.offboarded_at),
+            domain.deletion_grace_days,
+            chrono::Utc::now(),
+            &ctx.user.timezone,
+        )
+    });
     let tpl = crate::templates::GravekeeperObjectTemplate {
         base,
         domain_id: domain.id.to_string(),
@@ -1193,6 +1467,7 @@ async fn render_object(
         writable: domain.has_service_account && domain.last_delegation_ok == Some(true),
         can_manage,
         can_delete: ctx.has(Permission::DirectoryDelete),
+        delete_hold,
         offboard_available: is_user && can_manage && snapshot.is_none(),
         undo_snapshot_id: snapshot.filter(|_| can_manage).map(|s| s.id.to_string()),
         object,
@@ -1274,6 +1549,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// human error otherwise (not writable, DC offline, no key, ...).
 struct HelpdeskContext {
     domain_dns: String,
+    deletion_grace_days: i64,
     write_dc_id: Uuid,
     write_dc_name: String,
     upn: String,
@@ -1314,6 +1590,7 @@ async fn helpdesk_prepare(state: &AppState, id: Uuid) -> Result<HelpdeskContext,
         .to_string();
     Ok(HelpdeskContext {
         domain_dns: domain.dns_name,
+        deletion_grace_days: domain.deletion_grace_days,
         write_dc_id,
         write_dc_name,
         upn,
@@ -1356,6 +1633,12 @@ async fn dispatch_write(
 /// and symbol (satisfies default AD complexity and typical policies). Generated
 /// with the OS CSPRNG; shown once and never stored.
 fn generate_temp_password() -> String {
+    generate_password(20)
+}
+
+/// A random password of `len` (at least 4) characters with at least one lower,
+/// upper, digit and symbol, from the OS CSPRNG.
+fn generate_password(len: usize) -> String {
     use rand::seq::SliceRandom;
     use rand::{RngCore, rngs::OsRng};
     const LOWER: &[u8] = b"abcdefghijkmnpqrstuvwxyz";
@@ -1367,7 +1650,7 @@ fn generate_temp_password() -> String {
     let pick = |rng: &mut OsRng, set: &[u8]| set[(rng.next_u32() as usize) % set.len()];
     let mut chars: Vec<u8> = classes.iter().map(|set| pick(&mut rng, set)).collect();
     let all: Vec<u8> = classes.concat();
-    while chars.len() < 20 {
+    while chars.len() < len {
         chars.push(pick(&mut rng, &all));
     }
     chars.shuffle(&mut rng);
@@ -1957,6 +2240,48 @@ fn move_new_dn(dn: &str, new_parent: &str) -> String {
     }
 }
 
+/// Why a user account can't be deleted yet, or `None` if it can. Disable
+/// before delete: a user must already be disabled (an unknown state counts as
+/// not disabled), and one Gravekeeper offboarded must also have waited out the
+/// domain's grace period since, so the offboarding can still be undone until
+/// then. A user disabled outside Gravekeeper has no offboarding date, so only
+/// the disabled check applies. Computers aren't held.
+fn delete_hold(
+    kind: &str,
+    enabled: Option<bool>,
+    offboarded_at: Option<chrono::DateTime<chrono::Utc>>,
+    grace_days: i64,
+    now: chrono::DateTime<chrono::Utc>,
+    tz: &str,
+) -> Option<String> {
+    if kind != "user" {
+        return None;
+    }
+    match enabled {
+        Some(false) => {}
+        Some(true) => {
+            return Some(
+                "This account is still enabled. Disable or offboard it before deleting it.".into(),
+            );
+        }
+        None => {
+            return Some(
+                "Couldn't confirm this account is disabled, so it can't be deleted.".into(),
+            );
+        }
+    }
+    let offboarded_at = offboarded_at?;
+    let deletable_from = offboarded_at + chrono::Duration::days(grace_days.max(0));
+    (now < deletable_from).then(|| {
+        format!(
+            "This account was offboarded on {}. It can be deleted from {} (this domain's \
+             {grace_days}-day grace period), so the offboarding can still be undone until then.",
+            crate::common::format_in_tz(offboarded_at, tz),
+            crate::common::format_in_tz(deletable_from, tz),
+        )
+    })
+}
+
 /// POST: delete a user/computer object. `directory.delete`. (Groups use
 /// `delete_group`.)
 pub async fn delete_object(
@@ -1976,6 +2301,41 @@ pub async fn delete_object(
         Ok(hc) => hc,
         Err(e) => return render_object(&state, &jar, &ctx, id, &dn, None, None, Some(e)).await,
     };
+    // Disable before delete, and the grace period after offboarding: checked
+    // here against a fresh read of the object, not trusted from the page.
+    let snapshot = repo::directory::active_snapshot_for_dn(&state.pool, id, &dn).await?;
+    let read = dispatch_directory(
+        &state,
+        &ctx,
+        hc.write_dc_id,
+        &hc.write_dc_name,
+        AgentOperation::DirectoryGetObject {
+            domain_dns: hc.domain_dns.clone(),
+            dn: dn.clone(),
+        },
+        Permission::DirectoryDelete,
+        BROWSE_TIMEOUT,
+    )
+    .await
+    .and_then(|stdout| {
+        serde_json::from_str::<ObjectInfo>(stdout.trim()).map_err(|e| e.to_string())
+    });
+    let hold = match read {
+        Ok(info) => delete_hold(
+            &info.kind,
+            info.enabled,
+            snapshot.as_ref().map(|s| s.offboarded_at),
+            hc.deletion_grace_days,
+            chrono::Utc::now(),
+            &ctx.user.timezone,
+        ),
+        Err(e) => Some(format!(
+            "Couldn't read the object to check it can be deleted: {e}"
+        )),
+    };
+    if let Some(reason) = hold {
+        return render_object(&state, &jar, &ctx, id, &dn, None, None, Some(reason)).await;
+    }
     let op = AgentOperation::DirectoryDeleteObject {
         domain_dns: hc.domain_dns.clone(),
         service_account_upn: hc.upn.clone(),
@@ -1993,6 +2353,10 @@ pub async fn delete_object(
                 serde_json::json!({ "dn": dn }),
             )
             .await;
+            // The account is gone, so its offboarding can't be undone any more.
+            if let Some(snapshot) = snapshot {
+                repo::directory::mark_snapshot_undone(&state.pool, snapshot.id).await?;
+            }
             Ok(Redirect::to(&format!("/arsenals/gravekeeper/domains/{id}/browse")).into_response())
         }
         Err(e) => {
@@ -2849,6 +3213,117 @@ pub async fn bulk_retry(
 
 // --- Cross-domain find + Thanatos workflow landing (directory.view) ----------
 
+/// Runs `DirectorySearch` for `q` on `domain`'s write DC. `None` when that DC
+/// isn't set or connected (the domain is skipped, not an error); the inner
+/// `Err` is the agent's failure, for the page to show.
+async fn search_domain(
+    state: &AppState,
+    ctx: &AuthContext,
+    domain: &repo::directory::DirectoryDomain,
+    q: &str,
+) -> Result<Option<Result<Vec<SearchHit>, String>>, WebError> {
+    let Some(hid) = domain
+        .write_dc_host_id
+        .filter(|h| state.hosts.is_connected(*h))
+    else {
+        return Ok(None);
+    };
+    let Some(host) = repo::hosts::find_by_id(&state.pool, hid).await? else {
+        return Ok(None);
+    };
+    let outcome = dispatch_directory(
+        state,
+        ctx,
+        host.id,
+        &host.name,
+        AgentOperation::DirectorySearch {
+            domain_dns: domain.dns_name.clone(),
+            query: q.to_string(),
+        },
+        Permission::DirectoryView,
+        BROWSE_TIMEOUT,
+    )
+    .await;
+    Ok(Some(match outcome {
+        Ok(stdout) => Ok(parse_list::<SearchHit>(&stdout).unwrap_or_default()),
+        Err(e) => Err(e),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct LockoutQuery {
+    /// The host that logged the 4740 (a DC); prefers the domain it writes for.
+    host: Uuid,
+    account: String,
+}
+
+/// GET from a Thanatos "Windows account locked out" event: finds the named
+/// account and redirects to its object page, where Unlock is. Searches the
+/// domain whose write DC logged the event, else every domain, and only jumps
+/// when exactly one user's sAMAccountName matches; anything else lands on the
+/// find page with the name filled in. `directory.view` (Unlock itself still
+/// needs `directory.helpdesk`).
+pub async fn lockout_landing(
+    State(state): State<AppState>,
+    CurrentUser(ctx): CurrentUser,
+    axum::extract::Query(query): axum::extract::Query<LockoutQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::DirectoryView)?;
+    let account = query.account.trim().to_string();
+    let find = format!(
+        "/arsenals/gravekeeper/find?q={}",
+        crate::common::urlencoding_encode(&account)
+    );
+    if account.is_empty() || account.chars().count() > 20 {
+        return Ok(Redirect::to("/arsenals/gravekeeper/find").into_response());
+    }
+
+    let domains = repo::directory::list(&state.pool).await?;
+    let logged_by: Vec<_> = domains
+        .iter()
+        .filter(|d| d.write_dc_host_id == Some(query.host))
+        .collect();
+    let candidates = if logged_by.is_empty() {
+        domains.iter().collect()
+    } else {
+        logged_by
+    };
+
+    let mut found = Vec::new();
+    for domain in candidates {
+        if let Some(Ok(hits)) = search_domain(&state, &ctx, domain, &account).await? {
+            found.extend(
+                exact_user_matches(hits, &account)
+                    .into_iter()
+                    .map(|dn| (domain.id, dn)),
+            );
+        }
+    }
+    let target = match found.as_slice() {
+        [(domain_id, dn)] => format!(
+            "/arsenals/gravekeeper/domains/{domain_id}/object?dn={}",
+            crate::common::urlencoding_encode(dn)
+        ),
+        _ => find,
+    };
+    Ok(Redirect::to(&target).into_response())
+}
+
+/// The DNs of the users in `hits` whose sAMAccountName is `account` (AD
+/// compares them case-insensitively). The search is ANR, so it also returns
+/// prefix matches and groups/computers, which a lockout never names.
+fn exact_user_matches(hits: Vec<SearchHit>, account: &str) -> Vec<String> {
+    hits.into_iter()
+        .filter(|h| h.kind == "user")
+        .filter(|h| {
+            h.sam
+                .as_deref()
+                .is_some_and(|sam| sam.eq_ignore_ascii_case(account))
+        })
+        .map(|h| h.dn)
+        .collect()
+}
+
 #[derive(Deserialize)]
 pub struct FindQuery {
     #[serde(default)]
@@ -2902,52 +3377,28 @@ pub async fn find(
     let mut error = None;
     if !q.is_empty() {
         for domain in repo::directory::list(&state.pool).await? {
-            let Some(hid) = domain
-                .write_dc_host_id
-                .filter(|h| state.hosts.is_connected(*h))
-            else {
-                continue;
-            };
-            let host = match repo::hosts::find_by_id(&state.pool, hid).await? {
-                Some(h) => h,
-                None => continue,
-            };
-            match dispatch_directory(
-                &state,
-                &ctx,
-                host.id,
-                &host.name,
-                AgentOperation::DirectorySearch {
-                    domain_dns: domain.dns_name.clone(),
-                    query: q.clone(),
-                },
-                Permission::DirectoryView,
-                BROWSE_TIMEOUT,
-            )
-            .await
-            {
-                Ok(stdout) => {
-                    if let Ok(hits) = parse_list::<SearchHit>(&stdout) {
-                        for h in hits {
-                            let sub = h
-                                .upn
-                                .filter(|s| !s.is_empty())
-                                .or(h.sam)
-                                .unwrap_or_default();
-                            results.push(crate::templates::GravekeeperFindRow {
-                                domain_id: domain.id.to_string(),
-                                domain_dns: domain.dns_name.clone(),
-                                kind: h.kind,
-                                name: h.name,
-                                sub,
-                                dn_encoded: crate::common::urlencoding_encode(&h.dn),
-                            });
-                        }
+            match search_domain(&state, &ctx, &domain, &q).await? {
+                Some(Ok(hits)) => {
+                    for h in hits {
+                        let sub = h
+                            .upn
+                            .filter(|s| !s.is_empty())
+                            .or(h.sam)
+                            .unwrap_or_default();
+                        results.push(crate::templates::GravekeeperFindRow {
+                            domain_id: domain.id.to_string(),
+                            domain_dns: domain.dns_name.clone(),
+                            kind: h.kind,
+                            name: h.name,
+                            sub,
+                            dn_encoded: crate::common::urlencoding_encode(&h.dn),
+                        });
                     }
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     error.get_or_insert(format!("{}: {e}", domain.dns_name));
                 }
+                None => {}
             }
         }
     }
@@ -4923,6 +5374,153 @@ async fn record_audit(
 mod tests {
     use super::*;
 
+    mod password_expiry {
+        use super::super::{password_expiry, password_expiry_notice};
+        use abyssal_database::repo::directory::PasswordExpiry;
+        use chrono::{Duration, TimeZone, Utc};
+
+        /// 2026-12-01 00:00:00 UTC as a Windows FILETIME.
+        const DEC_1_2026: i64 = (1_796_083_200 + 11_644_473_600) * 10_000_000;
+
+        #[test]
+        fn filetime_converts_to_utc() {
+            assert_eq!(
+                password_expiry(Some(false), Some(DEC_1_2026)),
+                PasswordExpiry {
+                    expires_at: Some(Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap()),
+                    never_expires: Some(false),
+                }
+            );
+        }
+
+        #[test]
+        fn never_expires_from_the_flag_or_ads_max_value() {
+            let never = PasswordExpiry {
+                expires_at: None,
+                never_expires: Some(true),
+            };
+            assert_eq!(password_expiry(Some(true), Some(DEC_1_2026)), never);
+            assert_eq!(password_expiry(Some(false), Some(i64::MAX)), never);
+        }
+
+        #[test]
+        fn zero_means_it_must_be_changed_now() {
+            let expiry = password_expiry(Some(false), Some(0));
+            assert_eq!(expiry.expires_at, Some(chrono::DateTime::UNIX_EPOCH));
+            let (label, warn) =
+                password_expiry_notice(expiry.expires_at, expiry.never_expires, Utc::now(), "UTC");
+            assert!(warn);
+            assert!(label.contains("requires it to be changed"), "{label}");
+        }
+
+        #[test]
+        fn an_older_agent_reports_nothing() {
+            assert_eq!(password_expiry(None, None), PasswordExpiry::default());
+            let (label, warn) = password_expiry_notice(None, None, Utc::now(), "UTC");
+            assert_eq!((label.as_str(), warn), ("Not known yet", false));
+        }
+
+        #[test]
+        fn warns_inside_the_window_and_when_expired() {
+            let now = Utc.with_ymd_and_hms(2026, 11, 9, 12, 0, 0).unwrap();
+            let notice = |days: i64| {
+                password_expiry_notice(Some(now + Duration::days(days)), Some(false), now, "UTC")
+            };
+            assert!(!notice(30).1);
+            let (label, warn) = notice(14);
+            assert!(warn);
+            assert!(label.contains("in 14 days"), "{label}");
+            let (label, warn) = notice(-1);
+            assert!(warn);
+            assert!(label.starts_with("Expired on"), "{label}");
+            assert!(!password_expiry_notice(None, Some(true), now, "UTC").1);
+        }
+    }
+
+    mod delete_hold {
+        use super::super::delete_hold;
+        use chrono::{Duration, TimeZone, Utc};
+
+        fn offboarded() -> chrono::DateTime<Utc> {
+            Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap()
+        }
+
+        #[test]
+        fn computers_are_never_held() {
+            assert_eq!(
+                delete_hold("computer", Some(true), None, 30, Utc::now(), "UTC"),
+                None
+            );
+        }
+
+        #[test]
+        fn an_enabled_or_unknown_user_is_held() {
+            let held = delete_hold("user", Some(true), None, 30, Utc::now(), "UTC").unwrap();
+            assert!(held.contains("still enabled"));
+            let held = delete_hold("user", None, None, 30, Utc::now(), "UTC").unwrap();
+            assert!(held.contains("Couldn't confirm"));
+        }
+
+        #[test]
+        fn a_user_disabled_outside_gravekeeper_can_be_deleted() {
+            assert_eq!(
+                delete_hold("user", Some(false), None, 30, Utc::now(), "UTC"),
+                None
+            );
+        }
+
+        #[test]
+        fn an_offboarded_user_waits_out_the_grace_period() {
+            let at = offboarded();
+            let held = delete_hold(
+                "user",
+                Some(false),
+                Some(at),
+                30,
+                at + Duration::days(29),
+                "UTC",
+            )
+            .unwrap();
+            assert!(held.contains("30-day grace period"));
+            assert!(held.contains("2026-12-01"), "{held}");
+            assert_eq!(
+                delete_hold(
+                    "user",
+                    Some(false),
+                    Some(at),
+                    30,
+                    at + Duration::days(30),
+                    "UTC"
+                ),
+                None
+            );
+        }
+
+        #[test]
+        fn a_zero_day_grace_period_allows_deleting_straight_away() {
+            let at = offboarded();
+            assert_eq!(
+                delete_hold("user", Some(false), Some(at), 0, at, "UTC"),
+                None
+            );
+        }
+
+        #[test]
+        fn an_offboarded_user_re_enabled_by_hand_is_still_held() {
+            let at = offboarded();
+            let held = delete_hold(
+                "user",
+                Some(true),
+                Some(at),
+                30,
+                at + Duration::days(60),
+                "UTC",
+            )
+            .unwrap();
+            assert!(held.contains("still enabled"));
+        }
+    }
+
     #[test]
     fn default_disabled_ou_from_dns() {
         assert_eq!(
@@ -4969,6 +5567,24 @@ mod tests {
         assert!(r.account_found);
         assert_eq!(r.overprivileged_groups, vec!["Domain Admins"]);
         assert_eq!(r.manageable_ous, vec!["OU=Staff,DC=corp,DC=com"]);
+    }
+
+    #[test]
+    fn lockout_matches_only_users_with_that_exact_sam() {
+        // ANR on "jdoe" also returns prefix matches and non-users.
+        let hits: Vec<SearchHit> = parse_list(
+            r#"[
+                {"type":"user","name":"John Doe","sam":"JDoe","dn":"CN=John Doe,OU=Staff,DC=corp,DC=com"},
+                {"type":"user","name":"Jane Doer","sam":"jdoer","dn":"CN=Jane Doer,OU=Staff,DC=corp,DC=com"},
+                {"type":"group","name":"jdoe","sam":"jdoe","dn":"CN=jdoe,OU=Groups,DC=corp,DC=com"},
+                {"type":"user","name":"No Sam","dn":"CN=No Sam,DC=corp,DC=com"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_user_matches(hits, "jdoe"),
+            vec!["CN=John Doe,OU=Staff,DC=corp,DC=com".to_string()]
+        );
     }
 
     #[test]

@@ -1,13 +1,14 @@
 {% import "_macros.html" as macros %}
 {# The host list on an arsenal's landing page (`crate::host_picker`):
-   every enrolled host with its OS and whether it's online. Offline hosts
+   every enrolled host the arsenal is for, with its OS and whether it's
+   online, and a note for any hosts left out by OS. Offline hosts
    are shown, with when they were last seen, but not linked -- their page
    can't run anything until the agent reconnects. #}
 {% macro host_picker(hosts, arsenal, intro) %}
 {% if hosts.is_empty() %}
 <div class="card">
   <p style="color:var(--text-muted); margin:0;">
-    No hosts are enrolled yet. Enroll one from <a href="/admin/hosts">Hosts</a> first.
+    {% if let Some(note) = hosts.hidden_note %}No enrolled host can use this arsenal. {{ note }}{% else %}No hosts are enrolled yet. Enroll one from <a href="/admin/hosts">Hosts</a> first.{% endif %}
   </p>
 </div>
 {% else %}
@@ -37,6 +38,9 @@
     {% endif %}
     {% endfor %}
   </div>
+  {% if let Some(note) = hosts.hidden_note %}
+  <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0;">{{ note }}</p>
+  {% endif %}
 </div>
 {% endif %}
 {% endmacro %}

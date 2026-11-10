@@ -220,22 +220,6 @@
           </td>
         </tr>
         {% endfor %}
-        {% for t in legacy_tokens %}
-        <tr>
-          <td>{{ t.label }} <span class="badge badge-muted" title="A deployment token from before install tokens. It only works with the one-liners, and keeps working until it expires or is revoked. New ones can't be created.">Legacy (one-liner only)</span></td>
-          <td class="text-muted">{{ t.created }}</td>
-          <td class="text-muted">{{ t.expires }}</td>
-          <td class="text-muted">{{ t.use_count }}</td>
-          <td class="text-muted">Not required</td>
-          <td class="token-actions">
-            <form method="post" action="/admin/hosts/deployment-token/{{ t.id }}/revoke" style="margin:0;"
-                  data-confirm="Revoke this legacy deployment token? It stops enrolling new hosts immediately. Hosts it enrolled keep working.">
-              <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
-              <button type="submit" class="btn-danger btn-sm">Revoke</button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
       </tbody>
     </table>
   </div>

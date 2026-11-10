@@ -16,8 +16,10 @@
   enrolled.
 
   Properties: SERVER (control plane URL), AAT (install token; hidden from the
-  MSI log), NAME (optional host name override), PURGE=1 (on uninstall, also
-  delete this host's credentials, CA and log).
+  MSI log), AAT_FILE (instead of AAT: the path of a file holding the token,
+  which the agent reads and deletes, so the token is never on a command line),
+  NAME (optional host name override), PURGE=1 (on uninstall, also delete this
+  host's credentials, CA and log). AAT and AAT_FILE can't both be set.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Abyssal Arsenal Agent"
@@ -37,6 +39,8 @@
 
     <Property Id="SERVER" Secure="yes" />
     <Property Id="AAT" Secure="yes" Hidden="yes" />
+    <!-- A path, not a secret, so it isn't Hidden. -->
+    <Property Id="AAT_FILE" Secure="yes" />
     <Property Id="NAME" Secure="yes" />
     <Property Id="PURGE" Secure="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -60,7 +64,7 @@
          is in C:\ProgramData\abyssal-agent\agent.log. -->
     <CustomAction Id="InstallAgent"
                   FileRef="AgentExeFile"
-                  ExeCommand="install --non-interactive --msi --control-plane-url &quot;[SERVER]&quot; --aat &quot;[AAT]&quot; --name &quot;[NAME]&quot;"
+                  ExeCommand="install --non-interactive --msi --control-plane-url &quot;[SERVER]&quot; --aat &quot;[AAT]&quot; --aat-file &quot;[AAT_FILE]&quot; --name &quot;[NAME]&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />

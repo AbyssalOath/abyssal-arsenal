@@ -59,6 +59,72 @@ fn control_plane_base_url(state: &AppState, headers: &HeaderMap) -> String {
     crate::common::request_base_url(state, headers)
 }
 
+/// The most hosts one deploy job takes.
+const MAX_HOSTS_PER_JOB: usize = 50;
+/// The most hosts one job works on at once (the form's "Hosts at once").
+const MAX_CONCURRENCY: usize = 10;
+/// How many deploy jobs one operator can start per [`JOB_RATE_WINDOW`].
+const JOBS_PER_WINDOW: usize = 5;
+const JOB_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// When each operator started their recent deploy jobs, for
+/// [`check_job_rate`]. In memory, like the jobs themselves.
+static JOB_STARTS: std::sync::LazyLock<std::sync::Mutex<HashMap<Uuid, Vec<std::time::Instant>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Records a job start for `user`, or refuses it when they've already
+/// started [`JOBS_PER_WINDOW`] in the last [`JOB_RATE_WINDOW`] -- a brake on
+/// a scripted or mistaken loop pushing credentials at the network.
+fn check_job_rate(user: Uuid, now: std::time::Instant) -> Result<(), WebError> {
+    let mut starts = JOB_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+    let recent = starts.entry(user).or_default();
+    recent.retain(|t| now.duration_since(*t) < JOB_RATE_WINDOW);
+    if recent.len() >= JOBS_PER_WINDOW {
+        return Err(WebError(AppError::Validation(format!(
+            "You've started {JOBS_PER_WINDOW} deploy jobs in the last {} minutes; wait a few \
+             minutes before starting another.",
+            JOB_RATE_WINDOW.as_secs() / 60
+        ))));
+    }
+    recent.push(now);
+    Ok(())
+}
+
+/// "Hosts at once" from the form: blank or unparseable is the default,
+/// anything else is held to 1..=[`MAX_CONCURRENCY`].
+fn parse_concurrency(value: &str) -> usize {
+    value
+        .trim()
+        .parse::<usize>()
+        .map_or(crate::ssh_deploy::DEFAULT_CONCURRENCY, |n| {
+            n.clamp(1, MAX_CONCURRENCY)
+        })
+}
+
+/// Only hosts Panopticon already knows (a scan or the inventory) can be
+/// targeted: the IPs come back through the browser between steps, so an
+/// arbitrary one typed into a request must not get credentials sent to it.
+async fn ensure_in_inventory(state: &AppState, ips: &[String]) -> Result<(), WebError> {
+    for ip in ips {
+        if repo::network_devices::find_by_ip(&state.pool, ip)
+            .await?
+            .is_none()
+        {
+            return Err(WebError(AppError::Validation(format!(
+                "{ip} isn't in Panopticon's inventory. Only discovered hosts can be deployed to."
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// Windows pushes take a local administrator's credentials, so they need
+/// `hosts.deploy` on top of `hosts.enroll`.
+fn ensure_can_push_windows(ctx: &abyssal_rbac::AuthContext) -> Result<(), WebError> {
+    abyssal_rbac::ensure(ctx, Permission::HostsDeploy)?;
+    Ok(())
+}
+
 /// Every `ip: Vec<String>` field crossing this flow's request boundaries
 /// gets checked here before it's used for anything -- these values round-
 /// trip through the browser as hidden form fields between steps, so a
@@ -71,6 +137,12 @@ fn validate_ips(ips: &[String]) -> Result<(), WebError> {
         return Err(WebError(AppError::Validation(
             "One of the selected hosts is not a valid IP address.".into(),
         )));
+    }
+    if ips.len() > MAX_HOSTS_PER_JOB {
+        return Err(WebError(AppError::Validation(format!(
+            "{} hosts selected; one deploy takes at most {MAX_HOSTS_PER_JOB}.",
+            ips.len()
+        ))));
     }
     Ok(())
 }
@@ -275,9 +347,15 @@ pub async fn credentials_form(
     // hand back a ready-to-run install command (reusable token, CA-aware) to run
     // on them or push via PDQ/GPO/Intune. Covers both the scan picker's bulk
     // "Add Hosts" and the inventory's per-host "Quick add".
-    if fields.one("os") == "windows" {
+    // ...unless the operator chose to push it over SSH from that page.
+    let windows = fields.one("os") == "windows";
+    if windows && fields.one("transport") != "ssh" {
         return windows_deploy_page(&state, &jar, &ctx, &headers, selected_ips).await;
     }
+    if windows {
+        ensure_can_push_windows(&ctx)?;
+    }
+    ensure_in_inventory(&state, &selected_ips).await?;
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
     let base = BaseCtx::build(
@@ -306,6 +384,9 @@ pub async fn credentials_form(
         base,
         hosts,
         error: None,
+        windows,
+        default_concurrency: crate::ssh_deploy::DEFAULT_CONCURRENCY,
+        max_concurrency: MAX_CONCURRENCY,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -394,6 +475,7 @@ async fn windows_deploy_page(
     let tpl = PanopticonDeployWindowsTemplate {
         base,
         hosts,
+        can_push: ctx.has(Permission::HostsDeploy),
         oneliner,
         rmm,
         expires,
@@ -512,6 +594,9 @@ fn resolve_credentials(
 pub struct DeployCredentialsSubmitForm {
     csrf_token: String,
     ip: Vec<String>,
+    /// Pushing the Windows MSI rather than the Linux agent.
+    windows: bool,
+    concurrency: usize,
     shared_username: String,
     shared_auth_method: String,
     shared_password: String,
@@ -556,6 +641,8 @@ impl DeployCredentialsSubmitForm {
             .collect();
         Self {
             csrf_token: fields.one("csrf_token"),
+            windows: fields.one("target_os") == "windows",
+            concurrency: parse_concurrency(&fields.one("concurrency")),
             shared_username: fields.one("shared_username"),
             shared_auth_method: fields.one("shared_auth_method"),
             shared_password: fields.one("shared_password"),
@@ -616,6 +703,10 @@ pub async fn deploy_hostkeys(
     let form = DeployCredentialsSubmitForm::from_fields(&FormFields::parse(&body));
     require_csrf(&jar, &form.csrf_token)?;
     validate_ips(&form.ip)?;
+    if form.windows {
+        ensure_can_push_windows(&ctx)?;
+    }
+    ensure_in_inventory(&state, &form.ip).await?;
 
     let client = RusshClient;
     let mut rows = Vec::with_capacity(form.ip.len());
@@ -735,7 +826,15 @@ pub async fn deploy_hostkeys(
             .filter(|r| !r.blocked)
             .all(|r| r.status_label == "Already trusted");
     if all_pre_trusted && resolved.len() == form.ip.len() {
-        return start_deploy_job(&state, &ctx, &headers, resolved).await;
+        return start_deploy_job(
+            &state,
+            &ctx,
+            &headers,
+            resolved,
+            form.windows,
+            form.concurrency,
+        )
+        .await;
     }
 
     let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
@@ -754,6 +853,8 @@ pub async fn deploy_hostkeys(
         base,
         rows,
         any_deployable,
+        windows: form.windows,
+        concurrency: form.concurrency,
         shared_username: form.shared_username,
         shared_auth_method: form.shared_auth_method,
         shared_password: form.shared_password,
@@ -777,6 +878,8 @@ pub async fn deploy_hostkeys(
 pub struct DeployConfirmForm {
     csrf_token: String,
     confirm: bool,
+    windows: bool,
+    concurrency: usize,
     ip: Vec<String>,
     expected_fingerprint: Vec<String>,
     ssh_port: Vec<String>,
@@ -801,6 +904,8 @@ impl DeployConfirmForm {
         Self {
             csrf_token: fields.one("csrf_token"),
             confirm: fields.one("confirm") == "true",
+            windows: fields.one("target_os") == "windows",
+            concurrency: parse_concurrency(&fields.one("concurrency")),
             ip: fields.many("ip"),
             expected_fingerprint: fields.many("expected_fingerprint"),
             ssh_port: fields.many("ssh_port"),
@@ -842,6 +947,10 @@ pub async fn deploy_confirm(
         )));
     }
     validate_ips(&form.ip)?;
+    if form.windows {
+        ensure_can_push_windows(&ctx)?;
+    }
+    ensure_in_inventory(&state, &form.ip).await?;
     if form.expected_fingerprint.len() != form.ip.len() {
         return Err(WebError(AppError::Validation(
             "Malformed deploy request (host/fingerprint count mismatch).".into(),
@@ -887,7 +996,15 @@ pub async fn deploy_confirm(
         });
     }
 
-    start_deploy_job(&state, &ctx, &headers, resolved).await
+    start_deploy_job(
+        &state,
+        &ctx,
+        &headers,
+        resolved,
+        form.windows,
+        form.concurrency,
+    )
+    .await
 }
 
 async fn start_deploy_job(
@@ -895,7 +1012,22 @@ async fn start_deploy_job(
     ctx: &abyssal_rbac::AuthContext,
     headers: &HeaderMap,
     resolved: Vec<ResolvedTarget>,
+    windows: bool,
+    concurrency: usize,
 ) -> Result<Response, WebError> {
+    // Load the MSI before anything is trusted or counted against the rate
+    // limit: without it there's nothing to push.
+    let msi = if windows {
+        Some(Arc::new(
+            crate::windows_deploy::AgentMsi::load(state)
+                .await
+                .map_err(|e| WebError(AppError::Validation(e.to_string())))?,
+        ))
+    } else {
+        None
+    };
+    check_job_rate(ctx.user.id, std::time::Instant::now())?;
+
     // A changed/unconfirmed host key never reaches this point (excluded
     // upstream in `deploy_hostkeys`/`deploy_confirm`), so trusting here is
     // always either a first sighting or an unremarkable re-confirmation.
@@ -905,6 +1037,9 @@ async fn start_deploy_job(
     }
 
     let base_url = control_plane_base_url(state, headers);
+    if let Some(msi) = msi {
+        return start_windows_job(state, ctx, base_url, resolved, msi, concurrency).await;
+    }
     let mut ssh_targets = Vec::with_capacity(resolved.len());
     let mut job_hosts = Vec::with_capacity(resolved.len());
     for target in resolved {
@@ -927,6 +1062,7 @@ async fn start_deploy_job(
             // IP if nothing. `deploy_one_host` replaces this the moment
             // the host answers its own `hostname` command.
             hostname_is_fallback: target.hostname.is_none(),
+            failed_stage: None,
         });
         ssh_targets.push((
             DeployTarget {
@@ -954,7 +1090,64 @@ async fn start_deploy_job(
         job,
         ssh_targets,
         base_url,
-        crate::ssh_deploy::DEFAULT_CONCURRENCY,
+        concurrency,
+        ctx.user.id,
+        ctx.user.username.clone(),
+    ));
+
+    Ok(Redirect::to(&format!("/arsenals/panopticon/deploy/status/{job_id}")).into_response())
+}
+
+/// The Windows half of [`start_deploy_job`]: the MSI over SSH
+/// (`windows_deploy`), each host with its own install token, minted and
+/// revoked inside the job.
+async fn start_windows_job(
+    state: &AppState,
+    ctx: &abyssal_rbac::AuthContext,
+    base_url: String,
+    resolved: Vec<ResolvedTarget>,
+    msi: Arc<crate::windows_deploy::AgentMsi>,
+    concurrency: usize,
+) -> Result<Response, WebError> {
+    let mut targets = Vec::with_capacity(resolved.len());
+    let mut job_hosts = Vec::with_capacity(resolved.len());
+    for target in resolved {
+        job_hosts.push(HostDeployStatus {
+            ip_address: target.ip.clone(),
+            hostname: target.hostname.clone(),
+            state: HostDeployState::Pending,
+            output: String::new(),
+            hostname_is_fallback: target.hostname.is_none(),
+            failed_stage: None,
+        });
+        targets.push((
+            DeployTarget {
+                ip_address: target.ip,
+                hostname: target.hostname,
+                ssh_port: target.ssh_port,
+                credentials: target.credentials,
+            },
+            target.fingerprint,
+        ));
+    }
+
+    let job_id = Uuid::new_v4();
+    let job = Arc::new(tokio::sync::RwLock::new(DeployJob {
+        id: job_id,
+        hosts: job_hosts,
+    }));
+    state.deploy_jobs.write().await.insert(job_id, job.clone());
+
+    tokio::spawn(crate::windows_deploy::run_ssh_deploy_job(
+        Arc::new(RusshClient),
+        state.pool.clone(),
+        state.encryption_key.clone(),
+        state.hosts.clone(),
+        job,
+        targets,
+        base_url,
+        msi,
+        concurrency,
         ctx.user.id,
         ctx.user.username.clone(),
     ));
@@ -988,10 +1181,7 @@ pub async fn deploy_status(
         .hosts
         .iter()
         .map(|h| {
-            let failure_detail = match &h.state {
-                HostDeployState::Failed(reason) => Some(reason.message()),
-                _ => None,
-            };
+            let failure_detail = failure_detail(h);
             DeployStatusHostRow {
                 ip_address: h.ip_address.clone(),
                 hostname: h.hostname.clone(),
@@ -1059,10 +1249,7 @@ pub async fn deploy_status_json(
         .hosts
         .iter()
         .map(|h| {
-            let failure_detail = match &h.state {
-                HostDeployState::Failed(reason) => Some(reason.message()),
-                _ => None,
-            };
+            let failure_detail = failure_detail(h);
             serde_json::json!({
                 "ip_address": h.ip_address,
                 "hostname": h.hostname,
@@ -1088,6 +1275,17 @@ pub async fn deploy_status_json(
 /// `(hosts that have reached a terminal state, 0-100 percent complete)`.
 /// Shared between the status page's own initial render and the JSON
 /// endpoint it polls, so the two never compute this differently.
+/// A failed host's reason, prefixed with the stage it failed at when known.
+fn failure_detail(host: &HostDeployStatus) -> Option<String> {
+    let HostDeployState::Failed(reason) = &host.state else {
+        return None;
+    };
+    Some(match host.failed_stage {
+        Some(stage) => format!("Failed at {}: {}", stage.label(), reason.message()),
+        None => reason.message(),
+    })
+}
+
 fn deploy_job_progress(hosts: &[HostDeployStatus]) -> (usize, u8) {
     let total = hosts.len();
     let terminal = hosts.iter().filter(|h| h.state.is_terminal()).count();
@@ -1110,6 +1308,47 @@ fn state_badge_class(state: &HostDeployState) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn job_rate_limit_is_per_operator_and_slides() {
+        let alice = Uuid::new_v4();
+        let bob = Uuid::new_v4();
+        let t0 = std::time::Instant::now();
+        for _ in 0..JOBS_PER_WINDOW {
+            assert!(check_job_rate(alice, t0).is_ok());
+        }
+        assert!(check_job_rate(alice, t0).is_err(), "one too many");
+        assert!(check_job_rate(bob, t0).is_ok(), "per operator");
+        assert!(
+            check_job_rate(alice, t0 + JOB_RATE_WINDOW).is_ok(),
+            "the window moves on"
+        );
+    }
+
+    #[test]
+    fn concurrency_is_held_to_its_range() {
+        assert_eq!(
+            parse_concurrency(""),
+            crate::ssh_deploy::DEFAULT_CONCURRENCY
+        );
+        assert_eq!(
+            parse_concurrency("x"),
+            crate::ssh_deploy::DEFAULT_CONCURRENCY
+        );
+        assert_eq!(parse_concurrency("0"), 1);
+        assert_eq!(parse_concurrency("3"), 3);
+        assert_eq!(parse_concurrency("500"), MAX_CONCURRENCY);
+    }
+
+    #[test]
+    fn a_job_takes_at_most_the_host_cap() {
+        let ips: Vec<String> = (0..=MAX_HOSTS_PER_JOB)
+            .map(|i| format!("10.0.{}.{}", i / 250, i % 250 + 1))
+            .collect();
+        assert!(validate_ips(&ips[..MAX_HOSTS_PER_JOB]).is_ok());
+        assert!(validate_ips(&ips).is_err());
+    }
+
     use super::*;
 
     #[allow(clippy::too_many_arguments)]
@@ -1252,6 +1491,7 @@ mod tests {
             state,
             output: String::new(),
             hostname_is_fallback: true,
+            failed_stage: None,
         }
     }
 

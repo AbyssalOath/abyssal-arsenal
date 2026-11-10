@@ -43,6 +43,7 @@ pub async fn show(
 
     if let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "haruspex", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/haruspex/{host_id}")).into_response());
     }
@@ -61,7 +62,11 @@ pub async fn show(
 
     let mut hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
-        if host.is_active() && state.hosts.is_connected(host.id) {
+        // Windows hosts only (and any whose OS isn't known).
+        if host.is_active()
+            && state.hosts.is_connected(host.id)
+            && crate::platform::arsenal_runs_on(&state, "haruspex", host.id)
+        {
             hosts.push(HaruspexHostRow {
                 is_control_plane: host.is_control_plane,
                 id: host.id.to_string(),

@@ -146,7 +146,8 @@ pub async fn set_io_priority(
     _level: u8,
     _elevation: &ElevationState,
 ) -> CommandOutcome {
-    CommandOutcome::Err("I/O priority (ionice) isn't supported on Windows".to_string())
+    // Unreachable: `ops::run` refuses Linux-only operations on Windows.
+    crate::process::platform_unsupported()
 }
 
 #[cfg(unix)]
@@ -183,7 +184,8 @@ pub async fn set_oom_score_adj(
     _adj: i32,
     _elevation: &ElevationState,
 ) -> CommandOutcome {
-    CommandOutcome::Err("OOM score adjustment isn't supported on Windows".to_string())
+    // Unreachable: `ops::run` refuses Linux-only operations on Windows.
+    crate::process::platform_unsupported()
 }
 
 pub async fn process_open_files(pid: u32, elevation: &ElevationState) -> CommandOutcome {
@@ -434,9 +436,8 @@ pub async fn signal_by_name(
     _dry_run: bool,
     _elevation: &ElevationState,
 ) -> CommandOutcome {
-    CommandOutcome::Err(
-        "signal-by-name isn't supported on Windows (no pgrep / POSIX signals)".to_string(),
-    )
+    // Unreachable: `ops::run` refuses Linux-only operations on Windows.
+    crate::process::platform_unsupported()
 }
 
 fn validate_signal(signal: &str) -> Result<String, String> {

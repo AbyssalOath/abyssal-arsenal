@@ -38,6 +38,7 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
             Permission::AuditView,
             Permission::HostsView,
             Permission::HostsEnroll,
+            Permission::HostsDeploy,
             Permission::HostsManage,
             Permission::HostsElevate,
             Permission::DirectoryView,
@@ -130,7 +131,7 @@ pub async fn seed_core_defaults(pool: &DbPool) -> anyhow::Result<()> {
 /// each version below is that change, applied exactly once.
 const ROLE_DEFAULTS_VERSION_KEY: &str = "rbac.role_defaults_version";
 /// Installs from before this tracking existed are at version 1.
-const ROLE_DEFAULTS_VERSION: u32 = 4;
+const ROLE_DEFAULTS_VERSION: u32 = 5;
 
 /// One built-in role's change in a defaults version.
 struct RoleDelta {
@@ -238,6 +239,15 @@ const V4_DELTAS: &[RoleDelta] = &[
     },
 ];
 
+/// v5: Windows push deploy (`hosts.deploy`, docs/roadmap/windows-push-deploy.md
+/// M5). System Admin, which already enrolls hosts and runs the directory, gets
+/// it; Network Admin keeps Linux "Add hosts" (`hosts.enroll`) only.
+const V5_DELTAS: &[RoleDelta] = &[RoleDelta {
+    role: role::SYSTEM_ADMIN,
+    grant: &[Permission::HostsDeploy],
+    revoke: &[],
+}];
+
 /// Brings an existing install's roles up to the current defaults, once per
 /// version. Touches only the permissions a version names, so anything else an
 /// admin customized stays as it was. On a fresh install every step is a
@@ -281,6 +291,15 @@ async fn upgrade_role_defaults(pool: &DbPool) -> anyhow::Result<()> {
 
     if from < 4 {
         for delta in V4_DELTAS {
+            if let Some(role) = repo::roles::find_by_name(pool, delta.role).await? {
+                let current = repo::roles::permissions_for_role(pool, role.id).await?;
+                apply_delta(pool, role.id, &current, delta.grant, delta.revoke).await?;
+            }
+        }
+    }
+
+    if from < 5 {
+        for delta in V5_DELTAS {
             if let Some(role) = repo::roles::find_by_name(pool, delta.role).await? {
                 let current = repo::roles::permissions_for_role(pool, role.id).await?;
                 apply_delta(pool, role.id, &current, delta.grant, delta.revoke).await?;

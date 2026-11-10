@@ -28,6 +28,17 @@ pub async fn run(
     elevation: &ElevationState,
     control_plane_host: &str,
 ) -> CommandOutcome {
+    // Something this OS can't run (a Linux tool on Windows, an AD script on
+    // Linux) is refused here rather than half-run. The control plane refuses
+    // it first (`HostConnectionRegistry::dispatch`) from the same table; this
+    // covers older control planes. An OS the table doesn't know (macOS) runs
+    // everything, as before.
+    if !operation
+        .platforms()
+        .allows(abyssal_agent_protocol::HostOs::current())
+    {
+        return crate::process::platform_unsupported();
+    }
     match operation {
         AgentOperation::Ping => CommandOutcome::Ok(OperationOutput {
             stdout: "pong".to_string(),
@@ -460,6 +471,11 @@ pub async fn run(
         } => scourge::collect_events(eve_offset, eve_inode, max_events).await,
         AgentOperation::ScourgeListRules { query } => scourge::list_rules(query).await,
         AgentOperation::ScourgePcapList => scourge::pcap_list().await,
+        AgentOperation::ScourgePcapRead {
+            pcap_name,
+            offset,
+            len,
+        } => scourge::pcap_read(pcap_name, offset, len).await,
         AgentOperation::ScourgeInstall => scourge::install(elevation).await,
         AgentOperation::ScourgeApplyConfig {
             interfaces,
@@ -567,6 +583,20 @@ pub async fn run(
                 target_dn,
                 enabled,
                 allow_privileged,
+            )
+            .await
+        }
+        AgentOperation::DirectoryRotateServiceAccountPassword {
+            domain_dns,
+            service_account_upn,
+            current_password,
+            new_password,
+        } => {
+            gravekeeper::rotate_service_account_password(
+                domain_dns,
+                service_account_upn,
+                current_password,
+                new_password,
             )
             .await
         }
@@ -1056,5 +1086,48 @@ async fn recent_auth_log() -> CommandOutcome {
             CommandOutcome::Ok(crate::process::present(output, "No recent logon events."))
         }
         Err(e) => CommandOutcome::Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use abyssal_agent_protocol::HostOs;
+
+    /// What `platforms()` says this OS can't run is refused before any of
+    /// it runs, so the agent and the control plane can't disagree. On Linux
+    /// this covers the Windows-only operations; on Windows (CI), the
+    /// Linux-only ones.
+    #[tokio::test]
+    async fn refuses_what_this_os_cant_run() {
+        let elevation = ElevationState::new();
+        let ops = [
+            AgentOperation::LoadAverage,
+            AgentOperation::ThermalSensors,
+            AgentOperation::MemoryPressure,
+            AgentOperation::ListProcesses,
+            AgentOperation::SetIoPriority {
+                pid: 1,
+                class: 2,
+                level: 4,
+            },
+            AgentOperation::AdHealthReport {
+                domain: "corp.example".into(),
+            },
+            AgentOperation::DirectoryDiscoverForest,
+        ];
+        for op in ops {
+            if op.platforms().allows(HostOs::current()) {
+                continue;
+            }
+            let name = format!("{op:?}");
+            match run(op, &elevation, "127.0.0.1").await {
+                CommandOutcome::Err(message) => assert!(
+                    message.starts_with("operation not supported on this platform"),
+                    "{name}: {message}"
+                ),
+                CommandOutcome::Ok(_) => panic!("{name} should have been refused"),
+            }
+        }
     }
 }

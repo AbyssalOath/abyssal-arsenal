@@ -5,7 +5,7 @@
 {% block content %}
 
 <div class="page-crumbs">
-  {% call macros::host_breadcrumb("Grimoire", "/arsenals/grimoire?all=1", "/arsenals/grimoire/", host_id, host_name, base.available_hosts) %}
+  {% call macros::host_breadcrumb("Grimoire", "/arsenals/grimoire?all=1", "/arsenals/grimoire/", host_id, host_name, base.hosts_for("/arsenals/grimoire/")) %}
   <span style="display:flex; gap:14px;">
     <a href="/arsenals/grimoire/drift">{% call macros::icon("route") %} Fleet drift</a>
     <a href="/arsenals/grimoire/profiles">{% call macros::icon("audit") %} Config profiles</a>

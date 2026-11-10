@@ -4,13 +4,14 @@
 {% block heading %}Thanatos — {{ host_name }}{% endblock %}
 {% block content %}
 
-<div class="page-crumbs">{% call macros::host_breadcrumb("Thanatos", "/arsenals/thanatos", "/arsenals/thanatos/", host_id, host_name, base.available_hosts) %}</div>
+<div class="page-crumbs">{% call macros::host_breadcrumb("Thanatos", "/arsenals/thanatos", "/arsenals/thanatos/", host_id, host_name, base.hosts_for("/arsenals/thanatos/")) %}</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }} <span class="badge badge-muted">{{ os_label }}</span></h2>
     {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
-    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+    {% else if platform.linux %}<span class="badge badge-muted">Apotheosis: Not elevated</span>
+    {% else %}<span class="badge badge-muted" title="The Windows agent runs as SYSTEM, so there's nothing to elevate">Runs as SYSTEM</span>{% endif %}
   </div>
 
   {% if let Some((streaming, text)) = realtime %}
@@ -21,7 +22,7 @@
   </p>
   {% endif %}
 
-  {% if !elevated && base.can_hosts_elevate %}
+  {% if !elevated && base.can_hosts_elevate && platform.linux %}
   <form method="post" action="/arsenals/thanatos/{{ host_id }}/elevate" class="elevate-form">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label for="elevate-password" class="sr-only">Sudo password</label>
@@ -118,7 +119,7 @@
         {% for e in events %}
         <tr>
           <td><span class="badge {{ e.badge_class }}">{{ e.severity_label }}</span></td>
-          <td>{{ e.label }}{% if !e.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ e.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ e.technique }}</a>{% endif %}</td>
+          <td>{{ e.label }}{% if !e.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ e.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ e.technique }}</a>{% endif %}{% if let Some(href) = e.unlock_href %} <a class="btn btn-secondary btn-sm" href="{{ href }}" title="Find this account in Gravekeeper, where it can be unlocked">Unlock in Gravekeeper</a>{% endif %}</td>
           <td>{{ e.source }}</td>
           <td style="overflow-wrap:anywhere;">{{ e.raw_line }}</td>
           <td>

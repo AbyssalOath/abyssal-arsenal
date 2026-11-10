@@ -68,6 +68,8 @@
     <div style="display:flex; gap:8px;">
       <button type="submit" class="btn-danger">{% call macros::icon("scan") %} Search</button>
       <a class="btn btn-secondary" href="{{ clear_href }}">Clear</a>
+      <a class="btn btn-secondary" href="{{ export_csv_href }}" title="Every event matching these filters (up to 50,000), not just this page">Export CSV</a>
+      <a class="btn btn-secondary" href="{{ export_json_href }}" title="Every event matching these filters (up to 50,000), not just this page">Export JSON</a>
     </div>
   </form>
 </div>
@@ -97,7 +99,7 @@
         <tr>
           <td><a href="/arsenals/thanatos/{{ r.host_id }}">{{ r.host_name }}</a></td>
           <td><span class="badge {{ r.event.badge_class }}">{{ r.event.severity_label }}</span></td>
-          <td>{{ r.event.label }}{% if !r.event.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ r.event.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ r.event.technique }}</a>{% endif %}</td>
+          <td>{{ r.event.label }}{% if !r.event.technique.is_empty() %} <a class="badge badge-muted" href="https://attack.mitre.org/techniques/{{ r.event.technique.replace(".", "/") }}/" target="_blank" rel="noopener noreferrer" title="MITRE ATT&amp;CK technique">{{ r.event.technique }}</a>{% endif %}{% if let Some(href) = r.event.unlock_href %} <a class="btn btn-secondary btn-sm" href="{{ href }}" title="Find this account in Gravekeeper, where it can be unlocked">Unlock in Gravekeeper</a>{% endif %}</td>
           <td>{{ r.event.source }}</td>
           <td style="overflow-wrap:anywhere;">{{ r.event.raw_line }}</td>
           <td>

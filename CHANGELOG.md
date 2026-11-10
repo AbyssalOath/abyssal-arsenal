@@ -8,6 +8,163 @@ and this project follows [Semantic Versioning](https://semver.org/). The
 the stable checkpoints built from it. See [README.md](README.md#releases-and-branches)
 for what that means for cloning and updating.
 
+## [Unreleased]
+
+## [0.2.6] - 2026-11-10
+
+### Added
+
+- **Download packet captures from Scourge.** **Packet Captures** on a
+  sensor's page lists each capture with a **Download** button
+  (`scourge.manage`): a standard `.pcap` that Wireshark opens. The control
+  plane fetches it from the agent in 512 KB pieces and streams it to the
+  browser without storing it; every download is audited. Needs a 0.2.6
+  agent on the sensor (agent protocol **49**).
+- **Export alerts as CSV or JSON** from Scourge's alert page and Thanatos's
+  event search: every row matching the current filters (up to 50,000), with
+  spreadsheet formulas defused. Exports are audited.
+- **Docs: shipping Suricata's EVE log to a SIEM** (Filebeat, Splunk
+  Universal Forwarder, Fluent Bit, rsyslog) in `docs/scourge.md`.
+
+- **Push the agent to Windows hosts from Panopticon.** **Add hosts** for
+  Windows hosts now offers **Push over SSH** (needs the new `hosts.deploy`
+  permission, granted to System Admin) beside the install commands. It uses
+  the same credentials, host-key and live status pages as Linux. The
+  control plane installs the agent MSI on each host over SSH: it checks the account is
+  an administrator, uses a locked-down `%ProgramData%\Abyssal` staging
+  folder, copies the MSI over SFTP and checks its SHA-256 (and its signer,
+  when `AGENT_MSI_SIGNER_THUMBPRINT` is set), writes a per-host install
+  token to a file (revoked when the deploy ends), runs `msiexec` with
+  `AAT_FILE=`, handles its exit codes, cleans up, and waits for the agent to
+  check in. WinRM isn't available yet.
+
+- **Hosts are told apart by OS.** A Windows host is no longer offered
+  Linux-only arsenals or actions, and a Linux host no longer sees
+  Windows-only ones (Gravekeeper, Haruspex):
+  - Arsenal host lists and the host switcher on host pages show only hosts
+    the arsenal is for, with a note saying how many were left out and why.
+    An old link to an unsupported host's page goes back to the list.
+  - With a host selected at the top, the Arsenals menu and the dashboard show
+    only the arsenals for its OS.
+  - On the arsenals that work on both (Cadavault, Cystoolbox, Mortiscope,
+    Parish, Reanimation, Resurrection), a Windows host's page hides the
+    Linux-only actions; Reanimation offers only TERM and KILL. Windows host
+    pages drop the sudo elevation controls (the agent runs as SYSTEM).
+  - Workflow suggestion buttons no longer point at an arsenal the host can't
+    use.
+
+  The control plane also refuses such an operation outright ("... isn't
+  supported on Windows hosts ... Nothing was sent to the host."), and
+  background sweeps skip those hosts quietly. Hosts with no OS on record
+  (very old agents) and macOS hosts are treated as before: everything shown,
+  nothing refused.
+
+- **Unlock in Gravekeeper from a Thanatos lockout.** A *Windows account locked
+  out* event now has an **Unlock in Gravekeeper** button (for viewers with
+  `directory.view`). It finds the locked-out account, starting with the domain
+  whose DC logged the event, and opens it where **Unlock** is; if the name
+  matches no user, or more than one, it lands on Find with the name filled in.
+  No agent update needed.
+
+- **Gravekeeper warns before the service account's password expires, and can
+  rotate it.** Each delegation check reads the account's password expiry; the
+  domain page shows it, and the domain and landing pages warn from 14 days
+  before. *Rotate password* has the account change its own password to a new
+  random one that nobody sees, and replaces the stored copy in the same step.
+  The new password is stored as pending before AD is asked, so a rotation that
+  times out never loses the password AD accepted. Needs a 0.2.6 agent on the
+  write DC (agent protocol **48**); migration `0056_gravekeeper_sa_password`.
+
+- **`AAT_FILE=` for the agent installers** (`--aat-file` on Linux). Names a
+  file holding the install token instead of putting the token itself on the
+  command line, where process-creation auditing (event ID 4688) and RMM job
+  logs record it. The agent reads the file and deletes it before doing
+  anything else. Works with the MSI (`msiexec /i AbyssalAgent.msi /qn
+  SERVER=... AAT_FILE=...`) and the exe's `/install`; `AAT=` is unchanged.
+  Can't be combined with `AAT=`. This is the first step of Windows push
+  deploy ([docs/roadmap/windows-push-deploy.md](docs/roadmap/windows-push-deploy.md)).
+
+### Changed
+
+- **Scourge Sensor Status explains a sensor that won't run.** It lists the
+  configured capture interfaces correctly (it used to include commented-out
+  examples and template entries, e.g. "eth0, default, default, 0000, ..."),
+  flags any the host doesn't have and lists the ones it does, says whether
+  rules were never downloaded or are unreadable, shows the service's last
+  log lines when it has failed, and ends with what to fix.
+
+- **Add hosts limits** (Linux and Windows): only hosts in Panopticon's
+  inventory can be targeted, a job takes at most 50 hosts, "Hosts at once"
+  can be set from 1 to 10 (default 5), and one person can start at most 5
+  deploy jobs in 10 minutes.
+
+- **The agent refuses operations its OS can't run** before running any of
+  them, instead of trying a Linux tool on Windows. Thermal sensors and memory
+  pressure no longer report success on Windows without having checked.
+  The agent update is needed for this part only; no protocol change.
+
+- **SSH deploy (Panopticon's Add hosts) says which stage a host failed at**
+  (connect, authenticate, preflight, download, install or check-in) on the
+  status page and in the `HostDeployFailed` audit record. The
+  transport-neutral parts of deploying moved to `host_deploy.rs`, ready for
+  Windows push deploy.
+- **Gravekeeper enforces "disable before delete" and the deletion grace
+  period.** A user can only be deleted once it's disabled, and a user
+  Gravekeeper offboarded only once the domain's grace period (30 days by
+  default) has passed, so the offboarding can still be undone until then.
+  The object page shows when Delete becomes available, and the server checks
+  again against a fresh read of the object. Previously the grace period was
+  shown but not enforced. Computers aren't affected.
+- **Gravekeeper onboarding preview** no longer marks the mailbox step "not
+  wired yet"; it notes that the mailbox is set up after the account, and can
+  be retried from the job page if it fails.
+
+### Fixed
+
+- **A connected agent could show offline until it was restarted.** Two
+  causes, both fixed:
+  - When an agent reconnected, the control plane registered the new
+    connection before noticing the old one was dead. Cleaning up the old one
+    (which can take many minutes on a silently dropped connection) then
+    removed the *new* one, so a healthy, connected agent was listed offline
+    and, its own connection being fine, never reconnected. A connection now
+    only removes itself while it's still the current one.
+  - The agent waited forever on a connection that had died silently (a
+    router or firewall dropping an idle connection, the machine sleeping or
+    changing networks, the control plane restarting without closing it). It
+    now reconnects after 95 seconds without hearing from the control plane
+    (which pings every 30), gives up on a connection attempt after 30
+    seconds, and starts its retry delay short again after a connection that
+    worked. The control plane likewise drops an agent connection that's been
+    silent for 95 seconds instead of showing it online. The agent half needs
+    the updated agent; no protocol change.
+
+- **Scourge config and rule changes on a stopped sensor.** Applying a sensor
+  config or updating rules ended with `systemctl reload`, which fails when
+  Suricata isn't running, so on a sensor that had never started the change
+  was rolled back (or reported as failed). They now use
+  `reload-or-restart`.
+
+### Security
+
+- **SSH deploy (Panopticon's Add hosts) keeps the enrollment token off the
+  target's command line.** It's sent over stdin into a file the install
+  reads with `--enrollment-token-file`, instead of `--enrollment-token
+  <token>`, which the target's process list and `auditd` could record.
+- **SSH deploy stages in a private, random directory** (created with
+  `mkdir -m 700`, so it can't be pre-created) instead of the fixed
+  `/tmp/abyssal-agent-deploy`. Another local user on the target could have
+  created that path first and replaced the agent binary before `sudo` ran
+  it as root.
+
+### Removed
+
+- **Legacy deployment tokens.** Tokens from before 0.2.4's install tokens no
+  longer enroll hosts, and their list and Revoke button are gone from
+  `/admin/hosts`. Use an install token instead. Hosts they already enrolled
+  are unaffected, and still show "Deployment token (legacy)" as how they
+  enrolled.
+
 ## [0.2.5] - 2026-10-21
 
 ### Added

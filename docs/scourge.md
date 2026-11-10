@@ -108,6 +108,24 @@ Engine detection prefers **file probing over `PATH`**, the same approach
 known locations rather than trusting `which`. That makes the unattended
 sweep robust even when the agent's `PATH` is minimal.
 
+## Getting a new sensor running
+
+A freshly installed Suricata package usually can't start yet: the stock
+config listens on `eth0`, which many hosts don't have (`ens18`, `enp0s3`,
+...), and no rules have been downloaded. **Sensor Status** says so under
+*What to fix*, lists the host's own interfaces, and, when the service has
+failed, shows its last log lines. In order:
+
+1. **Sensor configuration:** set the interface(s) to watch, from the host's
+   list.
+2. **Update rules:** runs `suricata-update` to download the ruleset.
+3. **Service: Start**, then **Sensor Status** again.
+
+Applying a config and updating rules put the change into effect with
+`systemctl reload-or-restart`, so they also work while the service is
+stopped or failed (a plain reload fails then, which used to roll every such
+change back).
+
 ## Privilege and the unattended sweep
 
 Privilege is obtained through Apotheosis (`sudo -n`, via
@@ -164,12 +182,26 @@ Captures are bounded host-local jobs, following the scan/deploy-job pattern:
 `AppState.scourge_capture_jobs` holds in-memory `ScourgeCaptureJob`s (lost on
 restart, by design). `ScourgeCaptureStart` begins a capture bounded by a
 byte cap (stop-at-N-MB) and a BPF filter; `ScourgeCaptureStatus` polls it;
-`ScourgeCaptureCancel` stops it. **Pcaps stay on the host** -- their contents
-never stream over the agent channel. `ScourgePcapList` lists them and
+`ScourgeCaptureCancel` stops it. Pcaps are kept on the host; nothing streams
+them anywhere on its own. `ScourgePcapList` lists them and
 `ScourgePcapDelete` shreds one (a `Destructive` op, second-gated, with the
 witness/shred options the rest of the app uses for data destruction). Total
 pcap footprint is bounded by `scourge.pcap_max_total_mb` and aged out by
 `scourge.pcap_retention_days`.
+
+**Downloading a capture.** **Packet Captures** on a sensor's page lists them,
+with a **Download** button each (`scourge.manage`). The file arrives as a
+standard `.pcap` (`application/vnd.tcpdump.pcap`), which Wireshark opens,
+directly if `.pcap` files are associated with it. Behind the button,
+`GET /arsenals/scourge/{host}/pcap/download?name=...` asks the agent for the
+file in 512 KB pieces (`ScourgePcapRead`, protocol 49), one agent message per
+piece, and streams them to the browser as they arrive: nothing is written to
+the control plane's disk, and no agent message is large. Each download is an
+audit entry (`SCOURGE_PCAP_DOWNLOADED`: who, which host, which file, its
+size), since captures hold raw traffic; a failed one is recorded too.
+Downloads stop at 2 GB (the capture caps normally keep files far smaller);
+copy anything bigger off the host directly. A capture still being written is
+served at the size it had when the download began.
 
 Capture inputs are hardened: BPF filters reject any whitespace token
 starting with `-` and the filter is passed after a `--` argv separator so
@@ -199,6 +231,127 @@ and upserts the monotonic offset. Forwarding is gated on
 `thanatos.monitoring_enabled` and `scourge.monitoring_enabled`, and only
 alerts at or above `scourge.min_forward_severity` are sent. Scourge never
 touches `thanatos_events` directly.
+
+## Exporting alerts
+
+The alert page's **Export CSV** / **Export JSON**
+(`/arsenals/scourge/alerts/export?format=...`, `scourge.view`) download every
+alert matching the page's current filters, not just the page on screen,
+newest first, up to 50,000 rows (the `X-Export-Truncated` response header
+says when more matched). Thanatos's event search has the same two buttons
+(`/arsenals/thanatos/search/export`, `security.view`). CSV cells that a
+spreadsheet would run as a formula (starting `=`, `+`, `-`, `@`) are
+prefixed with `'`, since signatures and log lines come from the network.
+Each export is an audit entry (`ALERTS_EXPORTED`, with the filters and the
+row count).
+
+The cache behind the alert page is short-lived
+(`scourge.event_retention_days`); for history, export from Thanatos, or ship
+the sensor's own log (next section).
+
+## Shipping EVE to your SIEM
+
+Scourge keeps a short alert cache and forwards alerts to Thanatos; it
+doesn't ship Suricata's output to other systems. A team with a SIEM should
+have its own log shipper read the sensor's EVE log directly. That's
+Suricata's standard JSON output, which Elastic, Splunk, Graylog, Wazuh and
+most other SIEMs parse natively, and it carries everything Suricata
+records, not only what Scourge forwards.
+
+**What to ship:** `/var/log/suricata/eve.json` on each sensor, one JSON
+object per line. Reading it alongside Scourge is safe: Scourge only reads
+it, keeping its own position.
+
+**Before you start:**
+
+- **Event types.** Suricata's stock config writes alerts plus flow, DNS,
+  HTTP, TLS and other protocol events. Scourge's *EVE output* option in
+  Sensor configuration pins the log to **alerts only** (that's all Scourge
+  uses). If your SIEM wants the protocol events too, leave that option off
+  and keep the stock `eve-log` output; check `outputs:` in
+  `/etc/suricata/suricata.yaml` and `/etc/suricata/scourge.d/overrides.yaml`.
+- **Permissions.** `/var/log/suricata` is normally readable by root (and on
+  Debian/Ubuntu the `adm` group). Run the shipper as root, or add its user
+  to that group.
+- **Rotation.** The distribution packages rotate `eve.json` with logrotate.
+  The shippers below follow a rotated file; keep their state/registry files
+  so a restart doesn't resend everything.
+- **Volume.** With protocol events on, a busy sensor writes a lot; filter in
+  the shipper (for example, only `event_type` `alert`, `anomaly` and `dns`)
+  if your SIEM licence counts bytes.
+
+**Elastic (Filebeat):** the Suricata module parses EVE into ECS fields.
+
+```sh
+filebeat modules enable suricata
+```
+
+`/etc/filebeat/modules.d/suricata.yml`:
+
+```yaml
+- module: suricata
+  eve:
+    enabled: true
+    var.paths: ["/var/log/suricata/eve.json"]
+```
+
+**Splunk (Universal Forwarder):** with the Splunk Add-on for Suricata
+installed on the indexers/search heads, `inputs.conf` on the sensor:
+
+```ini
+[monitor:///var/log/suricata/eve.json]
+sourcetype = suricata
+index = suricata
+```
+
+**Anything else (Fluent Bit):** tail and parse the JSON, then send it with
+whichever output your SIEM takes (`forward`, `es`, `http`, `syslog`, ...).
+
+```ini
+[INPUT]
+    Name    tail
+    Path    /var/log/suricata/eve.json
+    Parser  json
+    Tag     suricata
+    DB      /var/lib/fluent-bit/suricata.db
+
+[OUTPUT]
+    Name    syslog
+    Match   suricata
+    Host    siem.example.com
+    Port    514
+    Mode    tcp
+    Syslog_Format   rfc5424
+    Syslog_Message_Key  message
+```
+
+(Adjust the output to your SIEM; for syslog, many SIEMs prefer the whole JSON
+line as the message.)
+
+**Plain syslog (rsyslog):** for a SIEM that only takes syslog, rsyslog can
+forward each EVE line as-is. `/etc/rsyslog.d/60-suricata-eve.conf`:
+
+```
+module(load="imfile")
+input(type="imfile" File="/var/log/suricata/eve.json" Tag="suricata-eve:"
+      Facility="local5" Severity="info")
+if $programname == 'suricata-eve' then {
+    action(type="omfwd" target="siem.example.com" port="514" protocol="tcp")
+    stop
+}
+```
+
+Then `systemctl restart rsyslog`. Use TLS (`omfwd` with
+`StreamDriver="gtls"`) if the syslog crosses an untrusted network: EVE lines
+include the addresses, hostnames and URLs Suricata saw.
+
+**What still comes from Abyssal:** the control plane's own notifications
+(Thanatos's correlated alerts and the like) go to syslog when `SYSLOG_HOST`
+(and `SYSLOG_PORT`) is set, and to `WEBHOOK_URL`, `SLACK_WEBHOOK_URL` or
+`TEAMS_WEBHOOK_URL`, all set in the control plane's environment. The audit
+trail can stream to the same syslog destination (Settings > Audit trail
+syslog export). Those are notifications and audit events, not the full alert
+stream; the EVE log above is the full stream.
 
 ## Second-gate settings (all off by default)
 

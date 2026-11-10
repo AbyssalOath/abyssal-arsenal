@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Container and container-runtime administration.
 pub struct NecropolisArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for NecropolisArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::ContainersView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Active incident response, investigation, containment, and remediation workflows.
 pub struct InquestArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for InquestArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::IncidentsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Both
     }
 }

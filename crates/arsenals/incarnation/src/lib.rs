@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Application and service deployment and provisioning.
 pub struct IncarnationArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for IncarnationArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SystemsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

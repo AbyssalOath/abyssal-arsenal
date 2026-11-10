@@ -60,6 +60,9 @@
           {% else %}
           <span class="badge badge-muted" title="{{ d.delegation }}">Read-only</span>
           {% endif %}
+          {% if let Some(warning) = d.password_warning %}
+          <span class="badge badge-warning" title="Rotate it on the domain's page">{{ warning }}</span>
+          {% endif %}
         </td>
         <td>
           <a href="/arsenals/gravekeeper/domains/{{ d.id }}/browse">Browse</a>

@@ -1,7 +1,7 @@
 //! The Abyssal Arsenal Token (AAT): one long-lived, reusable enrollment
 //! secret per control plane, for mass deployment -- the role CrowdStrike's
 //! CID plays (`abyssal-agent.exe /install /quiet AAT=... SERVER=...`).
-//! Unlike the single-use and deployment tokens, an operator can view it again
+//! Unlike a single-use enrollment token, an operator can view it again
 //! at any time on `/admin/hosts` (and `install.sh` prints it), and rotating
 //! it is the only way to stop it working.
 //!

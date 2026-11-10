@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// General Linux administration and miscellaneous sysadmin utilities.
 pub struct CystoolboxArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for CystoolboxArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SystemsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Both
     }
 }
