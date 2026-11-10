@@ -13,6 +13,11 @@ There is no JavaScript anywhere in Sepulchre's UI -- every page is a plain
 server-rendered HTML form, using the POST/redirect/GET pattern the rest of
 this app already uses.
 
+Sepulchre's host-side operations (provisioning, `local` paths) are
+**Linux-only**: the arsenal is hidden for Windows hosts and the control plane
+refuses to dispatch its operations to one (`Arsenal::platforms()`, see
+`ARCHITECTURE.md`, "Platform support").
+
 ## Responsibilities
 
 | Concern | Owner |

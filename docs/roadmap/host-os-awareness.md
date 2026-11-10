@@ -247,7 +247,7 @@ for older control planes and as defense in depth.
 - [ ] Headless screenshot checks of a mixed fleet: the Arsenals menu with a
       Windows host selected, a Linux-only arsenal's picker, and Cadavault's
       host page for each OS, at desktop and phone widths.
-- [ ] Docs: each arsenal's page in `docs/` states which OS it supports.
+- [x] Docs: each arsenal's page in `docs/` states which OS it supports.
       `ARCHITECTURE.md` says where platform support is declared, and that a
       new operation must declare it.
 - [ ] CHANGELOG, version bump, `Dev` → `main`, tag.

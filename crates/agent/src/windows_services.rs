@@ -436,30 +436,6 @@ mod tests {
     /// locally, required in CI.
     #[test]
     fn the_script_parses_as_powershell() {
-        if std::process::Command::new("pwsh")
-            .arg("-Version")
-            .output()
-            .is_err()
-        {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "pwsh is required for this test in CI"
-            );
-            return;
-        }
-        let path = std::env::temp_dir().join(format!("winsvc-{}.ps1", std::process::id()));
-        std::fs::write(&path, script(true)).unwrap();
-        let out = std::process::Command::new("pwsh")
-            .args(["-NoProfile", "-NonInteractive", "-Command",
-                "$t=$null; $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:SCRIPT, [ref]$t, [ref]$e); foreach ($x in $e) { $x.Message }; if ($e.Count) { exit 1 }"])
-            .env("SCRIPT", &path)
-            .output()
-            .unwrap();
-        let _ = std::fs::remove_file(&path);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
+        crate::pwsh_parse::assert_parses_as_powershell("winsvc", &script(true));
     }
 }

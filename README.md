@@ -34,47 +34,50 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 
 ## Arsenals
 
-All 26 arsenals are fully implemented -- each gated by its own
+All 27 arsenals are fully implemented -- each gated by its own
 permission(s) and, where the blast radius warrants it, a second layer of
-admin opt-in on top of the usual confirmation. Grouped by function:
+admin opt-in on top of the usual confirmation. **Host OS** is what the
+arsenal's operations run on: the UI hides an arsenal from a host whose OS it
+doesn't support, and the control plane refuses to send it one (hosts with no
+OS on record are shown everything). Grouped by function:
 
 **Operate**
 
-| Arsenal | Covers |
-| --- | --- |
-| Apothecary | Linux package management (apt/dnf/yum/pacman/zypper, auto-detected) |
-| Cystoolbox | General Linux administration and misc sysadmin utilities |
-| Defleshing | System cleanup and routine maintenance |
-| Gravekeeper | Active Directory management (users, groups, OUs, onboarding/offboarding, bulk) across a domain or forest, through the Haruspex DC agents under a delegated service account (Windows) |
-| Grimoire | Configuration management and repeatable system configuration |
-| Incarnation | Application and service deployment/provisioning |
-| Necrolink | Network interfaces, routes, DNS, sockets, connectivity diagnostics |
-| Necropolis | Container and container-runtime administration |
-| Parish | User, group, account, and access management |
-| Reanimation | Process and service management |
-| Sepulchre | Storage and file-sharing connectivity (SFTP, SMB/CIFS, local paths) shared across arsenals |
+| Arsenal | Host OS | Covers |
+| --- | --- | --- |
+| Apothecary | Linux | Linux package management (apt/dnf/yum/pacman/zypper, auto-detected) |
+| Cystoolbox | Linux, Windows | General Linux administration and misc sysadmin utilities |
+| Defleshing | Linux | System cleanup and routine maintenance |
+| Gravekeeper | Windows | Active Directory management (users, groups, OUs, onboarding/offboarding, bulk) across a domain or forest, through the Haruspex DC agents under a delegated service account (Windows) |
+| Grimoire | Linux | Configuration management and repeatable system configuration |
+| Incarnation | Linux | Application and service deployment/provisioning |
+| Necrolink | Linux | Network interfaces, routes, DNS, sockets, connectivity diagnostics |
+| Necropolis | Linux | Container and container-runtime administration |
+| Parish | Linux, Windows | User, group, account, and access management |
+| Reanimation | Linux, Windows | Process and service management |
+| Sepulchre | Linux | Storage and file-sharing connectivity (SFTP, SMB/CIFS, local paths) shared across arsenals |
 
 **Observe**
 
-| Arsenal | Covers |
-| --- | --- |
-| Haruspex | Active Directory DNS and domain-controller health diagnostics (Windows) |
-| Mortiscope | System health and resource monitoring |
-| Necropsy | Hardware inspection and diagnostics |
-| Obituary | Historical logging and audit record management |
-| Panopticon | Network discovery, device inventory, and topology mapping -- runs from the control plane itself, not a host agent |
-| Vivisection | Performance analysis, profiling, and system tuning |
+| Arsenal | Host OS | Covers |
+| --- | --- | --- |
+| Haruspex | Windows | Active Directory DNS and domain-controller health diagnostics (Windows) |
+| Mortiscope | Linux, Windows | System health and resource monitoring |
+| Necropsy | Linux | Hardware inspection and diagnostics |
+| Obituary | Linux | Historical logging and audit record management |
+| Panopticon | Linux, Windows | Network discovery, device inventory, and topology mapping -- runs from the control plane itself, not a host agent |
+| Vivisection | Linux | Performance analysis, profiling, and system tuning |
 
 **Defend**
 
-| Arsenal | Covers |
-| --- | --- |
-| Cadavault | Security configuration, hardening, and defensive operations |
-| Cryptkeeper | Secrets, credentials, certificates, keys, sensitive configuration |
-| Inquest | Incident containment and remediation (IP blocklisting, file quarantine, full host isolation) |
-| Postmortem | Forensic examination after failures or suspected compromise |
-| Scourge | Network intrusion detection/prevention (IDS/IPS): a Suricata sensor that inspects live traffic, surfaces and forwards alerts to Thanatos, captures and analyzes packets, and (gated) runs inline IPS |
-| Thanatos | Security telemetry (SIEM/EDR): MITRE-tagged detection, cross-host search & retention, correlation, suppression/allowlist & threat-intel IOC rules, multi-channel alerting (email/syslog/Slack/Teams/webhook), and inline response |
+| Arsenal | Host OS | Covers |
+| --- | --- | --- |
+| Cadavault | Linux, Windows | Security configuration, hardening, and defensive operations |
+| Cryptkeeper | Linux | Secrets, credentials, certificates, keys, sensitive configuration |
+| Inquest | Linux, Windows | Incident containment and remediation (IP blocklisting, file quarantine, full host isolation) |
+| Postmortem | Linux | Forensic examination after failures or suspected compromise |
+| Scourge | Linux | Network intrusion detection/prevention (IDS/IPS): a Suricata sensor that inspects live traffic, surfaces and forwards alerts to Thanatos, captures and analyzes packets, and (gated) runs inline IPS |
+| Thanatos | Linux, Windows | Security telemetry (SIEM/EDR): MITRE-tagged detection, cross-host search & retention, correlation, suppression/allowlist & threat-intel IOC rules, multi-channel alerting (email/syslog/Slack/Teams/webhook), and inline response |
 
 These form a lifecycle: **Cadavault** hardens, **Scourge** inspects the wire
 (and, gated, prevents inline), **Thanatos** detects and correlates,
@@ -84,12 +87,12 @@ Postmortem (see [docs/scourge.md](docs/scourge.md)).
 
 **Preserve / Recover**
 
-| Arsenal | Covers |
-| --- | --- |
-| Catacomb | Filesystem inspection, maintenance, and repair |
-| Ossuary | Disk, partition, LVM, RAID, and storage management |
-| Reliquary | Backup creation, verification, and restoration |
-| Resurrection | Disaster recovery and restoration of failed systems |
+| Arsenal | Host OS | Covers |
+| --- | --- | --- |
+| Catacomb | Linux | Filesystem inspection, maintenance, and repair |
+| Ossuary | Linux | Disk, partition, LVM, RAID, and storage management |
+| Reliquary | Linux | Backup creation, verification, and restoration |
+| Resurrection | Linux, Windows | Disaster recovery and restoration of failed systems |
 
 Plus Apotheosis, time-boxed sudo elevation for managed hosts (not an
 arsenal of its own -- a cross-cutting mechanism every host-dispatched
