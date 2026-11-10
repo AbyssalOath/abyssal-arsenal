@@ -444,34 +444,9 @@ mod tests {
     /// windows-latest both have it).
     #[test]
     fn the_script_parses_as_powershell() {
-        if std::process::Command::new("pwsh")
-            .arg("-Version")
-            .output()
-            .is_err()
-        {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "pwsh is required for this test in CI"
-            );
-            eprintln!("skipping: pwsh not on PATH");
-            return;
-        }
-        let path = std::env::temp_dir().join(format!("thanatos-stream-{}.ps1", std::process::id()));
-        std::fs::write(&path, realtime_script(REALTIME_CHANNELS)).unwrap();
-        let check = "$t = $null; $e = $null; \
-             [void][System.Management.Automation.Language.Parser]::ParseFile($env:SCRIPT, [ref]$t, [ref]$e); \
-             foreach ($x in $e) { \"$($x.Extent.StartLineNumber): $($x.Message)\" }; \
-             if ($e.Count -gt 0) { exit 1 }";
-        let out = std::process::Command::new("pwsh")
-            .args(["-NoProfile", "-NonInteractive", "-Command", check])
-            .env("SCRIPT", &path)
-            .output()
-            .unwrap();
-        let _ = std::fs::remove_file(&path);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stdout)
+        crate::pwsh_parse::assert_parses_as_powershell(
+            "thanatos-stream",
+            &realtime_script(REALTIME_CHANNELS),
         );
     }
 

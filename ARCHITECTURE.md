@@ -252,7 +252,7 @@ new column and one rule.
   only ever iterate the registry -- adding a new arsenal crate means adding
   one line to `crates/app/src/arsenals.rs` and the workspace manifest,
   nothing else.
-- All 26 arsenals have real capabilities wired up. See
+- All 27 arsenals have real capabilities wired up. See
   [CHANGELOG.md](CHANGELOG.md) for what each one actually does.
 
 **Control-plane arsenals vs. host-agent arsenals.** Most arsenals
@@ -1774,7 +1774,7 @@ model, not oversights:
 - SSO/OIDC is not implemented yet. Notification providers now cover email
   (SMTP), syslog, and Slack/Teams/generic webhook; Telegram and Discord are
   not implemented -- see [CHANGELOG.md](CHANGELOG.md) for current status. All
-  26 arsenals have real capabilities.
+  27 arsenals have real capabilities.
 - Thanatos is pull-based: an on-demand/periodic full sweep plus an optional
   short-interval fast sweep for a curated high-signal set, not a continuous
   push-based EDR agent. The agent has no live kernel telemetry producer yet

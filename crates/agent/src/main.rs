@@ -26,6 +26,8 @@ mod parish;
 mod postmortem;
 mod posture;
 mod process;
+#[cfg(test)]
+mod pwsh_parse;
 mod reanimation;
 mod reliquary;
 mod resurrection;
