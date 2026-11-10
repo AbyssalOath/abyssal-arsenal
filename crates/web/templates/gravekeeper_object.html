@@ -116,11 +116,15 @@
     (clear that flag in AD first). If the AD Recycle Bin is enabled, a restore is
     possible.
   </p>
+  {% if let Some(hold) = delete_hold %}
+  <p><span class="badge badge-muted">Not yet</span> {{ hold }}</p>
+  {% else %}
   <form method="post" action="/arsenals/gravekeeper/domains/{{ domain_id }}/object/delete">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <input type="hidden" name="dn" value="{{ target_dn }}">
     <button type="submit" class="btn-danger">Delete {{ obj.kind }}</button>
   </form>
+  {% endif %}
 </div>
 {% endif %}
 

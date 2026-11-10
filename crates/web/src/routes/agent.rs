@@ -91,7 +91,6 @@ pub async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest
                 is_control_plane = kind.as_ref().is_some_and(|k| k.control_plane);
                 enrolled_via = match &kind {
                     _ if is_control_plane => "control_plane",
-                    Some(k) if k.reusable => "deployment_token",
                     _ => "enrollment_token",
                 };
                 token_id = kind.map(|k| k.id);
@@ -353,6 +352,12 @@ pub async fn ws_upgrade(
     })
 }
 
+/// How often the control plane pings each agent.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// How long an agent can go without sending anything (it answers every
+/// ping) before its connection is treated as dead: three missed pings.
+const AGENT_SILENCE_LIMIT: Duration = Duration::from_secs(95);
+
 async fn handle_socket(
     mut socket: WebSocket,
     state: AppState,
@@ -367,7 +372,12 @@ async fn handle_socket(
     state
         .hosts
         .set_control_plane(host.id, host.is_control_plane);
-    state.hosts.register(host.id, tx, protocol_version);
+    let epoch = state.hosts.register(
+        host.id,
+        tx,
+        protocol_version,
+        abyssal_agent_protocol::HostOs::parse(os.as_deref()),
+    );
     if host.is_control_plane {
         let hosts = state.hosts.clone();
         let host_id = host.id;
@@ -422,12 +432,24 @@ async fn handle_socket(
         tracing::warn!(error = %e, "failed to record host connection time/address");
     }
 
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     heartbeat.tick().await; // first tick fires immediately; skip it
+    // The agent answers every ping, so silence this long means the
+    // connection is dead even if sends still "succeed" (a dead TCP
+    // connection buffers writes for many minutes before failing).
+    let mut last_heard = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
+                if last_heard.elapsed() > AGENT_SILENCE_LIMIT {
+                    tracing::warn!(
+                        host_id = %host.id,
+                        silent_secs = last_heard.elapsed().as_secs(),
+                        "agent stopped answering; dropping its connection"
+                    );
+                    break;
+                }
                 let Ok(payload) = serde_json::to_string(&ServerMessage::Ping) else { continue };
                 if socket.send(Message::Text(payload)).await.is_err() {
                     break;
@@ -441,6 +463,7 @@ async fn handle_socket(
                 }
             }
             incoming = socket.recv() => {
+                last_heard = tokio::time::Instant::now();
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(agent_msg) = serde_json::from_str::<AgentMessage>(&text) {
@@ -455,8 +478,13 @@ async fn handle_socket(
         }
     }
 
-    state.hosts.unregister(host.id);
-    tracing::info!(host_id = %host.id, "agent disconnected");
+    // Only if this is still the host's current connection: the agent may
+    // already have reconnected.
+    if state.hosts.unregister_connection(host.id, epoch) {
+        tracing::info!(host_id = %host.id, "agent disconnected");
+    } else {
+        tracing::info!(host_id = %host.id, "an agent's old connection closed; it has already reconnected");
+    }
 }
 
 async fn handle_agent_message(state: &AppState, host_id: Uuid, msg: AgentMessage) {

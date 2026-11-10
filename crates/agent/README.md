@@ -113,7 +113,18 @@ msiexec /i AbyssalAgent.msi /qn /norestart SERVER=https://arsenal.corp AAT=AAT1-
 In PDQ Deploy, add the exe as an Install step and put
 `/install /quiet /norestart SERVER=... AAT=...` in **Parameters** (or add the
 MSI and the same `SERVER=... AAT=...` as its parameters). Optional `NAME=`
-overrides the host name. The exe adds an **Apps & features** entry
+overrides the host name.
+
+To keep the token off the command line (where process-creation auditing,
+event ID 4688, and RMM job logs record it), put it in a file and pass
+`AAT_FILE=<path>` instead of `AAT=` (Linux: `--aat-file <path>`). The agent
+reads the file and deletes it before doing anything else, so it doesn't
+outlive the install even if the install fails; a file that can't be read,
+is empty, or can't be deleted fails the install. Don't give both `AAT=` and
+`AAT_FILE=`. Write the file somewhere only Administrators and SYSTEM can
+read.
+
+The exe adds an **Apps & features** entry
 ("Abyssal Arsenal Agent", uninstalling with `/uninstall`); the MSI is listed
 as itself.
 

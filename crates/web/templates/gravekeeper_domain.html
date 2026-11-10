@@ -30,8 +30,39 @@
     <tr><th style="text-align:left;">Write DC</th><td>{% if domain.write_dc.is_empty() %}<span class="badge badge-warning">None</span>{% else %}{{ domain.write_dc }}{% endif %}</td></tr>
     <tr><th style="text-align:left;">Service account</th><td>{% if domain.service_account.is_empty() %}—{% else %}{{ domain.service_account }}{% endif %}</td></tr>
     <tr><th style="text-align:left;">Delegation</th><td>{{ domain.delegation }}</td></tr>
+    {% if !domain.service_account.is_empty() %}
+    <tr><th style="text-align:left;">Password</th><td>{% if domain.password_expiry_warn %}<span class="badge badge-warning">{{ domain.password_expiry }}</span>{% else %}{{ domain.password_expiry }}{% endif %}</td></tr>
+    {% endif %}
   </table>
 </div>
+
+{% if !domain.service_account.is_empty() %}
+<div class="card">
+  <h3>Rotate the service-account password</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    The account changes its own password on the write DC to a new random one
+    that nobody sees, and the stored copy is replaced in the same step. The
+    domain's password policy applies (history, and a minimum password age can
+    block a second change on the same day). Gravekeeper warns
+    {{ crate::routes::gravekeeper::SA_PASSWORD_WARN_DAYS }} days before the
+    password expires. If it has already expired, the account can't sign in to
+    change it: reset it in ADUC and enter it above instead.
+  </p>
+  {% if domain.rotation_pending %}
+  <p><span class="badge badge-warning">Settling</span> An earlier rotation's
+  outcome isn't clear yet. Both passwords are kept, and the daily check keeps
+  whichever one works.</p>
+  {% else if domain.can_rotate %}
+  <form method="post" action="/arsenals/gravekeeper/domains/{{ domain.id }}/service-account/rotate"
+        data-confirm="Rotate the service-account password for {{ domain.dns_name }}? The account's password in AD changes now.">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <button type="submit" class="btn-secondary">{% call macros::icon("shield") %} Rotate password</button>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted);">Available once the domain is writable (the service account has passed its delegation check).</p>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="card">
   <h3>Delegated service account</h3>

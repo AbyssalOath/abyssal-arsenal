@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Security telemetry collection, threat detection, event correlation, endpoint monitoring, and security alerting.
 pub struct ThanatosArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for ThanatosArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SecurityView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Both
     }
 }

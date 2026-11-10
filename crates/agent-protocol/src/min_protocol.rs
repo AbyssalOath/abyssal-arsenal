@@ -281,6 +281,9 @@ impl AgentOperation {
             | Op::DirectoryUndoOffboard(..)
             | Op::ExchangeSetMailboxOffboard { .. }
             | Op::DirectoryStaleAccounts { .. } => 47,
+            // Gravekeeper service-account password rotation, new in 0.2.6.
+            Op::DirectoryRotateServiceAccountPassword { .. } => 48,
+            Op::ScourgePcapRead { .. } => 49,
         }
     }
 }
@@ -294,6 +297,7 @@ const RELEASES: &[(u32, &str)] = &[
     (45, "0.2.3"),
     (46, "0.2.4"),
     (47, "0.2.5"),
+    (49, "0.2.6"),
 ];
 
 /// The first release whose agent speaks at least `protocol`, for messages

@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 abyssal-core.workspace = true
+abyssal-agent-protocol.workspace = true
 abyssal-database.workspace = true
 abyssal-audit.workspace = true
 anyhow.workspace = true

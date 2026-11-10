@@ -95,10 +95,23 @@ fn status_view(status: EventStatus) -> (&'static str, &'static str) {
 
 /// Builds one event's row view-model -- shared by the fleet dashboard's
 /// per-host groups and the standalone per-host page, so the status
-/// badge/action-button logic (Phase 3) is defined exactly once.
-fn security_event_row(event: abyssal_core::SecurityEvent, timezone: &str) -> SecurityEventRow {
+/// badge/action-button logic (Phase 3) is defined exactly once. A Windows
+/// lockout also gets a link to Gravekeeper's unlock when the viewer has
+/// `directory.view`.
+fn security_event_row(event: abyssal_core::SecurityEvent, ctx: &AuthContext) -> SecurityEventRow {
     let (severity_label, badge_class) = severity_view(event.severity);
     let (status_label, status_badge_class) = status_view(event.status);
+    let unlock_href = ctx
+        .has(Permission::DirectoryView)
+        .then(|| crate::thanatos_ops::lockout_account(&event.label, &event.raw_line))
+        .flatten()
+        .map(|account| {
+            format!(
+                "/arsenals/gravekeeper/lockout?host={}&account={}",
+                event.host_id,
+                crate::common::urlencoding_encode(&account)
+            )
+        });
     SecurityEventRow {
         id: event.id.to_string(),
         severity_label,
@@ -107,12 +120,13 @@ fn security_event_row(event: abyssal_core::SecurityEvent, timezone: &str) -> Sec
         technique: event.technique,
         source: event.source,
         raw_line: event.raw_line,
-        occurred_at: crate::common::format_in_tz(event.occurred_at, timezone),
+        occurred_at: crate::common::format_in_tz(event.occurred_at, &ctx.user.timezone),
         status_label,
         status_badge_class,
         can_acknowledge: event.status == EventStatus::Open,
         can_resolve_or_suppress: event.status.is_active(),
         resolution_note: event.resolution_note,
+        unlock_href,
     }
 }
 
@@ -237,6 +251,7 @@ pub async fn show(
 
     if let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "thanatos", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/thanatos/{host_id}")).into_response());
     }
@@ -371,7 +386,7 @@ pub async fn show(
             .await?;
             let event_rows: Vec<SecurityEventRow> = rows
                 .into_iter()
-                .map(|e| security_event_row(e, &ctx.user.timezone))
+                .map(|e| security_event_row(e, &ctx))
                 .collect();
             let page_meta: pagination::Page<()> =
                 pagination::Page::new(vec![], page_num, GROUP_ROWS_PER_PAGE, total);
@@ -503,6 +518,159 @@ fn search_link_params(p: &SearchParams) -> Vec<(&'static str, String)> {
     v
 }
 
+/// The search filter a page or an export applies.
+fn event_filter(params: &SearchParams) -> repo::security_events::EventSearchFilter {
+    let mut filter = repo::security_events::EventSearchFilter {
+        only_active: !params.show_resolved,
+        ..Default::default()
+    };
+    if !params.host.is_empty()
+        && let Ok(id) = Uuid::parse_str(&params.host)
+    {
+        filter.host_id = Some(id);
+    }
+    if !params.source.is_empty() {
+        filter.source = Some(params.source.clone());
+    }
+    if !params.severity.is_empty() {
+        filter.severity = Severity::from_key(&params.severity);
+    }
+    if !params.technique.is_empty() {
+        filter.technique = Some(params.technique.clone());
+    }
+    if !params.text.is_empty() {
+        filter.text = Some(params.text.clone());
+    }
+    filter.from = parse_date_start(&params.from);
+    filter.to = parse_date_end(&params.to);
+    filter
+}
+
+/// The export link for the search's current filters.
+fn search_export_href(params: &[(&'static str, String)], format: &str) -> String {
+    let mut ser = form_urlencoded::Serializer::new(String::new());
+    for (k, v) in params {
+        ser.append_pair(k, v);
+    }
+    ser.append_pair("format", format);
+    format!("/arsenals/thanatos/search/export?{}", ser.finish())
+}
+
+/// GET: every event matching the search's filters (newest first, up to
+/// `export::MAX_ROWS`) as CSV or JSON. `security.view`, the search page's
+/// own permission; recorded in the audit log.
+pub async fn search_export(
+    State(state): State<AppState>,
+    CurrentUser(ctx): CurrentUser,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::SecurityView)?;
+    let params = parse_search_params(raw.as_deref());
+    let format = crate::export::Format::parse(
+        raw.as_deref()
+            .and_then(|r| {
+                form_urlencoded::parse(r.as_bytes())
+                    .find(|(k, _)| k == "format")
+                    .map(|(_, v)| v.into_owned())
+            })
+            .as_deref(),
+    );
+    let filter = event_filter(&params);
+    let total = repo::security_events::count_events(&state.pool, &filter).await?;
+    let events = repo::security_events::search_events(
+        &state.pool,
+        &filter,
+        i64::from(crate::export::MAX_ROWS),
+        0,
+    )
+    .await?;
+    let truncated = total > events.len() as i64;
+    let host_names: HashMap<Uuid, String> = repo::hosts::list(&state.pool)
+        .await?
+        .into_iter()
+        .map(|h| (h.id, h.name))
+        .collect();
+    let host_name = |id: Uuid| {
+        host_names
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| "(removed host)".to_string())
+    };
+
+    let body = match format {
+        crate::export::Format::Csv => crate::export::csv_document(
+            &[
+                "occurred_at",
+                "host",
+                "severity",
+                "finding",
+                "technique",
+                "source",
+                "status",
+                "detail",
+                "resolution_note",
+                "id",
+            ],
+            events.iter().map(|e| {
+                vec![
+                    e.occurred_at.to_rfc3339(),
+                    host_name(e.host_id),
+                    e.severity.as_key().to_string(),
+                    e.label.clone(),
+                    e.technique.clone(),
+                    e.source.clone(),
+                    e.status.as_key().to_string(),
+                    e.raw_line.clone(),
+                    e.resolution_note.clone().unwrap_or_default(),
+                    e.id.to_string(),
+                ]
+            }),
+        ),
+        crate::export::Format::Json => serde_json::to_string_pretty(
+            &events
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "occurred_at": e.occurred_at.to_rfc3339(),
+                        "host": host_name(e.host_id),
+                        "host_id": e.host_id,
+                        "severity": e.severity.as_key(),
+                        "finding": e.label,
+                        "technique": e.technique,
+                        "source": e.source,
+                        "status": e.status.as_key(),
+                        "detail": e.raw_line,
+                        "resolution_note": e.resolution_note,
+                        "id": e.id,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string()),
+    };
+
+    let event = AuditEvent::new(AuditAction::AlertsExported, AuditOutcome::Success)
+        .actor(abyssal_audit::Actor {
+            user_id: ctx.user.id,
+            username: &ctx.user.username,
+        })
+        .resource("thanatos.events")
+        .metadata(serde_json::json!({
+            "format": format.key(),
+            "rows": events.len(),
+            "matched": total,
+            "filters": search_href(&search_link_params(&params)),
+        }));
+    if let Err(e) = abyssal_audit::record(&state.pool, event).await {
+        tracing::error!(error = %e, "thanatos: failed to record event export audit");
+    }
+    let stem = format!(
+        "thanatos-events-{}",
+        chrono::Utc::now().format("%Y%m%d-%H%M")
+    );
+    Ok(crate::export::download(format, &stem, body, truncated))
+}
+
 fn search_href(params: &[(&'static str, String)]) -> String {
     if params.is_empty() {
         return "/arsenals/thanatos/search".to_string();
@@ -541,30 +709,7 @@ pub async fn search(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::SecurityView)?;
     let params = parse_search_params(raw.as_deref());
-
-    let mut filter = repo::security_events::EventSearchFilter {
-        only_active: !params.show_resolved,
-        ..Default::default()
-    };
-    if !params.host.is_empty()
-        && let Ok(id) = Uuid::parse_str(&params.host)
-    {
-        filter.host_id = Some(id);
-    }
-    if !params.source.is_empty() {
-        filter.source = Some(params.source.clone());
-    }
-    if !params.severity.is_empty() {
-        filter.severity = Severity::from_key(&params.severity);
-    }
-    if !params.technique.is_empty() {
-        filter.technique = Some(params.technique.clone());
-    }
-    if !params.text.is_empty() {
-        filter.text = Some(params.text.clone());
-    }
-    filter.from = parse_date_start(&params.from);
-    filter.to = parse_date_end(&params.to);
+    let filter = event_filter(&params);
 
     // Facets for the filter dropdowns.
     let all_hosts = repo::hosts::list(&state.pool).await?;
@@ -606,7 +751,7 @@ pub async fn search(
             SearchResultRow {
                 host_id: host_id.to_string(),
                 host_name,
-                event: security_event_row(e, &ctx.user.timezone),
+                event: security_event_row(e, &ctx),
             }
         })
         .collect();
@@ -656,6 +801,8 @@ pub async fn search(
         techniques,
         results,
         page,
+        export_csv_href: search_export_href(&link_params, "csv"),
+        export_json_href: search_export_href(&link_params, "json"),
         toggle_resolved_href,
         clear_href: "/arsenals/thanatos/search".to_string(),
     };
@@ -1139,7 +1286,7 @@ async fn render_host_with_suggestions(
     )
     .await?
     {
-        events.push(security_event_row(event, &ctx.user.timezone));
+        events.push(security_event_row(event, ctx));
     }
 
     let show_resolved = !only_active;
@@ -1159,6 +1306,7 @@ async fn render_host_with_suggestions(
         can_manage: ctx.has(Permission::SecurityManage),
         can_respond: ctx.has(Permission::IncidentsRespond),
         elevated: state.elevation.is_elevated(host_id),
+        platform: crate::platform::HostPlatform::for_host(state, host_id, host.os.as_deref()),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         control_plane: crate::control_plane::page_note(&state.hosts, host_id),
         isolate_refusal: crate::control_plane::refusal(
@@ -1578,6 +1726,18 @@ mod tests {
         assert_eq!(p.to, "2026-01-31");
         assert!(p.show_resolved);
         assert_eq!(p.page, 3);
+    }
+
+    #[test]
+    fn search_export_link_carries_the_filters() {
+        let p = parse_search_params(Some("q=lsass&severity=high&page=4"));
+        assert_eq!(
+            search_export_href(&search_link_params(&p), "json"),
+            "/arsenals/thanatos/search/export?severity=high&q=lsass&format=json"
+        );
+        let f = event_filter(&p);
+        assert_eq!(f.text.as_deref(), Some("lsass"));
+        assert!(f.only_active);
     }
 
     #[test]

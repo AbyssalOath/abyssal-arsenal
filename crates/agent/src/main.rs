@@ -155,6 +155,13 @@ pub enum Command {
         /// read from the ABYSSAL_AAT environment variable.
         #[arg(long, allow_hyphen_values = true)]
         aat: Option<String>,
+        /// A file holding the install token, read and then deleted, so the
+        /// token never appears on a command line, in a script or in an MSI
+        /// log. The MSI's AAT_FILE= property. Can't be combined with --aat.
+        /// A string, not a path, because the MSI passes an unset property
+        /// as "" (which clap's path parser refuses).
+        #[arg(long)]
+        aat_file: Option<String>,
         /// Never prompt: fail with an exit code when something is missing.
         /// What the installer-style `/quiet` switch turns on.
         #[arg(long)]
@@ -252,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
             ca_cert,
             ca_fingerprint,
             aat,
+            aat_file,
             non_interactive,
             msi,
         }) => {
@@ -264,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
                 ca_cert,
                 ca_fingerprint,
                 aat,
+                aat_file,
                 non_interactive,
                 msi,
             })
@@ -380,7 +389,12 @@ async fn run(
         match transport::connect_and_serve(&ws_url, &credentials.credential, &elevation, &trust)
             .await
         {
-            Ok(()) => tracing::warn!("connection to control plane closed; reconnecting"),
+            Ok(()) => {
+                tracing::warn!("connection to control plane closed; reconnecting");
+                // It did connect: start the next wait short again rather than
+                // where an earlier outage left it.
+                backoff = Duration::from_secs(1);
+            }
             // Say what a refused handshake means, rather than only "401
             // Unauthorized" / "403 Forbidden".
             Err(e) => match transport::handshake_status(&e) {
@@ -421,8 +435,54 @@ struct InstallArgs {
     ca_cert: Option<PathBuf>,
     ca_fingerprint: Option<String>,
     aat: Option<String>,
+    aat_file: Option<String>,
     non_interactive: bool,
     msi: bool,
+}
+
+/// `--aat`, else the token read from `--aat-file` (which is then deleted),
+/// else the `ABYSSAL_AAT` environment variable. Giving both `--aat` and
+/// `--aat-file` is refused rather than picking one; blank values (an unset
+/// MSI property) count as not given.
+fn resolve_aat(aat: Option<String>, aat_file: Option<String>) -> anyhow::Result<Option<String>> {
+    let aat = non_empty(aat);
+    let Some(path) = non_empty(aat_file) else {
+        return Ok(aat.or_else(|| non_empty(std::env::var("ABYSSAL_AAT").ok())));
+    };
+    if aat.is_some() {
+        return Err(tls::InstallError::BadArguments(
+            "AAT= (--aat) and AAT_FILE= (--aat-file) can't both be given".into(),
+        )
+        .into());
+    }
+    read_aat_file(std::path::Path::new(&path)).map(Some)
+}
+
+/// Reads the token from `path` and deletes the file before returning, so it
+/// doesn't outlive this install even if the install then fails. A missing or
+/// empty file, or one that can't be deleted, is an error: carrying on would
+/// either fail later with a less useful message or leave the token on disk.
+fn read_aat_file(path: &std::path::Path) -> anyhow::Result<String> {
+    let token = std::fs::read_to_string(path).map_err(|e| {
+        tls::InstallError::BadArguments(format!(
+            "could not read AAT_FILE= (--aat-file) {}: {e}",
+            path.display()
+        ))
+    })?;
+    std::fs::remove_file(path).with_context(|| {
+        format!(
+            "could not delete AAT_FILE= (--aat-file) {} after reading it -- refusing to \
+             leave the install token on disk",
+            path.display()
+        )
+    })?;
+    non_empty(Some(token)).ok_or_else(|| {
+        tls::InstallError::BadArguments(format!(
+            "AAT_FILE= (--aat-file) {} was empty",
+            path.display()
+        ))
+        .into()
+    })
 }
 
 /// `Some` non-blank values only -- an MSI passes an unset property as "".
@@ -442,6 +502,7 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
         ca_cert,
         ca_fingerprint,
         aat,
+        aat_file,
         non_interactive,
         msi,
     } = args;
@@ -458,7 +519,7 @@ async fn install(args: InstallArgs) -> anyhow::Result<()> {
         non_empty(enrollment_token),
         enrollment_token_file.as_deref(),
     )?);
-    let mut aat = non_empty(aat).or_else(|| non_empty(std::env::var("ABYSSAL_AAT").ok()));
+    let mut aat = resolve_aat(aat, aat_file)?;
 
     let already_enrolled = tokio::fs::metadata(&credentials_file).await.is_ok();
     if already_enrolled {
@@ -1271,4 +1332,73 @@ async fn run_systemctl(args: &[&str]) -> anyhow::Result<()> {
         anyhow::bail!("systemctl {} failed", args.join(" "));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A path in the temp folder unique to this test (tests run in
+    /// parallel threads of one process).
+    fn temp_path(test: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("abyssal-aat-file-{}-{test}", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn token_file(test: &str, contents: &str) -> String {
+        let path = temp_path(test);
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn aat_file_is_read_trimmed_and_deleted() {
+        let path = token_file("read", "AAT1-abc\r\n");
+        assert_eq!(
+            resolve_aat(None, Some(path.clone())).unwrap().as_deref(),
+            Some("AAT1-abc")
+        );
+        assert!(!std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn blank_values_count_as_not_given() {
+        // What the MSI passes when only one of AAT= / AAT_FILE= is set.
+        let path = token_file("blank", "AAT1-abc");
+        assert_eq!(
+            resolve_aat(Some(String::new()), Some(path))
+                .unwrap()
+                .as_deref(),
+            Some("AAT1-abc")
+        );
+        assert_eq!(
+            resolve_aat(Some("AAT1-xyz".into()), Some(String::new()))
+                .unwrap()
+                .as_deref(),
+            Some("AAT1-xyz")
+        );
+    }
+
+    #[test]
+    fn aat_and_aat_file_together_are_refused_and_the_file_is_left_alone() {
+        let path = token_file("both", "AAT1-abc");
+        assert!(resolve_aat(Some("AAT1-xyz".into()), Some(path.clone())).is_err());
+        assert!(std::path::Path::new(&path).exists());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn missing_or_empty_aat_file_fails_clearly() {
+        let missing = temp_path("missing");
+        let err = resolve_aat(None, Some(missing)).unwrap_err();
+        assert!(format!("{err:#}").contains("could not read AAT_FILE="));
+
+        let path = token_file("empty", "  \n");
+        let err = resolve_aat(None, Some(path.clone())).unwrap_err();
+        assert!(format!("{err:#}").contains("was empty"));
+        // Deleted even so: whatever was in it doesn't stay behind.
+        assert!(!std::path::Path::new(&path).exists());
+    }
 }

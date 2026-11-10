@@ -418,6 +418,31 @@ sysadmin capability an arsenal needs on a host means adding a variant to
 `agent-protocol` and a handler in `crates/agent/src/ops.rs` -- there is no
 path from a wire message to running something outside that fixed list.
 
+**Platform support.** Each operation also declares which host OSes run it:
+`AgentOperation::platforms()` (`crates/agent-protocol/src/platforms.rs`),
+an exhaustive `match` with no `_` arm, so a new variant doesn't compile until
+it's placed. "Both" means the agent has a real Windows implementation; an
+operation that would just run a Linux tool on Windows is "Linux". Each
+arsenal declares the same at its level (`Arsenal::platforms()`). From that
+one table:
+
+- `HostConnectionRegistry::dispatch` refuses an operation the host's OS
+  can't run (`DispatchError::UnsupportedPlatform`, using the OS the agent
+  reported when it connected), before the version check and without
+  sending anything; `supports()` folds the same check in for sweeps and
+  pages.
+- The agent refuses it too, before running anything (`ops::run`), for
+  older control planes.
+- The UI hides it (`crate::platform`): arsenal pickers and the breadcrumb
+  switcher list only fitting hosts, with a note for those left out; a GET
+  for an unsupported host's page redirects to the picker
+  (`middleware::platform_guard`); the Arsenals menu and dashboard follow
+  the selected host; workflow buttons skip unsupported targets; and the
+  mixed arsenals' host pages hide individual actions.
+
+A host whose OS isn't known (an agent too old to report it, or macOS, which
+hasn't been checked) is allowed everything, as before.
+
 **Protocol versioning.** A stale agent build (one compiled before some
 `AgentOperation` variant it's now being sent) fails to deserialize the
 `ServerMessage` and disconnects -- its own reconnect loop then quietly
@@ -897,6 +922,13 @@ The shape is the same on both pages, and deliberately so:
   `abyssal_rbac::ensure` permission check as the page itself
   (`network.scan` for the scan job, `hosts.enroll` for the deploy job) --
   the JSON endpoint is a new URL, not a new permission boundary.
+- **Windows hosts** (`crate::windows_deploy`) go through the same
+  credentials, host-key and status pages with a `target_os=windows` field
+  carried between steps, and need `hosts.deploy` as well as
+  `hosts.enroll`, since the credentials are a local administrator's. Every
+  deploy, Linux or Windows, only targets hosts already in Panopticon's
+  inventory, takes at most 50 hosts, works on 1-10 at once (default 5), and
+  an operator can start at most 5 jobs in 10 minutes.
 
 The scan progress bar's own percentage comes from reading nmap's stdout
 incrementally rather than only after the process exits
@@ -1099,8 +1131,12 @@ below for what that implies for toggling them).
   read-only if the account can no longer bind or has since become a member of
   a privileged group -- so a domain that was writable doesn't stay trusted
   after its service account drifts. Skips offline DCs and a control plane with
-  no `ENCRYPTION_KEY` rather than flapping the stored state. Registered with
-  `task_health` (`GRAVEKEEPER_DELEGATION_RECHECK`).
+  no `ENCRYPTION_KEY` rather than flapping the stored state. Also records the
+  account's password expiry (for the expiry warning), and first settles any
+  password rotation whose outcome was unclear
+  (`gravekeeper_ops::resolve_pending_password`: the pending new password is
+  tried before the current one). Registered with `task_health`
+  (`GRAVEKEEPER_DELEGATION_RECHECK`).
 - **Panopticon sweep** (`abyssal_web::spawn_panopticon_sweep`, two
   independent loops): a passive refresh every 60s, unconditional --
   re-reads the control plane's own kernel neighbor table (`ip neigh`,

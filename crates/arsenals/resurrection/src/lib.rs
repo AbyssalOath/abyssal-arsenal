@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Disaster recovery and restoration of failed systems.
 pub struct ResurrectionArsenal;
@@ -26,5 +26,9 @@ impl Arsenal for ResurrectionArsenal {
     // it on backups.view showed it to roles its every page then refused.
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SystemsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Both
     }
 }

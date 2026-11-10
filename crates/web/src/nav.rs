@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 
 use abyssal_core::ModuleCategory;
 use abyssal_database::{DbPool, repo};
-use abyssal_modules::ModuleRegistry;
+use abyssal_modules::{HostOs, ModuleRegistry};
 use abyssal_rbac::AuthContext;
 
 static REGISTRY: OnceLock<Arc<ModuleRegistry>> = OnceLock::new();
@@ -18,6 +18,15 @@ static REGISTRY: OnceLock<Arc<ModuleRegistry>> = OnceLock::new();
 /// Called once at startup with the application's registry.
 pub fn set_registry(registry: Arc<ModuleRegistry>) {
     let _ = REGISTRY.set(registry);
+}
+
+/// The OSes the arsenal `key` is for, from the registry set at startup;
+/// `Both` without one (or for an unknown key), so nothing is hidden.
+pub fn arsenal_platforms(key: &str) -> abyssal_modules::Platforms {
+    REGISTRY
+        .get()
+        .and_then(|r| r.find(key).map(|a| a.platforms()))
+        .unwrap_or(abyssal_modules::Platforms::Both)
 }
 
 /// The order categories appear in, on the dashboard and in the menu.
@@ -39,11 +48,15 @@ pub struct VisibleModule {
 }
 
 /// Every arsenal the user may open: enabled, one of its view permissions
-/// held (or none required), and not hidden from the user's roles.
+/// held (or none required), and not hidden from the user's roles. With a host
+/// selected in the host switcher (`selected_os` known), also only the
+/// arsenals for that host's OS; `HostOs::Unknown` (no host selected, or its
+/// OS unknown) leaves every arsenal in.
 pub async fn visible_modules(
     registry: &ModuleRegistry,
     pool: &DbPool,
     ctx: &AuthContext,
+    selected_os: HostOs,
 ) -> anyhow::Result<Vec<VisibleModule>> {
     let pinned_keys = repo::pinned_modules::list_for_user(pool, ctx.user.id).await?;
     let role_restriction =
@@ -53,6 +66,7 @@ pub async fn visible_modules(
         .await?
         .into_iter()
         .filter(|m| m.enabled)
+        .filter(|m| m.platforms.allows(selected_os))
         .filter(|m| m.view_permissions.is_empty() || m.view_permissions.iter().any(|p| ctx.has(*p)))
         .filter(|m| match &role_restriction {
             Some(allowed) => allowed.contains(m.key),
@@ -120,11 +134,15 @@ pub fn group_menu(modules: &[VisibleModule]) -> Vec<ArsenalMenuGroup> {
 
 /// The Arsenals menu for this user. Empty (rather than an error page) if
 /// it can't be built: the menu is a convenience, the dashboard still works.
-pub async fn arsenal_menu(pool: &DbPool, ctx: &AuthContext) -> Vec<ArsenalMenuGroup> {
+pub async fn arsenal_menu(
+    pool: &DbPool,
+    ctx: &AuthContext,
+    selected_os: HostOs,
+) -> Vec<ArsenalMenuGroup> {
     let Some(registry) = REGISTRY.get() else {
         return Vec::new();
     };
-    match visible_modules(registry, pool, ctx).await {
+    match visible_modules(registry, pool, ctx, selected_os).await {
         Ok(modules) => group_menu(&modules),
         Err(e) => {
             tracing::warn!(error = %e, "couldn't build the Arsenals menu");

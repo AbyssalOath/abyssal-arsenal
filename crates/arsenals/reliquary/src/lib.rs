@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Backup creation, verification, preservation, snapshots, and restoration.
 pub struct ReliquaryArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for ReliquaryArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::BackupsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

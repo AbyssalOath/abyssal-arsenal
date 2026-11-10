@@ -24,7 +24,7 @@ use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{
     BaseCtx, CommandsView, EnrollmentInstructions, HostFilterTab, HostRow, HostSummary,
-    HostsTemplate, InstallTokenView, LegacyTokenView,
+    HostsTemplate, InstallTokenView,
 };
 use crate::theme;
 
@@ -261,17 +261,6 @@ async fn render(
             revoked: t.revoked_at.is_some(),
         })
         .collect();
-    let legacy_tokens = repo::host_enrollment_tokens::list_active_deployment(&state.pool)
-        .await?
-        .into_iter()
-        .map(|t| LegacyTokenView {
-            id: t.id.to_string(),
-            label: t.label.unwrap_or_else(|| "(unlabeled)".to_string()),
-            created: crate::common::format_in_tz(t.created_at, tz),
-            expires: crate::common::format_in_tz(t.expires_at, tz),
-            use_count: t.use_count,
-        })
-        .collect();
 
     // PUBLIC_URL (install.sh sets it) -- this render has no request to infer
     // the address from, and the commands are for other machines.
@@ -330,7 +319,6 @@ async fn render(
             .filter(|s| s.via.as_deref() == Some("default_token"))
             .count(),
         additional_tokens,
-        legacy_tokens,
         expiry_choices: crate::install_tokens::EXPIRY_CHOICES
             .iter()
             .map(|(days, label)| (days.map(|d| d.to_string()).unwrap_or_default(), *label))
@@ -601,32 +589,6 @@ pub async fn revoke_install_token(
         )
         .await?;
     }
-    Ok(Redirect::to("/admin/hosts").into_response())
-}
-
-/// Revokes a legacy deployment token (it stops enrolling new hosts
-/// immediately; already-enrolled hosts are unaffected). New ones can't be
-/// created any more: install tokens replace them.
-pub async fn revoke_deployment_token(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    CurrentUser(ctx): CurrentUser,
-    Path(id): Path<Uuid>,
-    Form(form): Form<SimpleForm>,
-) -> Result<Response, WebError> {
-    abyssal_rbac::ensure(&ctx, Permission::HostsManage)?;
-    require_csrf(&jar, &form.csrf_token)?;
-
-    repo::host_enrollment_tokens::revoke(&state.pool, id).await?;
-    abyssal_audit::record(
-        &state.pool,
-        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
-            .actor(audit_actor(&ctx))
-            .resource("host.deployment_token")
-            .metadata(serde_json::json!({ "action": "revoke", "id": id.to_string() })),
-    )
-    .await?;
-
     Ok(Redirect::to("/admin/hosts").into_response())
 }
 

@@ -116,6 +116,12 @@ pub enum AuditAction {
     ScourgeModeChanged,
     ScourgeCaptureStarted,
     ScourgePcapDeleted,
+    /// A capture was downloaded from a sensor through the control plane.
+    /// Captures hold raw traffic, so every download is recorded.
+    ScourgePcapDownloaded,
+    /// A filtered alert list (Scourge alerts or Thanatos events) was
+    /// downloaded as CSV or JSON.
+    AlertsExported,
     ScourgeSensorRemoved,
     ScourgeEventScanRun,
 
@@ -232,6 +238,8 @@ impl AuditAction {
             AuditAction::ScourgeModeChanged => "SCOURGE_MODE_CHANGED",
             AuditAction::ScourgeCaptureStarted => "SCOURGE_CAPTURE_STARTED",
             AuditAction::ScourgePcapDeleted => "SCOURGE_PCAP_DELETED",
+            AuditAction::ScourgePcapDownloaded => "SCOURGE_PCAP_DOWNLOADED",
+            AuditAction::AlertsExported => "ALERTS_EXPORTED",
             AuditAction::ScourgeSensorRemoved => "SCOURGE_SENSOR_REMOVED",
             AuditAction::ScourgeEventScanRun => "SCOURGE_EVENT_SCAN_RUN",
             AuditAction::DirectoryDomainConfigured => "DIRECTORY_DOMAIN_CONFIGURED",
@@ -331,6 +339,8 @@ impl AuditAction {
         AuditAction::ScourgeModeChanged,
         AuditAction::ScourgeCaptureStarted,
         AuditAction::ScourgePcapDeleted,
+        AuditAction::ScourgePcapDownloaded,
+        AuditAction::AlertsExported,
         AuditAction::ScourgeSensorRemoved,
         AuditAction::ScourgeEventScanRun,
         AuditAction::DirectoryDomainConfigured,

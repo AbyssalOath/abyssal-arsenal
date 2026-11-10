@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Storage and file-sharing connectivity: SFTP/SMB/local connection
 /// definitions, host-side share/mount provisioning, and validation --
@@ -28,5 +28,9 @@ impl Arsenal for SepulchreArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::StorageConnectionsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Linux
     }
 }

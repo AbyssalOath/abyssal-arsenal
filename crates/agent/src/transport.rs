@@ -39,6 +39,14 @@ pub fn handshake_status(err: &anyhow::Error) -> Option<u16> {
     })
 }
 
+/// How long a connection attempt (TCP, TLS and the WebSocket upgrade) may
+/// take before it's abandoned and retried.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long the agent waits without hearing anything from the control plane
+/// (which pings every 30s) before it drops the connection and reconnects:
+/// three missed pings.
+const SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(95);
+
 /// Connects to the control plane's `/ws/agent` endpoint, authenticating via
 /// a `Bearer` header (validated server-side before the WebSocket upgrade
 /// completes), and serves incoming commands until the connection closes.
@@ -78,13 +86,22 @@ pub async fn connect_and_serve(
         .header("Sec-WebSocket-Key", generate_key())
         .body(())?;
 
-    let (ws_stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
-        request,
-        None,
-        false,
-        Some(tokio_tungstenite::Connector::Rustls(trust.rustls_config())),
+    let (ws_stream, _response) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async_tls_with_config(
+            request,
+            None,
+            false,
+            Some(tokio_tungstenite::Connector::Rustls(trust.rustls_config())),
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "connecting to the control plane timed out after {}s",
+            CONNECT_TIMEOUT.as_secs()
+        )
+    })??;
     tracing::info!("connected to control plane");
 
     let (mut sink, mut stream) = ws_stream.split();
@@ -112,7 +129,24 @@ pub async fn connect_and_serve(
     set_current_outgoing(Some(outgoing.clone()));
     let serve = Serve::start(outgoing.clone(), closed, runner, exclusive_gate());
 
-    while let Some(message) = stream.next().await {
+    loop {
+        // The control plane pings every 30s. Hearing nothing for longer than
+        // this means the connection is dead even though the socket looks
+        // open -- a router or firewall that forgot it, the machine sleeping
+        // or changing networks, a control plane that went away without
+        // closing it. Without this the agent waited on it forever and never
+        // reconnected, showing offline until it was restarted.
+        let message = match tokio::time::timeout(SILENCE_LIMIT, stream.next()).await {
+            Ok(Some(message)) => message,
+            Ok(None) => break,
+            Err(_) => {
+                tracing::warn!(
+                    silent_secs = SILENCE_LIMIT.as_secs(),
+                    "nothing from the control plane; treating the connection as dead and reconnecting"
+                );
+                break;
+            }
+        };
         match message? {
             Message::Text(text) => {
                 let server_msg: ServerMessage = match serde_json::from_str(&text) {

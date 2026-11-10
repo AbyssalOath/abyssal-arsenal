@@ -5,8 +5,40 @@
 {% block content %}
 
 <div class="card">
+  <h3 style="margin-top:0;">Push the agent</h3>
+  {% if can_push %}
+  <p style="color:var(--text-muted);">
+    Over <strong>OpenSSH</strong>: the control plane signs in with a local administrator
+    account you enter next, copies the agent MSI to each host, checks its hash, and installs
+    it with a single-use token that's revoked when the deploy ends. The hosts need the
+    OpenSSH server running and reachable. Credentials are held in memory only for this
+    deploy.
+  </p>
+  <form method="post" action="/arsenals/panopticon/deploy/credentials">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="os" value="windows">
+    <input type="hidden" name="transport" value="ssh">
+    {% for h in hosts %}
+    <input type="hidden" name="selected_ips" value="{{ h.ip }}">
+    {% endfor %}
+    <button type="submit" class="btn-warning">{% call macros::icon("host") %} Push over SSH&hellip;</button>
+  </form>
+  <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0;">
+    WinRM (HTTPS with Kerberos) isn't available yet. For hosts without OpenSSH, use the
+    commands below.
+  </p>
+  {% else %}
+  <p style="color:var(--text-muted); margin-bottom:0;">
+    Pushing the agent to Windows hosts needs the <code>hosts.deploy</code> permission. Without
+    it, use the commands below.
+  </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Or install it yourself</h3>
   <p style="color:var(--text-muted); margin-top:0;">
-    Windows hosts aren't pushed to over SSH. Run the command below on each of the
+    Run the command below on each of the
     selected hosts (from an elevated PowerShell), or push it with your deployment
     tool &mdash; PDQ Deploy, a GPO startup script, or Intune. It downloads the
     agent from this control plane, trusts the control plane's CA, and enrolls;

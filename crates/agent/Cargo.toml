@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 abyssal-agent-protocol.workspace = true
+base64.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

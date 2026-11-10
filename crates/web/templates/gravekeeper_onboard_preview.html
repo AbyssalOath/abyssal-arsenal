@@ -17,7 +17,7 @@
     <tr><th style="text-align:left;">Display name</th><td>{{ plan.display_name }}</td></tr>
     <tr><th style="text-align:left;">Email</th><td>{% if plan.email.is_empty() %}—{% else %}{{ plan.email }}{% endif %}</td></tr>
     <tr><th style="text-align:left;">Target OU</th><td>{% if plan.target_ou.is_empty() %}<span class="badge badge-muted">default Users container</span>{% else %}{{ plan.target_ou }}{% endif %}</td></tr>
-    <tr><th style="text-align:left;">Mailbox</th><td>{{ plan.mail_mode }}{% if plan.mail_mode != "none" %} <span class="badge badge-warning">not wired yet</span>{% endif %}</td></tr>
+    <tr><th style="text-align:left;">Mailbox</th><td>{{ plan.mail_mode }}{% if plan.mail_mode != "none" %} <span class="badge badge-muted" title="The mailbox is set up after the AD account is created. If it fails, the account is kept and the mail step can be retried from the job page.">after the account</span>{% endif %}</td></tr>
   </table>
 
   {% if !plan.attributes.is_empty() %}

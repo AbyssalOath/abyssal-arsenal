@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
-use crate::middleware::{maintenance_mode, security_headers};
+use crate::middleware::{maintenance_mode, platform_guard, security_headers};
 use crate::routes;
 use crate::state::AppState;
 
@@ -323,11 +323,6 @@ pub fn build(state: AppState) -> Router {
             "/admin/hosts/install-tokens/:id/revoke",
             post(routes::hosts::revoke_install_token),
         )
-        // Legacy deployment tokens: revoke only (install tokens replace them).
-        .route(
-            "/admin/hosts/deployment-token/:id/revoke",
-            post(routes::hosts::revoke_deployment_token),
-        )
         .route("/admin/hosts/aat/reveal", post(routes::hosts::reveal_aat))
         .route("/admin/hosts/aat/rotate", post(routes::hosts::rotate_aat))
         .route(
@@ -368,6 +363,10 @@ pub fn build(state: AppState) -> Router {
         .route("/admin/hosts/:id/update", post(routes::hosts::update_agent))
         .route("/arsenals/gravekeeper", get(routes::gravekeeper::show))
         .route("/arsenals/gravekeeper/find", get(routes::gravekeeper::find))
+        .route(
+            "/arsenals/gravekeeper/lockout",
+            get(routes::gravekeeper::lockout_landing),
+        )
         .route(
             "/arsenals/gravekeeper/:host_id",
             get(routes::gravekeeper::workflow_landing),
@@ -519,6 +518,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/gravekeeper/domains/:id/service-account",
             post(routes::gravekeeper::set_service_account),
+        )
+        .route(
+            "/arsenals/gravekeeper/domains/:id/service-account/rotate",
+            post(routes::gravekeeper::rotate_service_account_password),
         )
         .route(
             "/arsenals/gravekeeper/domains/:id/config",
@@ -1732,6 +1735,10 @@ pub fn build(state: AppState) -> Router {
         .route("/arsenals/scourge", get(routes::scourge::show))
         .route("/arsenals/scourge/alerts", get(routes::scourge::alerts))
         .route(
+            "/arsenals/scourge/alerts/export",
+            get(routes::scourge::alerts_export),
+        )
+        .route(
             "/arsenals/scourge/alerts/fragment",
             get(routes::scourge::alerts_fragment),
         )
@@ -1822,6 +1829,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/scourge/:host_id/capture/:job_id/cancel",
             post(routes::scourge::capture_cancel),
+        )
+        .route(
+            "/arsenals/scourge/:host_id/pcap/download",
+            get(routes::scourge::pcap_download),
         )
         .route(
             "/arsenals/scourge/:host_id/pcap/delete/confirm",
@@ -2172,6 +2183,10 @@ pub fn build(state: AppState) -> Router {
         .route("/arsenals/thanatos", get(routes::thanatos::show))
         .route("/arsenals/thanatos/search", get(routes::thanatos::search))
         .route(
+            "/arsenals/thanatos/search/export",
+            get(routes::thanatos::search_export),
+        )
+        .route(
             "/arsenals/thanatos/rules",
             get(routes::thanatos::rules).post(routes::thanatos::create_rule),
         )
@@ -2235,6 +2250,10 @@ pub fn build(state: AppState) -> Router {
         .route("/ca.crt", get(routes::bootstrap::ca_cert))
         .route("/ca.pem", get(routes::bootstrap::ca_cert))
         .nest_service("/static", ServeDir::new(static_dir()))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            platform_guard::guard,
+        ))
         .layer(axum::middleware::from_fn(security_headers::apply))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

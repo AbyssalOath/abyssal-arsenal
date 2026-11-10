@@ -1,8 +1,11 @@
 //! "Quick Add Host From Network Scan" (GitHub issue #5): SSH into a
 //! Panopticon-discovered device and run the agent's own already-existing
 //! non-interactive install (`abyssal-agent install --control-plane-url
-//! ... --enrollment-token ...`, see `crates/agent/src/main.rs` -- nothing
-//! new needed on the agent side) instead of an admin doing it by hand.
+//! ... --enrollment-token-file ...`, see `crates/agent/src/main.rs` --
+//! nothing new needed on the agent side) instead of an admin doing it by
+//! hand. The enrollment token goes over stdin into a file in a private,
+//! randomly named staging directory, never onto a command line, where the
+//! target's process list and audit logs (auditd `execve`) would record it.
 //!
 //! Everything here is built against the [`SshClient`]/[`SshSession`]
 //! traits, not `russh` directly, so the orchestration logic
@@ -10,6 +13,10 @@
 //! implementation with no real network or SSH server involved -- see this
 //! module's own tests. [`RusshClient`] is the one real implementation,
 //! used in production.
+//!
+//! The parts that don't depend on SSH -- the job a status page polls,
+//! running hosts in parallel, the check-in wait and the audit trail -- live
+//! in `crate::host_deploy`, shared with the Windows transports.
 //!
 //! Credentials never touch disk or a log line: [`SshCredentials`]' fields
 //! are `zeroize::Zeroizing`, the same primitive already used for exactly
@@ -21,7 +28,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_database::{DbPool, repo};
 use abyssal_hosts::HostConnectionRegistry;
 use russh::client::{AuthResult, Handler};
@@ -29,6 +35,14 @@ use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertifi
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;
+
+#[cfg(test)]
+use crate::host_deploy::CHECKIN_POLL_TIMEOUT;
+pub use crate::host_deploy::{
+    CommandResult, DEFAULT_CONCURRENCY, DeployFailureReason, DeployJob, HostDeployState,
+    HostDeployStatus,
+};
+use crate::host_deploy::{DeployOutcome, DeployStage, wait_for_checkin};
 
 /// Bounds every SSH TCP connect attempt -- an unreachable target must
 /// never hang the whole batch. Mirrors the exact same reasoning
@@ -38,20 +52,6 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounds one remote command (download + extract + install can be slow on
 /// a poor connection, so this is generous).
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// How long to wait, after the install command reports success, for the
-/// agent to actually connect back before giving up and reporting
-/// [`DeployFailureReason::NeverCheckedIn`]. Generous on purpose: the
-/// agent's own reconnect loop (`crates/agent/src/main.rs`) backs off
-/// 1s/2s/4s/8s/16s/32s/60s/... after a failed connection attempt, so a
-/// rough first attempt (DNS not quite ready yet, a brief network hiccup
-/// right after the service starts) can genuinely take over a minute to
-/// recover from before the *next* retry even fires -- a shorter timeout
-/// here risks reporting `NeverCheckedIn` for a host that was actually
-/// about to connect fine on its own.
-pub const CHECKIN_POLL_TIMEOUT: Duration = Duration::from_secs(150);
-const CHECKIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
-/// How many hosts a single deploy job SSHes into at once.
-pub const DEFAULT_CONCURRENCY: usize = 5;
 
 // ---------------------------------------------------------------------
 // Credentials -- never persisted, never logged, wiped on drop.
@@ -133,8 +133,11 @@ pub fn shell_quote(value: &str) -> String {
 /// `nested_shell_quoting_survives_two_levels_of_shell_parsing` test
 /// actually runs through a real `/bin/sh`, not just eyeballs.
 ///
+/// `dir` is this deploy's [`staging_dir`]. The token is read from
+/// `<dir>/token`, written there by [`build_token_command`].
+///
 /// `has_ca` means [`build_download_command`] wrote the control plane's CA
-/// to `/tmp/abyssal-agent-deploy/ca.pem`: passed as `--ca-cert`, so the
+/// to `<dir>/ca.pem`: passed as `--ca-cert`, so the
 /// agent trusts the control plane without any OS-store change. It comes from
 /// the control plane itself over the already-authenticated SSH session, so
 /// there's no fingerprint to check here.
@@ -143,31 +146,47 @@ pub fn shell_quote(value: &str) -> String {
 /// install's own -- not `rm`'s, which is always 0 and once made every failed
 /// install look like "succeeded, but never connected back."
 fn build_install_command(
+    dir: &str,
     control_plane_url: &str,
-    enrollment_token: &str,
     hostname: &str,
     has_ca: bool,
 ) -> String {
     let ca_arg = if has_ca {
-        " --ca-cert /tmp/abyssal-agent-deploy/ca.pem"
+        format!(" --ca-cert {dir}/ca.pem")
     } else {
-        ""
+        String::new()
     };
     let install_binary_cmd = format!(
         "mkdir -p /opt/abyssal-agent && \
-         cp /tmp/abyssal-agent-deploy/abyssal-agent /opt/abyssal-agent/abyssal-agent && \
+         cp {dir}/abyssal-agent /opt/abyssal-agent/abyssal-agent && \
          chmod +x /opt/abyssal-agent/abyssal-agent && \
          /opt/abyssal-agent/abyssal-agent install --control-plane-url {} \
-         --enrollment-token {} --name {}{ca_arg}",
+         --enrollment-token-file {dir}/token --name {}{ca_arg}",
         shell_quote(control_plane_url),
-        shell_quote(enrollment_token),
         shell_quote(hostname)
     );
     format!(
-        "sudo -S sh -c {} ; rc=$? ; \
-         rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz ; exit $rc",
+        "sudo -S sh -c {} ; rc=$? ; rm -rf {dir} ; exit $rc",
         shell_quote(&install_binary_cmd)
     )
+}
+
+/// A fresh staging directory on the target for one deploy. Random, and
+/// created by [`build_download_command`] with `mkdir -m 700` (which fails
+/// if it already exists), so no other user on the target can create it
+/// first, plant a symlink in it, or read the token file: with a fixed
+/// path under the world-writable `/tmp`, anyone could have pre-created it
+/// and swapped the binary `sudo` then runs as root. Only `[a-z0-9/-]`, so
+/// it's used unquoted in the commands.
+fn staging_dir() -> String {
+    format!("/tmp/abyssal-agent-deploy-{}", Uuid::new_v4().simple())
+}
+
+/// Writes the enrollment token, sent as this command's stdin, to
+/// `<dir>/token`, readable only by the SSH user (and root, for the
+/// install). Run as the SSH user, without `sudo`: the directory is theirs.
+fn build_token_command(dir: &str) -> String {
+    format!("umask 077 && cat > {dir}/token")
 }
 
 /// Downloads the agent from the control plane's own `GET /agent/linux` --
@@ -179,118 +198,34 @@ fn build_install_command(
 /// flag (`--ca-cert`) outright. It also keeps an internal/air-gapped deploy
 /// from needing internet access on every target.
 ///
+/// `dir` is this deploy's [`staging_dir`], created here.
+///
 /// `ca_pem`, if the control plane has an internal CA, is written first and
 /// pins the download (`--cacert`); [`build_install_command`] then hands the
 /// same file to the agent.
-fn build_download_command(control_plane_url: &str, ca_pem: Option<&str>) -> String {
+fn build_download_command(dir: &str, control_plane_url: &str, ca_pem: Option<&str>) -> String {
     let (write_ca, cacert) = match ca_pem {
         Some(pem) => (
-            format!(
-                "printf '%s' {} > /tmp/abyssal-agent-deploy/ca.pem && ",
-                shell_quote(pem)
-            ),
-            " --cacert /tmp/abyssal-agent-deploy/ca.pem",
+            format!("printf '%s' {} > {dir}/ca.pem && ", shell_quote(pem)),
+            format!(" --cacert {dir}/ca.pem"),
         ),
-        None => (String::new(), ""),
+        None => (String::new(), String::new()),
     };
     let url = format!("{}/agent/linux", control_plane_url.trim_end_matches('/'));
     format!(
-        "mkdir -p /tmp/abyssal-agent-deploy && {write_ca}\
-         curl -fsSL{cacert} -o /tmp/abyssal-agent-deploy.tar.gz {} && \
-         tar -xzf /tmp/abyssal-agent-deploy.tar.gz -C /tmp/abyssal-agent-deploy --strip-components=1 && \
-         chmod +x /tmp/abyssal-agent-deploy/abyssal-agent",
+        "mkdir -m 700 {dir} && {write_ca}\
+         curl -fsSL{cacert} -o {dir}/agent.tar.gz {} && \
+         tar -xzf {dir}/agent.tar.gz -C {dir} --strip-components=1 && \
+         chmod +x {dir}/abyssal-agent",
         shell_quote(&url)
     )
 }
 
-// ---------------------------------------------------------------------
-// Result / failure types
-// ---------------------------------------------------------------------
-
-#[derive(Debug, Clone, Default)]
-pub struct CommandResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: Option<u32>,
-}
-
-impl CommandResult {
-    pub fn success(&self) -> bool {
-        self.exit_code == Some(0)
-    }
-}
-
-/// Every failure mode the issue itself names, plus the handful this
-/// implementation can additionally distinguish. `message()` is what a
-/// non-expert admin sees on the status page -- specific enough to
-/// actually troubleshoot from, per the issue's own requirement.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DeployFailureReason {
-    ConnectionRefused,
-    ConnectionTimeout,
-    HostUnreachable(String),
-    /// The host key doesn't match a previously-trusted one for this IP --
-    /// always a hard stop, never silently bypassed.
-    HostKeyChanged {
-        expected: String,
-        actual: String,
-    },
-    /// First time seeing this IP and the admin never confirmed its
-    /// fingerprint (shouldn't normally happen -- the credentials step
-    /// always probes and requires confirmation first -- but handled
-    /// explicitly rather than assumed impossible).
-    HostKeyUnconfirmed,
-    AuthenticationFailed,
-    SudoDenied,
-    UnsupportedArchitecture(String),
-    DownloadFailed(String),
-    InstallFailed(String),
-    /// The install command reported success, but the agent never actually
-    /// connected back within `CHECKIN_POLL_TIMEOUT` -- exit code 0 alone
-    /// is never treated as "done."
-    NeverCheckedIn,
-    Other(String),
-}
-
-impl DeployFailureReason {
-    pub fn message(&self) -> String {
-        match self {
-            Self::ConnectionRefused => "Connection refused -- is SSH running on this host?".into(),
-            Self::ConnectionTimeout => {
-                "Connection timed out -- host unreachable or firewalled".into()
-            }
-            Self::HostUnreachable(detail) => format!("Could not reach host: {detail}"),
-            Self::HostKeyChanged { expected, actual } => format!(
-                "Host key changed since it was last trusted (expected {expected}, got {actual}) \
-                 -- possible man-in-the-middle, or the host was reimaged. Not proceeding \
-                 automatically; remove the old trusted key first if this is expected."
-            ),
-            Self::HostKeyUnconfirmed => {
-                "Host key was never confirmed -- re-run the credentials step".into()
-            }
-            Self::AuthenticationFailed => {
-                "SSH authentication failed -- check the username/password/key".into()
-            }
-            Self::SudoDenied => {
-                "sudo denied -- check the sudo password and that this account has sudo privileges"
-                    .into()
-            }
-            Self::UnsupportedArchitecture(arch) => {
-                format!("No published agent build for this host's architecture ({arch})")
-            }
-            Self::DownloadFailed(detail) => {
-                format!("Failed to download the agent from the control plane: {detail}")
-            }
-            Self::InstallFailed(detail) => format!("Install command failed: {detail}"),
-            Self::NeverCheckedIn => {
-                "Install command succeeded, but the agent never connected back -- check the \
-                 host's network access to the control plane and `systemctl status abyssal-agent` \
-                 on that host"
-                    .into()
-            }
-            Self::Other(detail) => detail.clone(),
-        }
-    }
+/// Best-effort removal of the staging directory when a step fails before
+/// the install command (whose own cleanup covers every later outcome).
+/// Ignored on failure: the session may be what broke.
+async fn remove_staging_dir(session: &mut dyn SshSession, dir: &str) {
+    let _ = session.exec(&format!("rm -rf {dir}"), None).await;
 }
 
 // ---------------------------------------------------------------------
@@ -307,6 +242,17 @@ pub trait SshSession: Send {
         command: &str,
         stdin: Option<&[u8]>,
     ) -> Result<CommandResult, DeployFailureReason>;
+
+    /// Writes `data` to `path` on the host over SFTP (created or
+    /// truncated), so file contents -- an installer, a token -- never go
+    /// through a command. `path` is in SFTP form (`/C:/ProgramData/...` on
+    /// Windows). Linux deploys don't use it.
+    async fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), DeployFailureReason> {
+        let _ = (path, data);
+        Err(DeployFailureReason::Other(
+            "this session can't write files".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -550,81 +496,48 @@ impl SshSession for RusshSession {
             ))),
         }
     }
-}
 
-// ---------------------------------------------------------------------
-// Deploy job -- shared in-memory state a caller polls, mirroring
-// `AppState.update_status` (`crates/web/src/state.rs`,
-// `update_check.rs`), the one existing precedent for live shared state
-// threaded through `AppState`. Never holds a credential.
-// ---------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum HostDeployState {
-    Pending,
-    Connecting,
-    Installing,
-    WaitingForCheckin,
-    Succeeded,
-    Failed(DeployFailureReason),
-}
-
-impl HostDeployState {
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed(_))
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Pending => "Pending",
-            Self::Connecting => "Connecting",
-            Self::Installing => "Installing",
-            Self::WaitingForCheckin => "Waiting for agent to check in",
-            Self::Succeeded => "Succeeded",
-            Self::Failed(_) => "Failed",
+    async fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), DeployFailureReason> {
+        use tokio::io::AsyncWriteExt;
+        let fail = |what: &str, e: &dyn std::fmt::Display| {
+            DeployFailureReason::Other(format!("SFTP {what} failed: {e}"))
+        };
+        let run = async {
+            let channel = {
+                let session = self.session.lock().await;
+                session
+                    .channel_open_session()
+                    .await
+                    .map_err(|e| fail("channel", &e))?
+            };
+            channel
+                .request_subsystem(true, "sftp")
+                .await
+                .map_err(|e| fail("subsystem", &e))?;
+            let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+                .await
+                .map_err(|e| fail("session", &e))?;
+            let mut file = sftp
+                .open_with_flags(
+                    path,
+                    russh_sftp::protocol::OpenFlags::CREATE
+                        | russh_sftp::protocol::OpenFlags::TRUNCATE
+                        | russh_sftp::protocol::OpenFlags::WRITE,
+                )
+                .await
+                .map_err(|e| fail("open", &e))?;
+            file.write_all(data).await.map_err(|e| fail("write", &e))?;
+            file.shutdown().await.map_err(|e| fail("close", &e))?;
+            let _ = sftp.close().await;
+            Ok(())
+        };
+        match tokio::time::timeout(COMMAND_TIMEOUT, run).await {
+            Ok(result) => result,
+            Err(_) => Err(DeployFailureReason::Other(format!(
+                "file transfer timed out after {}s",
+                COMMAND_TIMEOUT.as_secs()
+            ))),
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct HostDeployStatus {
-    pub ip_address: String,
-    pub hostname: Option<String>,
-    pub state: HostDeployState,
-    /// Redacted remote command output -- never includes anything from
-    /// `SshCredentials`, since the credentials themselves are never
-    /// placed in a command string or logged (see `deploy_one_host`).
-    pub output: String,
-    /// `true` when `hostname` above is really just the IP address --
-    /// either the SSH session never got far enough to ask the host for
-    /// its own name, or it answered with something that didn't look like
-    /// a real hostname. Surfaced on the status page so an IP standing in
-    /// for a hostname is something to investigate, not mistaken for a
-    /// real name (see `deploy_one_host`'s hostname resolution).
-    pub hostname_is_fallback: bool,
-}
-
-/// What one host's deploy attempt produced -- `deploy_one_host`'s return
-/// type. `resolved_hostname`/`hostname_is_fallback` start from the
-/// inventory's pre-deploy guess (`DeployTarget::hostname`, or the IP if
-/// there wasn't one) and get replaced the moment the host answers its own
-/// `hostname` command, which is ground truth in a way a pre-scan guess
-/// never is.
-struct DeployOutcome {
-    state: HostDeployState,
-    output: String,
-    resolved_hostname: String,
-    hostname_is_fallback: bool,
-}
-
-pub struct DeployJob {
-    pub id: Uuid,
-    pub hosts: Vec<HostDeployStatus>,
-}
-
-impl DeployJob {
-    pub fn is_complete(&self) -> bool {
-        self.hosts.iter().all(|h| h.state.is_terminal())
     }
 }
 
@@ -658,16 +571,21 @@ async fn deploy_one_host(
         .clone()
         .unwrap_or_else(|| target.ip_address.clone());
     let mut hostname_is_fallback = target.hostname.is_none();
+    // Where this deploy has got to, reported with a failure.
+    let mut stage = DeployStage::Connect;
 
     macro_rules! finish {
-        ($state:expr) => {
+        ($state:expr) => {{
+            let state = $state;
+            let failed_stage = matches!(state, HostDeployState::Failed(_)).then_some(stage);
             return DeployOutcome {
-                state: $state,
+                state,
                 output,
                 resolved_hostname,
                 hostname_is_fallback,
-            }
-        };
+                failed_stage,
+            };
+        }};
     }
 
     let mut session = match client
@@ -680,8 +598,14 @@ async fn deploy_one_host(
         .await
     {
         Ok(s) => s,
-        Err(reason) => finish!(HostDeployState::Failed(reason)),
+        Err(reason) => {
+            if is_authentication_failure(&reason) {
+                stage = DeployStage::Authenticate;
+            }
+            finish!(HostDeployState::Failed(reason))
+        }
     };
+    stage = DeployStage::Preflight;
 
     macro_rules! run {
         ($cmd:expr) => {{
@@ -719,8 +643,8 @@ async fn deploy_one_host(
                 // turns out (a failed install still taught us something
                 // real about this host), but a slow or unreachable
                 // database must never stall this task's own progress --
-                // same reasoning as `record_deploy_audit` in
-                // `run_deploy_job`.
+                // same reasoning as the audit writes in
+                // `host_deploy::run_job`.
                 let pool = pool.clone();
                 let ip_address = target.ip_address.clone();
                 let hostname_for_inventory = resolved_hostname.clone();
@@ -747,7 +671,10 @@ async fn deploy_one_host(
     // rotation), else an operator-supplied CA.
     let ca_pem =
         crate::internal_tls::trust_bundle().or_else(|| crate::public_ca::load().map(|ca| ca.pem));
+    stage = DeployStage::Download;
+    let dir = staging_dir();
     let download = run!(&build_download_command(
+        &dir,
         control_plane_url,
         ca_pem.as_deref()
     ));
@@ -756,6 +683,7 @@ async fn deploy_one_host(
         download.stdout, download.stderr
     ));
     if !download.success() {
+        remove_staging_dir(session.as_mut(), &dir).await;
         finish!(HostDeployState::Failed(
             DeployFailureReason::DownloadFailed(format!(
                 "exit code {:?}: {}",
@@ -765,9 +693,37 @@ async fn deploy_one_host(
         ));
     }
 
+    stage = DeployStage::Install;
+    // The token goes over stdin into a file, never onto a command line.
+    let mut token_stdin = Zeroizing::new(String::with_capacity(enrollment_token.len() + 1));
+    token_stdin.push_str(enrollment_token);
+    token_stdin.push('\n');
+    let written = session
+        .exec(&build_token_command(&dir), Some(token_stdin.as_bytes()))
+        .await;
+    drop(token_stdin);
+    output.push_str("$ (write the enrollment token file)\n");
+    match written {
+        Ok(result) if result.success() => {}
+        Ok(result) => {
+            remove_staging_dir(session.as_mut(), &dir).await;
+            finish!(HostDeployState::Failed(DeployFailureReason::InstallFailed(
+                format!(
+                    "couldn't write the enrollment token file (exit code {:?}): {}",
+                    result.exit_code,
+                    result.stderr.trim()
+                )
+            )));
+        }
+        Err(reason) => {
+            remove_staging_dir(session.as_mut(), &dir).await;
+            finish!(HostDeployState::Failed(reason));
+        }
+    }
+
     let install_cmd = build_install_command(
+        &dir,
         control_plane_url,
-        enrollment_token,
         &resolved_hostname,
         ca_pem.is_some(),
     );
@@ -781,7 +737,10 @@ async fn deploy_one_host(
         .await
     {
         Ok(result) => result,
-        Err(reason) => finish!(HostDeployState::Failed(reason)),
+        Err(reason) => {
+            remove_staging_dir(session.as_mut(), &dir).await;
+            finish!(HostDeployState::Failed(reason))
+        }
     };
     drop(sudo_stdin);
     output.push_str(&format!(
@@ -805,58 +764,24 @@ async fn deploy_one_host(
         )));
     }
 
-    // Confirm real enrollment, not just exit code 0: poll for a host row
-    // registered under the name we just told the agent to use, that has
-    // actually connected back over its own WebSocket.
-    let deadline = tokio::time::Instant::now() + CHECKIN_POLL_TIMEOUT;
-    loop {
-        if let Ok(hosts) = repo::hosts::list(pool).await
-            && let Some(host) = hosts.iter().find(|h| h.name == resolved_hostname)
-            && hosts_registry.is_connected(host.id)
-        {
-            finish!(HostDeployState::Succeeded);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            finish!(HostDeployState::Failed(DeployFailureReason::NeverCheckedIn));
-        }
-        tokio::time::sleep(CHECKIN_POLL_INTERVAL).await;
-    }
+    stage = DeployStage::CheckIn;
+    finish!(wait_for_checkin(pool, hosts_registry, &resolved_hostname).await)
 }
 
-/// Records one `HostDeployStarted`/`HostDeploySucceeded`/`HostDeployFailed`
-/// row, best-effort -- spawned separately from a deploy task's own work
-/// (see `run_deploy_job`) so a slow or unreachable audit DB can never
-/// delay a deploy's progress or the status page polling it.
-async fn record_deploy_audit(
-    pool: DbPool,
-    action: AuditAction,
-    outcome: AuditOutcome,
-    ip_address: String,
-    actor_user_id: Uuid,
-    actor_username: String,
-    metadata: Option<serde_json::Value>,
-) {
-    let mut event = AuditEvent::new(action, outcome)
-        .actor(Actor {
-            user_id: actor_user_id,
-            username: &actor_username,
-        })
-        .resource(&ip_address);
-    if let Some(m) = metadata {
-        event = event.metadata(m);
-    }
-    let _ = abyssal_audit::record(&pool, event).await;
+/// SSH connects and authenticates in one step; this tells which of the two
+/// failed. Checking the server's host key counts as authenticating it.
+fn is_authentication_failure(reason: &DeployFailureReason) -> bool {
+    matches!(
+        reason,
+        DeployFailureReason::AuthenticationFailed
+            | DeployFailureReason::HostKeyChanged { .. }
+            | DeployFailureReason::HostKeyUnconfirmed
+    )
 }
 
-/// Runs a deploy across every target in `targets`, at most `concurrency`
-/// at once (`tokio::sync::Semaphore`), each in its own task
-/// (`tokio::task::JoinSet`) so one host's failure or hang can never block
-/// or take down the others. `job` is updated in place as each host
-/// progresses -- a caller elsewhere polls the same `Arc<RwLock<...>>` to
-/// render a status page. Records `HostDeployStarted`/`HostDeploySucceeded`/
-/// `HostDeployFailed` per host, attributed to whoever confirmed the deploy
-/// (`actor_user_id`/`actor_username`) -- this is the durable record of what
-/// happened; `job` itself is in-memory only and doesn't outlive the process.
+/// Deploys to every target over SSH, through `host_deploy::run_job` (at
+/// most `concurrency` at once, `job` updated as each host progresses, a
+/// `HostDeployStarted`/`Succeeded`/`Failed` audit row per host).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_deploy_job(
     client: Arc<dyn SshClient>,
@@ -873,100 +798,39 @@ pub async fn run_deploy_job(
     actor_user_id: Uuid,
     actor_username: String,
 ) {
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
-    let mut tasks = tokio::task::JoinSet::new();
-
-    for (target, expected_fingerprint, enrollment_token) in targets {
-        {
-            let mut job = job.write().await;
-            if let Some(status) = job
-                .hosts
-                .iter_mut()
-                .find(|h| h.ip_address == target.ip_address)
-            {
-                status.state = HostDeployState::Connecting;
-            }
-        }
-
-        let semaphore = semaphore.clone();
-        let client = client.clone();
-        let pool = pool.clone();
-        let hosts_registry = hosts_registry.clone();
-        let job = job.clone();
-        let control_plane_url = control_plane_url.clone();
-        let ip_address = target.ip_address.clone();
-        let actor_username = actor_username.clone();
-
-        tasks.spawn(async move {
-            let _permit = semaphore.acquire_owned().await;
-
-            // Fire-and-forget: this task's own progress (and the status
-            // page polling it) must never wait on an audit write landing --
-            // spawned separately rather than awaited inline.
-            tokio::spawn(record_deploy_audit(
-                pool.clone(),
-                AuditAction::HostDeployStarted,
-                AuditOutcome::Success,
-                ip_address.clone(),
-                actor_user_id,
-                actor_username.clone(),
-                None,
-            ));
-
-            let outcome = deploy_one_host(
-                client.as_ref(),
-                &pool,
-                hosts_registry.as_ref(),
-                &target,
-                &expected_fingerprint,
-                &control_plane_url,
-                &enrollment_token,
-            )
-            .await;
-            drop(enrollment_token);
-            let DeployOutcome {
-                state,
-                output,
-                resolved_hostname,
-                hostname_is_fallback,
-            } = outcome;
-
-            let (action, outcome, metadata) = match &state {
-                HostDeployState::Succeeded => (
-                    AuditAction::HostDeploySucceeded,
-                    AuditOutcome::Success,
-                    None,
-                ),
-                HostDeployState::Failed(reason) => (
-                    AuditAction::HostDeployFailed,
-                    AuditOutcome::Failure,
-                    Some(serde_json::json!({ "reason": reason.message() })),
-                ),
-                // Every other state is non-terminal; `deploy_one_host` always
-                // returns Succeeded or Failed, never leaves it pending.
-                _ => (AuditAction::HostDeployFailed, AuditOutcome::Failure, None),
+    let deploys = targets
+        .into_iter()
+        .map(|(target, expected_fingerprint, enrollment_token)| {
+            let client = client.clone();
+            let pool = pool.clone();
+            let hosts_registry = hosts_registry.clone();
+            let control_plane_url = control_plane_url.clone();
+            let ip_address = target.ip_address.clone();
+            // The token is dropped (and zeroed) when this future finishes.
+            let deploy = async move {
+                deploy_one_host(
+                    client.as_ref(),
+                    &pool,
+                    hosts_registry.as_ref(),
+                    &target,
+                    &expected_fingerprint,
+                    &control_plane_url,
+                    &enrollment_token,
+                )
+                .await
             };
-            tokio::spawn(record_deploy_audit(
-                pool.clone(),
-                action,
-                outcome,
-                ip_address.clone(),
-                actor_user_id,
-                actor_username.clone(),
-                metadata,
-            ));
-
-            let mut job = job.write().await;
-            if let Some(status) = job.hosts.iter_mut().find(|h| h.ip_address == ip_address) {
-                status.state = state;
-                status.output = output;
-                status.hostname = Some(resolved_hostname);
-                status.hostname_is_fallback = hostname_is_fallback;
-            }
-        });
-    }
-
-    while tasks.join_next().await.is_some() {}
+            (ip_address, deploy)
+        })
+        .collect();
+    crate::host_deploy::run_job(
+        pool,
+        job,
+        deploys,
+        concurrency,
+        actor_user_id,
+        actor_username,
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -1013,40 +877,104 @@ mod tests {
     // systemd's `203/EXEC`).
     // ---------------------------------------------------------------
 
+    const DIR: &str = "/tmp/abyssal-agent-deploy-test";
+
     #[test]
     fn install_command_installs_from_a_permanent_location_not_the_temp_one() {
-        let cmd = build_install_command("https://cp.example.com", "tok", "myhost", false);
+        let cmd = build_install_command(DIR, "https://cp.example.com", "myhost", false);
         assert!(cmd.starts_with("sudo -S sh -c "));
         assert!(!cmd.contains("--ca-cert"));
         assert!(cmd.contains("mkdir -p /opt/abyssal-agent"));
-        assert!(cmd.contains(
-            "cp /tmp/abyssal-agent-deploy/abyssal-agent /opt/abyssal-agent/abyssal-agent"
-        ));
+        assert!(cmd.contains(&format!(
+            "cp {DIR}/abyssal-agent /opt/abyssal-agent/abyssal-agent"
+        )));
         assert!(cmd.contains("/opt/abyssal-agent/abyssal-agent install"));
         // The cleanup at the end must only ever remove the temporary
-        // staging directory/archive -- never the permanent copy the
-        // service now depends on for every future restart and reboot.
-        assert!(cmd.contains("rm -rf /tmp/abyssal-agent-deploy /tmp/abyssal-agent-deploy.tar.gz"));
+        // staging directory -- never the permanent copy the service now
+        // depends on for every future restart and reboot.
+        assert!(cmd.contains(&format!("rm -rf {DIR} ;")));
         assert!(!cmd.contains("rm -rf /opt"));
     }
 
     #[test]
+    fn install_command_reads_the_token_from_the_staging_file() {
+        let cmd = build_install_command(DIR, "https://cp.example.com", "myhost", false);
+        assert!(cmd.contains(&format!("--enrollment-token-file {DIR}/token")));
+        assert!(!cmd.contains("--enrollment-token "));
+        assert!(!cmd.contains("--enrollment-token '"));
+    }
+
+    #[test]
     fn install_command_hands_over_the_internal_ca() {
-        let cmd = build_install_command("https://10.0.0.5", "tok", "myhost", true);
-        assert!(cmd.contains("--ca-cert /tmp/abyssal-agent-deploy/ca.pem"));
+        let cmd = build_install_command(DIR, "https://10.0.0.5", "myhost", true);
+        assert!(cmd.contains(&format!("--ca-cert {DIR}/ca.pem")));
     }
 
     #[test]
     fn download_comes_from_the_control_plane_pinned_to_its_ca() {
         let pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
-        let cmd = build_download_command("https://10.0.0.5/", Some(pem));
+        let cmd = build_download_command(DIR, "https://10.0.0.5/", Some(pem));
         assert!(cmd.contains("'https://10.0.0.5/agent/linux'"));
         assert!(!cmd.contains("github.com"));
-        assert!(cmd.contains("> /tmp/abyssal-agent-deploy/ca.pem"));
-        assert!(cmd.contains("--cacert /tmp/abyssal-agent-deploy/ca.pem"));
-        let plain = build_download_command("https://cp.example.com", None);
+        assert!(cmd.contains(&format!("> {DIR}/ca.pem")));
+        assert!(cmd.contains(&format!("--cacert {DIR}/ca.pem")));
+        let plain = build_download_command(DIR, "https://cp.example.com", None);
         assert!(!plain.contains("--cacert"));
         assert!(!plain.contains("ca.pem"));
+    }
+
+    #[test]
+    fn staging_dir_is_created_fresh_and_private() {
+        // `mkdir -m 700` without `-p`: fails if someone made it first.
+        let cmd = build_download_command(DIR, "https://cp.example.com", None);
+        assert!(cmd.starts_with(&format!("mkdir -m 700 {DIR} && ")));
+        let (a, b) = (staging_dir(), staging_dir());
+        assert_ne!(a, b);
+        assert!(a.starts_with("/tmp/abyssal-agent-deploy-"));
+        // Used unquoted in the commands, so it must be shell-inert.
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '/' || c == '-')
+        );
+    }
+
+    #[tokio::test]
+    async fn token_command_writes_stdin_to_a_private_file() {
+        if tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("true")
+            .status()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: /bin/sh not available in this environment");
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("abyssal-token-cmd-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir(&dir).unwrap();
+        let dir_str = dir.to_string_lossy().into_owned();
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(build_token_command(&dir_str))
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(b"tok'; $(id)\n").await.unwrap();
+        }
+        assert!(child.wait().await.unwrap().success());
+        let path = dir.join("token");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "tok'; $(id)\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "token file mode {mode:o}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
@@ -1064,7 +992,7 @@ mod tests {
             eprintln!("skipping: /bin/sh not available in this environment");
             return;
         }
-        let cmd = build_install_command("https://cp.example.com", "tok", "myhost", false)
+        let cmd = build_install_command(DIR, "https://cp.example.com", "myhost", false)
             .replacen("sudo -S sh -c ", "sh -c ", 1)
             .replace("mkdir -p /opt/abyssal-agent", "exit 2");
         let status = tokio::process::Command::new("sh")
@@ -1139,17 +1067,25 @@ mod tests {
         Exec(Vec<Result<CommandResult, DeployFailureReason>>),
     }
 
+    /// Every command a fake session ran, with the stdin it was given.
+    type ExecLog = Arc<StdMutex<Vec<(String, Option<Vec<u8>>)>>>;
+
     struct FakeSession {
         responses: std::vec::IntoIter<Result<CommandResult, DeployFailureReason>>,
+        log: ExecLog,
     }
 
     #[async_trait::async_trait]
     impl SshSession for FakeSession {
         async fn exec(
             &mut self,
-            _command: &str,
-            _stdin: Option<&[u8]>,
+            command: &str,
+            stdin: Option<&[u8]>,
         ) -> Result<CommandResult, DeployFailureReason> {
+            self.log
+                .lock()
+                .unwrap()
+                .push((command.to_string(), stdin.map(<[u8]>::to_vec)));
             self.responses
                 .next()
                 .unwrap_or(Ok(CommandResult::default()))
@@ -1160,6 +1096,7 @@ mod tests {
         hosts: StdMutex<HashMap<String, FakeStep>>,
         probe_fingerprint: String,
         connect_delay: Option<Duration>,
+        log: ExecLog,
     }
 
     impl FakeClient {
@@ -1168,6 +1105,7 @@ mod tests {
                 hosts: StdMutex::new(HashMap::new()),
                 probe_fingerprint: "SHA256:fake".to_string(),
                 connect_delay: None,
+                log: ExecLog::default(),
             }
         }
 
@@ -1217,9 +1155,11 @@ mod tests {
                 Some(FakeStep::ConnectError(reason)) => Err(reason),
                 Some(FakeStep::Exec(responses)) => Ok(Box::new(FakeSession {
                     responses: responses.into_iter(),
+                    log: self.log.clone(),
                 })),
                 None => Ok(Box::new(FakeSession {
                     responses: Vec::new().into_iter(),
+                    log: self.log.clone(),
                 })),
             }
         }
@@ -1439,6 +1379,7 @@ mod tests {
                 ok_result("x86_64"),
                 ok_result("dev-host-6"),
                 ok_result("downloaded"),
+                ok_result(""),
                 err_result(1, "[sudo] password for admin: Sorry, try again.\nsudo: 1 incorrect password attempt"),
             ],
         );
@@ -1457,6 +1398,7 @@ mod tests {
                 ok_result("x86_64"),
                 ok_result("dev-host-7"),
                 ok_result("downloaded"),
+                ok_result(""),
                 err_result(1, "enrollment rejected by control plane"),
             ],
         );
@@ -1465,6 +1407,74 @@ mod tests {
             state,
             HostDeployState::Failed(DeployFailureReason::InstallFailed(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn the_token_only_ever_travels_over_stdin() {
+        let token = "secret-enrollment-token";
+        let client = FakeClient::new().with_exec_sequence(
+            "10.0.0.9",
+            vec![
+                ok_result("x86_64"),
+                ok_result("dev-host-9"),
+                ok_result("downloaded"),
+                ok_result(""),
+                err_result(1, "stop here"),
+            ],
+        );
+        let pool = unconfigured_pool();
+        let hosts_registry = HostConnectionRegistry::new();
+        deploy_one_host(
+            &client,
+            &pool,
+            &hosts_registry,
+            &target("10.0.0.9"),
+            "SHA256:fake",
+            "https://cp.example.com",
+            token,
+        )
+        .await;
+        let log = client.log.lock().unwrap();
+        assert!(log.iter().all(|(cmd, _)| !cmd.contains(token)));
+        let (token_cmd, token_stdin) = &log[3];
+        assert!(token_cmd.starts_with("umask 077 && cat > /tmp/abyssal-agent-deploy-"));
+        assert_eq!(
+            token_stdin.as_deref(),
+            Some(format!("{token}\n").as_bytes())
+        );
+        // The same staging directory throughout, and the install reads
+        // the file the token step wrote.
+        let dir = token_cmd
+            .trim_start_matches("umask 077 && cat > ")
+            .trim_end_matches("/token");
+        assert!(log[2].0.starts_with(&format!("mkdir -m 700 {dir} ")));
+        assert!(
+            log[4]
+                .0
+                .contains(&format!("--enrollment-token-file {dir}/token"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_token_write_is_reported_and_cleaned_up() {
+        let client = FakeClient::new().with_exec_sequence(
+            "10.0.0.10",
+            vec![
+                ok_result("x86_64"),
+                ok_result("dev-host-10"),
+                ok_result("downloaded"),
+                err_result(1, "No space left on device"),
+            ],
+        );
+        let (state, _) = deploy_one_host_test(&client, "10.0.0.10").await;
+        assert!(matches!(
+            &state,
+            HostDeployState::Failed(DeployFailureReason::InstallFailed(msg))
+                if msg.contains("enrollment token file") && msg.contains("No space left")
+        ));
+        let log = client.log.lock().unwrap();
+        assert_eq!(log.len(), 5, "no install attempted after the failure");
+        assert!(log[4].0.starts_with("rm -rf /tmp/abyssal-agent-deploy-"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1479,6 +1489,7 @@ mod tests {
                 ok_result("x86_64"),
                 ok_result("dev-host-8"),
                 ok_result("downloaded"),
+                ok_result(""),
                 ok_result("installed"),
             ],
         );
@@ -1502,6 +1513,107 @@ mod tests {
         // Actually waited out the poll window (in virtual time) rather
         // than failing instantly for an unrelated reason.
         assert!(started.elapsed() >= CHECKIN_POLL_TIMEOUT);
+    }
+
+    // ---------------------------------------------------------------
+    // The stage a failure is reported at (windows-push-deploy M2).
+    // ---------------------------------------------------------------
+
+    async fn failed_stage_for(client: &FakeClient, ip: &str) -> Option<DeployStage> {
+        let pool = unconfigured_pool();
+        let hosts_registry = HostConnectionRegistry::new();
+        deploy_one_host(
+            client,
+            &pool,
+            &hosts_registry,
+            &target(ip),
+            "SHA256:fake",
+            "https://cp.example.com",
+            "tok",
+        )
+        .await
+        .failed_stage
+    }
+
+    #[tokio::test]
+    async fn each_failure_reports_the_stage_it_happened_at() {
+        let refused = FakeClient::new()
+            .with_connect_error("10.0.3.1", DeployFailureReason::ConnectionRefused);
+        assert_eq!(
+            failed_stage_for(&refused, "10.0.3.1").await,
+            Some(DeployStage::Connect)
+        );
+
+        let bad_password = FakeClient::new()
+            .with_connect_error("10.0.3.2", DeployFailureReason::AuthenticationFailed);
+        assert_eq!(
+            failed_stage_for(&bad_password, "10.0.3.2").await,
+            Some(DeployStage::Authenticate)
+        );
+
+        let changed_key = FakeClient::new().with_connect_error(
+            "10.0.3.3",
+            DeployFailureReason::HostKeyChanged {
+                expected: "a".into(),
+                actual: "b".into(),
+            },
+        );
+        assert_eq!(
+            failed_stage_for(&changed_key, "10.0.3.3").await,
+            Some(DeployStage::Authenticate)
+        );
+
+        let arm = FakeClient::new().with_exec_sequence("10.0.3.4", vec![ok_result("aarch64")]);
+        assert_eq!(
+            failed_stage_for(&arm, "10.0.3.4").await,
+            Some(DeployStage::Preflight)
+        );
+
+        let no_download = FakeClient::new().with_exec_sequence(
+            "10.0.3.5",
+            vec![
+                ok_result("x86_64"),
+                ok_result("h5"),
+                err_result(22, "curl: (22) 404"),
+            ],
+        );
+        assert_eq!(
+            failed_stage_for(&no_download, "10.0.3.5").await,
+            Some(DeployStage::Download)
+        );
+
+        let sudo_denied = FakeClient::new().with_exec_sequence(
+            "10.0.3.6",
+            vec![
+                ok_result("x86_64"),
+                ok_result("h6"),
+                ok_result("downloaded"),
+                ok_result(""),
+                err_result(1, "sudo: 1 incorrect password attempt"),
+            ],
+        );
+        assert_eq!(
+            failed_stage_for(&sudo_denied, "10.0.3.6").await,
+            Some(DeployStage::Install)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn never_checking_in_is_reported_at_the_check_in_stage() {
+        let client = FakeClient::new().with_exec_sequence(
+            "10.0.3.7",
+            vec![
+                ok_result("x86_64"),
+                ok_result("h7"),
+                ok_result("downloaded"),
+                ok_result(""),
+                ok_result("installed"),
+            ],
+        );
+        assert_eq!(
+            failed_stage_for(&client, "10.0.3.7").await,
+            Some(DeployStage::CheckIn)
+        );
     }
 
     async fn deploy_one_host_test(client: &FakeClient, ip: &str) -> (HostDeployState, String) {
@@ -1568,6 +1680,7 @@ mod tests {
                     err_result(1, "stop here, this test only cares about connect timing"),
                 ]
                 .into_iter(),
+                log: ExecLog::default(),
             }))
         }
     }
@@ -1590,6 +1703,7 @@ mod tests {
                     state: HostDeployState::Pending,
                     output: String::new(),
                     hostname_is_fallback: true,
+                    failed_stage: None,
                 },
                 HostDeployStatus {
                     ip_address: "10.0.1.2".to_string(),
@@ -1597,6 +1711,7 @@ mod tests {
                     state: HostDeployState::Pending,
                     output: String::new(),
                     hostname_is_fallback: true,
+                    failed_stage: None,
                 },
             ],
         }));

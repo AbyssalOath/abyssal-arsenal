@@ -39,6 +39,13 @@ pub struct DirectoryDomain {
     pub mail_mode: String,
     pub last_delegation_check_at: Option<DateTime<Utc>>,
     pub last_delegation_ok: Option<bool>,
+    /// When the service account's password expires, from the last delegation
+    /// check. `None` with `sa_password_never_expires` also `None` means not
+    /// known yet.
+    pub sa_password_expires_at: Option<DateTime<Utc>>,
+    pub sa_password_never_expires: Option<bool>,
+    /// A password rotation is in flight (or its outcome is still unclear).
+    pub has_pending_password: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -64,6 +71,9 @@ struct Row {
     mail_mode: String,
     last_delegation_check_at: Option<NaiveDateTime>,
     last_delegation_ok: Option<bool>,
+    sa_password_expires_at: Option<NaiveDateTime>,
+    sa_password_never_expires: Option<bool>,
+    has_pending_password: bool,
     created_at: NaiveDateTime,
 }
 
@@ -86,6 +96,9 @@ impl From<Row> for DirectoryDomain {
             mail_mode: r.mail_mode,
             last_delegation_check_at: r.last_delegation_check_at.map(utc),
             last_delegation_ok: r.last_delegation_ok,
+            sa_password_expires_at: r.sa_password_expires_at.map(utc),
+            sa_password_never_expires: r.sa_password_never_expires,
+            has_pending_password: r.has_pending_password,
             created_at: utc(r.created_at),
         }
     }
@@ -94,7 +107,9 @@ impl From<Row> for DirectoryDomain {
 const COLUMNS: &str = "id, dns_name, netbios_name, forest_root, write_dc_host_id, \
                        service_account_upn, service_account_sealed, disabled_ou, \
                        deletion_grace_days, mail_mode, last_delegation_check_at, \
-                       last_delegation_ok, created_at";
+                       last_delegation_ok, sa_password_expires_at, sa_password_never_expires, \
+                       (service_account_pending_sealed IS NOT NULL) AS has_pending_password, \
+                       created_at";
 
 /// Every configured domain, ordered by DNS name.
 pub async fn list(pool: &DbPool) -> anyhow::Result<Vec<DirectoryDomain>> {
@@ -152,7 +167,9 @@ pub async fn upsert(pool: &DbPool, new: &NewDirectoryDomain<'_>) -> anyhow::Resu
                 "UPDATE directory_domains SET netbios_name = ?, forest_root = ?, \
                  write_dc_host_id = ?, service_account_upn = NULL, \
                  service_account_sealed = NULL, last_delegation_ok = NULL, \
-                 last_delegation_check_at = NULL, last_delegation_detail = NULL \
+                 last_delegation_check_at = NULL, last_delegation_detail = NULL, \
+                 service_account_pending_sealed = NULL, sa_password_expires_at = NULL, \
+                 sa_password_never_expires = NULL \
                  WHERE id = ?",
             )
             .bind(new.netbios_name)
@@ -200,15 +217,20 @@ pub async fn set_validated_service_account(
     upn: &str,
     sealed: &str,
     detail_json: &str,
+    expiry: PasswordExpiry,
 ) -> anyhow::Result<()> {
+    // A password typed in by an admin replaces any rotation in flight.
     sqlx::query(
         "UPDATE directory_domains SET service_account_upn = ?, service_account_sealed = ?, \
          last_delegation_check_at = CURRENT_TIMESTAMP(6), last_delegation_ok = 1, \
-         last_delegation_detail = ? WHERE id = ?",
+         last_delegation_detail = ?, sa_password_expires_at = ?, \
+         sa_password_never_expires = ?, service_account_pending_sealed = NULL WHERE id = ?",
     )
     .bind(upn)
     .bind(sealed)
     .bind(detail_json)
+    .bind(expiry.expires_at.map(|t| t.naive_utc()))
+    .bind(expiry.never_expires)
     .bind(id.to_string())
     .execute(pool)
     .await?;
@@ -742,6 +764,8 @@ pub struct DirectoryDomainCredential {
     pub dns_name: String,
     pub service_account_upn: String,
     pub service_account_sealed: String,
+    /// A rotation's new password, sealed, while its outcome is unresolved.
+    pub pending_sealed: Option<String>,
     pub write_dc_host_id: Option<Uuid>,
 }
 
@@ -751,6 +775,7 @@ struct CredRow {
     dns_name: String,
     service_account_upn: Option<String>,
     service_account_sealed: Option<String>,
+    service_account_pending_sealed: Option<String>,
     write_dc_host_id: Option<String>,
 }
 
@@ -759,7 +784,8 @@ struct CredRow {
 /// nothing to re-check.
 pub async fn with_service_account(pool: &DbPool) -> anyhow::Result<Vec<DirectoryDomainCredential>> {
     let rows: Vec<CredRow> = sqlx::query_as(
-        "SELECT id, dns_name, service_account_upn, service_account_sealed, write_dc_host_id \
+        "SELECT id, dns_name, service_account_upn, service_account_sealed, \
+         service_account_pending_sealed, write_dc_host_id \
          FROM directory_domains \
          WHERE service_account_sealed IS NOT NULL AND service_account_upn IS NOT NULL",
     )
@@ -767,16 +793,112 @@ pub async fn with_service_account(pool: &DbPool) -> anyhow::Result<Vec<Directory
     .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|r| {
-            Some(DirectoryDomainCredential {
-                id: Uuid::parse_str(&r.id).ok()?,
-                dns_name: r.dns_name,
-                service_account_upn: r.service_account_upn?,
-                service_account_sealed: r.service_account_sealed?,
-                write_dc_host_id: r.write_dc_host_id.and_then(|s| Uuid::parse_str(&s).ok()),
-            })
-        })
+        .filter_map(CredRow::into_credential)
         .collect())
+}
+
+impl CredRow {
+    fn into_credential(self) -> Option<DirectoryDomainCredential> {
+        Some(DirectoryDomainCredential {
+            id: Uuid::parse_str(&self.id).ok()?,
+            dns_name: self.dns_name,
+            service_account_upn: self.service_account_upn?,
+            service_account_sealed: self.service_account_sealed?,
+            pending_sealed: self.service_account_pending_sealed,
+            write_dc_host_id: self.write_dc_host_id.and_then(|s| Uuid::parse_str(&s).ok()),
+        })
+    }
+}
+
+/// One domain's stored credential (current and any pending rotation), for
+/// rotating or resolving it. `None` if it has no service account.
+pub async fn credential(
+    pool: &DbPool,
+    id: Uuid,
+) -> anyhow::Result<Option<DirectoryDomainCredential>> {
+    let row: Option<CredRow> = sqlx::query_as(
+        "SELECT id, dns_name, service_account_upn, service_account_sealed, \
+         service_account_pending_sealed, write_dc_host_id \
+         FROM directory_domains WHERE id = ?",
+    )
+    .bind(id.to_string())
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(CredRow::into_credential))
+}
+
+// --- Service-account password expiry and rotation ---------------------------
+
+/// What a delegation check (or a rotation) learned about the service account's
+/// password expiry. Both `None`: not known (an agent older than 0.2.6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PasswordExpiry {
+    pub expires_at: Option<DateTime<Utc>>,
+    pub never_expires: Option<bool>,
+}
+
+/// Stores the password expiry from a delegation check or rotation. An unknown
+/// result (an older agent) leaves what's stored alone.
+pub async fn record_password_expiry(
+    pool: &DbPool,
+    id: Uuid,
+    expiry: PasswordExpiry,
+) -> anyhow::Result<()> {
+    if expiry == PasswordExpiry::default() {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE directory_domains SET sa_password_expires_at = ?, sa_password_never_expires = ? \
+         WHERE id = ?",
+    )
+    .bind(expiry.expires_at.map(|t| t.naive_utc()))
+    .bind(expiry.never_expires)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Stores a rotation's new password (sealed) before AD is asked to change
+/// anything. Refuses if a rotation is already pending, so two can't overlap.
+/// Returns whether it was stored.
+pub async fn begin_password_rotation(
+    pool: &DbPool,
+    id: Uuid,
+    pending_sealed: &str,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE directory_domains SET service_account_pending_sealed = ? \
+         WHERE id = ? AND service_account_sealed IS NOT NULL \
+           AND service_account_pending_sealed IS NULL",
+    )
+    .bind(pending_sealed)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// AD accepted the pending password: it becomes the stored one.
+pub async fn complete_password_rotation(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE directory_domains SET service_account_sealed = service_account_pending_sealed, \
+         service_account_pending_sealed = NULL \
+         WHERE id = ? AND service_account_pending_sealed IS NOT NULL",
+    )
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// AD kept the current password: the pending one is discarded.
+pub async fn abandon_password_rotation(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE directory_domains SET service_account_pending_sealed = NULL WHERE id = ?")
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// The stored service account (UPN + sealed password) for a writable domain,

@@ -5,7 +5,7 @@
 {% block content %}
 
 <div class="page-crumbs">
-  {% call macros::host_breadcrumb("Reliquary", "/arsenals/reliquary?all=1", "/arsenals/reliquary/", host_id, host_name, base.available_hosts) %}
+  {% call macros::host_breadcrumb("Reliquary", "/arsenals/reliquary?all=1", "/arsenals/reliquary/", host_id, host_name, base.hosts_for("/arsenals/reliquary/")) %}
   <a href="/arsenals/reliquary/backups">Control-plane backups&hellip;</a>
 </div>
 

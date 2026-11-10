@@ -5,7 +5,7 @@
 {% block content %}
 
 <div class="page-crumbs">
-  {% call macros::host_breadcrumb("Resurrection", "/arsenals/resurrection?all=1", "/arsenals/resurrection/", host_id, host_name, base.available_hosts) %}
+  {% call macros::host_breadcrumb("Resurrection", "/arsenals/resurrection?all=1", "/arsenals/resurrection/", host_id, host_name, base.hosts_for("/arsenals/resurrection/")) %}
   <a href="/arsenals/resurrection/fleet">{% call macros::icon("route") %} Fleet recovery</a>
 </div>
 
@@ -13,10 +13,11 @@
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
     {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
-    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+    {% else if platform.linux %}<span class="badge badge-muted">Apotheosis: Not elevated</span>
+    {% else %}<span class="badge badge-muted" title="The Windows agent runs as SYSTEM, so there's nothing to elevate">Runs as SYSTEM</span>{% endif %}
   </div>
 
-  {% if !elevated && base.can_hosts_elevate %}
+  {% if !elevated && base.can_hosts_elevate && platform.linux %}
   <form method="post" action="/arsenals/resurrection/{{ host_id }}/elevate" class="elevate-form">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label for="elevate-password" class="sr-only">Sudo password</label>
@@ -94,18 +95,24 @@
   <h3>Read</h3>
   <p style="color:var(--text-muted); margin-top:0;">Triage checks for a host that looks like it's in a bad way.</p>
   <div class="action-grid">
+    {% if platform.linux %}
     <form method="post" action="/arsenals/resurrection/{{ host_id }}/system-state">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("check") %} System Running State</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/resurrection/{{ host_id }}/previous-boot-errors">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("audit") %} Previous Boot Errors</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/resurrection/{{ host_id }}/ro-filesystems">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Read-Only Filesystems</button>
     </form>
+    {% endif %}
     <form method="post" action="/arsenals/resurrection/{{ host_id }}/failed-units">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("danger") %} {% if windows %}Failed Services{% else %}Failed Units{% endif %}</button>
@@ -114,10 +121,12 @@
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("module") %} Disk Space</button>
     </form>
+    {% if platform.linux %}
     <form method="post" action="/arsenals/resurrection/{{ host_id }}/fstab-check">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <button type="submit" class="btn-secondary">{% call macros::icon("check") %} Fstab Check</button>
     </form>
+    {% endif %}
   </div>
 </div>
 
@@ -188,7 +197,8 @@
 </div>
 {% endif %}
 
-{% if can_manage %}
+{# Reloading systemd, resetting failed units and remounting are Linux-only. #}
+{% if can_manage && platform.linux %}
 <div class="card kind-write">
   <h3>Write</h3>
   <p style="color:var(--text-muted); margin-top:0;">

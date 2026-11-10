@@ -74,6 +74,7 @@ pub async fn show(
 
     if let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "scourge", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/scourge/{host_id}")).into_response());
     }
@@ -93,7 +94,11 @@ pub async fn show(
 
     let mut connected_hosts = Vec::new();
     for host in repo::hosts::list(&state.pool).await? {
-        if host.is_active() && state.hosts.is_connected(host.id) {
+        // Only hosts this (Linux-only) arsenal is for.
+        if host.is_active()
+            && state.hosts.is_connected(host.id)
+            && crate::platform::arsenal_runs_on(&state, "scourge", host.id)
+        {
             connected_hosts.push(host);
         }
     }
@@ -157,6 +162,30 @@ async fn render_host(
     result_output: Option<String>,
     result_error: Option<String>,
 ) -> Result<Response, WebError> {
+    render_host_with_pcaps(
+        state,
+        jar,
+        ctx,
+        host_id,
+        result_label,
+        result_output,
+        result_error,
+        Vec::new(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_host_with_pcaps(
+    state: &AppState,
+    jar: &CookieJar,
+    ctx: &AuthContext,
+    host_id: Uuid,
+    result_label: Option<String>,
+    result_output: Option<String>,
+    result_error: Option<String>,
+    pcaps: Vec<crate::templates::ScourgePcapRow>,
+) -> Result<Response, WebError> {
     let host = repo::hosts::find_by_id(&state.pool, host_id)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -209,6 +238,7 @@ async fn render_host(
         result_label,
         result_output,
         result_error,
+        pcaps,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -330,15 +360,294 @@ pub async fn list_pcaps(
 ) -> Result<Response, WebError> {
     abyssal_rbac::ensure(&ctx, Permission::ScourgeView)?;
     require_csrf(&jar, &form.csrf_token)?;
-    run_read_op(
-        &state,
-        &jar,
-        &ctx,
-        host_id,
-        AgentOperation::ScourgePcapList,
-        "Packet Captures",
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let result_label = Some(format!("Packet Captures -- {}", host.name));
+    let elevated = state.elevation.is_elevated(host_id);
+    let result = state
+        .executor
+        .execute_on_host(
+            &ctx,
+            &state.hosts,
+            host_id,
+            &host.name,
+            AgentOperation::ScourgePcapList,
+            Permission::ScourgeView,
+            OperationKind::Read,
+            false,
+            Duration::from_secs(25),
+            None,
+            elevated,
+        )
+        .await;
+    match result {
+        Ok(output) => {
+            let pcaps = parse_pcap_list(&output.stdout, host_id);
+            render_host_with_pcaps(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                Some(output.stdout),
+                None,
+                pcaps,
+            )
+            .await
+        }
+        Err(e) => {
+            render_host(
+                &state,
+                &jar,
+                &ctx,
+                host_id,
+                result_label,
+                None,
+                Some(e.to_string()),
+            )
+            .await
+        }
+    }
+}
+
+/// The agent's `name\t<n> bytes\t<mtime>` lines as table rows; a line that
+/// isn't one (e.g. "No captures.") is left out.
+fn parse_pcap_list(stdout: &str, host_id: Uuid) -> Vec<crate::templates::ScourgePcapRow> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let name = parts.next()?.trim();
+            let bytes: u64 = parts.next()?.trim().strip_suffix(" bytes")?.parse().ok()?;
+            let captured = parts
+                .next()
+                .unwrap_or("")
+                .trim()
+                .split('.')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !is_valid_pcap_name(name) {
+                return None;
+            }
+            Some(crate::templates::ScourgePcapRow {
+                name: name.to_string(),
+                size: human_bytes(bytes),
+                captured,
+                download_href: format!(
+                    "/arsenals/scourge/{host_id}/pcap/download?name={}",
+                    urlencoding_encode(name)
+                ),
+            })
+        })
+        .collect()
+}
+
+/// The agent's own rule for a capture filename (`scourge::valid_pcap_name`).
+fn is_valid_pcap_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.ends_with(".pcap")
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// `size\t<n>\n<base64>` from `ScourgePcapRead`: the file's size and this
+/// chunk's bytes.
+fn parse_pcap_chunk(stdout: &str) -> Result<(u64, Vec<u8>), String> {
+    use base64::Engine;
+    let (header, body) = stdout.split_once('\n').unwrap_or((stdout, ""));
+    let size = header
+        .strip_prefix("size\t")
+        .and_then(|n| n.trim().parse().ok())
+        .ok_or_else(|| "the agent's reply wasn't a capture chunk".to_string())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .map_err(|e| format!("the agent's capture chunk didn't decode: {e}"))?;
+    Ok((size, bytes))
+}
+
+/// The most a download serves, whatever the file's size: the capture caps
+/// (`scourge.pcap_max_total_mb`) normally keep files far smaller.
+const MAX_PCAP_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Per chunk: each is one agent round trip.
+const PCAP_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Deserialize)]
+pub struct PcapDownloadQuery {
+    name: String,
+}
+
+/// GET: streams a capture off the sensor to the browser as a `.pcap`
+/// download (Wireshark opens it). The control plane asks the agent for it
+/// one chunk at a time (`ScourgePcapRead`), so no single agent message is
+/// large and nothing is written to the control plane's disk.
+/// `scourge.manage`, and audited: captures hold raw traffic.
+pub async fn pcap_download(
+    State(state): State<AppState>,
+    CurrentUser(ctx): CurrentUser,
+    Path(host_id): Path<Uuid>,
+    Query(query): Query<PcapDownloadQuery>,
+) -> Result<Response, WebError> {
+    use futures_util::StreamExt;
+
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeManage)?;
+    let name = query.name.trim().to_string();
+    if !is_valid_pcap_name(&name) {
+        return Err(WebError(AppError::Validation(
+            "Invalid capture name.".into(),
+        )));
+    }
+    let host = repo::hosts::find_by_id(&state.pool, host_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let read = |offset: u64| AgentOperation::ScourgePcapRead {
+        pcap_name: name.clone(),
+        offset,
+        len: abyssal_agent_protocol::SCOURGE_PCAP_CHUNK_BYTES,
+    };
+    let audit = |outcome: AuditOutcome, detail: serde_json::Value| {
+        AuditEvent::new(AuditAction::ScourgePcapDownloaded, outcome)
+            .actor(abyssal_audit::Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(&host.name)
+            .metadata(detail)
+    };
+
+    // The first chunk says how big the file is, and fails fast (unknown
+    // capture, agent too old) while there's still a page to show it on.
+    let first = match state
+        .hosts
+        .dispatch(host_id, read(0), PCAP_CHUNK_TIMEOUT)
+        .await
+    {
+        Ok(abyssal_agent_protocol::CommandOutcome::Ok(out)) => parse_pcap_chunk(&out.stdout),
+        Ok(abyssal_agent_protocol::CommandOutcome::Err(e)) => Err(e),
+        Err(e) => Err(e.to_string()),
+    };
+    let (size, first) = match first {
+        Ok(chunk) => chunk,
+        Err(e) => {
+            let _ = abyssal_audit::record(
+                &state.pool,
+                audit(
+                    AuditOutcome::Failure,
+                    serde_json::json!({ "pcap": name, "error": e }),
+                ),
+            )
+            .await;
+            return Err(WebError(AppError::Validation(format!(
+                "Couldn't download {name}: {e}"
+            ))));
+        }
+    };
+    if size > MAX_PCAP_DOWNLOAD_BYTES {
+        return Err(WebError(AppError::Validation(format!(
+            "{name} is {} -- bigger than a download serves ({}). Copy it off the host instead.",
+            human_bytes(size),
+            human_bytes(MAX_PCAP_DOWNLOAD_BYTES)
+        ))));
+    }
+    if let Err(e) = abyssal_audit::record(
+        &state.pool,
+        audit(
+            AuditOutcome::Success,
+            serde_json::json!({ "pcap": name, "bytes": size }),
+        ),
     )
     .await
+    {
+        tracing::error!(error = %e, "scourge: failed to record pcap download audit");
+    }
+
+    // The rest, one chunk per agent round trip, as the browser reads.
+    let hosts = state.hosts.clone();
+    let chunk_name = name.clone();
+    let start = first.len() as u64;
+    let rest = futures_util::stream::unfold(start, move |offset| {
+        let hosts = hosts.clone();
+        let op = AgentOperation::ScourgePcapRead {
+            pcap_name: chunk_name.clone(),
+            offset,
+            len: abyssal_agent_protocol::SCOURGE_PCAP_CHUNK_BYTES,
+        };
+        async move {
+            if offset >= size {
+                return None;
+            }
+            let chunk = match hosts.dispatch(host_id, op, PCAP_CHUNK_TIMEOUT).await {
+                Ok(abyssal_agent_protocol::CommandOutcome::Ok(out)) => {
+                    parse_pcap_chunk(&out.stdout)
+                }
+                Ok(abyssal_agent_protocol::CommandOutcome::Err(e)) => Err(e),
+                Err(e) => Err(e.to_string()),
+            };
+            match chunk {
+                // Never past the size the download announced.
+                Ok((_, bytes)) if !bytes.is_empty() => {
+                    let take = bytes.len().min((size - offset) as usize);
+                    let mut bytes = bytes;
+                    bytes.truncate(take);
+                    Some((
+                        Ok::<_, std::io::Error>(axum::body::Bytes::from(bytes)),
+                        offset + take as u64,
+                    ))
+                }
+                Ok(_) => Some((
+                    Err(std::io::Error::other(
+                        "the capture got shorter while downloading",
+                    )),
+                    size,
+                )),
+                Err(e) => {
+                    tracing::warn!(%host_id, error = %e, "scourge: pcap download chunk failed");
+                    Some((Err(std::io::Error::other(e)), size))
+                }
+            }
+        }
+    });
+    let body = futures_util::stream::once(async move {
+        Ok::<_, std::io::Error>(axum::body::Bytes::from(first))
+    })
+    .chain(rest);
+
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/vnd.tcpdump.pcap".to_string(),
+            ),
+            (axum::http::header::CONTENT_LENGTH, size.to_string()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response())
 }
 
 pub async fn list_rules(
@@ -436,6 +745,9 @@ pub struct AlertsQuery {
     range: Option<String>,
     #[serde(default)]
     page: Option<u32>,
+    /// Exports only: `csv` (default) or `json`.
+    #[serde(default)]
+    format: Option<String>,
 }
 
 /// Trims an optional filter to `Some(non-empty)` or `None`.
@@ -494,15 +806,20 @@ fn alerts_href(base: &str, q: &AlertsQuery, page: Option<u32>) -> String {
     }
 }
 
-async fn build_alerts_view(
-    state: &AppState,
-    ctx: &AuthContext,
-    q: &AlertsQuery,
-) -> Result<ScourgeAlertsView, WebError> {
+const ALERTS_EXPORT_PATH: &str = "/arsenals/scourge/alerts/export";
+
+/// The export link for the page's current filters.
+fn export_href(q: &AlertsQuery, format: &str) -> String {
+    let href = alerts_href(ALERTS_EXPORT_PATH, q, None);
+    let sep = if href.contains('?') { '&' } else { '?' };
+    format!("{href}{sep}format={format}")
+}
+
+/// The alert filter a page or an export applies, from its query string.
+fn alert_filter(q: &AlertsQuery) -> AlertFilter {
     let range = clean(&q.range).unwrap_or_else(|| "24h".to_string());
-    let host_id = clean(&q.host).and_then(|h| Uuid::parse_str(&h).ok());
-    let filter = AlertFilter {
-        host_id,
+    AlertFilter {
+        host_id: clean(&q.host).and_then(|h| Uuid::parse_str(&h).ok()),
         severity: clean(&q.severity),
         signature: clean(&q.signature),
         src_ip: clean(&q.src_ip),
@@ -511,7 +828,121 @@ async fn build_alerts_view(
         proto: clean(&q.proto),
         category: clean(&q.category),
         since: range_since(&range),
+    }
+}
+
+/// GET: the alerts matching the page's filters (every page of them, newest
+/// first, up to `export::MAX_ROWS`) as CSV or JSON. `scourge.view`, the
+/// page's own permission; recorded in the audit log.
+pub async fn alerts_export(
+    State(state): State<AppState>,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<AlertsQuery>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::ScourgeView)?;
+    let format = crate::export::Format::parse(q.format.as_deref());
+    let filter = alert_filter(&q);
+    let total = repo::scourge::count_alerts(&state.pool, &filter).await?;
+    let rows = repo::scourge::list_alerts(&state.pool, &filter, crate::export::MAX_ROWS, 0).await?;
+    let truncated = total > rows.len() as i64;
+    let host_names: HashMap<Uuid, String> = repo::hosts::list(&state.pool)
+        .await?
+        .into_iter()
+        .map(|h| (h.id, h.name))
+        .collect();
+    let host_name = |id: Uuid| {
+        host_names
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| id.to_string())
     };
+    let opt = |v: &Option<String>| v.clone().unwrap_or_default();
+    let num = |v: Option<u32>| v.map(|n| n.to_string()).unwrap_or_default();
+
+    let body = match format {
+        crate::export::Format::Csv => crate::export::csv_document(
+            &[
+                "occurred_at",
+                "host",
+                "severity",
+                "sid",
+                "signature",
+                "category",
+                "proto",
+                "src_ip",
+                "src_port",
+                "dst_ip",
+                "dst_port",
+                "id",
+            ],
+            rows.iter().map(|a| {
+                vec![
+                    a.occurred_at.to_rfc3339(),
+                    host_name(a.host_id),
+                    a.severity.clone(),
+                    num(a.sid),
+                    a.signature.clone(),
+                    opt(&a.category),
+                    opt(&a.proto),
+                    opt(&a.src_ip),
+                    num(a.src_port),
+                    opt(&a.dst_ip),
+                    num(a.dst_port),
+                    a.id.to_string(),
+                ]
+            }),
+        ),
+        crate::export::Format::Json => serde_json::to_string_pretty(
+            &rows
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "occurred_at": a.occurred_at.to_rfc3339(),
+                        "host": host_name(a.host_id),
+                        "host_id": a.host_id,
+                        "severity": a.severity,
+                        "sid": a.sid,
+                        "signature": a.signature,
+                        "category": a.category,
+                        "proto": a.proto,
+                        "src_ip": a.src_ip,
+                        "src_port": a.src_port,
+                        "dst_ip": a.dst_ip,
+                        "dst_port": a.dst_port,
+                        "id": a.id,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string()),
+    };
+
+    let event = AuditEvent::new(AuditAction::AlertsExported, AuditOutcome::Success)
+        .actor(abyssal_audit::Actor {
+            user_id: ctx.user.id,
+            username: &ctx.user.username,
+        })
+        .resource("scourge.alerts")
+        .metadata(serde_json::json!({
+            "format": format.key(),
+            "rows": rows.len(),
+            "matched": total,
+            "filters": alerts_href(ALERTS_BASE_PATH, &q, None),
+        }));
+    if let Err(e) = abyssal_audit::record(&state.pool, event).await {
+        tracing::error!(error = %e, "scourge: failed to record alert export audit");
+    }
+    let stem = format!("scourge-alerts-{}", Utc::now().format("%Y%m%d-%H%M"));
+    Ok(crate::export::download(format, &stem, body, truncated))
+}
+
+async fn build_alerts_view(
+    state: &AppState,
+    ctx: &AuthContext,
+    q: &AlertsQuery,
+) -> Result<ScourgeAlertsView, WebError> {
+    let range = clean(&q.range).unwrap_or_else(|| "24h".to_string());
+    let filter = alert_filter(q);
 
     let total = repo::scourge::count_alerts(&state.pool, &filter).await?;
     let page_requested = q.page.unwrap_or(1).max(1);
@@ -659,6 +1090,8 @@ async fn build_alerts_view(
         page,
         fragment_url: alerts_href(ALERTS_FRAGMENT_PATH, q, Some(page_num)),
         self_url: alerts_href(ALERTS_BASE_PATH, q, Some(page_num)),
+        export_csv_href: export_href(q, "csv"),
+        export_json_href: export_href(q, "json"),
         live_eligible,
         hosts,
         f_host: clean(&q.host).unwrap_or_default(),
@@ -2288,6 +2721,44 @@ pub async fn sid_action_set(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn capture_list_becomes_rows_with_download_links() {
+        let host = Uuid::nil();
+        let rows = parse_pcap_list(
+            "capture-20261110-1.pcap\t1536 bytes\t2026-11-10 14:02:11.123456789 +0000\n\
+             evil/../x.pcap\t10 bytes\t\n\
+             notes.txt\t5 bytes\t\n",
+            host,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "capture-20261110-1.pcap");
+        assert_eq!(rows[0].size, "1.5 KB");
+        assert_eq!(rows[0].captured, "2026-11-10 14:02:11");
+        assert_eq!(
+            rows[0].download_href,
+            format!("/arsenals/scourge/{host}/pcap/download?name=capture-20261110-1.pcap")
+        );
+        assert!(parse_pcap_list("No captures.", host).is_empty());
+    }
+
+    #[test]
+    fn decodes_a_capture_chunk() {
+        assert_eq!(
+            parse_pcap_chunk("size\t42\nAAEC/w==").unwrap(),
+            (42, vec![0, 1, 2, 255])
+        );
+        assert_eq!(parse_pcap_chunk("size\t0\n").unwrap(), (0, vec![]));
+        assert!(parse_pcap_chunk("operation not supported").is_err());
+        assert!(parse_pcap_chunk("size\t9\n!!!").is_err());
+    }
+
+    #[test]
+    fn sizes_read_compactly() {
+        assert_eq!(human_bytes(900), "900 B");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+
     use super::*;
 
     #[test]
@@ -2308,6 +2779,23 @@ mod tests {
         // Page > 1 is carried.
         let p2 = alerts_href(ALERTS_FRAGMENT_PATH, &q, Some(2));
         assert!(p2.contains("page=2"));
+    }
+
+    #[test]
+    fn export_links_carry_the_filters_but_not_the_page() {
+        let q = AlertsQuery {
+            severity: Some("high".to_string()),
+            page: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(
+            export_href(&q, "csv"),
+            "/arsenals/scourge/alerts/export?severity=high&format=csv"
+        );
+        assert_eq!(
+            export_href(&AlertsQuery::default(), "json"),
+            "/arsenals/scourge/alerts/export?format=json"
+        );
     }
 
     #[test]

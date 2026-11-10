@@ -337,14 +337,9 @@ pub fn spawn_scourge_sweep(state: AppState) {
                 if !host.is_active() || !state.hosts.is_connected(host.id) {
                     continue;
                 }
-                // Linux-only sensor; skip other OSes rather than dispatch an op
-                // that always returns "unsupported".
-                if host.os.as_deref().is_some_and(|os| os != "linux") {
-                    continue;
-                }
-                // An agent from before Scourge can't run it (dispatch would
-                // refuse it anyway); skip quietly rather than log a refusal
-                // every sweep. The host already shows "Agent out of date".
+                // A non-Linux host (Scourge is a Linux sensor) or an agent from
+                // before Scourge can't run it (dispatch would refuse it
+                // anyway); skip quietly rather than log a refusal every sweep.
                 let probe = AgentOperation::ScourgeCollectEvents {
                     eve_offset: 0,
                     eve_inode: 0,

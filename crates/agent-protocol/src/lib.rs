@@ -9,7 +9,10 @@
 //! itself can't be used to smuggle in anything else.
 
 mod min_protocol;
+mod platforms;
+
 pub use min_protocol::agent_release_for_protocol;
+pub use platforms::{HostOs, Platforms};
 pub mod aat;
 pub mod failed_services;
 
@@ -31,7 +34,11 @@ use uuid::Uuid;
 /// compatibility check -- an old agent might still handle every operation
 /// actually sent to it, but there's no cheap way to know that in advance,
 /// so any change here just calls the whole build "out of date."
-pub const PROTOCOL_VERSION: u32 = 47;
+pub const PROTOCOL_VERSION: u32 = 49;
+
+/// The most a single `ScourgePcapRead` returns. Base64 makes the message
+/// about a third bigger; this keeps it well under a megabyte.
+pub const SCOURGE_PCAP_CHUNK_BYTES: u32 = 512 * 1024;
 
 /// `PostureFacts`'s answer, as JSON on stdout: every fact Cadavault's
 /// posture checks read, flat and stringly typed (`"sshd.permitrootlogin" ->
@@ -1418,6 +1425,19 @@ pub enum AgentOperation {
         new_password: String,
         allow_privileged: bool,
     },
+    /// Gravekeeper: the delegated service account changes its **own**
+    /// password from `current_password` to `new_password`
+    /// (`Set-ADAccountPassword -OldPassword`, a change rather than a reset, so
+    /// the domain's history and minimum-age rules apply). Runs under the
+    /// account's own `-Credential`. Both secrets are piped over stdin (current,
+    /// then new), never argv, and redacted in `Debug`. Output is JSON with the
+    /// new password's expiry, read back under the new password.
+    DirectoryRotateServiceAccountPassword {
+        domain_dns: String,
+        service_account_upn: String,
+        current_password: String,
+        new_password: String,
+    },
     /// Gravekeeper mail: test an on-premises/hybrid Exchange connection. Opens
     /// an Exchange remote-PowerShell session to `uri` (Kerberos) with the
     /// Recipient Management `account_upn`/`account_password` and reads the org
@@ -1798,8 +1818,20 @@ pub enum AgentOperation {
     },
     /// Read: list captured pcap files (name, size, mtime) in Scourge's
     /// permission-restricted capture directory. Metadata only -- pcap contents
-    /// never cross the agent channel.
+    /// never cross the agent channel in bulk (see `ScourgePcapRead`).
     ScourgePcapList,
+    /// Read: one chunk of a captured pcap, for the control plane to stream to
+    /// an operator's browser as a download: at most
+    /// [`SCOURGE_PCAP_CHUNK_BYTES`] from `offset`. The reply is
+    /// `size\t<file size>\n<base64 bytes>`, so the control plane learns the
+    /// total from the first chunk and asks for the rest one at a time,
+    /// keeping each agent message small. `pcap_name` is a bare filename in
+    /// the capture directory, as listed.
+    ScourgePcapRead {
+        pcap_name: String,
+        offset: u64,
+        len: u32,
+    },
     /// Write: install the IDS/IPS engine via Apothecary's package backend (never
     /// a raw package-manager call). Requires elevation.
     ScourgeInstall,
@@ -2274,6 +2306,7 @@ impl AgentOperation {
                 | Op::ScourgeCollectEvents { .. }
                 | Op::ScourgeListRules { .. }
                 | Op::ScourgePcapList
+                | Op::ScourgePcapRead { .. }
                 | Op::ScourgeCaptureStatus { .. }
                 | Op::ScourgeIpsStatus
         )
@@ -3199,6 +3232,17 @@ impl fmt::Debug for AgentOperation {
                 .field("new_password", &"[REDACTED]")
                 .field("allow_privileged", allow_privileged)
                 .finish(),
+            AgentOperation::DirectoryRotateServiceAccountPassword {
+                domain_dns,
+                service_account_upn,
+                ..
+            } => f
+                .debug_struct("DirectoryRotateServiceAccountPassword")
+                .field("domain_dns", domain_dns)
+                .field("service_account_upn", service_account_upn)
+                .field("current_password", &"[REDACTED]")
+                .field("new_password", &"[REDACTED]")
+                .finish(),
             AgentOperation::ExchangeTestConnection {
                 uri, account_upn, ..
             } => f
@@ -3466,6 +3510,16 @@ impl fmt::Debug for AgentOperation {
                 .field("query", query)
                 .finish(),
             AgentOperation::ScourgePcapList => write!(f, "ScourgePcapList"),
+            AgentOperation::ScourgePcapRead {
+                pcap_name,
+                offset,
+                len,
+            } => f
+                .debug_struct("ScourgePcapRead")
+                .field("pcap_name", pcap_name)
+                .field("offset", offset)
+                .field("len", len)
+                .finish(),
             AgentOperation::ScourgeInstall => write!(f, "ScourgeInstall"),
             AgentOperation::ScourgeApplyConfig {
                 interfaces,

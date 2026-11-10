@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Active Directory management: the day-to-day of ADUC (users, groups, OUs,
 /// onboarding/offboarding) from the web UI, domain-scoped and run through the
@@ -26,5 +26,9 @@ impl Arsenal for GravekeeperArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::DirectoryView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Windows
     }
 }

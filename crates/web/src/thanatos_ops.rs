@@ -849,6 +849,30 @@ fn extract_username(raw_line: &str) -> Option<String> {
     None
 }
 
+/// The agent's label for Windows event 4740. Matched by Thanatos's event rows
+/// to offer Gravekeeper's unlock for the locked-out account.
+pub const WINDOWS_LOCKOUT_LABEL: &str = "Windows account locked out";
+
+/// The account a Windows lockout event names, if `label` is a lockout and its
+/// `Account=` field looks like a sAMAccountName (1-20 characters, none of AD's
+/// reserved ones, not a computer account). For 4740 the agent's `Account=` is
+/// the last `Account Name:` in the message: the locked-out account, not the
+/// DC that logged it.
+pub fn lockout_account(label: &str, raw_line: &str) -> Option<String> {
+    if label != WINDOWS_LOCKOUT_LABEL {
+        return None;
+    }
+    let (_, rest) = raw_line.split_once("Account=")?;
+    let name = rest.split('\t').next().unwrap_or("").trim();
+    let valid = (1..=20).contains(&name.chars().count())
+        && !name.ends_with('$')
+        && !name.ends_with('.')
+        && name
+            .chars()
+            .all(|c| !c.is_control() && !c.is_whitespace() && !"\"/\\[]:;|=,+*?<>@".contains(c));
+    valid.then(|| name.to_string())
+}
+
 const CROSS_HOST_LABEL: &str = "Cross-host credential-stuffing pattern";
 const CROSS_HOST_USERNAME_LABEL: &str = "Cross-host account-targeting pattern";
 
@@ -1739,6 +1763,41 @@ mod tests {
         assert_eq!(
             extract_source_ip(line),
             Some("203.0.113.9".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn lockout_account_reads_the_locked_out_account() {
+        let line = "EventID=4740\tTime=t\tIpAddress=\tAccount=jdoe\tA user account was locked out.";
+        assert_eq!(
+            lockout_account(WINDOWS_LOCKOUT_LABEL, line),
+            Some("jdoe".to_string())
+        );
+        // Only lockouts get the unlock link.
+        assert_eq!(lockout_account("Windows failed logon", line), None);
+    }
+
+    #[test]
+    fn lockout_account_rejects_unusable_names() {
+        for account in [
+            "",
+            "DC01$",
+            "a b",
+            "x@y",
+            "cn=x",
+            "abcdefghijklmnopqrstu",
+            "trailing.",
+        ] {
+            let line = format!("EventID=4740\tTime=t\tIpAddress=\tAccount={account}\tmsg");
+            assert_eq!(
+                lockout_account(WINDOWS_LOCKOUT_LABEL, &line),
+                None,
+                "{account}"
+            );
+        }
+        assert_eq!(
+            lockout_account(WINDOWS_LOCKOUT_LABEL, "no field here"),
+            None
         );
     }
 

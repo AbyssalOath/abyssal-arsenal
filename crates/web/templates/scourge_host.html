@@ -5,7 +5,7 @@
 {% block content %}
 
 <div class="page-crumbs">
-  {% call macros::host_breadcrumb("Scourge", "/arsenals/scourge", "/arsenals/scourge/", host_id, host_name, base.available_hosts) %}
+  {% call macros::host_breadcrumb("Scourge", "/arsenals/scourge", "/arsenals/scourge/", host_id, host_name, base.hosts_for("/arsenals/scourge/")) %}
   <a href="/arsenals/scourge/alerts">{% call macros::icon("alert") %} Alert inspection</a>
 </div>
 
@@ -52,7 +52,26 @@
   {% if result_label.is_some() || result_output.is_some() || result_error.is_some() %}
   <details class="results-panel" open style="margin-top:14px;">
     <summary>{% if let Some(label) = result_label %}{{ label }}{% else %}Results{% endif %}</summary>
-    {% if let Some(output) = result_output %}
+    {% if !pcaps.is_empty() %}
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Capture</th><th>Size</th><th>Captured</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+        <tbody>
+          {% for p in pcaps %}
+          <tr>
+            <td><code>{{ p.name }}</code></td>
+            <td>{{ p.size }}</td>
+            <td>{{ p.captured }}</td>
+            {% if can_manage %}
+            <td><a class="btn btn-secondary btn-sm" href="{{ p.download_href }}" download="{{ p.name }}" title="Download the .pcap (opens in Wireshark). Recorded in the audit log.">{% call macros::icon("packet") %} Download</a></td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if !can_manage %}<p style="color:var(--text-muted); font-size:0.85rem;">Downloading a capture needs <code>scourge.manage</code>.</p>{% endif %}
+    {% else if let Some(output) = result_output %}
     <pre class="cmd-output">{{ output }}</pre>
     {% endif %}
     {% if let Some(err) = result_error %}

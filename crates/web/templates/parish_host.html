@@ -4,16 +4,17 @@
 {% block heading %}Parish — {{ host_name }}{% endblock %}
 {% block content %}
 
-<div class="page-crumbs">{% call macros::host_breadcrumb("Parish", "/arsenals/parish?all=1", "/arsenals/parish/", host_id, host_name, base.available_hosts) %}</div>
+<div class="page-crumbs">{% call macros::host_breadcrumb("Parish", "/arsenals/parish?all=1", "/arsenals/parish/", host_id, host_name, base.hosts_for("/arsenals/parish/")) %}</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0;">{% call macros::icon("host") %} {{ host_name }}</h2>
     {% if elevated %}<span class="badge badge-elevated">{% call macros::icon("elevate") %} Apotheosis: Elevated</span>
-    {% else %}<span class="badge badge-muted">Apotheosis: Not elevated</span>{% endif %}
+    {% else if platform.linux %}<span class="badge badge-muted">Apotheosis: Not elevated</span>
+    {% else %}<span class="badge badge-muted" title="The Windows agent runs as SYSTEM, so there's nothing to elevate">Runs as SYSTEM</span>{% endif %}
   </div>
 
-  {% if !elevated && base.can_hosts_elevate %}
+  {% if !elevated && base.can_hosts_elevate && platform.linux %}
   <form method="post" action="/arsenals/parish/{{ host_id }}/elevate" class="elevate-form">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
     <label for="elevate-password" class="sr-only">Sudo password</label>
@@ -54,6 +55,8 @@
   {% endif %}
 </div>
 
+{# Only locking and unlocking a local account work on Windows. #}
+{% if platform.linux %}
 <div class="card kind-read">
   <h3>Read</h3>
   <p style="color:var(--text-muted); margin-top:0;">Linux accounts and groups on this host -- not the control plane's own users.</p>
@@ -74,11 +77,13 @@
     </form>
   </div>
 </div>
+{% endif %}
 
 {% if can_manage %}
 <div class="card kind-write">
   <h3>Write</h3>
   <div class="action-grid">
+    {% if platform.linux %}
     <form method="post" action="/arsenals/parish/{{ host_id }}/create-user">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="create-user-username">Username</label>
@@ -87,12 +92,16 @@
       <input type="text" id="create-user-comment" name="comment" placeholder="e.g. Deploy bot">
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create User</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/parish/{{ host_id }}/create-group">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="create-group-group">Group</label>
       <input type="text" id="create-group-group" name="group" placeholder="e.g. deployers" required>
       <button type="submit" class="btn-warning">{% call macros::icon("generate") %} Create Group</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/parish/{{ host_id }}/add-to-group">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="add-group-username">Username</label>
@@ -101,6 +110,8 @@
       <input type="text" id="add-group-group" name="group" placeholder="e.g. deployers" required>
       <button type="submit" class="btn-warning">{% call macros::icon("role") %} Add to Group</button>
     </form>
+    {% endif %}
+    {% if platform.linux %}
     <form method="post" action="/arsenals/parish/{{ host_id }}/remove-from-group">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="rm-group-username">Username</label>
@@ -109,6 +120,7 @@
       <input type="text" id="rm-group-group" name="group" placeholder="e.g. deployers" required>
       <button type="submit" class="btn-warning">{% call macros::icon("role") %} Remove from Group</button>
     </form>
+    {% endif %}
     <form method="post" action="/arsenals/parish/{{ host_id }}/lock">
       <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
       <label for="lock-username">Username</label>
@@ -124,6 +136,7 @@
   </div>
 </div>
 
+{% if platform.linux %}
 <div class="card kind-destructive">
   <h3>Destructive</h3>
   <p style="color:var(--text-muted); margin-top:0;">
@@ -147,6 +160,7 @@
     </form>
   </div>
 </div>
+{% endif %}
 {% endif %}
 
 {% endblock %}

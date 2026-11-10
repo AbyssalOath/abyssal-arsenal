@@ -1,5 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
-use sqlx::FromRow;
+use chrono::Duration;
 use uuid::Uuid;
 
 use crate::DbPool;
@@ -49,100 +48,39 @@ pub async fn create_control_plane(
 /// What kind of token a (already [`consume`]d) token is.
 pub struct TokenKind {
     pub id: Uuid,
-    /// A legacy reusable deployment token.
-    pub reusable: bool,
     /// Minted by `install.sh` for the control plane's own server.
     pub control_plane: bool,
 }
 
 pub async fn kind(pool: &DbPool, token_hash: &str) -> anyhow::Result<Option<TokenKind>> {
-    let row: Option<(String, bool, bool)> = sqlx::query_as(
-        "SELECT id, reusable, control_plane FROM host_enrollment_tokens WHERE token_hash = ?",
-    )
-    .bind(token_hash)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|(id, reusable, control_plane)| TokenKind {
+    let row: Option<(String, bool)> =
+        sqlx::query_as("SELECT id, control_plane FROM host_enrollment_tokens WHERE token_hash = ?")
+            .bind(token_hash)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(id, control_plane)| TokenKind {
         id: Uuid::parse_str(&id).unwrap_or_default(),
-        reusable,
         control_plane,
     }))
 }
 
-/// Atomically validates and records one use of a token, reporting whether it
+/// Atomically validates and burns a single-use token, reporting whether it
 /// succeeded. One `UPDATE` (not a separate `SELECT` then `UPDATE`) so two
-/// concurrent enrollments can't both slip a single-use token through. Handles
-/// both kinds: a single-use token matches only while unused and is then burned
-/// (`used_at` set); a reusable deployment token matches while unexpired and
-/// unrevoked, incrementing `use_count` and leaving `used_at` NULL so it keeps
-/// working for the next host.
+/// concurrent enrollments can't both slip the same token through. Legacy
+/// reusable deployment tokens (`reusable = 1`, from before install tokens)
+/// no longer enroll anything: install tokens replaced them in 0.2.4.
 pub async fn consume(pool: &DbPool, token_hash: &str) -> anyhow::Result<bool> {
     let result = sqlx::query(
         "UPDATE host_enrollment_tokens \
-         SET use_count = use_count + 1, \
-             used_at = CASE WHEN reusable = 1 THEN used_at ELSE CURRENT_TIMESTAMP(6) END \
+         SET use_count = use_count + 1, used_at = CURRENT_TIMESTAMP(6) \
          WHERE token_hash = ? \
+           AND reusable = 0 \
            AND revoked_at IS NULL \
            AND expires_at > CURRENT_TIMESTAMP(6) \
-           AND (reusable = 1 OR used_at IS NULL)",
+           AND used_at IS NULL",
     )
     .bind(token_hash)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() == 1)
-}
-
-/// One active (not revoked, not expired) reusable deployment token, for the
-/// admin UI's management list. The raw token is never returned -- only hashed
-/// metadata -- so the command string is shown once, at creation.
-pub struct DeploymentToken {
-    pub id: Uuid,
-    pub label: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    pub use_count: i64,
-}
-
-#[derive(FromRow)]
-struct DeploymentTokenRow {
-    id: String,
-    label: Option<String>,
-    created_at: NaiveDateTime,
-    expires_at: NaiveDateTime,
-    use_count: i64,
-}
-
-/// Active deployment tokens (reusable, unexpired, unrevoked), newest first.
-pub async fn list_active_deployment(pool: &DbPool) -> anyhow::Result<Vec<DeploymentToken>> {
-    let rows: Vec<DeploymentTokenRow> = sqlx::query_as(
-        "SELECT id, label, created_at, expires_at, use_count FROM host_enrollment_tokens \
-         WHERE reusable = 1 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP(6) \
-         ORDER BY created_at DESC",
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| DeploymentToken {
-            id: Uuid::parse_str(&r.id).unwrap_or_default(),
-            label: r.label,
-            created_at: DateTime::from_naive_utc_and_offset(r.created_at, Utc),
-            expires_at: DateTime::from_naive_utc_and_offset(r.expires_at, Utc),
-            use_count: r.use_count,
-        })
-        .collect())
-}
-
-/// Revokes a deployment token by id (idempotent). A revoked token stops
-/// enrolling new hosts immediately; already-enrolled hosts keep their own
-/// per-host credentials and are unaffected.
-pub async fn revoke(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE host_enrollment_tokens SET revoked_at = CURRENT_TIMESTAMP(6) \
-         WHERE id = ? AND revoked_at IS NULL",
-    )
-    .bind(id.to_string())
-    .execute(pool)
-    .await?;
-    Ok(())
 }

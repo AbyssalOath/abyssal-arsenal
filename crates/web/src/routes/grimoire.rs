@@ -39,6 +39,7 @@ pub async fn show(
     if !picker_query.show_list()
         && let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "grimoire", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/grimoire/{host_id}")).into_response());
     }
@@ -55,7 +56,7 @@ pub async fn show(
     )
     .await?;
 
-    let hosts = host_picker::hosts(&state).await?;
+    let hosts = host_picker::hosts(&state, "grimoire").await?;
 
     let tpl = GrimoireTemplate { base, hosts };
     let jar = jar.clone();

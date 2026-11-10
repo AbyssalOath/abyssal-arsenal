@@ -34,6 +34,8 @@ pub struct HostOption {
     pub id: String,
     pub name: String,
     pub selected: bool,
+    /// What the host's live connection reported, for `BaseCtx::hosts_for`.
+    pub os: abyssal_agent_protocol::HostOs,
 }
 
 /// Shared chrome context every authenticated page template embeds: identity,
@@ -105,6 +107,7 @@ impl BaseCtx {
             .collect();
 
         let mut selected_host_name = None;
+        let mut selected_os = abyssal_agent_protocol::HostOs::Unknown;
         let mut available_hosts = Vec::new();
         for host in repo::hosts::list(pool).await? {
             if !host.is_active() || !hosts.is_connected(host.id) {
@@ -113,8 +116,10 @@ impl BaseCtx {
             let selected = Some(host.id) == selected_host_id;
             if selected {
                 selected_host_name = Some(host.name.clone());
+                selected_os = hosts.host_os(host.id);
             }
             available_hosts.push(HostOption {
+                os: hosts.host_os(host.id),
                 is_control_plane: host.is_control_plane,
                 id: host.id.to_string(),
                 name: host.name,
@@ -140,9 +145,39 @@ impl BaseCtx {
             available_timezones,
             selected_host_name,
             available_hosts,
-            arsenal_menu: crate::nav::arsenal_menu(pool, ctx).await,
+            arsenal_menu: crate::nav::arsenal_menu(pool, ctx, selected_os).await,
         })
     }
+}
+
+impl BaseCtx {
+    /// The OS of the host selected in the host switcher, if it's connected;
+    /// `Unknown` otherwise (which hides nothing).
+    pub fn selected_os(&self) -> abyssal_agent_protocol::HostOs {
+        self.available_hosts
+            .iter()
+            .find(|h| h.selected)
+            .map(|h| h.os)
+            .unwrap_or_default()
+    }
+
+    /// The connected hosts the arsenal at `host_prefix` (`/arsenals/<key>/`,
+    /// as a host page's breadcrumb passes it) is for, for its host switcher.
+    pub fn hosts_for(&self, host_prefix: &str) -> Vec<&HostOption> {
+        let key = host_prefix
+            .trim_start_matches("/arsenals/")
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        hosts_fitting(&self.available_hosts, crate::nav::arsenal_platforms(key))
+    }
+}
+
+fn hosts_fitting(
+    hosts: &[HostOption],
+    platforms: abyssal_agent_protocol::Platforms,
+) -> Vec<&HostOption> {
+    hosts.iter().filter(|h| platforms.allows(h.os)).collect()
 }
 
 pub(crate) fn format_remaining(remaining: std::time::Duration) -> String {
@@ -1176,15 +1211,6 @@ pub struct InstallTokenView {
     pub revoked: bool,
 }
 
-/// A legacy deployment token, listed until it expires or is revoked.
-pub struct LegacyTokenView {
-    pub id: String,
-    pub label: String,
-    pub created: String,
-    pub expires: String,
-    pub use_count: i64,
-}
-
 /// The install commands under Add hosts, for one install token: masked
 /// (`<AAT>`) until a token is revealed or created.
 pub struct CommandsView {
@@ -1245,7 +1271,6 @@ pub struct HostsTemplate {
     /// Hosts currently enrolled through the default token.
     pub default_token_hosts: usize,
     pub additional_tokens: Vec<InstallTokenView>,
-    pub legacy_tokens: Vec<LegacyTokenView>,
     /// (days or "" for never, label) for the new-token form.
     pub expiry_choices: Vec<(String, &'static str)>,
     pub commands: CommandsView,
@@ -1376,6 +1401,8 @@ pub struct GravekeeperDomainRow {
     pub writable: bool,
     /// Human label for the delegation state ("Delegation verified", etc.).
     pub delegation: String,
+    /// Set when the service-account password has expired or expires soon.
+    pub password_warning: Option<String>,
 }
 
 #[derive(Template)]
@@ -1430,6 +1457,14 @@ pub struct GravekeeperDomainDetail {
     pub delegation: String,
     pub disabled_ou: String,
     pub deletion_grace_days: i64,
+    /// "Expires 2026-12-01 (in 12 days)", "Never expires", ...
+    pub password_expiry: String,
+    /// Expired, or within the warning window.
+    pub password_expiry_warn: bool,
+    /// Offer Rotate: the domain is writable and no rotation is unsettled.
+    pub can_rotate: bool,
+    /// A rotation's outcome is still being settled.
+    pub rotation_pending: bool,
 }
 
 #[derive(Template)]
@@ -1799,6 +1834,9 @@ pub struct GravekeeperObjectTemplate {
     pub can_manage: bool,
     /// Whether the viewer can delete objects (`directory.delete`).
     pub can_delete: bool,
+    /// Why this user can't be deleted yet (still enabled, or inside the
+    /// grace period after offboarding); the Delete button is replaced by it.
+    pub delete_hold: Option<String>,
     /// Whether to offer Offboard (a user, manageable, not already offboarded).
     pub offboard_available: bool,
     /// The active offboard snapshot id, if this account can be un-offboarded.
@@ -1835,7 +1873,7 @@ pub struct HaruspexHostTemplate {
 #[template(path = "cystoolbox.html")]
 pub struct CystoolboxTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 /// One "Suggested Next Steps" button: a matched workflow-registry action,
@@ -1851,6 +1889,8 @@ pub struct SuggestedActionView {
 #[template(path = "cystoolbox_host.html")]
 pub struct CystoolboxHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub host_id: String,
     pub host_name: String,
     pub can_manage: bool,
@@ -1874,7 +1914,7 @@ pub struct CystoolboxHostTemplate {
 #[template(path = "cadavault.html")]
 pub struct CadavaultTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 /// Cadavault's check-by-check posture report for one host
@@ -2003,6 +2043,8 @@ pub struct PostureTopCheckRow {
 #[template(path = "cadavault_host.html")]
 pub struct CadavaultHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub host_id: String,
     pub host_name: String,
     pub can_manage: bool,
@@ -2090,7 +2132,7 @@ pub struct PostmortemHostTemplate {
 #[template(path = "mortiscope.html")]
 pub struct MortiscopeTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 /// No `can_manage` field -- every op in this arsenal is read-only
@@ -2099,6 +2141,8 @@ pub struct MortiscopeTemplate {
 #[template(path = "mortiscope_host.html")]
 pub struct MortiscopeHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub host_id: String,
     pub host_name: String,
     pub elevated: bool,
@@ -2191,7 +2235,7 @@ pub struct GrimoireHostRow {
 #[template(path = "grimoire.html")]
 pub struct GrimoireTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 /// One saved scheduled-task macro, as visible to the current user -- see
@@ -2330,7 +2374,7 @@ pub struct GrimoireMacroEditTemplate {
 #[template(path = "ossuary.html")]
 pub struct OssuaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -2384,6 +2428,8 @@ pub struct InquestTemplate {
 #[template(path = "inquest_host.html")]
 pub struct InquestHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub host_id: String,
     pub host_name: String,
     /// "Linux"/"Windows"/"macOS"/"Unknown OS", from `Host.os` -- see
@@ -2473,6 +2519,17 @@ pub struct ScourgeHostTemplate {
     pub result_label: Option<String>,
     pub result_output: Option<String>,
     pub result_error: Option<String>,
+    /// The captures on the host, after "Packet Captures"; empty otherwise.
+    pub pcaps: Vec<ScourgePcapRow>,
+}
+
+/// One capture in the host page's list, with its download link.
+pub struct ScourgePcapRow {
+    pub name: String,
+    pub size: String,
+    pub captured: String,
+    /// `/arsenals/scourge/<host>/pcap/download?name=...`
+    pub download_href: String,
 }
 
 /// One cached alert row for the inspection table.
@@ -2511,6 +2568,9 @@ pub struct ScourgeAlertsView {
     pub fragment_url: String,
     /// The preferences-form return-to (the full page URL with filters).
     pub self_url: String,
+    /// The current filters, every page, as CSV / JSON.
+    pub export_csv_href: String,
+    pub export_json_href: String,
     /// Whether this view is pollable: only the "latest" view (page 1, a
     /// relative range), never a paged-back or all-time query.
     pub live_eligible: bool,
@@ -3153,17 +3213,24 @@ pub struct PanopticonDeployCredentialsTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<DeployCredentialHostRow>,
     pub error: Option<String>,
+    /// Pushing the Windows MSI over SSH: no sudo fields, and the account
+    /// must be a local administrator.
+    pub windows: bool,
+    pub default_concurrency: usize,
+    pub max_concurrency: usize,
 }
 
 /// Windows "add host" result from a scan: there's no SSH to push over, so the
-/// operator gets a ready-to-run install command (built from a reusable
-/// deployment token, CA-aware) to run on the selected hosts or push via
+/// operator gets a ready-to-run install command (built from a short-lived
+/// install token, CA-aware) to run on the selected hosts or push via
 /// PDQ/GPO/Intune. The hosts are shown for reference; nothing is pushed.
 #[derive(Template)]
 #[template(path = "panopticon_deploy_windows.html")]
 pub struct PanopticonDeployWindowsTemplate {
     pub base: BaseCtx,
     pub hosts: Vec<DeployCredentialHostRow>,
+    /// `hosts.deploy`: offer pushing the agent over SSH.
+    pub can_push: bool,
     /// The interactive one-liner.
     pub oneliner: String,
     /// The unattended variant for RMM tools (PDQ/Intune/GPO).
@@ -3206,6 +3273,8 @@ pub struct PanopticonDeployHostKeysTemplate {
     pub base: BaseCtx,
     pub rows: Vec<DeployHostKeyRow>,
     pub any_deployable: bool,
+    pub windows: bool,
+    pub concurrency: usize,
     pub shared_username: String,
     pub shared_auth_method: String,
     pub shared_password: String,
@@ -3247,7 +3316,7 @@ pub struct PanopticonDeployStatusTemplate {
 #[template(path = "cryptkeeper.html")]
 pub struct CryptkeeperTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3321,6 +3390,10 @@ pub struct SecurityEventRow {
     /// pass (no "reopen" -- see `docs` for why).
     pub can_resolve_or_suppress: bool,
     pub resolution_note: Option<String>,
+    /// Gravekeeper's lockout landing for a Windows lockout event (finds the
+    /// account and opens it, where Unlock is), or `None` for any other event
+    /// or a viewer without `directory.view`.
+    pub unlock_href: Option<String>,
 }
 
 pub struct AlertRow {
@@ -3396,6 +3469,9 @@ pub struct ThanatosSearchTemplate {
     /// Link that flips the show-resolved toggle, preserving every other filter.
     pub toggle_resolved_href: String,
     /// Link that clears all filters.
+    /// Every event matching the current filters, as CSV / JSON.
+    pub export_csv_href: String,
+    pub export_json_href: String,
     pub clear_href: String,
 }
 
@@ -3450,6 +3526,8 @@ pub struct ThanatosIocsTemplate {
 #[template(path = "thanatos_host.html")]
 pub struct ThanatosHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub can_manage: bool,
     /// The real-time event stream on this host's current connection
     /// (`thanatos_stream::status`): whether it's running, and what the
@@ -3487,7 +3565,7 @@ pub struct ThanatosHostTemplate {
 #[template(path = "apothecary.html")]
 pub struct ApothecaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3513,7 +3591,7 @@ pub struct ApothecaryHostTemplate {
 #[template(path = "catacomb.html")]
 pub struct CatacombTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3546,13 +3624,15 @@ pub struct CatacombHostTemplate {
 #[template(path = "parish.html")]
 pub struct ParishTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
 #[template(path = "parish_host.html")]
 pub struct ParishHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub host_id: String,
     pub host_name: String,
     /// `host_users.manage` -- gates the Write/Destructive section,
@@ -3572,7 +3652,7 @@ pub struct ParishHostTemplate {
 #[template(path = "vivisection.html")]
 pub struct VivisectionTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3599,7 +3679,7 @@ pub struct VivisectionHostTemplate {
 #[template(path = "defleshing.html")]
 pub struct DefleshingTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3626,13 +3706,15 @@ pub struct DefleshingHostTemplate {
 #[template(path = "reanimation.html")]
 pub struct ReanimationTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
 #[template(path = "reanimation_host.html")]
 pub struct ReanimationHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub host_id: String,
     pub host_name: String,
     /// `systems.manage` -- gates the Write/Destructive process-control
@@ -3694,7 +3776,7 @@ pub struct ProcessRow {
 #[template(path = "necropolis.html")]
 pub struct NecropolisTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3721,7 +3803,7 @@ pub struct NecropolisHostTemplate {
 #[template(path = "necropsy.html")]
 pub struct NecropsyTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 /// No `can_manage` field -- every op in this arsenal is read-only hardware
@@ -3750,7 +3832,7 @@ pub struct NecropsyHostTemplate {
 #[template(path = "incarnation.html")]
 pub struct IncarnationTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3777,13 +3859,15 @@ pub struct IncarnationHostTemplate {
 #[template(path = "resurrection.html")]
 pub struct ResurrectionTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
 #[template(path = "resurrection_host.html")]
 pub struct ResurrectionHostTemplate {
     pub base: BaseCtx,
+    /// What this host's OS can run, to hide the rest (`crate::platform`).
+    pub platform: crate::platform::HostPlatform,
     pub host_id: String,
     pub host_name: String,
     /// `systems.manage` -- gates the Write/Destructive recovery section,
@@ -3877,7 +3961,7 @@ pub struct FailedUnitRow {
 #[template(path = "reliquary.html")]
 pub struct ReliquaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3910,7 +3994,7 @@ pub struct ReliquaryHostTemplate {
 #[template(path = "necrolink.html")]
 pub struct NecrolinkTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -3941,7 +4025,7 @@ pub struct NecrolinkHostTemplate {
 #[template(path = "obituary.html")]
 pub struct ObituaryTemplate {
     pub base: BaseCtx,
-    pub hosts: Vec<crate::host_picker::PickerHost>,
+    pub hosts: crate::host_picker::PickerList,
 }
 
 #[derive(Template)]
@@ -4285,5 +4369,244 @@ mod breadcrumb_tests {
         }
         assert!(pages >= 25, "found only {pages} host pages");
         assert!(offenders.is_empty(), "{offenders:#?}");
+    }
+}
+
+#[cfg(test)]
+mod platform_page_tests {
+    //! Host OS awareness (docs/roadmap/host-os-awareness.md): pages hide what
+    //! a host's OS can't run.
+    use super::*;
+    use crate::platform::HostPlatform;
+    use abyssal_agent_protocol::HostOs;
+
+    fn base(hosts: Vec<HostOption>) -> BaseCtx {
+        BaseCtx {
+            username: "admin".into(),
+            theme: "dark".into(),
+            csrf_token: "t".into(),
+            can_users_view: false,
+            can_roles_manage: false,
+            can_audit_view: false,
+            can_modules_manage: false,
+            can_settings_manage: false,
+            can_settings_view: false,
+            can_hosts_view: true,
+            can_hosts_elevate: true,
+            apotheosis_active: false,
+            elevated_hosts: Vec::new(),
+            timezone: "UTC".into(),
+            available_timezones: Vec::new(),
+            selected_host_name: None,
+            available_hosts: hosts,
+            arsenal_menu: Vec::new(),
+        }
+    }
+
+    fn host(name: &str, os: HostOs) -> HostOption {
+        HostOption {
+            is_control_plane: false,
+            id: format!("id-{name}"),
+            name: name.into(),
+            selected: false,
+            os,
+        }
+    }
+
+    fn cystoolbox(os: HostOs) -> String {
+        CystoolboxHostTemplate {
+            base: base(Vec::new()),
+            platform: HostPlatform::new(os),
+            host_id: "h".into(),
+            host_name: "h".into(),
+            can_manage: true,
+            elevated: false,
+            protocol_mismatch: false,
+            control_plane: None,
+            result_label: None,
+            result_output: None,
+            result_error: None,
+            suggested_actions: Vec::new(),
+        }
+        .render()
+        .unwrap()
+    }
+
+    fn parish(os: HostOs) -> String {
+        ParishHostTemplate {
+            base: base(Vec::new()),
+            platform: HostPlatform::new(os),
+            host_id: "h".into(),
+            host_name: "h".into(),
+            can_manage: true,
+            elevated: false,
+            protocol_mismatch: false,
+            control_plane: None,
+            result_label: None,
+            result_output: None,
+            result_error: None,
+        }
+        .render()
+        .unwrap()
+    }
+
+    fn reanimation(os: HostOs) -> String {
+        ReanimationHostTemplate {
+            base: base(Vec::new()),
+            platform: HostPlatform::new(os),
+            host_id: "h".into(),
+            host_name: "h".into(),
+            can_manage: true,
+            elevated: false,
+            protocol_mismatch: false,
+            control_plane: None,
+            result_label: None,
+            result_output: None,
+            result_error: None,
+            context: Vec::new(),
+            prefill_pid: None,
+            processes: Vec::new(),
+            suggested_actions: Vec::new(),
+        }
+        .render()
+        .unwrap()
+    }
+
+    #[test]
+    fn windows_host_pages_leave_out_linux_only_actions() {
+        let page = cystoolbox(HostOs::Windows);
+        assert!(page.contains("/resource-usage"));
+        assert!(!page.contains("/set-hostname") && !page.contains("/reboot/confirm"));
+        // The agent runs as SYSTEM: no sudo elevation.
+        assert!(!page.contains("/elevate\"") && page.contains("Runs as SYSTEM"));
+
+        let page = parish(HostOs::Windows);
+        assert!(page.contains("/lock\"") && page.contains("/unlock\""));
+        for linux_only in [
+            "/users\"",
+            "/create-user\"",
+            "/add-to-group\"",
+            "/delete-user/confirm",
+        ] {
+            assert!(!page.contains(linux_only), "{linux_only}");
+        }
+
+        let page = reanimation(HostOs::Windows);
+        assert!(page.contains("/signal/confirm"));
+        assert!(page.contains("value=\"TERM\"") && page.contains("value=\"KILL\""));
+        for linux_only in [
+            "value=\"HUP\"",
+            "/list\"",
+            "/renice\"",
+            "/signal-by-name/confirm",
+        ] {
+            assert!(!page.contains(linux_only), "{linux_only}");
+        }
+    }
+
+    #[test]
+    fn linux_and_unknown_hosts_keep_everything() {
+        for os in [HostOs::Linux, HostOs::Unknown] {
+            let page = cystoolbox(os);
+            assert!(page.contains("/set-hostname") && page.contains("/elevate\""));
+            let page = parish(os);
+            assert!(page.contains("/create-user\"") && page.contains("/lock\""));
+            let page = reanimation(os);
+            assert!(page.contains("value=\"HUP\"") && page.contains("/renice\""));
+        }
+    }
+
+    #[test]
+    fn picker_lists_only_fitting_hosts_and_says_why() {
+        let page = CatacombTemplate {
+            base: base(Vec::new()),
+            hosts: crate::host_picker::PickerList {
+                hosts: Vec::new(),
+                hidden_note: Some(
+                    "1 Windows host not shown: Catacomb is for Linux hosts only.".into(),
+                ),
+            },
+        }
+        .render()
+        .unwrap();
+        assert!(page.contains("No enrolled host can use this arsenal."));
+        assert!(page.contains("1 Windows host not shown"));
+    }
+
+    fn deploy_hosts() -> Vec<DeployCredentialHostRow> {
+        vec![DeployCredentialHostRow {
+            ip: "10.0.0.20".into(),
+            hostname: "WS042".into(),
+        }]
+    }
+
+    #[test]
+    fn windows_add_page_offers_the_ssh_push_only_with_hosts_deploy() {
+        let page = |can_push| {
+            PanopticonDeployWindowsTemplate {
+                base: base(Vec::new()),
+                hosts: deploy_hosts(),
+                can_push,
+                oneliner: "iex".into(),
+                rmm: "rmm".into(),
+                expires: "soon".into(),
+            }
+            .render()
+            .unwrap()
+        };
+        let with = page(true);
+        assert!(with.contains("Push over SSH"));
+        assert!(with.contains("name=\"transport\" value=\"ssh\""));
+        assert!(with.contains("name=\"selected_ips\" value=\"10.0.0.20\""));
+        let without = page(false);
+        assert!(!without.contains("Push over SSH") && without.contains("hosts.deploy"));
+        assert!(without.contains("iex"), "the manual commands stay");
+    }
+
+    #[test]
+    fn windows_credentials_form_has_no_sudo_and_carries_the_target() {
+        let page = |windows| {
+            PanopticonDeployCredentialsTemplate {
+                base: base(Vec::new()),
+                hosts: deploy_hosts(),
+                error: None,
+                windows,
+                default_concurrency: 5,
+                max_concurrency: 10,
+            }
+            .render()
+            .unwrap()
+        };
+        let windows = page(true);
+        assert!(windows.contains("name=\"target_os\" value=\"windows\""));
+        assert!(windows.contains("local administrator"));
+        assert!(!windows.contains("Sudo password"));
+        assert!(windows.contains("name=\"concurrency\""));
+        let linux = page(false);
+        assert!(linux.contains("Sudo password") && !linux.contains("target_os"));
+    }
+
+    #[test]
+    fn breadcrumb_switcher_lists_hosts_the_arsenal_is_for() {
+        use abyssal_agent_protocol::Platforms;
+        let hosts = vec![
+            host("lin", HostOs::Linux),
+            host("win", HostOs::Windows),
+            host("old", HostOs::Unknown),
+        ];
+        let names = |p| -> Vec<String> {
+            hosts_fitting(&hosts, p)
+                .into_iter()
+                .map(|h| h.name.clone())
+                .collect()
+        };
+        assert_eq!(names(Platforms::Linux), ["lin", "old"]);
+        assert_eq!(names(Platforms::Windows), ["win", "old"]);
+        assert_eq!(names(Platforms::Both).len(), 3);
+        // No registry in unit tests: nothing is hidden on a guess.
+        assert_eq!(
+            base(hosts.clone()).hosts_for("/arsenals/catacomb/").len(),
+            3
+        );
     }
 }

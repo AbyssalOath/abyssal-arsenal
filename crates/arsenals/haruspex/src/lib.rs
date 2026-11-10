@@ -1,5 +1,5 @@
 use abyssal_core::{ModuleCategory, Permission};
-use abyssal_modules::Arsenal;
+use abyssal_modules::{Arsenal, Platforms};
 
 /// Windows Active Directory / directory-services health diagnostics.
 pub struct HaruspexArsenal;
@@ -23,5 +23,9 @@ impl Arsenal for HaruspexArsenal {
 
     fn view_permissions(&self) -> &'static [Permission] {
         &[Permission::SystemsView]
+    }
+
+    fn platforms(&self) -> Platforms {
+        Platforms::Windows
     }
 }

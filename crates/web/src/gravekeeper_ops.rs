@@ -9,6 +9,10 @@
 //! disabled) is flipped back to read-only without anyone having to notice. A DC
 //! that's briefly unreachable, or a control plane with no `ENCRYPTION_KEY`,
 //! leaves the stored state untouched rather than flapping it to "failed".
+//!
+//! Each check also records when the account's password expires (for the
+//! warning on the domain pages), and first settles any password rotation whose
+//! outcome was unclear ([`resolve_pending_password`]).
 
 use std::time::Duration;
 
@@ -53,6 +57,107 @@ pub fn spawn_gravekeeper_delegation_recheck(state: AppState) {
     });
 }
 
+/// How an unsettled password rotation came out.
+pub enum PendingPassword {
+    /// No rotation was pending.
+    None,
+    /// The new password works: AD accepted it, and it is now the stored one.
+    Promoted,
+    /// The new password doesn't work and the current one does: AD never
+    /// changed it, so the new one was discarded.
+    Abandoned,
+    /// Couldn't tell (the DC is unreachable, or neither password worked);
+    /// both are kept for the next try.
+    Unresolved,
+}
+
+/// Settles a rotation whose outcome is unclear by trying the passwords on the
+/// write DC. The **new** one is tried first: it can only work if AD accepted
+/// it, whereas the old one can keep working for a while after a change
+/// (Windows accepts an old password for a short grace period on some network
+/// sign-ins), so trying it first could wrongly discard a password AD is now
+/// using.
+pub async fn resolve_pending_password(state: &AppState, domain_id: uuid::Uuid) -> PendingPassword {
+    let Ok(Some(cred)) = repo::directory::credential(&state.pool, domain_id).await else {
+        return PendingPassword::Unresolved;
+    };
+    let Some(pending_sealed) = cred.pending_sealed else {
+        return PendingPassword::None;
+    };
+    let (Some(key), Some(write_dc)) = (state.encryption_key.clone(), cred.write_dc_host_id) else {
+        return PendingPassword::Unresolved;
+    };
+    let (Ok(pending), Ok(current)) = (
+        key.decrypt(&pending_sealed),
+        key.decrypt(&cred.service_account_sealed),
+    ) else {
+        return PendingPassword::Unresolved;
+    };
+    let check = |password: String| {
+        let operation = AgentOperation::DirectoryTestDelegation {
+            domain_dns: cred.dns_name.clone(),
+            service_account_upn: cred.service_account_upn.clone(),
+            password,
+        };
+        async move {
+            match state
+                .hosts
+                .dispatch(write_dc, operation, DELEGATION_TIMEOUT)
+                .await
+            {
+                Ok(CommandOutcome::Ok(out)) => SignIn::Works(out.stdout),
+                Ok(CommandOutcome::Err(_)) => SignIn::Refused,
+                Err(_) => SignIn::Unreachable,
+            }
+        }
+    };
+
+    match check(pending.to_string()).await {
+        SignIn::Works(stdout) => {
+            if repo::directory::complete_password_rotation(&state.pool, domain_id)
+                .await
+                .is_err()
+            {
+                return PendingPassword::Unresolved;
+            }
+            if let Ok(result) = serde_json::from_str::<DelegationResult>(stdout.trim()) {
+                let _ = repo::directory::record_password_expiry(
+                    &state.pool,
+                    domain_id,
+                    result.password_expiry(),
+                )
+                .await;
+            }
+            tracing::info!(domain = %cred.dns_name, "service-account password rotation settled: new password kept");
+            PendingPassword::Promoted
+        }
+        SignIn::Unreachable => PendingPassword::Unresolved,
+        SignIn::Refused => match check(current.to_string()).await {
+            SignIn::Works(_) => {
+                if repo::directory::abandon_password_rotation(&state.pool, domain_id)
+                    .await
+                    .is_err()
+                {
+                    return PendingPassword::Unresolved;
+                }
+                tracing::info!(domain = %cred.dns_name, "service-account password rotation settled: AD kept the old password");
+                PendingPassword::Abandoned
+            }
+            SignIn::Refused | SignIn::Unreachable => {
+                tracing::warn!(domain = %cred.dns_name, "service-account password rotation still unsettled: neither password signed in");
+                PendingPassword::Unresolved
+            }
+        },
+    }
+}
+
+/// One sign-in attempt by the delegation check.
+enum SignIn {
+    Works(String),
+    Refused,
+    Unreachable,
+}
+
 async fn run_once(state: &AppState) -> anyhow::Result<()> {
     let Some(key) = state.encryption_key.clone() else {
         // No key to decrypt the stored credentials with -- nothing to do, and
@@ -60,7 +165,15 @@ async fn run_once(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    for domain in repo::directory::with_service_account(&state.pool).await? {
+    for mut domain in repo::directory::with_service_account(&state.pool).await? {
+        if domain.pending_sealed.is_some() {
+            resolve_pending_password(state, domain.id).await;
+            // Re-read: the stored password may have just changed.
+            match repo::directory::credential(&state.pool, domain.id).await? {
+                Some(fresh) => domain = fresh,
+                None => continue,
+            }
+        }
         let Some(write_dc) = domain.write_dc_host_id else {
             continue;
         };
@@ -109,6 +222,16 @@ async fn run_once(state: &AppState) -> anyhow::Result<()> {
                 continue;
             }
         };
+
+        if let Err(e) = repo::directory::record_password_expiry(
+            &state.pool,
+            domain.id,
+            result.password_expiry(),
+        )
+        .await
+        {
+            tracing::error!(domain = %domain.dns_name, error = %e, "couldn't store the service-account password expiry");
+        }
 
         let passed = result.ok && result.account_found && result.overprivileged_groups.is_empty();
         let detail = serde_json::json!({

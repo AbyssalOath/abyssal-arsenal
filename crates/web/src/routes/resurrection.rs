@@ -41,6 +41,7 @@ pub async fn show(
     if !picker_query.show_list()
         && let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "resurrection", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/resurrection/{host_id}")).into_response());
     }
@@ -57,7 +58,7 @@ pub async fn show(
     )
     .await?;
 
-    let hosts = host_picker::hosts(&state).await?;
+    let hosts = host_picker::hosts(&state, "resurrection").await?;
 
     let tpl = ResurrectionTemplate { base, hosts };
     let jar = jar.clone();
@@ -166,6 +167,7 @@ async fn render_host_full(
     let tpl = ResurrectionHostTemplate {
         can_manage: ctx.has(Permission::SystemsManage),
         elevated: state.elevation.is_elevated(host_id),
+        platform: crate::platform::HostPlatform::for_host(state, host_id, host.os.as_deref()),
         protocol_mismatch: state.hosts.agent_protocol_mismatch(host_id),
         control_plane: crate::control_plane::page_note(&state.hosts, host_id),
         base,
@@ -1480,6 +1482,12 @@ async fn run_read_capture(
     host_name: &str,
     operation: AgentOperation,
 ) -> Result<String, String> {
+    // A check the host's OS doesn't have (systemd state, fstab on Windows)
+    // shows as not applicable, not as a refusal.
+    let os = state.hosts.host_os(host_id);
+    if !operation.platforms().allows(os) {
+        return Err(format!("doesn't apply to {} hosts", os.label()));
+    }
     let elevated = state.elevation.is_elevated(host_id);
     state
         .executor

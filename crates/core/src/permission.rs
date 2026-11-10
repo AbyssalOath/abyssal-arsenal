@@ -76,10 +76,15 @@ pub enum Permission {
     HostsView,
     /// Enroll new hosts: a single-use enrollment token, or Panopticon's
     /// "Add hosts" deploy. Split from `HostsManage` (remove/revoke hosts,
-    /// reusable deployment tokens, the install token, approvals, agent
-    /// updates) so a role can add hosts without being able to remove them
-    /// or mint a token that enrolls anything.
+    /// install tokens, approvals, agent updates) so a role can add hosts
+    /// without being able to remove them or mint a token that enrolls
+    /// anything.
     HostsEnroll,
+    /// Push the agent to Windows hosts from Panopticon's "Add hosts": a
+    /// local administrator's (often a domain account's) credentials are
+    /// typed in, so it's separate from `HostsEnroll`, which still covers
+    /// Linux. Needs `HostsEnroll` too.
+    HostsDeploy,
     HostsManage,
     HostsElevate,
 
@@ -178,6 +183,7 @@ impl Permission {
 
             Permission::HostsView => "hosts.view",
             Permission::HostsEnroll => "hosts.enroll",
+            Permission::HostsDeploy => "hosts.deploy",
             Permission::HostsManage => "hosts.manage",
             Permission::HostsElevate => "hosts.elevate",
 
@@ -235,6 +241,7 @@ impl Permission {
         Permission::NotificationsManage,
         Permission::HostsView,
         Permission::HostsEnroll,
+        Permission::HostsDeploy,
         Permission::HostsManage,
         Permission::HostsElevate,
         Permission::MacrosManageAll,

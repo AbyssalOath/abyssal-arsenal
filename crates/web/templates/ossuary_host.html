@@ -4,7 +4,7 @@
 {% block heading %}Ossuary — {{ host_name }}{% endblock %}
 {% block content %}
 
-<div class="page-crumbs">{% call macros::host_breadcrumb("Ossuary", "/arsenals/ossuary?all=1", "/arsenals/ossuary/", host_id, host_name, base.available_hosts) %}</div>
+<div class="page-crumbs">{% call macros::host_breadcrumb("Ossuary", "/arsenals/ossuary?all=1", "/arsenals/ossuary/", host_id, host_name, base.hosts_for("/arsenals/ossuary/")) %}</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">

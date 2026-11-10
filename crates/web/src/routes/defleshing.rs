@@ -36,6 +36,7 @@ pub async fn show(
     if !picker_query.show_list()
         && let Some(host_id) = host_context::current(&jar)
         && state.hosts.is_connected(host_id)
+        && crate::platform::arsenal_runs_on(&state, "defleshing", host_id)
     {
         return Ok(Redirect::to(&format!("/arsenals/defleshing/{host_id}")).into_response());
     }
@@ -52,7 +53,7 @@ pub async fn show(
     )
     .await?;
 
-    let hosts = host_picker::hosts(&state).await?;
+    let hosts = host_picker::hosts(&state, "defleshing").await?;
     if !picker_query.show_list()
         && let Some(only) = host_picker::sole_online_host(&hosts)
     {
