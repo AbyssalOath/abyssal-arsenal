@@ -545,6 +545,12 @@ async fn run_discovery_scan(
         }
     }
 
+    // Devices that are managed hosts' own addresses get linked to the host,
+    // so host-keyed signals (Thanatos, Cadavault) can find their port.
+    if let Err(e) = repo::network_devices::link_hosts(pool, &agent_neighbors.own_host).await {
+        tracing::warn!(error = %e, "failed to link discovered devices to managed hosts");
+    }
+
     Ok(DiscoveryOutcome {
         stdout: output.stdout,
         stderr: output.stderr,
@@ -774,11 +780,8 @@ async fn run_passive_refresh(
     // In Docker the container's own table holds only its bridge; the
     // control plane's own server (its agent, if install.sh put one there)
     // has the real one.
-    neighbors.extend(
-        crate::panopticon_neighbors::collect(pool, agents, true)
-            .await
-            .macs,
-    );
+    let control_plane = crate::panopticon_neighbors::collect(pool, agents, true).await;
+    neighbors.extend(control_plane.macs);
     for (ip, mac) in neighbors {
         let prior = match repo::network_devices::find_by_ip(pool, &ip).await {
             Ok(prior) => prior,
@@ -794,6 +797,11 @@ async fn run_passive_refresh(
         if let Err(e) = audit_sighting(pool, notifications, &ip, prior).await {
             tracing::warn!(error = %e, ip = %ip, "passive refresh failed to record audit event");
         }
+    }
+    // Keeps the control plane's own server linked to its host every minute:
+    // the NAC policy never auto-enforces that device's port.
+    if let Err(e) = repo::network_devices::link_hosts(pool, &control_plane.own_host).await {
+        tracing::warn!(error = %e, "passive refresh failed to link the control plane's devices");
     }
 }
 

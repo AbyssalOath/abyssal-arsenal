@@ -250,6 +250,12 @@ async fn render(
         repo::settings::get_bool(&state.pool, PANOPTICON_MDNS_ENABLED, false).await?;
     let panopticon_arp_enabled =
         repo::settings::get_bool(&state.pool, PANOPTICON_ARP_ENABLED, false).await?;
+    let panopticon_auto_classify_enabled = repo::settings::get_bool(
+        &state.pool,
+        abyssal_core::settings::PANOPTICON_AUTO_CLASSIFY_ENABLED,
+        false,
+    )
+    .await?;
     let panopticon_arp_interface =
         repo::settings::get_string(&state.pool, PANOPTICON_ARP_INTERFACE, "").await?;
     let panopticon_traffic_raw_retention_days = repo::settings::get_u32(
@@ -343,6 +349,7 @@ async fn render(
         panopticon_sweep_target,
         panopticon_mdns_enabled,
         panopticon_arp_enabled,
+        panopticon_auto_classify_enabled,
         panopticon_arp_interface,
         panopticon_traffic_raw_retention_days,
         panopticon_traffic_hourly_retention_days,
@@ -1573,6 +1580,36 @@ pub async fn set_panopticon_arp_enabled(
     )
     .await?;
 
+    Ok(Redirect::to("/admin/settings").into_response())
+}
+
+pub async fn set_panopticon_auto_classify(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PanopticonArpEnabledForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let key = abyssal_core::settings::PANOPTICON_AUTO_CLASSIFY_ENABLED;
+    repo::settings::set(
+        &state.pool,
+        key,
+        serde_json::json!(form.enabled),
+        Some(ctx.user.id),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(key)
+            .metadata(serde_json::json!({ "enabled": form.enabled })),
+    )
+    .await?;
     Ok(Redirect::to("/admin/settings").into_response())
 }
 

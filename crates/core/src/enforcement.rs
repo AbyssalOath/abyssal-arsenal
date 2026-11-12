@@ -158,3 +158,24 @@ impl EnforcementAction {
         self.state.is_in_effect() && self.expires_at.is_some_and(|exp| exp <= now)
     }
 }
+
+/// An enforcement action held against a device's MAC rather than written to a
+/// switch port (0.2.7): the RADIUS decision honors it (quarantine VLAN, or
+/// reject for `Disable`), and a CoA applies and lifts it. For devices whose
+/// access RADIUS controls, on switches Panopticon can't write over SNMP.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceEnforcement {
+    pub id: Uuid,
+    pub mac_address: String,
+    pub device_ip: Option<String>,
+    pub kind: EnforcementKind,
+    /// `Active` or `Reverted` only: nothing is written to a switch, so a
+    /// device action can't fail to apply or revert.
+    pub state: EnforcementState,
+    pub reason: Option<String>,
+    pub created_by: Option<Uuid>,
+    pub created_by_username: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub reverted_at: Option<DateTime<Utc>>,
+}

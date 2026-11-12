@@ -752,6 +752,38 @@
     {% if access.panopticon %}
     <div class="settings-row">
       <div class="settings-row-info">
+        <div class="settings-row-label">{% call macros::icon("network") %} Panopticon automatic classification</div>
+        <p class="settings-row-desc">Sets the type of unclassified devices from their DHCP fingerprint, open ports, MAC vendor and hostname.</p>
+        <details class="settings-row-more">
+          <summary>Learn more</summary>
+          <p>
+            Every 10 minutes, a device that is still <em>Unknown</em> (or was classified automatically) gets the
+            suggested type when the suggestion is medium confidence or better. A type a person chose is never
+            changed. Each device's classify page shows the suggestion and its evidence whether this is on or not.
+            DHCP fingerprints come from the ARP listener's capture: it reads DHCP broadcast on its segment and any
+            DHCP relayed to this server (add it as an extra <code>ip helper-address</code>; behind Docker's bridge
+            network, also publish UDP 67 to the container).
+          </p>
+        </details>
+      </div>
+      <div class="settings-row-control">
+        <span class="toggle-state {% if panopticon_auto_classify_enabled %}on{% endif %}">
+          <span class="toggle-dot"></span>{% if panopticon_auto_classify_enabled %}Enabled{% else %}Disabled{% endif %}
+        </span>
+        <form method="post" action="/admin/settings/panopticon-auto-classify">
+          <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+          <input type="hidden" name="enabled" value="{% if panopticon_auto_classify_enabled %}false{% else %}true{% endif %}">
+          <button type="submit" class="{% if panopticon_auto_classify_enabled %}btn-secondary{% else %}btn-warning{% endif %}">
+            {% if panopticon_auto_classify_enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if access.panopticon %}
+    <div class="settings-row">
+      <div class="settings-row-info">
         <div class="settings-row-label">{% call macros::icon("network") %} Panopticon ARP interface</div>
         <p class="settings-row-desc">Network interface(s) the ARP listener captures on, e.g. <code>eth0</code> -- comma-separated for more than one.</p>
         <details class="settings-row-more">

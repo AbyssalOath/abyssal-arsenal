@@ -27,6 +27,9 @@ pub struct AgentNeighbors {
     pub macs: HashMap<String, String>,
     /// Addresses that belong to a managed host, with that host's name.
     pub own: HashMap<String, String>,
+    /// The same addresses with the host's ID, for linking inventory devices
+    /// to their managed host (`panopticon_devices.host_id`).
+    pub own_host: HashMap<String, uuid::Uuid>,
 }
 
 /// `aa:bb:cc:dd:ee:ff` lowercase from either `aa:bb..` or Windows'
@@ -96,9 +99,10 @@ pub fn parse_neighbor_table(stdout: &str) -> Vec<Entry> {
 }
 
 /// Merges one host's entries into `into`.
-fn merge(into: &mut AgentNeighbors, host_name: &str, entries: Vec<Entry>) {
+fn merge(into: &mut AgentNeighbors, host_id: uuid::Uuid, host_name: &str, entries: Vec<Entry>) {
     for entry in entries {
         if entry.own {
+            into.own_host.insert(entry.ip.clone(), host_id);
             into.own.insert(entry.ip.clone(), host_name.to_string());
             into.macs.insert(entry.ip, entry.mac);
         } else if !into.own.contains_key(&entry.ip) {
@@ -141,13 +145,13 @@ pub async fn collect(
                 let outcome = hosts
                     .dispatch(id, AgentOperation::NeighborTable, QUERY_TIMEOUT)
                     .await;
-                (name, outcome)
+                (id, name, outcome)
             });
         }
-        while let Some(Ok((name, outcome))) = set.join_next().await {
+        while let Some(Ok((id, name, outcome))) = set.join_next().await {
             match outcome {
                 Ok(CommandOutcome::Ok(output)) => {
-                    merge(&mut out, &name, parse_neighbor_table(&output.stdout));
+                    merge(&mut out, id, &name, parse_neighbor_table(&output.stdout));
                 }
                 Ok(CommandOutcome::Err(e)) => {
                     tracing::debug!(host = %name, error = %e, "panopticon: neighbor table failed");
@@ -184,8 +188,10 @@ pub async fn enrich_from_host(
         .into_iter()
         .filter(|e| e.own)
     {
-        if let Err(e) =
-            repo::network_devices::enrich_from_agent(pool, &entry.ip, &entry.mac, host_name).await
+        if let Err(e) = repo::network_devices::enrich_from_agent(
+            pool, &entry.ip, &entry.mac, host_name, host_id,
+        )
+        .await
         {
             tracing::warn!(error = %e, ip = %entry.ip, "panopticon: failed to record an agent's own MAC");
         }
@@ -253,6 +259,7 @@ mod tests {
         let mut n = AgentNeighbors::default();
         merge(
             &mut n,
+            uuid::Uuid::nil(),
             "router-watcher",
             vec![Entry {
                 ip: "10.0.0.7".into(),
@@ -262,6 +269,7 @@ mod tests {
         );
         merge(
             &mut n,
+            uuid::Uuid::nil(),
             "win-07",
             vec![Entry {
                 ip: "10.0.0.7".into(),
@@ -271,6 +279,7 @@ mod tests {
         );
         merge(
             &mut n,
+            uuid::Uuid::nil(),
             "late-arp",
             vec![Entry {
                 ip: "10.0.0.7".into(),
@@ -280,5 +289,7 @@ mod tests {
         );
         assert_eq!(n.macs["10.0.0.7"], "00:15:5d:aa:bb:cc");
         assert_eq!(n.own["10.0.0.7"], "win-07");
+        assert_eq!(n.own_host["10.0.0.7"], uuid::Uuid::nil());
+        assert!(!n.own_host.contains_key("10.0.0.1"));
     }
 }

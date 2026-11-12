@@ -16,6 +16,7 @@ members = [
     "crates/modules",
     "crates/workflows",
     "crates/web",
+    "crates/portal-net",
     "crates/posture",
     "crates/arsenals/cystoolbox",
     "crates/arsenals/cadavault",
@@ -47,12 +48,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.6"
+version = "0.2.7"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 authors = ["LordSodomiser <lordsodomiser@proton.me>"]
 
 [workspace.dependencies]
+abyssal-portal-net = { path = "crates/portal-net" }
 abyssal-core = { path = "crates/core" }
 abyssal-database = { path = "crates/database" }
 abyssal-auth = { path = "crates/auth" }
@@ -114,6 +116,7 @@ http = "1"
 tower = "0.5"
 tower-http = { version = "0.5", features = ["trace", "fs", "set-header"] }
 tracing = "0.1"
+socket2 = { version = "0.6", features = ["all"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

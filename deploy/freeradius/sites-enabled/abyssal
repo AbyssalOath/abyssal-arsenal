@@ -1,0 +1,89 @@
+#  Abyssal Arsenal's RADIUS front end (docs/roadmap/0.2.7.md, N4).
+#
+#  FreeRADIUS authenticates; Panopticon decides:
+#    - EAP (802.1X): EAP-TLS here, then Panopticon's admission decision for
+#      the device's MAC in post-auth (VLAN, quarantine, or reject).
+#    - Anything else: Panopticon's MAB decision in authorize, which rejects a
+#      request that isn't MAB (no password store).
+#    - Accounting: sessions recorded in Panopticon, so CoA keeps working.
+
+server abyssal {
+	listen {
+		type = auth
+		ipaddr = *
+		port = 1812
+	}
+	listen {
+		type = acct
+		ipaddr = *
+		port = 1813
+	}
+
+	authorize {
+		#  EAP (802.1X): the eap module takes it from here. It returns "ok"
+		#  for the first packet of a conversation and "updated" for the
+		#  rest; both end authorize.
+		eap {
+			ok = return
+			updated = return
+		}
+
+		#  Anything else is decided by Panopticon as MAB. MAB needs no
+		#  password check, and Panopticon has no password store: don't hand
+		#  it a password (a MAB "password" is the MAC, but a mistyped user
+		#  login would be a real one).
+		if (!&EAP-Message) {
+			update request {
+				&User-Password !* ANY
+				&CHAP-Password !* ANY
+			}
+			abyssal
+		}
+	}
+
+	authenticate {
+		Auth-Type eap {
+			eap
+		}
+	}
+
+	preacct {
+		acct_unique
+	}
+
+	accounting {
+		abyssal
+	}
+
+	post-auth {
+		#  EAP succeeded: ask Panopticon what this device gets.
+		if (&request:EAP-Message) {
+			abyssal
+			if (&control:Tmp-String-0 == "reject") {
+				reject
+			}
+		}
+
+		Post-Auth-Type REJECT {
+			eap
+			attr_filter.access_reject
+		}
+	}
+}
+
+#  Dynamic clients (clients.conf): the NAS secret comes from Panopticon.
+server abyssal_dynamic_clients {
+	authorize {
+		abyssal_clients
+		if (&control:FreeRADIUS-Client-Secret) {
+			update control {
+				&FreeRADIUS-Client-Virtual-Server := "abyssal"
+				&FreeRADIUS-Client-NAS-Type := "other"
+			}
+			ok
+		}
+		else {
+			reject
+		}
+	}
+}

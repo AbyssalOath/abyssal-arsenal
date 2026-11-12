@@ -86,28 +86,28 @@ pub enum EnforceOrigin {
 }
 
 impl EnforceOrigin {
-    fn created_by(&self) -> Option<Uuid> {
+    pub(crate) fn created_by(&self) -> Option<Uuid> {
         match self {
             EnforceOrigin::Operator { id, .. } => Some(*id),
             EnforceOrigin::Policy { .. } => None,
         }
     }
 
-    fn created_by_username(&self) -> Option<&str> {
+    pub(crate) fn created_by_username(&self) -> Option<&str> {
         match self {
             EnforceOrigin::Operator { username, .. } => Some(username.as_str()),
             EnforceOrigin::Policy { .. } => None,
         }
     }
 
-    fn key(&self) -> &'static str {
+    pub(crate) fn key(&self) -> &'static str {
         match self {
             EnforceOrigin::Operator { .. } => "operator",
             EnforceOrigin::Policy { .. } => "policy",
         }
     }
 
-    fn rule_name(&self) -> Option<&str> {
+    pub(crate) fn rule_name(&self) -> Option<&str> {
         match self {
             EnforceOrigin::Policy { rule_name } => Some(rule_name.as_str()),
             EnforceOrigin::Operator { .. } => None,
@@ -136,7 +136,7 @@ pub enum ReleaseBy {
 }
 
 impl ReleaseBy {
-    fn key(&self) -> &'static str {
+    pub(crate) fn key(&self) -> &'static str {
         match self {
             ReleaseBy::Operator { .. } => "operator",
             ReleaseBy::AutoRevert => "auto_revert",
@@ -152,7 +152,7 @@ impl ReleaseBy {
 /// been checked by the caller.
 pub async fn apply(
     pool: &DbPool,
-    encryption_key: Option<&EncryptionKey>,
+    encryption_key: Option<&Arc<EncryptionKey>>,
     req: &EnforceRequest,
 ) -> Result<Uuid, EnforceError> {
     // --- Gate 1: global kill-switch ---
@@ -231,6 +231,18 @@ pub async fn apply(
                 .await
                 .map_err(|e| EnforceError::Db(e.to_string()))?;
             audit_enforced(pool, req, quarantine_vlan, AuditOutcome::Success, None).await;
+            // A RADIUS-assigned VLAN overrides the port's PVID for as long as
+            // the session lasts, so have the NAS re-authorize the port's
+            // devices: the RADIUS decision now honors the quarantine (N2).
+            if req.kind == EnforcementKind::Quarantine {
+                crate::panopticon_coa::spawn_reauthorize_port(
+                    pool.clone(),
+                    Some(key.clone()),
+                    req.switch.id,
+                    req.port_label.clone(),
+                    format!("port {} quarantined", req.port_label),
+                );
+            }
             Ok(id)
         }
         Err(e) => {
@@ -274,7 +286,7 @@ pub async fn apply(
 /// action is left `RevertFailed` so the sweep keeps retrying it.
 pub async fn release(
     pool: &DbPool,
-    encryption_key: Option<&EncryptionKey>,
+    encryption_key: Option<&Arc<EncryptionKey>>,
     action: &EnforcementAction,
     by: ReleaseBy,
 ) -> Result<(), EnforceError> {
@@ -351,6 +363,18 @@ pub async fn release(
             .await
             .map_err(|e| EnforceError::Db(e.to_string()))?;
             audit_released(pool, action, &by, AuditOutcome::Success, None).await;
+            // Out of quarantine: re-authorize so RADIUS hands back the normal
+            // VLAN. (A released disable brings the link up, which
+            // re-authenticates on its own.)
+            if action.kind == EnforcementKind::Quarantine {
+                crate::panopticon_coa::spawn_reauthorize_port(
+                    pool.clone(),
+                    Some(key.clone()),
+                    action.switch_id,
+                    action.port_label.clone(),
+                    format!("port {} released from quarantine", action.port_label),
+                );
+            }
             Ok(())
         }
         Err(e) => {
@@ -474,6 +498,9 @@ pub fn spawn_panopticon_enforcement_revert(
                 )
                 .await;
 
+            // Device actions (enforcement through RADIUS) expire here too.
+            crate::panopticon_device_enforcement::release_due(&pool, encryption_key.clone()).await;
+
             let due = match repo::panopticon_enforcement::list_due_for_revert(&pool, Utc::now())
                 .await
             {
@@ -486,7 +513,7 @@ pub fn spawn_panopticon_enforcement_revert(
             for action in due {
                 match release(
                     &pool,
-                    encryption_key.as_deref(),
+                    encryption_key.as_ref(),
                     &action,
                     ReleaseBy::AutoRevert,
                 )

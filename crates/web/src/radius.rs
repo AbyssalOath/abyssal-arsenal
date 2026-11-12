@@ -1,5 +1,6 @@
 //! Minimal RADIUS wire codec (RFC 2865 auth, RFC 2866 accounting, RFC 3579
-//! Message-Authenticator, RFC 3580 VLAN tunnel attributes) -- just the subset
+//! Message-Authenticator, RFC 3580 VLAN tunnel attributes, RFC 5176 dynamic
+//! authorization: CoA and Disconnect requests we send) -- just the subset
 //! Panopticon's embedded MAB server needs. Deliberately hand-rolled and small
 //! rather than pulling a heavyweight dependency: the packet format is simple and
 //! the security-sensitive parts (the two keyed hashes) are the whole point to
@@ -18,6 +19,13 @@ pub const CODE_ACCESS_ACCEPT: u8 = 2;
 pub const CODE_ACCESS_REJECT: u8 = 3;
 pub const CODE_ACCOUNTING_REQUEST: u8 = 4;
 pub const CODE_ACCOUNTING_RESPONSE: u8 = 5;
+// RFC 5176 dynamic authorization.
+pub const CODE_DISCONNECT_REQUEST: u8 = 40;
+pub const CODE_DISCONNECT_ACK: u8 = 41;
+pub const CODE_DISCONNECT_NAK: u8 = 42;
+pub const CODE_COA_REQUEST: u8 = 43;
+pub const CODE_COA_ACK: u8 = 44;
+pub const CODE_COA_NAK: u8 = 45;
 
 // ---- Attribute types ----
 pub const ATTR_USER_NAME: u8 = 1;
@@ -25,6 +33,7 @@ pub const ATTR_USER_PASSWORD: u8 = 2;
 pub const ATTR_CHAP_PASSWORD: u8 = 3;
 pub const ATTR_NAS_IP_ADDRESS: u8 = 4;
 pub const ATTR_FRAMED_IP_ADDRESS: u8 = 8;
+pub const ATTR_VENDOR_SPECIFIC: u8 = 26;
 pub const ATTR_CALLED_STATION_ID: u8 = 30;
 pub const ATTR_CALLING_STATION_ID: u8 = 31;
 pub const ATTR_ACCT_STATUS_TYPE: u8 = 40;
@@ -36,6 +45,14 @@ pub const ATTR_EAP_MESSAGE: u8 = 79;
 pub const ATTR_MESSAGE_AUTHENTICATOR: u8 = 80;
 pub const ATTR_TUNNEL_PRIVATE_GROUP_ID: u8 = 81;
 pub const ATTR_NAS_PORT_ID: u8 = 87;
+pub const ATTR_ERROR_CAUSE: u8 = 101;
+
+/// Cisco's IANA enterprise number, for its `Cisco-AVPair` VSA (type 1).
+const VENDOR_CISCO: u32 = 9;
+const CISCO_AVPAIR: u8 = 1;
+
+/// RFC 5176 Error-Cause: "the NAS has no such session".
+pub const ERROR_CAUSE_SESSION_NOT_FOUND: u32 = 503;
 
 // ---- Acct-Status-Type values (RFC 2866) ----
 // Start(1) and Interim-Update(3) are handled identically (refresh last_seen),
@@ -293,6 +310,117 @@ pub fn build_response(
     out
 }
 
+/// A Cisco `Cisco-AVPair` vendor-specific attribute (`subscriber:command=...`).
+pub fn cisco_avpair(pair: &str) -> (u8, Vec<u8>) {
+    let pair = &pair.as_bytes()[..pair.len().min(247)];
+    let mut v = VENDOR_CISCO.to_be_bytes().to_vec();
+    v.push(CISCO_AVPAIR);
+    v.push((pair.len() + 2) as u8);
+    v.extend_from_slice(pair);
+    (ATTR_VENDOR_SPECIFIC, v)
+}
+
+/// Builds a signed request we originate: a Disconnect-Request or CoA-Request
+/// (RFC 5176). Both use the accounting-style Request Authenticator,
+/// MD5(code|id|length|16 zero octets|attributes|secret). A
+/// Message-Authenticator is always included (some NASes require it, none
+/// reject it); for these codes it's computed with the authenticator field
+/// zeroed, before the Request Authenticator is filled in -- the order
+/// FreeRADIUS and the NASes that interoperate with it use.
+pub fn build_request(code: u8, id: u8, attributes: &[(u8, Vec<u8>)], secret: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_LEN + 64);
+    out.push(code);
+    out.push(id);
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(&[0u8; 16]);
+    for (t, v) in attributes {
+        push_attr(&mut out, *t, v);
+    }
+    let msg_auth_offset = out.len() + 2;
+    push_attr(&mut out, ATTR_MESSAGE_AUTHENTICATOR, &[0u8; 16]);
+    let length = out.len() as u16;
+    out[2..4].copy_from_slice(&length.to_be_bytes());
+
+    let mut mac = HmacMd5::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(&out);
+    let tag = mac.finalize().into_bytes();
+    out[msg_auth_offset..msg_auth_offset + 16].copy_from_slice(&tag);
+
+    let mut hasher = Md5::new();
+    hasher.update(&out);
+    hasher.update(secret);
+    let auth = hasher.finalize();
+    out[4..20].copy_from_slice(&auth);
+    out
+}
+
+impl Packet {
+    /// Verifies a response's Response Authenticator against the request we
+    /// sent (RFC 2865 section 3, used unchanged by RFC 5176 ACK/NAKs):
+    /// MD5(code|id|length|request authenticator|attributes|secret).
+    pub fn verify_response(&self, request_authenticator: &[u8; 16], secret: &[u8]) -> bool {
+        let mut buf = self.raw.clone();
+        buf[4..20].copy_from_slice(request_authenticator);
+        let mut hasher = Md5::new();
+        hasher.update(&buf);
+        hasher.update(secret);
+        constant_time_eq(&hasher.finalize(), &self.authenticator)
+    }
+
+    /// Verifies a Message-Authenticator computed with the authenticator field
+    /// zeroed -- how a NAS checks one on a CoA/Disconnect-Request (and how
+    /// [`build_request`] signs it). `false` if absent or wrong. Test-only:
+    /// we only ever send these requests, never receive them.
+    #[cfg(test)]
+    pub fn verify_message_authenticator_zeroed(&self, secret: &[u8]) -> bool {
+        let Some((offset, received)) = locate_attr_value(&self.raw, ATTR_MESSAGE_AUTHENTICATOR)
+        else {
+            return false;
+        };
+        if received.len() != 16 {
+            return false;
+        }
+        let expected = received.to_vec();
+        let mut buf = self.raw.clone();
+        buf[4..20].fill(0);
+        buf[offset..offset + 16].fill(0);
+        let Ok(mut mac) = HmacMd5::new_from_slice(secret) else {
+            return false;
+        };
+        mac.update(&buf);
+        constant_time_eq(&mac.finalize().into_bytes(), &expected)
+    }
+
+    /// The request authenticator of a packet we built (its bytes 4..20).
+    pub fn authenticator_of(raw: &[u8]) -> Option<[u8; 16]> {
+        raw.get(4..20)?.try_into().ok()
+    }
+}
+
+/// RFC 5176 Error-Cause values, named for the sessions table.
+pub fn error_cause_name(cause: u32) -> &'static str {
+    match cause {
+        201 => "Residual-Session-Context-Removed",
+        202 => "Invalid-EAP-Packet",
+        401 => "Unsupported-Attribute",
+        402 => "Missing-Attribute",
+        403 => "NAS-Identification-Mismatch",
+        404 => "Invalid-Request",
+        405 => "Unsupported-Service",
+        406 => "Unsupported-Extension",
+        407 => "Invalid-Attribute-Value",
+        501 => "Administratively-Prohibited",
+        502 => "Request-Not-Routable",
+        503 => "Session-Context-Not-Found",
+        504 => "Session-Context-Not-Removable",
+        505 => "Other-Proxy-Processing-Error",
+        506 => "Resources-Unavailable",
+        507 => "Request-Initiated",
+        508 => "Multiple-Session-Selection-Unsupported",
+        _ => "unknown cause",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +507,67 @@ mod tests {
         let p = Packet::parse(&buf).expect("valid");
         assert!(p.verify_accounting_authenticator(secret));
         assert!(!p.verify_accounting_authenticator(b"wrong"));
+    }
+
+    /// A request we build verifies the way a NAS checks it: the accounting-
+    /// style Request Authenticator, and the Message-Authenticator with the
+    /// authenticator field zeroed.
+    #[test]
+    fn built_requests_carry_both_authenticators() {
+        let secret = b"coasecret";
+        let attrs = vec![(ATTR_ACCT_SESSION_ID, b"0A0B0C".to_vec())];
+        let req = build_request(CODE_DISCONNECT_REQUEST, 17, &attrs, secret);
+        let p = Packet::parse(&req).expect("valid");
+        assert_eq!(p.code, CODE_DISCONNECT_REQUEST);
+        assert_eq!(p.id, 17);
+        assert_eq!(
+            p.get_string(ATTR_ACCT_SESSION_ID).as_deref(),
+            Some("0A0B0C")
+        );
+        // Same formula as an Accounting-Request.
+        assert!(p.verify_accounting_authenticator(secret));
+        assert!(!p.verify_accounting_authenticator(b"wrong"));
+        // Message-Authenticator: HMAC over the packet, authenticator and
+        // msg-auth value zeroed.
+        let (off, value) = locate_attr_value(&req, ATTR_MESSAGE_AUTHENTICATOR).unwrap();
+        let mut zeroed = req.clone();
+        zeroed[4..20].fill(0);
+        zeroed[off..off + 16].fill(0);
+        let mut mac = HmacMd5::new_from_slice(secret).unwrap();
+        mac.update(&zeroed);
+        assert_eq!(mac.finalize().into_bytes().as_slice(), value);
+    }
+
+    #[test]
+    fn responses_verify_against_the_request() {
+        let secret = b"coasecret";
+        let req = build_request(CODE_COA_REQUEST, 5, &[], secret);
+        let req_auth = Packet::authenticator_of(&req).unwrap();
+        let cause = ERROR_CAUSE_SESSION_NOT_FOUND.to_be_bytes().to_vec();
+        let nak = build_response(
+            CODE_COA_NAK,
+            5,
+            &req_auth,
+            &[(ATTR_ERROR_CAUSE, cause)],
+            secret,
+            false,
+        );
+        let p = Packet::parse(&nak).unwrap();
+        assert!(p.verify_response(&req_auth, secret));
+        assert!(!p.verify_response(&req_auth, b"wrong"));
+        assert!(!p.verify_response(&[0u8; 16], secret));
+        assert_eq!(p.get_u32(ATTR_ERROR_CAUSE), Some(503));
+        assert_eq!(error_cause_name(503), "Session-Context-Not-Found");
+    }
+
+    #[test]
+    fn cisco_avpair_is_a_vendor_specific_attribute() {
+        let (t, v) = cisco_avpair("subscriber:command=reauthenticate");
+        assert_eq!(t, ATTR_VENDOR_SPECIFIC);
+        assert_eq!(&v[..4], &[0, 0, 0, 9]);
+        assert_eq!(v[4], 1);
+        assert_eq!(v[5] as usize, v.len() - 4);
+        assert_eq!(&v[6..], b"subscriber:command=reauthenticate");
     }
 
     #[test]

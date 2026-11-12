@@ -46,7 +46,9 @@ struct NetworkDeviceRow {
     mac_address: Option<String>,
     hostname: Option<String>,
     device_type: String,
+    device_type_auto: bool,
     trust_state: String,
+    host_id: Option<String>,
     notes: Option<String>,
     switch_id: Option<String>,
     switch_port: Option<String>,
@@ -72,7 +74,9 @@ impl NetworkDeviceRow {
             mac_address: self.mac_address,
             hostname: self.hostname,
             device_type: DeviceType::from_str(&self.device_type).unwrap_or(DeviceType::Unknown),
+            device_type_auto: self.device_type_auto,
             trust_state: TrustState::from_str(&self.trust_state).unwrap_or(TrustState::Unknown),
+            host_id: self.host_id.and_then(|s| Uuid::parse_str(&s).ok()),
             notes: self.notes,
             ports,
             switch_id: self.switch_id.and_then(|s| Uuid::parse_str(&s).ok()),
@@ -83,6 +87,15 @@ impl NetworkDeviceRow {
         }
     }
 }
+
+/// `ON DUPLICATE KEY UPDATE` fragment that drops a device's managed-host
+/// link when a sighting reports a *different* MAC for its address (DHCP gave
+/// the address to another machine). It must come before the `mac_address`
+/// assignment: MariaDB evaluates the assignments left to right, so after it
+/// `mac_address` already holds the new value.
+const CLEAR_HOST_ON_MAC_CHANGE: &str = "host_id = IF(VALUES(mac_address) IS NOT NULL \
+     AND mac_address IS NOT NULL AND LOWER(VALUES(mac_address)) <> LOWER(mac_address), \
+     NULL, host_id), ";
 
 /// Inserts a newly-discovered device, or refreshes an already-known one at
 /// the same IP -- `first_seen_at` is left untouched on a refresh (only set
@@ -112,15 +125,16 @@ pub async fn upsert(
     hostname: Option<&str>,
 ) -> anyhow::Result<Uuid> {
     let network = current_network_of(pool, ip_address).await;
-    sqlx::query(
+    sqlx::query(&format!(
         "INSERT INTO panopticon_devices (id, ip_address, network, mac_address, hostname) \
          VALUES (?, ?, ?, ?, ?) \
          ON DUPLICATE KEY UPDATE \
              network = VALUES(network), \
+             {CLEAR_HOST_ON_MAC_CHANGE}\
              mac_address = COALESCE(VALUES(mac_address), mac_address), \
              hostname = COALESCE(VALUES(hostname), hostname), \
-             last_seen_at = CURRENT_TIMESTAMP(6)",
-    )
+             last_seen_at = CURRENT_TIMESTAMP(6)"
+    ))
     .bind(Uuid::new_v4().to_string())
     .bind(ip_address)
     .bind(&network)
@@ -139,24 +153,45 @@ pub async fn upsert(
 /// Fills in what a managed host's agent says about one of its own
 /// addresses, on a device already in the inventory: its MAC always (the
 /// host's own interface is authoritative), its hostname only if there's
-/// none yet. Never creates a device. Returns whether one matched.
+/// none yet, and the link to that host (`host_id`). Never creates a
+/// device. Returns whether one matched.
 pub async fn enrich_from_agent(
     pool: &DbPool,
     ip_address: &str,
     mac_address: &str,
     hostname: &str,
+    host_id: Uuid,
 ) -> anyhow::Result<bool> {
     let result = sqlx::query(
         "UPDATE panopticon_devices \
-         SET mac_address = ?, hostname = COALESCE(hostname, ?) \
+         SET mac_address = ?, hostname = COALESCE(hostname, ?), host_id = ? \
          WHERE ip_address = ?",
     )
     .bind(mac_address)
     .bind(hostname)
+    .bind(host_id.to_string())
     .bind(ip_address)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Links inventory devices to the managed hosts whose agents report their
+/// addresses as their own (address -> host). Only devices already in the
+/// inventory; nothing is created. See `enrich_from_agent` for the same on
+/// agent connect.
+pub async fn link_hosts(
+    pool: &DbPool,
+    links: &std::collections::HashMap<String, Uuid>,
+) -> anyhow::Result<()> {
+    for (ip, host_id) in links {
+        sqlx::query("UPDATE panopticon_devices SET host_id = ? WHERE ip_address = ?")
+            .bind(host_id.to_string())
+            .bind(ip)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Records a passive sighting from the control plane's own kernel neighbor
@@ -166,13 +201,14 @@ pub async fn enrich_from_agent(
 /// the classification fields.
 pub async fn touch(pool: &DbPool, ip_address: &str, mac_address: &str) -> anyhow::Result<Uuid> {
     let network = current_network_of(pool, ip_address).await;
-    sqlx::query(
+    sqlx::query(&format!(
         "INSERT INTO panopticon_devices (id, ip_address, network, mac_address) VALUES (?, ?, ?, ?) \
          ON DUPLICATE KEY UPDATE \
              network = VALUES(network), \
+             {CLEAR_HOST_ON_MAC_CHANGE}\
              mac_address = VALUES(mac_address), \
-             last_seen_at = CURRENT_TIMESTAMP(6)",
-    )
+             last_seen_at = CURRENT_TIMESTAMP(6)"
+    ))
     .bind(Uuid::new_v4().to_string())
     .bind(ip_address)
     .bind(&network)
@@ -201,15 +237,16 @@ pub async fn note_sighting(
     hostname: Option<&str>,
 ) -> anyhow::Result<Uuid> {
     let network = current_network_of(pool, ip_address).await;
-    sqlx::query(
+    sqlx::query(&format!(
         "INSERT INTO panopticon_devices (id, ip_address, network, mac_address, hostname) \
          VALUES (?, ?, ?, ?, ?) \
          ON DUPLICATE KEY UPDATE \
              network = VALUES(network), \
+             {CLEAR_HOST_ON_MAC_CHANGE}\
              mac_address = COALESCE(VALUES(mac_address), mac_address), \
              hostname = COALESCE(VALUES(hostname), hostname), \
-             last_seen_at = CURRENT_TIMESTAMP(6)",
-    )
+             last_seen_at = CURRENT_TIMESTAMP(6)"
+    ))
     .bind(Uuid::new_v4().to_string())
     .bind(ip_address)
     .bind(&network)
@@ -323,23 +360,49 @@ pub async fn list_on_switch(pool: &DbPool, switch_id: Uuid) -> anyhow::Result<Ve
 
 /// Sets an admin's classification of a device -- purely advisory in this
 /// phase, nothing else in Panopticon reads these fields to make a decision.
+/// A person's classification. `device_type_auto` says whether the type is
+/// still the classifier's (the person left an automatic type as it was).
 pub async fn classify(
     pool: &DbPool,
     id: Uuid,
     device_type: DeviceType,
+    device_type_auto: bool,
     trust_state: TrustState,
     notes: Option<&str>,
 ) -> anyhow::Result<()> {
     sqlx::query(
-        "UPDATE panopticon_devices SET device_type = ?, trust_state = ?, notes = ? WHERE id = ?",
+        "UPDATE panopticon_devices \
+         SET device_type = ?, device_type_auto = ?, trust_state = ?, notes = ? WHERE id = ?",
     )
     .bind(device_type.as_str())
+    .bind(device_type_auto)
     .bind(trust_state.as_str())
     .bind(notes)
     .bind(id.to_string())
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// The automatic classifier's write: sets the type only while the device is
+/// still unclassified or was classified automatically -- checked in the
+/// UPDATE itself, so a person's classification made since the sweep read the
+/// device is never overwritten. Returns whether it changed anything.
+pub async fn set_auto_type(
+    pool: &DbPool,
+    id: Uuid,
+    device_type: DeviceType,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE panopticon_devices SET device_type = ?, device_type_auto = 1 \
+         WHERE id = ? AND (device_type = 'unknown' OR device_type_auto = 1) AND device_type <> ?",
+    )
+    .bind(device_type.as_str())
+    .bind(id.to_string())
+    .bind(device_type.as_str())
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Ordered numerically (via `INET6_ATON`, which handles both IPv4 and IPv6)
@@ -363,6 +426,26 @@ pub async fn list(pool: &DbPool) -> anyhow::Result<Vec<NetworkDevice>> {
             let ports = ports_by_device.remove(&id).unwrap_or_default();
             Some(row.into_device(ports))
         })
+        .collect())
+}
+
+/// Every device seen within the stale threshold that has a MAC on record:
+/// the policy engine's working set. Located devices (the SNMP path) are a
+/// subset; the rest may still be enforceable through RADIUS. Open ports aren't
+/// attached.
+pub async fn list_recent_with_mac(pool: &DbPool) -> anyhow::Result<Vec<NetworkDevice>> {
+    let cutoff = Utc::now() - Duration::hours(abyssal_core::network_device::STALE_THRESHOLD_HOURS);
+    let rows: Vec<NetworkDeviceRow> = sqlx::query_as(
+        "SELECT * FROM panopticon_devices \
+         WHERE mac_address IS NOT NULL AND last_seen_at >= ? \
+         ORDER BY INET6_ATON(ip_address) ASC",
+    )
+    .bind(cutoff.naive_utc())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.into_device(Vec::new()))
         .collect())
 }
 

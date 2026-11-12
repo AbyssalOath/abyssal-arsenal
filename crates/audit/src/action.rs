@@ -64,6 +64,23 @@ pub enum AuditAction {
     /// auto-revert sweep when a timed action expired (`metadata.by`:
     /// `"operator"` | `"auto_revert"`).
     NetworkPortReleased,
+    /// Panopticon NAC (0.2.7 N2): a RADIUS CoA or Disconnect-Request sent to a
+    /// NAS to re-authorize a session after a device's trust or quarantine
+    /// changed. `metadata`: `{"nas", "nas_ip", "session", "mode", "result",
+    /// "why"}`. `Failure` = NAK, no response, or not sent.
+    NetworkRadiusReauthorized,
+    /// Panopticon NAC (0.2.7): a device quarantined or blocked through the
+    /// RADIUS decision rather than an SNMP write (`resource` = MAC;
+    /// `metadata`: kind, by, rule, reason, timeout).
+    NetworkDeviceEnforced,
+    /// The inverse: a device action lifted (`metadata.by`: operator or
+    /// auto_revert).
+    NetworkDeviceReleased,
+    /// Panopticon registration portal (0.2.7 N5): a guest asked for access
+    /// (`metadata.status`: "pending" or, self-service, "approved").
+    NetworkGuestRegistered,
+    /// Staff approved, denied or revoked a guest registration.
+    NetworkGuestRegistrationDecided,
     UserProfileUpdated,
     HostDeployStarted,
     HostDeploySucceeded,
@@ -204,6 +221,11 @@ impl AuditAction {
             AuditAction::NetworkSwitchRemoved => "NETWORK_SWITCH_REMOVED",
             AuditAction::NetworkPortEnforced => "NETWORK_PORT_ENFORCED",
             AuditAction::NetworkPortReleased => "NETWORK_PORT_RELEASED",
+            AuditAction::NetworkRadiusReauthorized => "NETWORK_RADIUS_REAUTHORIZED",
+            AuditAction::NetworkDeviceEnforced => "NETWORK_DEVICE_ENFORCED",
+            AuditAction::NetworkDeviceReleased => "NETWORK_DEVICE_RELEASED",
+            AuditAction::NetworkGuestRegistered => "NETWORK_GUEST_REGISTERED",
+            AuditAction::NetworkGuestRegistrationDecided => "NETWORK_GUEST_REGISTRATION_DECIDED",
             AuditAction::UserProfileUpdated => "USER_PROFILE_UPDATED",
             AuditAction::HostDeployStarted => "HOST_DEPLOY_STARTED",
             AuditAction::HostDeploySucceeded => "HOST_DEPLOY_SUCCEEDED",
@@ -306,6 +328,11 @@ impl AuditAction {
         AuditAction::NetworkDhcpLeasesImported,
         AuditAction::NetworkPortEnforced,
         AuditAction::NetworkPortReleased,
+        AuditAction::NetworkRadiusReauthorized,
+        AuditAction::NetworkDeviceEnforced,
+        AuditAction::NetworkDeviceReleased,
+        AuditAction::NetworkGuestRegistered,
+        AuditAction::NetworkGuestRegistrationDecided,
         AuditAction::UserProfileUpdated,
         AuditAction::HostDeployStarted,
         AuditAction::HostDeploySucceeded,

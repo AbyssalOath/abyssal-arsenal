@@ -971,6 +971,7 @@ pub struct SettingsTemplate {
     pub panopticon_sweep_target: String,
     pub panopticon_mdns_enabled: bool,
     pub panopticon_arp_enabled: bool,
+    pub panopticon_auto_classify_enabled: bool,
     pub panopticon_arp_interface: String,
     pub panopticon_traffic_raw_retention_days: u32,
     pub panopticon_traffic_hourly_retention_days: u32,
@@ -2793,6 +2794,27 @@ pub struct PanopticonClassifyTemplate {
     /// (`TrustState::as_str()` key, label, is this the device's current state)
     pub trust_states: Vec<(&'static str, &'static str, bool)>,
     pub notes: String,
+    /// Enforcement through RADIUS (0.2.7): the device's MAC (empty = none,
+    /// so it can't be enforced this way), whether it has an open RADIUS
+    /// session, and the device action in effect, if any.
+    pub mac: String,
+    pub has_radius_session: bool,
+    pub device_action: Option<DeviceEnforcementRow>,
+    pub can_enforce: bool,
+    /// Whether the current type was set by the automatic classifier.
+    pub type_is_auto: bool,
+    /// The classifier's suggestion (0.2.7 N3), if any evidence points anywhere.
+    pub suggestion: Option<ClassifySuggestionView>,
+    /// The device's DHCP fingerprint, as seen: (option, value) rows.
+    pub fingerprint: Vec<(&'static str, String)>,
+    pub auto_classify_on: bool,
+}
+
+pub struct ClassifySuggestionView {
+    pub type_label: &'static str,
+    pub os: String,
+    pub confidence: &'static str,
+    pub reasons: Vec<String>,
 }
 
 pub struct PanopticonSwitchRow {
@@ -3042,7 +3064,25 @@ pub struct PanopticonEnforcementTemplate {
     pub revert_minutes: u32,
     pub in_effect: Vec<EnforcementActionRow>,
     pub history: Vec<EnforcementActionRow>,
+    /// Devices enforced through RADIUS (0.2.7).
+    pub device_in_effect: Vec<DeviceEnforcementRow>,
+    pub device_history: Vec<DeviceEnforcementRow>,
     pub csrf_token: String,
+}
+
+/// One device action (enforcement through RADIUS).
+pub struct DeviceEnforcementRow {
+    pub id: String,
+    pub mac: String,
+    pub ip: String,
+    pub kind_label: String,
+    pub active: bool,
+    pub is_timed: bool,
+    pub expires_at: String,
+    pub created_at: String,
+    pub reverted_at: String,
+    pub created_by: String,
+    pub reason: String,
 }
 
 /// One enforcement action, for the dashboard/history tables.
@@ -3076,12 +3116,17 @@ pub struct PanopticonPolicyTemplate {
     pub current_mode: String,
     pub new_window_minutes: u32,
     pub cooldown_minutes: u32,
+    pub signal_window_minutes: u32,
+    pub max_devices_per_port: u32,
     /// Warnings so the page explains why an armed policy still wouldn't act.
     pub global_enforcement_on: bool,
     pub quarantine_vlan_set: bool,
     pub rules: Vec<PolicyRuleRow>,
     /// Add-form option lists.
     pub triggers: Vec<(String, String)>,
+    /// (key, label, is-default) for the minimum-severity select.
+    pub severities: Vec<(String, String, bool)>,
+    pub default_posture_below: u8,
     pub actions: Vec<(String, String)>,
     pub device_types: Vec<(String, String)>,
     pub switches: Vec<(String, String)>,
@@ -3101,6 +3146,44 @@ pub struct PolicyRuleRow {
     pub timeout_label: String,
     pub is_first: bool,
     pub is_last: bool,
+}
+
+/// Registration portal admin (0.2.7 N5). See `routes/panopticon.rs::portal_show`.
+#[derive(Template)]
+#[template(path = "panopticon_portal.html")]
+pub struct PanopticonPortalTemplate {
+    pub base: BaseCtx,
+    pub can_manage: bool,
+    pub csrf_token: String,
+    pub enabled: bool,
+    pub vlan: u32,
+    pub address: String,
+    pub dhcp_start: String,
+    pub dhcp_end: String,
+    pub lease_seconds: u32,
+    pub mode_self: bool,
+    pub access_hours: u32,
+    pub terms: String,
+    pub guest_vlan: u32,
+    pub unknown_action_is_register: bool,
+    pub running: bool,
+    pub running_interface: String,
+    pub running_address: String,
+    pub active_leases: usize,
+    /// Why the saved settings can't run, if they can't.
+    pub config_error: String,
+    pub registrations: Vec<RegistrationRow>,
+}
+
+pub struct RegistrationRow {
+    pub mac: String,
+    pub name: String,
+    pub email: String,
+    pub status_key: &'static str,
+    pub status_label: &'static str,
+    pub requested: String,
+    pub expires: String,
+    pub decided_by: String,
 }
 
 /// Embedded RADIUS server admin (phase 5): MAB policy settings, NAS clients, and
@@ -3126,6 +3209,11 @@ pub struct PanopticonRadiusTemplate {
     pub unknown_actions: Vec<(String, String, bool)>,
     pub clients: Vec<RadiusClientRow>,
     pub sessions: Vec<RadiusSessionRow>,
+    /// FreeRADIUS front end (0.2.7 N4): configured, and when it last called.
+    pub freeradius_enabled: bool,
+    pub freeradius_last_call: String,
+    /// CoA mode options for the add-client form (Disconnect preselected).
+    pub new_client_coa_modes: Vec<(String, String, bool)>,
 }
 
 pub struct RadiusClientRow {
@@ -3133,9 +3221,16 @@ pub struct RadiusClientRow {
     pub name: String,
     pub nas_address: String,
     pub enabled: bool,
+    pub coa_label: String,
+    pub coa_port: u16,
+    /// (key, label, selected) for the row's CoA mode select.
+    pub coa_modes: Vec<(String, String, bool)>,
 }
 
 pub struct RadiusSessionRow {
+    pub id: String,
+    /// The latest CoA's result and time, or empty.
+    pub last_coa: String,
     pub mac: String,
     pub username: String,
     pub nas_ip: String,

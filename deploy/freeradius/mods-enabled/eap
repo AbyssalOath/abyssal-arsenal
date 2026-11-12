@@ -1,0 +1,49 @@
+#  Abyssal Arsenal: EAP-TLS only (certificate-based 802.1X). Replaces the
+#  stock eap module, whose PEAP/TTLS methods need an inner-tunnel server and
+#  a password store this deployment doesn't have.
+#
+#  Certificates (deploy/freeradius/certs, mounted read-only at
+#  /etc/freeradius/certs-abyssal; see deploy/freeradius/README.md):
+#    server.pem  this RADIUS server's certificate (with any intermediates)
+#    server.key  its private key (unencrypted, readable by uid 101)
+#    ca.pem      the CA(s) that issue the *client* certificates to accept
+#
+#  Any client certificate chaining to ca.pem is accepted at the EAP layer;
+#  Panopticon then decides the device's VLAN, quarantine or reject by its
+#  MAC (post-auth), exactly as for MAB.
+
+eap {
+	default_eap_type = tls
+	timer_expire = 60
+	ignore_unknown_eap_types = no
+	cisco_accounting_username_bug = no
+	max_sessions = ${max_requests}
+
+	tls-config tls-common {
+		private_key_file = /etc/freeradius/certs-abyssal/server.key
+		certificate_file = /etc/freeradius/certs-abyssal/server.pem
+		ca_file = /etc/freeradius/certs-abyssal/ca.pem
+		ca_path = /etc/freeradius/certs-abyssal
+		cipher_list = "DEFAULT"
+		cipher_server_preference = yes
+		tls_min_version = "1.2"
+		tls_max_version = "1.2"
+		ecdh_curve = ""
+		check_crl = no
+
+		cache {
+			enable = no
+		}
+
+		verify {
+		}
+
+		ocsp {
+			enable = no
+		}
+	}
+
+	tls {
+		tls = tls-common
+	}
+}

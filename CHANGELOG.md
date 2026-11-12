@@ -10,6 +10,190 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-12
+
+This release is about Panopticon's network access control (NAC); the plan
+and its decisions are in
+[docs/roadmap/0.2.7.md](docs/roadmap/0.2.7.md). Everything new is off until
+you turn it on, but see **Upgrading** at the end first if your
+auto-enforcement policy is already *Active*. No agent protocol change.
+
+### Added
+
+- **Security findings can quarantine a device.** The NAC auto-enforcement
+  policy has three new triggers, each with its own threshold:
+  - **IDS alert (Scourge):** an alert at or above a minimum severity
+    (default *high*) with the device as the flow's **source**. Never the
+    destination, which is the victim of an inbound attack.
+  - **Open security event (Thanatos):** an *open* event at or above a
+    minimum severity on the managed host the device belongs to.
+    Acknowledging or resolving the event stands the rule down.
+  - **Failing posture (Cadavault):** the host's latest posture score is
+    below a threshold (default 60).
+
+  The IDS and Thanatos triggers look back over a configurable window
+  (default 60 minutes). The enforcement reason names the finding (e.g.
+  `Scourge high alert "ET MALWARE ..."`), so the audit log and enforcement
+  history say why a port was cut. To link Thanatos events and posture runs to
+  network devices, Panopticon now records which managed host owns each
+  device (from the agent's own interface addresses), and drops the link if
+  the device's MAC changes. Migration `0057_panopticon_signals`.
+
+- **RADIUS Change of Authorization (CoA).** A device's trust or quarantine
+  change now takes effect at once, instead of at its next login. Each NAS
+  client on the RADIUS page has a **CoA** setting:
+  - **Off:** what existing clients get on upgrade.
+  - **Disconnect (RFC 5176):** works on most switches and controllers; the
+    device drops briefly. The default for new clients.
+  - **Reauthenticate (Cisco CoA):** no drop.
+
+  Panopticon re-authorizes a device's sessions when its trust changes, and
+  every device on a port when a quarantine is applied to or released from
+  it. It also adds a **Reauthorize** button per active session. Replies are
+  checked against the request and the NAS's secret, with up to 3 tries. The
+  result shows in a new *Last CoA* column and is audited
+  (`NETWORK_RADIUS_REAUTHORIZED`). The NAS must accept dynamic authorization
+  from the control plane's address (Cisco: `aaa server radius
+  dynamic-author`), and must send accounting. Migration
+  `0058_panopticon_radius_coa`.
+
+- **Automatic device classification.** Panopticon suggests each device's
+  type, OS family and a confidence, from evidence it already has: its DHCP
+  fingerprint, open ports, MAC vendor, hostname, and the OS its agent
+  reports. The **Classify** page shows the suggestion, the reasons and the
+  raw fingerprint. A new **Settings → Panopticon automatic classification**
+  toggle (off by default, `network.manage`) applies medium-or-better
+  suggestions every 10 minutes, but only to devices still *Unknown* or
+  classified automatically. **A type a person chose is never changed.**
+  Automatic types show as "(auto)" in the inventory.
+
+  DHCP fingerprints come from the ARP listener, which now also reads DHCP
+  client packets: those broadcast on its segment, and any relayed to the
+  control plane (add it as an extra `ip helper-address`; behind Docker's
+  bridge network, also publish UDP 67, commented in `docker-compose.yml`).
+  Migration `0059_panopticon_classification`.
+
+- **802.1X logins through FreeRADIUS.** An optional FreeRADIUS 3.2.7
+  container (`docker compose --profile freeradius up -d`) runs in front of
+  Panopticon's RADIUS server for **EAP-TLS** with your own CA, plus MAC
+  authentication for devices without a supplicant. **FreeRADIUS
+  authenticates; Panopticon still decides** each device's VLAN, quarantine
+  or reject. NAS clients stay on Panopticon's RADIUS page (FreeRADIUS
+  fetches their secrets), and accounting still lands in Panopticon, so CoA
+  keeps working. Set `FREERADIUS_API_TOKEN` (32+ characters) to turn it on;
+  the built-in server then stands down. The RADIUS page shows when
+  FreeRADIUS last called in. Setup:
+  [deploy/freeradius/README.md](deploy/freeradius/README.md);
+  `deploy/freeradius/test/run.sh` tests the configuration against the real
+  FreeRADIUS image. PEAP/MSCHAPv2 against Active Directory isn't included.
+
+- **Guest registration portal.** With **RADIUS → Unknown device action →
+  Registration portal**, an unknown device goes to a *registration VLAN*.
+  There, Panopticon runs its own DHCP server, a captive DNS server, and a
+  portal page, so phones and laptops pop up their sign-in sheet. Guests
+  enter their name and accept your terms, and are approved either at once
+  (*self-service*) or by staff on **Panopticon → Registration portal**
+  (*sponsor*, the default). Panopticon then moves the device to the guest
+  VLAN with a CoA until the approval expires (24 hours by default). Staff can
+  approve, deny or revoke; a denial sticks. Devices that passed 802.1X never
+  go through the portal. Audited as `NETWORK_GUEST_REGISTERED` and
+  `NETWORK_GUEST_REGISTRATION_DECIDED`.
+
+  The app reaches the registration VLAN through an opt-in compose override
+  (`deploy/registration/docker-compose.registration.yml`, a macvlan network,
+  with four `REGISTRATION_*` settings in `.env`). Setup:
+  [deploy/registration/README.md](deploy/registration/README.md);
+  `deploy/registration/test/run.sh` tests the DHCP and DNS servers against
+  real clients. Migration `0060_panopticon_registrations`.
+
+- **Enforcement through RADIUS, with no switch write.** A device can be
+  quarantined (quarantine VLAN) or blocked (rejected) through the RADIUS
+  decision, applied by CoA, on switches Panopticon has no SNMP write access
+  to:
+  - **By hand:** an *Enforce through RADIUS* card on a device's Classify
+    page.
+  - **Automatically:** the policy engine still enforces a port over SNMP
+    where it can. Otherwise it records a device action, if the device has an
+    open RADIUS session. A device seen behind an uplink can now be enforced
+    this way, without touching the uplink.
+
+  Device actions have their own section on the enforcement dashboard
+  (Release, Make permanent, history), expire in the same revert sweep, and
+  are audited as `NETWORK_DEVICE_ENFORCED` and `NETWORK_DEVICE_RELEASED`.
+  Migration `0061_panopticon_device_enforcement`.
+
+- **Scourge sets up a new sensor.** **Install sensor** no longer stops at
+  the package:
+  - it downloads rules;
+  - it clears systemd's start limit;
+  - it points Suricata at the NIC with the default route (skipping Docker
+    bridges, veths, tunnels and VPNs), unless a working interface is already
+    configured;
+  - it starts and enables the service, and reports what's left to do.
+
+  Re-running it repairs a sensor stuck on the packaged `eth0`, and Sensor
+  Status suggests it, naming the interface it would pick. Needs the 0.2.7
+  agent on the sensor.
+
+- **Docs:** the README's arsenal tables have a **Host OS** column, and
+  `docs/sepulchre.md` says it's Linux-only.
+
+### Changed
+
+- **The policy engine considers every recent device with a MAC,** not only
+  those located on a switch port, so it can use enforcement through RADIUS.
+  It still prefers a port it can enforce over SNMP. In *Simulate* mode it
+  logs which way it would enforce, or why it can't.
+- **Two guards apply to every auto-enforcement rule,** including existing
+  ones. The **control plane's own server** is never auto-enforced: it would
+  lose the switch access needed to undo the action. Neither is a **port that
+  looks like an uplink**: one facing another polled switch (LLDP/CDP), or
+  with more located devices than *Max devices per port* (default 4, on the
+  Policy page). Manual enforcement isn't limited by either.
+- **The RADIUS decision honors enforcement.** A device on a quarantined port
+  (or under a device action) gets the quarantine VLAN, or a reject if no
+  quarantine VLAN is set, whatever its trust; a disabled port's device is
+  rejected.
+- The Classify page no longer says classification is "purely advisory":
+  trust decides access when NAC is in use.
+
+### Fixed
+
+- **A port quarantine on a RADIUS-controlled (MAB) port didn't last.** When
+  the device next authenticated, RADIUS assigned its normal VLAN, which
+  replaced the quarantine. It now stays quarantined (see *Changed*).
+- **Flaky Windows-script parse tests.** The six PowerShell parse tests
+  started `pwsh` in parallel, and `pwsh` sometimes crashed while starting
+  up, which failed the v0.2.6 Release run. They now share one helper that
+  runs `pwsh` one at a time and retries a crash, but never a real parse
+  error.
+
+### Security
+
+- **The admin UI ignores the registration VLAN.** Guests can reach the
+  container's address there, so every request from that subnet gets a 404.
+  The portal itself is a separate web server serving only the registration
+  pages, and DHCP and DNS are bound to the registration interface only.
+- **The FreeRADIUS API answers only loopback and the token**
+  (HTTP Basic, compared in constant time), and exists only when
+  `FREERADIUS_API_TOKEN` is set. Passwords are stripped before FreeRADIUS
+  calls it. Values it returns are sent literally, so a NAS client's name or
+  secret containing `%{...}` can't be expanded by FreeRADIUS.
+- The app binary gains `cap_net_bind_service` (alongside `cap_net_raw`) for
+  the registration portal's ports 53, 67 and 80. Nothing binds them unless
+  the portal is enabled.
+
+### Upgrading
+
+- **Back up first:** migrations `0057` to `0061` run at startup.
+- **If your auto-enforcement policy is *Active*,** set it to **Simulate**
+  after upgrading and watch the server log before setting it back. It can
+  now act on devices it used to skip (devices with a RADIUS session on
+  switches it can't write over SNMP). Ports that look like uplinks are no
+  longer auto-enforced.
+- **Update the agents** for the Scourge install changes. There's no protocol
+  change, so older agents keep working.
+
 ## [0.2.6] - 2026-11-10
 
 ### Added
