@@ -1,3 +1,4 @@
+pub mod classify;
 pub mod crypto;
 pub mod enforcement;
 pub mod error;
@@ -10,6 +11,7 @@ pub mod oui;
 pub mod permission;
 pub mod policy;
 pub mod radius;
+pub mod registration;
 pub mod reliquary_backup;
 pub mod role;
 pub mod secret;
@@ -21,7 +23,7 @@ pub mod subnet;
 pub mod user;
 
 pub use crypto::{CryptoError, EncryptionKey};
-pub use enforcement::{EnforcementAction, EnforcementKind, EnforcementState};
+pub use enforcement::{DeviceEnforcement, EnforcementAction, EnforcementKind, EnforcementState};
 pub use error::AppError;
 pub use host::Host;
 pub use ioc::{Ioc, IocType};
@@ -34,7 +36,8 @@ pub use network_device::{
 pub use oui::lookup_vendor;
 pub use permission::Permission;
 pub use policy::{PolicyMode, PolicyRule, PolicyTrigger};
-pub use radius::{RadiusClient, RadiusSession};
+pub use radius::{CoaMode, RadiusClient, RadiusSession};
+pub use registration::{PortalMode, Registration, RegistrationStatus};
 pub use reliquary_backup::{
     BackupComponent, BackupJob, BackupJobType, BackupManifest, BackupStatus, BackupTrigger,
     EncryptionMetadata, ManifestEntry, VerificationStatus,

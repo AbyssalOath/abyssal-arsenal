@@ -271,6 +271,26 @@ pub const PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES: &str =
     "panopticon.auto_enforce_cooldown_minutes";
 pub const PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES_DEFAULT: u32 = 60;
 
+/// 0.2.7 N3: the automatic device classifier (`abyssal_web::panopticon_classify`)
+/// sets the type of devices that are still `unknown` (or that it classified
+/// itself) when its suggestion is medium confidence or better. Off by default;
+/// the classify page shows suggestions either way.
+pub const PANOPTICON_AUTO_CLASSIFY_ENABLED: &str = "panopticon.auto_classify_enabled";
+
+/// How far back (minutes) the `ids_alert` and `security_event` policy
+/// triggers look for a Scourge alert or an open Thanatos event on a device.
+pub const PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES: &str =
+    "panopticon.auto_enforce_signal_window_minutes";
+pub const PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES_DEFAULT: u32 = 60;
+
+/// The uplink guard: the policy engine never auto-enforces a switch port
+/// with more located devices than this (or one facing another polled
+/// switch), since that port is almost certainly an uplink and enforcing it
+/// would cut off everything behind it. Manual enforcement isn't limited.
+pub const PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT: &str =
+    "panopticon.auto_enforce_max_devices_per_port";
+pub const PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT_DEFAULT: u32 = 4;
+
 /// NAC phase 5: enables Panopticon's embedded RADIUS server (MAC Auth Bypass +
 /// dynamic VLAN + accounting). Off by default; binds the two UDP ports below
 /// only when on and an `ENCRYPTION_KEY` is configured (NAS shared secrets are
@@ -303,7 +323,39 @@ pub const PANOPTICON_RADIUS_UNTRUSTED_ACTION: &str = "panopticon.radius_untruste
 /// watched the sessions and classified your fleet.
 pub const PANOPTICON_RADIUS_UNKNOWN_ACTION: &str = "panopticon.radius_unknown_action";
 
-/// Guest VLAN for `unknown_action = guest`. `0` falls back to a plain accept.
+// ---- Registration portal (0.2.7 N5) -----------------------------------
+//
+// With `unknown_action = register`, an unknown device goes to the
+// registration VLAN until a guest registration for its MAC is approved, then
+// to the guest VLAN below. On the registration VLAN, Panopticon runs DHCP,
+// captive DNS and the portal on PANOPTICON_PORTAL_ADDRESS (an address of the
+// container's interface on that VLAN). Network settings apply on restart.
+
+/// Runs the portal's DHCP, DNS and web listeners at startup.
+pub const PANOPTICON_PORTAL_ENABLED: &str = "panopticon.portal_enabled";
+/// The portal's own address on the registration VLAN, with prefix
+/// ("10.99.0.1/24"): DHCP server, router, DNS server and portal.
+pub const PANOPTICON_PORTAL_ADDRESS: &str = "panopticon.portal_address";
+/// The DHCP pool, inclusive.
+pub const PANOPTICON_PORTAL_DHCP_START: &str = "panopticon.portal_dhcp_start";
+pub const PANOPTICON_PORTAL_DHCP_END: &str = "panopticon.portal_dhcp_end";
+/// Short, so a device that moves to the guest VLAN renews its address soon.
+pub const PANOPTICON_PORTAL_LEASE_SECONDS: &str = "panopticon.portal_lease_seconds";
+pub const PANOPTICON_PORTAL_LEASE_SECONDS_DEFAULT: u32 = 60;
+/// The registration VLAN RADIUS assigns unregistered unknown devices.
+/// `0` = unset: with `unknown_action = register` they're rejected instead.
+pub const PANOPTICON_PORTAL_VLAN: &str = "panopticon.portal_vlan";
+pub const PANOPTICON_PORTAL_VLAN_DEFAULT: u32 = 0;
+/// `self` (accepting the terms grants access) or `sponsor` (staff approve).
+pub const PANOPTICON_PORTAL_MODE: &str = "panopticon.portal_mode";
+/// How long an approval lasts.
+pub const PANOPTICON_PORTAL_ACCESS_HOURS: &str = "panopticon.portal_access_hours";
+pub const PANOPTICON_PORTAL_ACCESS_HOURS_DEFAULT: u32 = 24;
+/// Terms of use shown on the portal (plain text).
+pub const PANOPTICON_PORTAL_TERMS: &str = "panopticon.portal_terms";
+
+/// Guest VLAN for `unknown_action = guest`, and for approved registrations
+/// with `unknown_action = register`. `0` falls back to a plain accept.
 pub const PANOPTICON_RADIUS_GUEST_VLAN: &str = "panopticon.radius_guest_vlan";
 pub const PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT: u32 = 0;
 

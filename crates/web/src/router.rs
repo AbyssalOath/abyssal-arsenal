@@ -299,6 +299,10 @@ pub fn build(state: AppState) -> Router {
             post(routes::settings::set_panopticon_arp_enabled),
         )
         .route(
+            "/admin/settings/panopticon-auto-classify",
+            post(routes::settings::set_panopticon_auto_classify),
+        )
+        .route(
             "/admin/settings/panopticon-arp-interface",
             post(routes::settings::set_panopticon_arp_interface),
         )
@@ -2093,6 +2097,18 @@ pub fn build(state: AppState) -> Router {
             get(routes::panopticon::enforcement_show),
         )
         .route(
+            "/arsenals/panopticon/enforcement/device-release",
+            post(routes::panopticon::device_enforce_release),
+        )
+        .route(
+            "/arsenals/panopticon/enforcement/device-make-permanent",
+            post(routes::panopticon::device_enforce_make_permanent),
+        )
+        .route(
+            "/arsenals/panopticon/devices/:id/radius-enforce",
+            post(routes::panopticon::device_enforce),
+        )
+        .route(
             "/arsenals/panopticon/enforcement/release",
             post(routes::panopticon::enforce_release),
         )
@@ -2139,6 +2155,26 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/radius/clients/:id/enabled",
             post(routes::panopticon::radius_client_set_enabled),
+        )
+        .route(
+            "/arsenals/panopticon/portal",
+            get(routes::panopticon::portal_show),
+        )
+        .route(
+            "/arsenals/panopticon/portal/settings",
+            post(routes::panopticon::portal_set_settings),
+        )
+        .route(
+            "/arsenals/panopticon/portal/registrations/:mac/:action",
+            post(routes::panopticon::portal_decide),
+        )
+        .route(
+            "/arsenals/panopticon/radius/clients/:id/coa",
+            post(routes::panopticon::radius_client_set_coa),
+        )
+        .route(
+            "/arsenals/panopticon/radius/sessions/:id/reauthorize",
+            post(routes::panopticon::radius_session_reauthorize),
         )
         .route(
             "/arsenals/panopticon/radius/clients/:id/delete",
@@ -2239,6 +2275,24 @@ pub fn build(state: AppState) -> Router {
         // how `abyssal-agent install` spots a stale credentials.json.
         .route("/api/agent/whoami", get(routes::agent::whoami))
         .route("/ws/agent", get(routes::agent::ws_upgrade))
+        // FreeRADIUS front end (0.2.7 N4): loopback + token only, and 404
+        // unless FREERADIUS_API_TOKEN is set -- see panopticon_freeradius.
+        .route(
+            "/internal/radius/client",
+            get(crate::panopticon_freeradius::client),
+        )
+        .route(
+            "/internal/radius/mab",
+            post(crate::panopticon_freeradius::mab),
+        )
+        .route(
+            "/internal/radius/post-auth",
+            post(crate::panopticon_freeradius::post_auth),
+        )
+        .route(
+            "/internal/radius/accounting",
+            post(crate::panopticon_freeradius::accounting),
+        )
         // Public, unauthenticated bootstrap installers (no secrets in the
         // served text -- see routes::bootstrap): the target of the copy-
         // paste enrollment one-liners on /admin/hosts.
@@ -2255,6 +2309,11 @@ pub fn build(state: AppState) -> Router {
             platform_guard::guard,
         ))
         .layer(axum::middleware::from_fn(security_headers::apply))
+        // Nothing here answers the registration VLAN (0.2.7 N5): guests can
+        // reach this container's address there, and get only the portal.
+        .layer(axum::middleware::from_fn(
+            crate::panopticon_portal::admin_guard,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             maintenance_mode::guard,

@@ -1,0 +1,45 @@
+# Registration portal (Panopticon NAC, 0.2.7 N5): attaches the app container
+# to the registration VLAN, so Panopticon can run DHCP, captive DNS and the
+# portal there. See deploy/registration/README.md. Use it alongside the main
+# file:
+#
+#   docker compose -f docker-compose.yml \
+#     -f deploy/registration/docker-compose.registration.yml up -d
+#
+# Settings (in .env):
+#   REGISTRATION_PARENT        host interface carrying the VLAN, as
+#                              <nic>.<vlan> (e.g. eno1.99): Docker creates the
+#                              802.1Q sub-interface if it doesn't exist
+#   REGISTRATION_SUBNET        the VLAN's subnet (e.g. 10.99.0.0/24)
+#   REGISTRATION_PORTAL_IP     the container's address there -- the same
+#                              address as the portal settings' "Portal
+#                              address" (e.g. 10.99.0.1)
+#   REGISTRATION_DOCKER_GATEWAY  an unused address in the subnet that Docker
+#                              reserves as the network's gateway (nothing
+#                              answers on it, and the network is internal,
+#                              so nothing routes through it), e.g. 10.99.0.254
+#
+# The network is `internal`: Docker gives the container no default route
+# through it, so the app's own outbound traffic is unchanged, and nothing on
+# the registration VLAN is routed anywhere.
+
+services:
+  app:
+    networks:
+      abyssal: {}
+      registration:
+        ipv4_address: ${REGISTRATION_PORTAL_IP:?set REGISTRATION_PORTAL_IP in .env}
+    cap_add:
+      - NET_RAW
+      - NET_BIND_SERVICE
+
+networks:
+  registration:
+    driver: macvlan
+    internal: true
+    driver_opts:
+      parent: ${REGISTRATION_PARENT:?set REGISTRATION_PARENT in .env, e.g. eno1.99}
+    ipam:
+      config:
+        - subnet: ${REGISTRATION_SUBNET:?set REGISTRATION_SUBNET in .env}
+          gateway: ${REGISTRATION_DOCKER_GATEWAY:?set REGISTRATION_DOCKER_GATEWAY in .env}

@@ -1,7 +1,7 @@
 //! Persistence for Panopticon's embedded RADIUS server (phase 5): the NAS
 //! clients it accepts requests from and the sessions it accounts.
 
-use abyssal_core::{RadiusClient, RadiusSession};
+use abyssal_core::{CoaMode, RadiusClient, RadiusSession};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -21,6 +21,8 @@ struct ClientRow {
     nas_address: String,
     shared_secret_encrypted: String,
     enabled: bool,
+    coa_mode: String,
+    coa_port: u16,
     created_at: NaiveDateTime,
 }
 
@@ -32,6 +34,8 @@ impl From<ClientRow> for RadiusClient {
             nas_address: r.nas_address,
             shared_secret_encrypted: r.shared_secret_encrypted,
             enabled: r.enabled,
+            coa_mode: r.coa_mode.parse().unwrap_or_default(),
+            coa_port: r.coa_port,
             created_at: utc(r.created_at),
         }
     }
@@ -42,16 +46,21 @@ pub async fn create_client(
     name: &str,
     nas_address: &str,
     shared_secret_encrypted: &str,
+    coa_mode: CoaMode,
+    coa_port: u16,
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO panopticon_radius_clients (id, name, nas_address, shared_secret_encrypted) \
-         VALUES (?, ?, ?, ?)",
+        "INSERT INTO panopticon_radius_clients \
+         (id, name, nas_address, shared_secret_encrypted, coa_mode, coa_port) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(name)
     .bind(nas_address)
     .bind(shared_secret_encrypted)
+    .bind(coa_mode.as_str())
+    .bind(coa_port)
     .execute(pool)
     .await?;
     Ok(id)
@@ -85,6 +94,22 @@ pub async fn set_client_enabled(pool: &DbPool, id: Uuid, enabled: bool) -> anyho
     Ok(())
 }
 
+/// Sets how (and on which port) Panopticon pushes re-authorizations to a NAS.
+pub async fn set_client_coa(
+    pool: &DbPool,
+    id: Uuid,
+    coa_mode: CoaMode,
+    coa_port: u16,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE panopticon_radius_clients SET coa_mode = ?, coa_port = ? WHERE id = ?")
+        .bind(coa_mode.as_str())
+        .bind(coa_port)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn delete_client(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
     sqlx::query("DELETE FROM panopticon_radius_clients WHERE id = ?")
         .bind(id.to_string())
@@ -109,6 +134,8 @@ struct SessionRow {
     last_seen_at: NaiveDateTime,
     stopped_at: Option<NaiveDateTime>,
     terminate_cause: Option<String>,
+    last_coa_at: Option<NaiveDateTime>,
+    last_coa_result: Option<String>,
 }
 
 impl From<SessionRow> for RadiusSession {
@@ -126,6 +153,8 @@ impl From<SessionRow> for RadiusSession {
             last_seen_at: utc(r.last_seen_at),
             stopped_at: r.stopped_at.map(utc),
             terminate_cause: r.terminate_cause,
+            last_coa_at: r.last_coa_at.map(utc),
+            last_coa_result: r.last_coa_result,
         }
     }
 }
@@ -225,4 +254,73 @@ pub async fn prune_sessions_older_than(
         .execute(pool)
         .await?;
     Ok(r.rows_affected())
+}
+
+/// A MAC's sessions with no Stop recorded, newest first -- the ones a
+/// re-authorization targets. Capped: a NAS that never sends Stop shouldn't
+/// make one change fan out to every session the MAC ever had.
+pub async fn open_sessions_for_mac(
+    pool: &DbPool,
+    mac: &str,
+    limit: u32,
+) -> anyhow::Result<Vec<RadiusSession>> {
+    let rows: Vec<SessionRow> = sqlx::query_as(
+        "SELECT * FROM panopticon_radius_sessions \
+         WHERE LOWER(mac_address) = LOWER(?) AND stopped_at IS NULL \
+         ORDER BY last_seen_at DESC LIMIT ?",
+    )
+    .bind(mac)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+pub async fn find_session(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<RadiusSession>> {
+    let row: Option<SessionRow> =
+        sqlx::query_as("SELECT * FROM panopticon_radius_sessions WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(Into::into))
+}
+
+/// Records the latest CoA/Disconnect sent for a session and its outcome.
+/// `stopped_cause` closes the session too (the NAS said it no longer exists,
+/// or acknowledged a Disconnect).
+pub async fn record_coa_result(
+    pool: &DbPool,
+    id: Uuid,
+    result: &str,
+    stopped_cause: Option<&str>,
+) -> anyhow::Result<()> {
+    let result: String = result.chars().take(128).collect();
+    sqlx::query(
+        "UPDATE panopticon_radius_sessions \
+         SET last_coa_at = CURRENT_TIMESTAMP(6), last_coa_result = ?, \
+             stopped_at = IF(? IS NULL, stopped_at, COALESCE(stopped_at, CURRENT_TIMESTAMP(6))), \
+             terminate_cause = COALESCE(?, terminate_cause) \
+         WHERE id = ?",
+    )
+    .bind(result)
+    .bind(stopped_cause)
+    .bind(stopped_cause)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Every MAC with an open accounted session -- the devices whose access
+/// RADIUS controls, which the policy engine can enforce through RADIUS.
+pub async fn macs_with_open_sessions(
+    pool: &DbPool,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT LOWER(mac_address) FROM panopticon_radius_sessions \
+         WHERE stopped_at IS NULL AND mac_address IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(m,)| m).collect())
 }

@@ -122,6 +122,26 @@ pub async fn find_by_id(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<Enforc
 /// The in-effect action for a port, if any -- used to block stacking a second
 /// enforcement on an already-enforced port, and to find what to release. An
 /// `Active` or `RevertFailed` row counts as in-effect; terminal rows don't.
+/// The in-effect action on a port, by its label (what a device's SNMP
+/// location records) rather than ifIndex -- used by the RADIUS server to keep
+/// a re-authenticating device on a quarantined port in quarantine.
+pub async fn find_in_effect_for_port_label(
+    pool: &DbPool,
+    switch_id: Uuid,
+    port_label: &str,
+) -> anyhow::Result<Option<EnforcementAction>> {
+    let row: Option<ActionRow> = sqlx::query_as(
+        "SELECT * FROM panopticon_enforcement_actions \
+         WHERE switch_id = ? AND port_label = ? AND state IN ('active', 'revert_failed') \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(switch_id.to_string())
+    .bind(port_label)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(Into::into))
+}
+
 pub async fn find_in_effect_for_port(
     pool: &DbPool,
     switch_id: Uuid,

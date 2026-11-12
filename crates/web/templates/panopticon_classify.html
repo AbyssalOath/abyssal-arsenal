@@ -5,9 +5,39 @@
 
 <div class="card">
   <p style="color:var(--text-muted); margin-top:0;">
-    Classifying <strong>{{ ip_address }}</strong>. This is purely advisory --
-    nothing in Panopticon enforces access based on it yet.
+    Classifying <strong>{{ ip_address }}</strong>. The trust state decides network access when NAC is in use
+    (the RADIUS server and auto-enforcement rules); the device type can scope enforcement rules.
+    {% if type_is_auto %}The current type was set automatically; choosing another one makes it yours, and the
+    classifier won't change it again.{% endif %}
   </p>
+  {% match suggestion %}
+  {% when Some with (s) %}
+  <div class="info-banner" style="margin-bottom:12px;">
+    <strong>Suggested: {{ s.type_label }}</strong>{% if !s.os.is_empty() %} &middot; {{ s.os }}{% endif %}
+    &middot; {{ s.confidence }} confidence
+    <ul style="margin:6px 0 0;">
+      {% for r in s.reasons %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+    <p style="margin:6px 0 0; color:var(--text-muted);">
+      {% if auto_classify_on %}Automatic classification is on: suggestions of medium confidence or better are
+      applied to unclassified devices.{% else %}Automatic classification is off (Settings), so this is only a
+      suggestion.{% endif %}
+    </p>
+  </div>
+  {% when None %}
+  <p style="color:var(--text-muted);">No suggestion: nothing known about this device (DHCP fingerprint, open ports,
+  MAC vendor, hostname) points to a type.</p>
+  {% endmatch %}
+  {% if !fingerprint.is_empty() %}
+  <details style="margin-bottom:12px;">
+    <summary>DHCP fingerprint</summary>
+    <table>
+      <tbody>
+        {% for (k, v) in fingerprint %}<tr><th>{{ k }}</th><td><code>{{ v }}</code></td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
   <form method="post" action="/arsenals/panopticon/devices/{{ device_id }}/classify">
     <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
 
@@ -34,5 +64,50 @@
     </div>
   </form>
 </div>
+
+{% if can_enforce %}
+<div class="card">
+  <h3>Enforce through RADIUS</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Quarantine or block this device without writing to its switch: the RADIUS decision sends it to the quarantine
+    VLAN or rejects it, and a CoA applies it now. For devices whose access RADIUS controls.
+  </p>
+  {% if mac.is_empty() %}
+  <p>This device has no MAC on record, so RADIUS can't identify it.</p>
+  {% else %}
+  {% if !has_radius_session %}
+  <div class="warning-banner">No open RADIUS session for <code>{{ mac }}</code>: an action applies at its next RADIUS
+    login, and does nothing if its port isn't RADIUS-controlled.</div>
+  {% endif %}
+  {% match device_action %}
+  {% when Some with (a) %}
+  <p><strong>{{ a.kind_label }}</strong> in effect since {{ a.created_at }}{% if a.is_timed %}, until {{ a.expires_at }}{% else %}, permanently{% endif %}
+    (by {{ a.created_by }}){% if !a.reason.is_empty() %}: {{ a.reason }}{% endif %}.</p>
+  <form method="post" action="/arsenals/panopticon/enforcement/device-release">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <input type="hidden" name="action_id" value="{{ a.id }}">
+    <input type="hidden" name="return_to" value="/arsenals/panopticon/devices/{{ device_id }}/classify">
+    <button type="submit" class="btn-secondary">Release</button>
+  </form>
+  {% when None %}
+  <form method="post" action="/arsenals/panopticon/devices/{{ device_id }}/radius-enforce">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="enf-kind">Action</label>
+    <select id="enf-kind" name="kind" style="max-width:360px;">
+      <option value="quarantine">Quarantine (quarantine VLAN)</option>
+      <option value="disable">Block (reject at RADIUS)</option>
+    </select>
+    <label for="enf-timeout">Auto-revert (minutes; blank = default, 0 = permanent)</label>
+    <input type="number" id="enf-timeout" name="timeout_minutes" min="0" max="43200" style="max-width:160px;" placeholder="default">
+    <label for="enf-reason">Reason</label>
+    <input type="text" id="enf-reason" name="reason" maxlength="500" style="max-width:480px;">
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn-warning">Enforce</button>
+    </div>
+  </form>
+  {% endmatch %}
+  {% endif %}
+</div>
+{% endif %}
 
 {% endblock %}

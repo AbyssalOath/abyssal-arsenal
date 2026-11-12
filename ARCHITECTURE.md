@@ -1219,7 +1219,10 @@ below for what that implies for toggling them).
 - **Panopticon NAC policy sweep** (`abyssal_web::spawn_panopticon_policy_sweep`,
   every ~2 min, NAC phase 4): the auto-enforcement engine -- lets enforcement
   fire without a human. Evaluates the ordered `panopticon_policy_rules` (trigger:
-  `untrusted` / `new_unknown`; action: disable/quarantine; optional subnet /
+  `untrusted` / `new_unknown`, or a security signal -- `ids_alert` (Scourge, by
+  the flow's source address), `security_event` (open Thanatos events) or
+  `posture_failing` (latest Cadavault score), each with a per-rule threshold,
+  0.2.7 N1; action: disable/quarantine; optional subnet /
   switch / device-type scope; first match wins) against every device the poll has
   located behind a port, and acts via the same `panopticon_enforcement::apply`
   path as the manual UI. Deliberately a decoupled stateful sweep, not a hook on
@@ -1230,7 +1233,21 @@ below for what that implies for toggling them).
   already-enforced port or re-acts within the post-action cooldown
   (`panopticon.auto_enforce_cooldown_minutes`), which is what makes an operator's
   manual release of a policy action stick. Policy actions auto-revert and are
-  audited exactly like manual ones, attributed to the firing rule.
+  audited exactly like manual ones, attributed to the firing rule and (for a
+  signal trigger) the signal. Host-keyed signals reach a device through
+  `panopticon_devices.host_id`, set whenever an agent reports the address as one
+  of its own interfaces and cleared when the device's MAC changes. Two guards no
+  rule passes: the control plane's own server is never auto-enforced (it would
+  lose the switch access needed to undo it), and neither is a likely uplink -- a
+  port facing another polled switch over LLDP/CDP, or with more located devices
+  than `panopticon.auto_enforce_max_devices_per_port`. **Enforcement through
+  RADIUS** (0.2.7, `abyssal_web::panopticon_device_enforcement`): the sweep
+  covers every recent device with a MAC; when the port can't be enforced over
+  SNMP (not located, uplink, unresolved, or not opted in) and the device has
+  an open RADIUS session, it records a device action against the MAC
+  (`panopticon_device_enforcements`), which the RADIUS decision honors
+  (quarantine VLAN or reject) and a CoA applies -- no switch write. Device
+  actions expire in the same revert sweep.
 - **Panopticon traffic rollup** (`abyssal_web::spawn_panopticon_traffic_rollup`,
   every hour): turns those raw counter rows into actual bandwidth graphs.
   Consecutive raw samples become rate points (bits/sec) in
@@ -1269,7 +1286,10 @@ below for what that implies for toggling them).
   startup-time resource acquisition, so toggling this takes a server
   restart, the same posture a raw syslog UDP/TCP receiver would need.
 - **Panopticon ARP listener** (`abyssal_web::spawn_panopticon_arp_listener`,
-  gated by `panopticon.arp_enabled` + a non-empty `panopticon.arp_interface`):
+  gated by `panopticon.arp_enabled` + a non-empty `panopticon.arp_interface`;
+  the same capture also parses DHCP DISCOVER/REQUEST/INFORM into
+  `panopticon_dhcp_fingerprints` -- client MAC, options 55/60/12 -- for device
+  classification, 0.2.7 N3):
   raw `AF_PACKET` capture via `pnet_datalink`, the one place in this
   entire workspace that needs elevated privileges (`CAP_NET_RAW`) --
   every other arsenal, including the rest of Panopticon, runs as an
@@ -1286,6 +1306,25 @@ below for what that implies for toggling them).
   on socket reads. Same Docker-bridge-vs-physical-LAN caveat the manual
   discovery scan's own page already states, and the same
   restart-to-toggle posture as the mDNS listener.
+- **Panopticon classification sweep** (`abyssal_web::spawn_panopticon_classify_sweep`,
+  every 10 min, 0.2.7 N3, `panopticon.auto_classify_enabled`, off by default):
+  `abyssal_core::classify::suggest` weighs a device's DHCP fingerprint, open
+  ports, MAC vendor, hostname and managed host's OS into a suggested type, OS
+  family and confidence with reasons (shown on the classify page either way).
+  The sweep applies medium-or-better suggestions only to devices still
+  `unknown` or classified by itself (`device_type_auto`); the UPDATE re-checks
+  that, so a person's classification is never overwritten.
+- **Panopticon registration portal** (`abyssal_web::spawn_panopticon_portal`,
+  0.2.7 N5, `panopticon.portal_enabled`, off by default; network settings apply
+  at startup): on the registration VLAN (a macvlan attachment,
+  `deploy/registration/`), runs `abyssal_portal_net`'s DHCP server and captive
+  DNS bound to that interface only, and a separate portal web server on the
+  portal address (port 80) that serves only `/register` and redirects
+  everything else there. Guests are identified by their DHCP lease; requests
+  land in `panopticon_registrations` (sponsor or self-service), and approvals,
+  revocations and expiries (a 1-minute sweep) send a CoA so RADIUS moves the
+  device between the registration and guest VLANs. The main router answers 404
+  to the registration subnet (`panopticon_portal::admin_guard`).
 - **Panopticon RADIUS server** (`abyssal_web::spawn_panopticon_radius`, NAC
   phase 5, off by default): two UDP listeners (1812 auth, 1813 accounting) that
   make Panopticon the access-control decision point for 802.1X MAC Auth Bypass.
@@ -1302,7 +1341,24 @@ below for what that implies for toggling them).
   store, a request carrying a password (User-Password/CHAP-Password) or
   `EAP-Message` is rejected rather than authorized on its MAC alone, and the MAB
   MAC must be consistent (a User-Name MAC must match Calling-Station-Id) -- full
-  user auth belongs with FreeRADIUS. Both ports are >1024, so no elevated
+  user auth belongs with FreeRADIUS. Enforcement in effect on the device's
+  located port wins over its trust (quarantine VLAN, or reject for a disabled
+  port), so a re-authentication can't walk a device out of quarantine.
+  **Change of Authorization** (0.2.7 N2, `abyssal_web::panopticon_coa`): when a
+  device's trust changes, or a quarantine on its port is applied or released,
+  the control plane sends each of its open accounted sessions' NAS an RFC 5176
+  Disconnect-Request or a Cisco `subscriber:command=reauthenticate`
+  CoA-Request (per NAS client `coa_mode`, off by default; `coa_port`, default
+  3799), from an ephemeral UDP port, signed with the NAS's secret, retried, and
+  with the ACK/NAK verified against the request; the result is stored on the
+  session and audited (`NETWORK_RADIUS_REAUTHORIZED`). **802.1X through
+  FreeRADIUS** (0.2.7 N4, `abyssal_web::panopticon_freeradius`,
+  `deploy/freeradius/`): with `FREERADIUS_API_TOKEN` set, an optional
+  FreeRADIUS container in the app's network namespace answers RADIUS instead
+  (this listener doesn't start), authenticates EAP-TLS, and calls back over
+  loopback-only, token-authenticated `/internal/radius/*` endpoints for the
+  admission decision (MAB and post-EAP, the same `decide_for_mac`), NAS
+  secrets (dynamic clients) and accounting. Both ports are >1024, so no elevated
   privileges, unlike the ARP listener.
 - **Dashboard health sweep** (`abyssal_web::spawn_health_sweep`, every 5
   minutes): dispatches `AgentOperation::FailedServices` (Mortiscope) to

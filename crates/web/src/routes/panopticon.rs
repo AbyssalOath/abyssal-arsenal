@@ -4,8 +4,11 @@ use std::str::FromStr;
 use abyssal_audit::{Actor, AuditAction, AuditEvent, AuditOutcome};
 use abyssal_core::settings::{
     PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES, PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES_DEFAULT,
-    PANOPTICON_AUTO_ENFORCE_MODE, PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES,
-    PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES_DEFAULT, PANOPTICON_ENFORCEMENT_ENABLED,
+    PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT,
+    PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT_DEFAULT, PANOPTICON_AUTO_ENFORCE_MODE,
+    PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES, PANOPTICON_AUTO_ENFORCE_NEW_WINDOW_MINUTES_DEFAULT,
+    PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES,
+    PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES_DEFAULT, PANOPTICON_ENFORCEMENT_ENABLED,
     PANOPTICON_ENFORCEMENT_REVERT_MINUTES, PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT,
     PANOPTICON_INVENTORY_RENDER_BUDGET, PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT,
     PANOPTICON_QUARANTINE_VLAN, PANOPTICON_QUARANTINE_VLAN_DEFAULT, PANOPTICON_RADIUS_ACCT_PORT,
@@ -19,9 +22,9 @@ use abyssal_core::settings::{
     PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
 };
 use abyssal_core::{
-    AppError, DeviceType, EnforcementAction, EnforcementKind, EnforcementState, IfAdminStatus,
-    IfOperStatus, MacroScope, NetworkDevice, Permission, PolicyMode, PolicyTrigger,
-    SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
+    AppError, CoaMode, DeviceType, EnforcementAction, EnforcementKind, EnforcementState,
+    IfAdminStatus, IfOperStatus, MacroScope, NetworkDevice, Permission, PolicyMode, PolicyTrigger,
+    Severity, SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
 };
 use abyssal_database::repo;
 use abyssal_database::repo::network_devices::GroupCount;
@@ -258,7 +261,12 @@ fn build_device_row(
         vendor,
         hostname: d.hostname,
         open_ports,
-        device_type_label: d.device_type.label().to_string(),
+        // "(auto)" marks a type the classifier set, not a person.
+        device_type_label: if d.device_type_auto && d.device_type != DeviceType::Unknown {
+            format!("{} (auto)", d.device_type.label())
+        } else {
+            d.device_type.label().to_string()
+        },
         device_type_value: d.device_type.as_str().to_string(),
         trust_label: d.trust_state.label().to_string(),
         trust_value: d.trust_state.as_str().to_string(),
@@ -1085,13 +1093,82 @@ pub async fn classify_form(
     )
     .await?;
 
+    let (suggestion, fingerprint) =
+        crate::panopticon_classify::suggest_for(&state.pool, &device).await;
+    // An unclassified device's form starts on a confident suggestion (saving
+    // the form then accepts it); a low-confidence one is only shown.
+    let preselect = match (&suggestion, device.device_type) {
+        (Some(s), DeviceType::Unknown)
+            if s.confidence >= abyssal_core::classify::Confidence::Medium =>
+        {
+            s.device_type
+        }
+        _ => device.device_type,
+    };
+    let fingerprint_rows = fingerprint
+        .map(|f| {
+            [
+                ("Vendor class (option 60)", f.vendor_class.clone()),
+                ("Parameter request list (option 55)", f.prl.clone()),
+                ("Hostname (option 12)", f.hostname.clone()),
+                (
+                    "Last seen",
+                    Some(crate::common::format_in_tz(
+                        f.last_seen_at(),
+                        &ctx.user.timezone,
+                    )),
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect()
+        })
+        .unwrap_or_default();
+    let auto_classify_on = repo::settings::get_bool(
+        &state.pool,
+        abyssal_core::settings::PANOPTICON_AUTO_CLASSIFY_ENABLED,
+        false,
+    )
+    .await?;
+
+    let mac = device
+        .mac_address
+        .clone()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let (has_radius_session, device_action) = if mac.is_empty() {
+        (false, None)
+    } else {
+        (
+            !repo::panopticon_radius::open_sessions_for_mac(&state.pool, &mac, 1)
+                .await?
+                .is_empty(),
+            repo::panopticon_device_enforcement::find_in_effect_for_mac(&state.pool, &mac)
+                .await?
+                .map(|a| device_enforcement_row(a, &ctx.user.timezone)),
+        )
+    };
+
     let tpl = PanopticonClassifyTemplate {
         base,
+        mac,
+        has_radius_session,
+        device_action,
+        can_enforce: ctx.has(Permission::NetworkNac),
         device_id: id.to_string(),
+        type_is_auto: device.device_type_auto && device.device_type != DeviceType::Unknown,
+        suggestion: suggestion.map(|s| crate::templates::ClassifySuggestionView {
+            type_label: s.device_type.label(),
+            os: s.os.unwrap_or_default().to_string(),
+            confidence: s.confidence.label(),
+            reasons: s.reasons,
+        }),
+        fingerprint: fingerprint_rows,
+        auto_classify_on,
         ip_address: device.ip_address,
         device_types: DeviceType::ALL
             .iter()
-            .map(|t| (t.as_str(), t.label(), *t == device.device_type))
+            .map(|t| (t.as_str(), t.label(), *t == preselect))
             .collect(),
         trust_states: TrustState::ALL
             .iter()
@@ -1136,7 +1213,36 @@ pub async fn classify_device(
         .await?
         .ok_or(AppError::NotFound)?;
 
-    repo::network_devices::classify(&state.pool, id, device_type, trust_state, notes).await?;
+    // The type stays the classifier's only if the person left it as it was;
+    // any other choice is theirs and the classifier won't touch it again.
+    let device_type_auto = device.device_type_auto && device_type == device.device_type;
+    repo::network_devices::classify(
+        &state.pool,
+        id,
+        device_type,
+        device_type_auto,
+        trust_state,
+        notes,
+    )
+    .await?;
+
+    // A trust change re-decides RADIUS admission: ask the NAS to
+    // re-authorize the device's sessions now rather than at its next login.
+    if trust_state != device.trust_state
+        && let Some(mac) = device.mac_address.clone()
+    {
+        crate::panopticon_coa::spawn_reauthorize_mac(
+            state.pool.clone(),
+            state.encryption_key.clone(),
+            mac,
+            format!(
+                "trust changed from {} to {}",
+                device.trust_state.as_str(),
+                trust_state.as_str()
+            ),
+            Some((ctx.user.id, ctx.user.username.clone())),
+        );
+    }
 
     abyssal_audit::record(
         &state.pool,
@@ -2643,7 +2749,7 @@ pub async fn enforce_apply(
     };
 
     let back = format!("/arsenals/panopticon/switches/{id}/traffic");
-    match crate::panopticon_enforcement::apply(&state.pool, state.encryption_key.as_deref(), &req)
+    match crate::panopticon_enforcement::apply(&state.pool, state.encryption_key.as_ref(), &req)
         .await
     {
         Ok(_) => Ok(Redirect::to(&back).into_response()),
@@ -2687,7 +2793,7 @@ pub async fn enforce_release(
 
     match crate::panopticon_enforcement::release(
         &state.pool,
-        state.encryption_key.as_deref(),
+        state.encryption_key.as_ref(),
         &action,
         crate::panopticon_enforcement::ReleaseBy::Operator {
             id: ctx.user.id,
@@ -2790,6 +2896,16 @@ pub async fn enforcement_show(
         host_context::current(&jar),
     )
     .await?;
+    let device_in_effect = repo::panopticon_device_enforcement::list_in_effect(&state.pool)
+        .await?
+        .into_iter()
+        .map(|a| device_enforcement_row(a, &tz))
+        .collect();
+    let device_history = repo::panopticon_device_enforcement::list_recent(&state.pool, 50)
+        .await?
+        .into_iter()
+        .map(|a| device_enforcement_row(a, &tz))
+        .collect();
     let tpl = crate::templates::PanopticonEnforcementTemplate {
         base,
         can_manage: ctx.has(Permission::NetworkNac),
@@ -2798,6 +2914,8 @@ pub async fn enforcement_show(
         revert_minutes,
         in_effect,
         history,
+        device_in_effect,
+        device_history,
         csrf_token: csrf_token.clone(),
     };
     let jar = match new_cookie {
@@ -2805,6 +2923,149 @@ pub async fn enforcement_show(
         None => jar,
     };
     Ok((jar, tpl).into_response())
+}
+
+fn device_enforcement_row(
+    a: abyssal_core::DeviceEnforcement,
+    tz: &str,
+) -> crate::templates::DeviceEnforcementRow {
+    let active = a.state == abyssal_core::EnforcementState::Active;
+    crate::templates::DeviceEnforcementRow {
+        id: a.id.to_string(),
+        mac: a.mac_address,
+        ip: a.device_ip.unwrap_or_default(),
+        kind_label: match a.kind {
+            EnforcementKind::Quarantine => "Quarantine (RADIUS)".into(),
+            EnforcementKind::Disable => "Block (RADIUS reject)".into(),
+        },
+        active,
+        is_timed: active && a.expires_at.is_some(),
+        expires_at: a
+            .expires_at
+            .map(|t| crate::common::format_in_tz(t, tz))
+            .unwrap_or_default(),
+        created_at: crate::common::format_in_tz(a.created_at, tz),
+        reverted_at: a
+            .reverted_at
+            .map(|t| crate::common::format_in_tz(t, tz))
+            .unwrap_or_default(),
+        created_by: a
+            .created_by_username
+            .unwrap_or_else(|| "policy".to_string()),
+        reason: a.reason.unwrap_or_default(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DeviceEnforceForm {
+    csrf_token: String,
+    kind: String,
+    /// Empty = the default auto-revert; `0` = permanent.
+    #[serde(default)]
+    timeout_minutes: String,
+    #[serde(default)]
+    reason: String,
+}
+
+/// Quarantines or blocks a device through RADIUS (no switch write), from
+/// its Classify page.
+pub async fn device_enforce(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<DeviceEnforceForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let device = repo::network_devices::find_by_id(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let mac = device.mac_address.clone().ok_or_else(|| {
+        AppError::Validation(
+            "This device has no MAC on record, so RADIUS can't identify it.".into(),
+        )
+    })?;
+    let kind: EnforcementKind = form
+        .kind
+        .parse()
+        .map_err(|_| AppError::Validation("Unknown action.".into()))?;
+    let timeout_minutes = match form.timeout_minutes.trim() {
+        "" => {
+            repo::settings::get_u32(
+                &state.pool,
+                PANOPTICON_ENFORCEMENT_REVERT_MINUTES,
+                PANOPTICON_ENFORCEMENT_REVERT_MINUTES_DEFAULT,
+            )
+            .await?
+        }
+        t => t
+            .parse::<u32>()
+            .ok()
+            .filter(|m| *m <= 43_200)
+            .ok_or_else(|| {
+                AppError::Validation("Auto-revert must be 0 to 43200 minutes.".into())
+            })?,
+    };
+    let reason = form.reason.trim();
+    if reason.chars().count() > 500 {
+        return Err(WebError(AppError::Validation(
+            "The reason is too long.".into(),
+        )));
+    }
+    let req = crate::panopticon_device_enforcement::DeviceEnforceRequest {
+        mac_address: mac.to_ascii_lowercase(),
+        device_ip: Some(device.ip_address.clone()),
+        kind,
+        reason: (!reason.is_empty()).then(|| reason.to_string()),
+        timeout_minutes,
+        origin: crate::panopticon_enforcement::EnforceOrigin::Operator {
+            id: ctx.user.id,
+            username: ctx.user.username.clone(),
+        },
+    };
+    crate::panopticon_device_enforcement::apply(&state.pool, state.encryption_key.clone(), &req)
+        .await
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    Ok(Redirect::to(&format!("/arsenals/panopticon/devices/{id}/classify")).into_response())
+}
+
+pub async fn device_enforce_release(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<EnforceActionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let action = repo::panopticon_device_enforcement::find_by_id(&state.pool, form.action_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    crate::panopticon_device_enforcement::release(
+        &state.pool,
+        state.encryption_key.clone(),
+        &action,
+        crate::panopticon_enforcement::ReleaseBy::Operator {
+            id: ctx.user.id,
+            username: ctx.user.username.clone(),
+        },
+    )
+    .await?;
+    let back = safe_return_to(&form.return_to, "/arsenals/panopticon/enforcement");
+    Ok(Redirect::to(&back).into_response())
+}
+
+pub async fn device_enforce_make_permanent(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<EnforceActionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    repo::panopticon_device_enforcement::make_permanent(&state.pool, form.action_id).await?;
+    let back = safe_return_to(&form.return_to, "/arsenals/panopticon/enforcement");
+    Ok(Redirect::to(&back).into_response())
 }
 
 // ---------------------------------------------------------------------
@@ -2844,6 +3105,18 @@ pub async fn policy_show(
         &state.pool,
         PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES,
         PANOPTICON_AUTO_ENFORCE_COOLDOWN_MINUTES_DEFAULT,
+    )
+    .await?;
+    let signal_window_minutes = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES,
+        PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES_DEFAULT,
+    )
+    .await?;
+    let max_devices_per_port = repo::settings::get_u32(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT,
+        PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT_DEFAULT,
     )
     .await?;
     let global_enforcement_on =
@@ -2889,7 +3162,7 @@ pub async fn policy_show(
                 priority: r.priority,
                 name: r.name.clone(),
                 enabled: r.enabled,
-                trigger_label: r.trigger.label().to_string(),
+                trigger_label: r.condition_label(),
                 action_label: r.action.label().to_string(),
                 scope,
                 timeout_label: policy_timeout_label(r.timeout_minutes),
@@ -2913,6 +3186,21 @@ pub async fn policy_show(
         .iter()
         .map(|t| (t.as_str().to_string(), t.label().to_string()))
         .collect();
+    let severities = [
+        Severity::Low,
+        Severity::Medium,
+        Severity::High,
+        Severity::Critical,
+    ]
+    .iter()
+    .map(|s| {
+        (
+            s.as_key().to_string(),
+            format!("{s} or worse"),
+            *s == abyssal_core::policy::DEFAULT_SIGNAL_MIN_SEVERITY,
+        )
+    })
+    .collect();
     let actions = vec![
         (
             EnforcementKind::Quarantine.as_str().to_string(),
@@ -2951,10 +3239,14 @@ pub async fn policy_show(
         current_mode: current_mode.as_str().to_string(),
         new_window_minutes,
         cooldown_minutes,
+        signal_window_minutes,
+        max_devices_per_port,
         global_enforcement_on,
         quarantine_vlan_set: quarantine_vlan > 0,
         rules,
         triggers,
+        severities,
+        default_posture_below: abyssal_core::policy::DEFAULT_POSTURE_BELOW,
         actions,
         device_types,
         switches: switch_opts,
@@ -2974,6 +3266,18 @@ pub struct PolicyModeForm {
     new_window_minutes: u32,
     #[serde(default)]
     cooldown_minutes: u32,
+    #[serde(default = "default_signal_window")]
+    signal_window_minutes: u32,
+    #[serde(default = "default_max_devices_per_port")]
+    max_devices_per_port: u32,
+}
+
+fn default_signal_window() -> u32 {
+    PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES_DEFAULT
+}
+
+fn default_max_devices_per_port() -> u32 {
+    PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT_DEFAULT
 }
 
 pub async fn policy_set_mode(
@@ -3011,6 +3315,30 @@ pub async fn policy_set_mode(
         Some(ctx.user.id),
     )
     .await?;
+    if !(1..=10_080).contains(&form.signal_window_minutes) {
+        return Err(WebError(AppError::Validation(
+            "The signal window must be 1 to 10080 minutes.".into(),
+        )));
+    }
+    if !(1..=64).contains(&form.max_devices_per_port) {
+        return Err(WebError(AppError::Validation(
+            "Max devices per port must be 1 to 64.".into(),
+        )));
+    }
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES,
+        serde_json::json!(form.signal_window_minutes),
+        Some(ctx.user.id),
+    )
+    .await?;
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_AUTO_ENFORCE_MAX_DEVICES_PER_PORT,
+        serde_json::json!(form.max_devices_per_port),
+        Some(ctx.user.id),
+    )
+    .await?;
 
     abyssal_audit::record(
         &state.pool,
@@ -3024,6 +3352,8 @@ pub async fn policy_set_mode(
                 "mode": mode.as_str(),
                 "new_window_minutes": form.new_window_minutes,
                 "cooldown_minutes": form.cooldown_minutes,
+                "signal_window_minutes": form.signal_window_minutes,
+                "max_devices_per_port": form.max_devices_per_port,
             })),
     )
     .await?;
@@ -3037,6 +3367,10 @@ pub struct PolicyRuleForm {
     name: String,
     trigger: String,
     action: String,
+    #[serde(default)]
+    min_severity: String,
+    #[serde(default)]
+    posture_below: String,
     #[serde(default)]
     subnet: String,
     #[serde(default)]
@@ -3071,6 +3405,28 @@ pub async fn policy_create_rule(
         .action
         .parse()
         .map_err(|_| AppError::Validation("Unknown action.".into()))?;
+
+    // Thresholds are stored only for the triggers that use them.
+    let min_severity = if trigger.uses_severity() {
+        Some(
+            Severity::from_key(form.min_severity.trim())
+                .ok_or_else(|| AppError::Validation("Unknown severity.".into()))?,
+        )
+    } else {
+        None
+    };
+    let posture_below = if trigger == PolicyTrigger::PostureFailing {
+        match form.posture_below.trim().parse::<u8>() {
+            Ok(n @ 1..=100) => Some(n),
+            _ => {
+                return Err(WebError(AppError::Validation(
+                    "The posture threshold must be a score from 1 to 100.".into(),
+                )));
+            }
+        }
+    } else {
+        None
+    };
 
     let subnet = form.subnet.trim();
     let subnet = (!subnet.is_empty()).then_some(subnet);
@@ -3111,6 +3467,8 @@ pub async fn policy_create_rule(
             name,
             trigger,
             action,
+            min_severity,
+            posture_below,
             subnet,
             switch_id,
             device_type,
@@ -3254,12 +3612,25 @@ pub async fn radius_show(
             name: c.name,
             nas_address: c.nas_address,
             enabled: c.enabled,
+            coa_label: c.coa_mode.label().to_string(),
+            coa_port: c.coa_port,
+            coa_modes: coa_mode_options(c.coa_mode),
         })
         .collect();
     let sessions = repo::panopticon_radius::list_recent_sessions(&state.pool, 100)
         .await?
         .into_iter()
         .map(|s| crate::templates::RadiusSessionRow {
+            id: s.id.to_string(),
+            last_coa: match (&s.last_coa_result, s.last_coa_at) {
+                (Some(r), Some(at)) => {
+                    format!(
+                        "{r} ({})",
+                        crate::common::format_in_tz(at, &ctx.user.timezone)
+                    )
+                }
+                _ => String::new(),
+            },
             mac: s.mac_address.unwrap_or_default(),
             username: s.username.unwrap_or_default(),
             nas_ip: s.nas_ip.unwrap_or_default(),
@@ -3303,11 +3674,17 @@ pub async fn radius_show(
             &[
                 ("accept", "Accept (no VLAN)"),
                 ("guest", "Guest VLAN"),
+                ("register", "Registration portal"),
                 ("reject", "Reject"),
             ],
         ),
         clients,
         sessions,
+        new_client_coa_modes: coa_mode_options(CoaMode::Disconnect),
+        freeradius_enabled: crate::panopticon_freeradius::enabled(),
+        freeradius_last_call: crate::panopticon_freeradius::last_call()
+            .map(|t| crate::common::format_in_tz(t, &ctx.user.timezone))
+            .unwrap_or_default(),
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -3354,7 +3731,10 @@ pub async fn radius_set_settings(
             "Invalid untrusted action.".into(),
         )));
     }
-    if !matches!(form.unknown_action.as_str(), "accept" | "guest" | "reject") {
+    if !matches!(
+        form.unknown_action.as_str(),
+        "accept" | "guest" | "register" | "reject"
+    ) {
         return Err(WebError(AppError::Validation(
             "Invalid unknown action.".into(),
         )));
@@ -3442,6 +3822,38 @@ pub struct RadiusClientForm {
     name: String,
     nas_address: String,
     shared_secret: String,
+    #[serde(default)]
+    coa_mode: String,
+    #[serde(default)]
+    coa_port: String,
+}
+
+/// (key, label, selected) for a CoA mode select.
+fn coa_mode_options(current: CoaMode) -> Vec<(String, String, bool)> {
+    CoaMode::ALL
+        .iter()
+        .map(|m| (m.as_str().to_string(), m.label().to_string(), *m == current))
+        .collect()
+}
+
+/// Parses the CoA mode and port fields (blank port = RFC 5176's 3799).
+fn parse_coa(mode: &str, port: &str) -> Result<(CoaMode, u16), WebError> {
+    let mode: CoaMode = if mode.trim().is_empty() {
+        CoaMode::Off
+    } else {
+        mode.trim()
+            .parse()
+            .map_err(|()| AppError::Validation("Unknown CoA mode.".into()))?
+    };
+    let port = match port.trim() {
+        "" => 3799,
+        p => p
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p > 0)
+            .ok_or_else(|| AppError::Validation("The CoA port must be 1 to 65535.".into()))?,
+    };
+    Ok((mode, port))
 }
 
 pub async fn radius_create_client(
@@ -3479,8 +3891,16 @@ pub async fn radius_create_client(
         .encrypt(secret)
         .map_err(|e| AppError::Validation(format!("Failed to encrypt shared secret: {e}")))?;
 
-    repo::panopticon_radius::create_client(&state.pool, name, nas_address, &secret_encrypted)
-        .await?;
+    let (coa_mode, coa_port) = parse_coa(&form.coa_mode, &form.coa_port)?;
+    repo::panopticon_radius::create_client(
+        &state.pool,
+        name,
+        nas_address,
+        &secret_encrypted,
+        coa_mode,
+        coa_port,
+    )
+    .await?;
 
     Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
 }
@@ -3506,6 +3926,70 @@ pub async fn radius_client_set_enabled(
 }
 
 #[derive(Deserialize)]
+pub struct RadiusClientCoaForm {
+    csrf_token: String,
+    coa_mode: String,
+    #[serde(default)]
+    coa_port: String,
+}
+
+pub async fn radius_client_set_coa(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RadiusClientCoaForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let (coa_mode, coa_port) = parse_coa(&form.coa_mode, &form.coa_port)?;
+    repo::panopticon_radius::set_client_coa(&state.pool, id, coa_mode, coa_port).await?;
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RadiusSessionReauthForm {
+    csrf_token: String,
+}
+
+/// Re-authorizes one session now (the "Reauthorize" button). Waits for the
+/// NAS's answer (a few seconds at most), which the sessions table then shows.
+pub async fn radius_session_reauthorize(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RadiusSessionReauthForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let Some(key) = &state.encryption_key else {
+        return Err(WebError(AppError::Validation(
+            "ENCRYPTION_KEY isn't configured, so NAS secrets can't be read.".into(),
+        )));
+    };
+    let session = repo::panopticon_radius::find_session(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let requester = Some((ctx.user.id, ctx.user.username.clone()));
+    if crate::panopticon_coa::reauthorize_session(
+        &state.pool,
+        key,
+        &session,
+        "requested by an operator",
+        &requester,
+    )
+    .await
+    .is_none()
+    {
+        return Err(WebError(AppError::Validation(
+            "CoA is off for this session's NAS client. Choose a CoA mode for it first.".into(),
+        )));
+    }
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
 pub struct RadiusClientDeleteForm {
     csrf_token: String,
 }
@@ -3521,6 +4005,285 @@ pub async fn radius_client_delete(
     require_csrf(&jar, &form.csrf_token)?;
     repo::panopticon_radius::delete_client(&state.pool, id).await?;
     Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+// ---------------------------------------------------------------------
+// Registration portal (0.2.7 N5)
+// ---------------------------------------------------------------------
+
+pub async fn portal_show(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+) -> Result<Response, WebError> {
+    use abyssal_core::settings::{
+        PANOPTICON_PORTAL_ACCESS_HOURS, PANOPTICON_PORTAL_ACCESS_HOURS_DEFAULT,
+        PANOPTICON_PORTAL_ENABLED, PANOPTICON_PORTAL_MODE, PANOPTICON_PORTAL_TERMS,
+        PANOPTICON_PORTAL_VLAN, PANOPTICON_PORTAL_VLAN_DEFAULT,
+    };
+    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+    let pool = &state.pool;
+    let enabled = repo::settings::get_bool(pool, PANOPTICON_PORTAL_ENABLED, false).await?;
+    let net = crate::panopticon_portal::NetSettings::load(pool).await;
+    let config_error = if enabled {
+        net.dhcp_config().err().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let unknown_action =
+        repo::settings::get_string(pool, PANOPTICON_RADIUS_UNKNOWN_ACTION, "accept").await?;
+    let tz = &ctx.user.timezone;
+    let registrations = repo::panopticon_registrations::list(pool, 200)
+        .await?
+        .into_iter()
+        .map(|r| crate::templates::RegistrationRow {
+            status_key: r.status.as_str(),
+            status_label: r.status.label(),
+            requested: crate::common::format_in_tz(r.requested_at, tz),
+            expires: r
+                .expires_at
+                .map(|t| crate::common::format_in_tz(t, tz))
+                .unwrap_or_default(),
+            decided_by: r.decided_by.unwrap_or_default(),
+            email: r.email.unwrap_or_default(),
+            name: r.name,
+            mac: r.mac_address,
+        })
+        .collect();
+    let running = crate::panopticon_portal::status();
+
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::PanopticonPortalTemplate {
+        base,
+        can_manage: ctx.has(Permission::NetworkNac),
+        csrf_token: csrf_token.clone(),
+        enabled,
+        vlan: repo::settings::get_u32(pool, PANOPTICON_PORTAL_VLAN, PANOPTICON_PORTAL_VLAN_DEFAULT)
+            .await?,
+        address: net.address,
+        dhcp_start: net.dhcp_start,
+        dhcp_end: net.dhcp_end,
+        lease_seconds: net.lease_seconds,
+        mode_self: repo::settings::get_string(pool, PANOPTICON_PORTAL_MODE, "sponsor").await?
+            == "self",
+        access_hours: repo::settings::get_u32(
+            pool,
+            PANOPTICON_PORTAL_ACCESS_HOURS,
+            PANOPTICON_PORTAL_ACCESS_HOURS_DEFAULT,
+        )
+        .await?,
+        terms: repo::settings::get_string(pool, PANOPTICON_PORTAL_TERMS, "").await?,
+        guest_vlan: repo::settings::get_u32(
+            pool,
+            PANOPTICON_RADIUS_GUEST_VLAN,
+            PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT,
+        )
+        .await?,
+        unknown_action_is_register: unknown_action == "register",
+        running: running.is_some(),
+        running_interface: running.as_ref().map(|r| r.0.clone()).unwrap_or_default(),
+        running_address: running
+            .as_ref()
+            .map(|r| r.1.to_string())
+            .unwrap_or_default(),
+        active_leases: running.map(|r| r.2).unwrap_or(0),
+        config_error,
+        registrations,
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PortalSettingsForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    vlan: u32,
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    dhcp_start: String,
+    #[serde(default)]
+    dhcp_end: String,
+    #[serde(default)]
+    lease_seconds: u32,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    access_hours: u32,
+    #[serde(default)]
+    terms: String,
+}
+
+pub async fn portal_set_settings(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<PortalSettingsForm>,
+) -> Result<Response, WebError> {
+    use abyssal_core::settings::{
+        PANOPTICON_PORTAL_ACCESS_HOURS, PANOPTICON_PORTAL_ADDRESS, PANOPTICON_PORTAL_DHCP_END,
+        PANOPTICON_PORTAL_DHCP_START, PANOPTICON_PORTAL_ENABLED, PANOPTICON_PORTAL_LEASE_SECONDS,
+        PANOPTICON_PORTAL_MODE, PANOPTICON_PORTAL_TERMS, PANOPTICON_PORTAL_VLAN,
+    };
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let invalid = |m: String| WebError(AppError::Validation(m));
+
+    let net = crate::panopticon_portal::NetSettings {
+        address: form.address.trim().to_string(),
+        dhcp_start: form.dhcp_start.trim().to_string(),
+        dhcp_end: form.dhcp_end.trim().to_string(),
+        lease_seconds: form.lease_seconds,
+    };
+    // Network settings must be complete and sound to turn the portal on;
+    // half-filled ones may be saved while it's off.
+    let any_net = !(net.address.is_empty() && net.dhcp_start.is_empty() && net.dhcp_end.is_empty());
+    if form.enabled || any_net {
+        net.dhcp_config()
+            .map_err(|e| invalid(format!("Portal network: {e}.")))?;
+    }
+    if form.vlan > 4094 {
+        return Err(invalid(
+            "The registration VLAN must be 1 to 4094 (or 0 for none).".into(),
+        ));
+    }
+    if form.enabled && form.vlan == 0 {
+        return Err(invalid(
+            "Set the registration VLAN to run the portal.".into(),
+        ));
+    }
+    if !(1..=720).contains(&form.access_hours) {
+        return Err(invalid("Access must last 1 to 720 hours.".into()));
+    }
+    let mode = match form.mode.as_str() {
+        "self" | "sponsor" => form.mode.as_str(),
+        _ => return Err(invalid("Unknown approval mode.".into())),
+    };
+    let terms = form.terms.trim();
+    if terms.chars().count() > 5000 {
+        return Err(invalid(
+            "The terms of use are longer than 5000 characters.".into(),
+        ));
+    }
+
+    let uid = Some(ctx.user.id);
+    let pool = &state.pool;
+    repo::settings::set(
+        pool,
+        PANOPTICON_PORTAL_ENABLED,
+        serde_json::json!(form.enabled),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        pool,
+        PANOPTICON_PORTAL_VLAN,
+        serde_json::json!(form.vlan),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        pool,
+        PANOPTICON_PORTAL_ADDRESS,
+        serde_json::json!(net.address),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        pool,
+        PANOPTICON_PORTAL_DHCP_START,
+        serde_json::json!(net.dhcp_start),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        pool,
+        PANOPTICON_PORTAL_DHCP_END,
+        serde_json::json!(net.dhcp_end),
+        uid,
+    )
+    .await?;
+    repo::settings::set(
+        pool,
+        PANOPTICON_PORTAL_LEASE_SECONDS,
+        serde_json::json!(net.lease_seconds),
+        uid,
+    )
+    .await?;
+    repo::settings::set(pool, PANOPTICON_PORTAL_MODE, serde_json::json!(mode), uid).await?;
+    repo::settings::set(
+        pool,
+        PANOPTICON_PORTAL_ACCESS_HOURS,
+        serde_json::json!(form.access_hours),
+        uid,
+    )
+    .await?;
+    repo::settings::set(pool, PANOPTICON_PORTAL_TERMS, serde_json::json!(terms), uid).await?;
+
+    abyssal_audit::record(
+        pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_PORTAL_ENABLED)
+            .metadata(serde_json::json!({
+                "enabled": form.enabled,
+                "vlan": form.vlan,
+                "address": net.address,
+                "mode": mode,
+                "access_hours": form.access_hours,
+            })),
+    )
+    .await?;
+    Ok(Redirect::to("/arsenals/panopticon/portal").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PortalDecisionForm {
+    csrf_token: String,
+}
+
+pub async fn portal_decide(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path((mac, action)): Path<(String, String)>,
+    Form(form): Form<PortalDecisionForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let mac = crate::panopticon_neighbors::normalize_mac(&mac)
+        .ok_or_else(|| AppError::Validation("Not a MAC address.".into()))?;
+    if !matches!(action.as_str(), "approve" | "deny" | "revoke") {
+        return Err(WebError(AppError::NotFound));
+    }
+    crate::panopticon_portal::decide(
+        &state.pool,
+        state.encryption_key.clone(),
+        &mac,
+        &action,
+        (ctx.user.id, &ctx.user.username),
+    )
+    .await?;
+    Ok(Redirect::to("/arsenals/panopticon/portal").into_response())
 }
 
 #[cfg(test)]

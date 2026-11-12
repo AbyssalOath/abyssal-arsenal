@@ -1,0 +1,75 @@
+#  Abyssal Arsenal: the calls FreeRADIUS makes to Panopticon
+#  (crates/web/src/panopticon_freeradius.rs). FreeRADIUS shares the app
+#  container's network namespace (docker-compose.yml, profile "freeradius"),
+#  so Panopticon is on 127.0.0.1:8080 and only answers there, with HTTP Basic
+#  "freeradius:<FREERADIUS_API_TOKEN>".
+#
+#  Connections are opened on demand (pool start = 0), so FreeRADIUS starts
+#  even while the app is still starting; a call that fails rejects the
+#  request (fail closed).
+
+rest abyssal {
+	authorize {
+		uri = "http://127.0.0.1:8080/internal/radius/mab"
+		method = 'post'
+		body = 'json'
+		auth = 'basic'
+		username = 'freeradius'
+		password = $ENV{ABYSSAL_FREERADIUS_TOKEN}
+		require_auth = yes
+		timeout = 4.0
+	}
+	post-auth {
+		uri = "http://127.0.0.1:8080/internal/radius/post-auth"
+		method = 'post'
+		body = 'json'
+		auth = 'basic'
+		username = 'freeradius'
+		password = $ENV{ABYSSAL_FREERADIUS_TOKEN}
+		require_auth = yes
+		timeout = 4.0
+	}
+	accounting {
+		uri = "http://127.0.0.1:8080/internal/radius/accounting?src=%{Packet-Src-IP-Address}"
+		method = 'post'
+		body = 'json'
+		auth = 'basic'
+		username = 'freeradius'
+		password = $ENV{ABYSSAL_FREERADIUS_TOKEN}
+		require_auth = yes
+		timeout = 4.0
+	}
+	pool {
+		start = 0
+		min = 0
+		max = 32
+		spare = 4
+		uses = 0
+		retry_delay = 1
+		lifetime = 0
+		idle_timeout = 60
+	}
+}
+
+#  Dynamic clients: the NAS secret for a source address.
+rest abyssal_clients {
+	authorize {
+		uri = "http://127.0.0.1:8080/internal/radius/client?ip=%{Packet-Src-IP-Address}"
+		method = 'get'
+		auth = 'basic'
+		username = 'freeradius'
+		password = $ENV{ABYSSAL_FREERADIUS_TOKEN}
+		require_auth = yes
+		timeout = 4.0
+	}
+	pool {
+		start = 0
+		min = 0
+		max = 8
+		spare = 2
+		uses = 0
+		retry_delay = 1
+		lifetime = 0
+		idle_timeout = 60
+	}
+}

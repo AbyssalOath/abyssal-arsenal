@@ -1,0 +1,126 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Registration Portal — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — Registration Portal{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Guest access, PacketFence style. With the RADIUS policy's unknown-device action set to
+    <em>Registration portal</em>, an unknown device lands on the <strong>registration VLAN</strong>. There
+    Panopticon hands out addresses (DHCP), answers every DNS name with the portal, and serves the
+    registration page, so phones and laptops pop up their sign-in sheet. Once a guest is approved
+    (at once, or by staff), Panopticon re-authorizes the device (CoA) onto the <strong>guest VLAN</strong> until
+    the approval expires.
+    <a href="/arsenals/panopticon/radius">{% call macros::icon("role") %} RADIUS / 802.1X</a>
+  </p>
+  {% if !unknown_action_is_register %}
+  <div class="warning-banner">
+    The RADIUS policy's unknown-device action isn't <em>Registration portal</em>, so no device is sent here.
+    Set it on the <a href="/arsenals/panopticon/radius">RADIUS page</a>.
+  </div>
+  {% endif %}
+  {% if running %}
+  <div class="info-banner">
+    Running on <code>{{ running_interface }}</code> at <code>{{ running_address }}</code> &middot;
+    {{ active_leases }} active lease{% if active_leases != 1 %}s{% endif %}.
+  </div>
+  {% else if enabled %}
+  <div class="warning-banner">
+    Enabled, but not running{% if !config_error.is_empty() %}: {{ config_error }}{% else %}. Network settings
+    apply on restart, and the container needs an interface with the portal address
+    (see <code>deploy/registration/README.md</code>){% endif %}.
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("audit") %} Registrations</h3>
+  {% if registrations.is_empty() %}
+  <p style="color:var(--text-muted); margin-top:0;">No registrations yet.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Device</th><th>Name</th><th>Email</th><th>Status</th><th>Requested</th><th>Expires</th><th>Decided by</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for r in registrations %}
+      <tr>
+        <td><code>{{ r.mac }}</code></td>
+        <td>{{ r.name }}</td>
+        <td>{% if r.email.is_empty() %}&mdash;{% else %}{{ r.email }}{% endif %}</td>
+        <td><span class="badge {% if r.status_key == "approved" %}badge-success{% else if r.status_key == "pending" %}badge-warning{% else %}badge-muted{% endif %}">{{ r.status_label }}</span></td>
+        <td>{{ r.requested }}</td>
+        <td>{% if r.expires.is_empty() %}&mdash;{% else %}{{ r.expires }}{% endif %}</td>
+        <td>{% if r.decided_by.is_empty() %}&mdash;{% else %}{{ r.decided_by }}{% endif %}</td>
+        {% if can_manage %}
+        <td class="actions">
+          {% if r.status_key == "pending" %}
+          <form method="post" action="/arsenals/panopticon/portal/registrations/{{ r.mac }}/approve" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-sm btn-warning">Approve</button>
+          </form>
+          <form method="post" action="/arsenals/panopticon/portal/registrations/{{ r.mac }}/deny" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-sm btn-secondary">Deny</button>
+          </form>
+          {% else if r.status_key == "denied" %}
+          <form method="post" action="/arsenals/panopticon/portal/registrations/{{ r.mac }}/approve" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-sm btn-secondary">Approve after all</button>
+          </form>
+          {% else if r.status_key == "approved" %}
+          <form method="post" action="/arsenals/panopticon/portal/registrations/{{ r.mac }}/revoke" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("settings") %} Portal settings</h3>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/portal/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><input type="checkbox" name="enabled" value="true"{% if enabled %} checked{% endif %}> Run the portal (DHCP, DNS and web server on the registration VLAN; applies on restart)</label>
+
+    <label for="portal-vlan">Registration VLAN (RADIUS assigns it to unregistered unknown devices)</label>
+    <input type="number" id="portal-vlan" name="vlan" min="0" max="4094" value="{{ vlan }}" style="max-width:120px;">
+
+    <label for="portal-address">Portal address on that VLAN, with prefix</label>
+    <input type="text" id="portal-address" name="address" maxlength="18" value="{{ address }}" placeholder="10.99.0.1/24" style="max-width:220px;">
+    <label for="portal-start">DHCP range start</label>
+    <input type="text" id="portal-start" name="dhcp_start" maxlength="15" value="{{ dhcp_start }}" placeholder="10.99.0.100" style="max-width:220px;">
+    <label for="portal-end">DHCP range end</label>
+    <input type="text" id="portal-end" name="dhcp_end" maxlength="15" value="{{ dhcp_end }}" placeholder="10.99.0.250" style="max-width:220px;">
+    <label for="portal-lease">Lease time (seconds; short, so a device moved to the guest VLAN renews soon)</label>
+    <input type="number" id="portal-lease" name="lease_seconds" min="30" max="86400" value="{{ lease_seconds }}" style="max-width:120px;">
+
+    <label for="portal-mode">Approval</label>
+    <select id="portal-mode" name="mode">
+      <option value="sponsor"{% if !mode_self %} selected{% endif %}>Staff approve each request</option>
+      <option value="self"{% if mode_self %} selected{% endif %}>Accepting the terms is enough (self-service)</option>
+    </select>
+    <label for="portal-hours">Access lasts (hours)</label>
+    <input type="number" id="portal-hours" name="access_hours" min="1" max="720" value="{{ access_hours }}" style="max-width:120px;">
+    <label for="portal-terms">Terms of use (shown on the portal)</label>
+    <textarea id="portal-terms" name="terms" rows="6" maxlength="5000" style="max-width:640px; width:100%;">{{ terms }}</textarea>
+
+    <p style="color:var(--text-muted);">Approved guests get the RADIUS page's <strong>guest VLAN</strong>
+      ({% if guest_vlan > 0 %}{{ guest_vlan }}{% else %}unset: accepted without a VLAN{% endif %}).
+      The portal is plain HTTP on an isolated VLAN, so it never asks for a password.</p>
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn-warning">Save</button>
+    </div>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted); margin-top:0;">You need network.nac to change the portal.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

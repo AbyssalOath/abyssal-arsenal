@@ -2,7 +2,7 @@
 //! Ordered by `priority`; the policy sweep (`abyssal_web::panopticon_policy`)
 //! evaluates enabled rules in ascending priority and acts on the first match.
 
-use abyssal_core::{DeviceType, EnforcementKind, PolicyRule, PolicyTrigger};
+use abyssal_core::{DeviceType, EnforcementKind, PolicyRule, PolicyTrigger, Severity};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::FromRow;
 use std::str::FromStr;
@@ -22,6 +22,8 @@ struct RuleRow {
     enabled: bool,
     trigger_kind: String,
     action: String,
+    min_severity: Option<String>,
+    posture_below: Option<u8>,
     subnet: Option<String>,
     switch_id: Option<String>,
     device_type: Option<String>,
@@ -39,6 +41,8 @@ impl From<RuleRow> for PolicyRule {
             enabled: r.enabled,
             trigger: r.trigger_kind.parse().unwrap_or(PolicyTrigger::Untrusted),
             action: r.action.parse().unwrap_or(EnforcementKind::Quarantine),
+            min_severity: r.min_severity.as_deref().and_then(Severity::from_key),
+            posture_below: r.posture_below,
             subnet: r.subnet,
             switch_id: r.switch_id.and_then(|s| Uuid::parse_str(&s).ok()),
             device_type: r
@@ -58,6 +62,8 @@ pub struct NewRule<'a> {
     pub name: &'a str,
     pub trigger: PolicyTrigger,
     pub action: EnforcementKind,
+    pub min_severity: Option<Severity>,
+    pub posture_below: Option<u8>,
     pub subnet: Option<&'a str>,
     pub switch_id: Option<Uuid>,
     pub device_type: Option<DeviceType>,
@@ -75,15 +81,17 @@ pub async fn create(pool: &DbPool, new: &NewRule<'_>) -> anyhow::Result<Uuid> {
             .await?;
     sqlx::query(
         "INSERT INTO panopticon_policy_rules \
-         (id, priority, name, enabled, trigger_kind, action, subnet, switch_id, \
-          device_type, timeout_minutes, created_by) \
-         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
+         (id, priority, name, enabled, trigger_kind, action, min_severity, posture_below, \
+          subnet, switch_id, device_type, timeout_minutes, created_by) \
+         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(next_priority)
     .bind(new.name)
     .bind(new.trigger.as_str())
     .bind(new.action.as_str())
+    .bind(new.min_severity.map(Severity::as_key))
+    .bind(new.posture_below)
     .bind(new.subnet)
     .bind(new.switch_id.map(|u| u.to_string()))
     .bind(new.device_type.map(|d| d.as_str()))

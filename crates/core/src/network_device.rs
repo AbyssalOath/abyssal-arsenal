@@ -170,9 +170,18 @@ pub struct NetworkDevice {
     /// Admin-assigned category; defaults to `Unknown` until someone
     /// classifies the device.
     pub device_type: DeviceType,
-    /// Admin-assigned trust flag; defaults to `Unknown`. Purely advisory in
-    /// this phase -- nothing reads it to make an access-control decision.
+    /// Whether `device_type` was set by the automatic classifier (0.2.7 N3)
+    /// rather than a person. The classifier only changes devices that are
+    /// still `Unknown` or that it set itself.
+    pub device_type_auto: bool,
+    /// Admin-assigned trust flag; defaults to `Unknown`. The NAC policy
+    /// engine and the embedded RADIUS server decide on it.
     pub trust_state: TrustState,
+    /// The managed host whose agent reports this address as one of its own
+    /// interfaces (`AgentOperation::NeighborTable`), so host-keyed signals
+    /// (Thanatos events, Cadavault posture) can find this device's switch
+    /// port. Cleared when the device's MAC changes.
+    pub host_id: Option<Uuid>,
     /// Freeform admin notes about the device.
     pub notes: Option<String>,
     /// Open ports from the most recent scan that saw this device, one row

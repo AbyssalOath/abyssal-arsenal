@@ -18,6 +18,14 @@
 //! keeping the blocking I/O and the async DB writes on separate sides of
 //! that boundary rather than blocking a tokio worker thread on socket
 //! reads.
+//!
+//! The same capture also reads **DHCP client packets** (0.2.7 N3): a
+//! DISCOVER, REQUEST or INFORM carries the client's MAC, its parameter
+//! request list (option 55), vendor class (option 60) and hostname (option
+//! 12) -- the fingerprint `abyssal_core::classify` suggests a device type
+//! from. It sees DHCP broadcast on the captured segment, and any DHCP relayed
+//! to this server: add the control plane as an extra `ip helper-address`
+//! (and, behind Docker's bridge network, publish UDP 67 to the container).
 
 use std::net::Ipv4Addr;
 use std::time::Duration;
@@ -30,6 +38,9 @@ use pnet_datalink::{Channel, Config, MacAddr};
 use tokio::sync::mpsc;
 
 const ETHERTYPE_ARP: u16 = 0x0806;
+const ETHERTYPE_IPV4: u16 = 0x0800;
+const IPPROTO_UDP: u8 = 17;
+const DHCP_SERVER_PORT: u16 = 67;
 const ETHERTYPE_VLAN: u16 = 0x8100;
 const ARP_HTYPE_ETHERNET: u16 = 1;
 const ARP_PTYPE_IPV4: u16 = 0x0800;
@@ -37,6 +48,74 @@ const ARP_PTYPE_IPV4: u16 = 0x0800;
 struct ArpSighting {
     mac: MacAddr,
     ip: Ipv4Addr,
+}
+
+/// A DHCP client's fingerprint, from one DISCOVER/REQUEST/INFORM.
+#[derive(Debug, PartialEq, Eq)]
+struct DhcpSighting {
+    /// Lowercase colon form, from the BOOTP `chaddr` (the client's own MAC,
+    /// even when a relay forwarded the packet).
+    mac: String,
+    /// Option 55 as comma-separated decimal codes.
+    prl: Option<String>,
+    vendor_class: Option<String>,
+    hostname: Option<String>,
+}
+
+/// What the capture loop hands to the async side.
+enum Sighting {
+    Arp(ArpSighting),
+    Dhcp(DhcpSighting),
+}
+
+/// The Ethernet payload and its ethertype, through at most one 802.1Q tag.
+fn ethernet_payload(frame: &[u8]) -> Option<(u16, &[u8])> {
+    let mut ethertype = u16::from_be_bytes([*frame.get(12)?, *frame.get(13)?]);
+    let mut offset = 14;
+    if ethertype == ETHERTYPE_VLAN {
+        ethertype = u16::from_be_bytes([*frame.get(16)?, *frame.get(17)?]);
+        offset += 4;
+    }
+    Some((ethertype, frame.get(offset..)?))
+}
+
+/// Parses one captured frame for a DHCP client fingerprint: IPv4, UDP to
+/// port 67, an unfragmented BOOTREQUEST with the DHCP magic cookie and a
+/// DISCOVER (1), REQUEST (3) or INFORM (8) message type. Everything else --
+/// server replies, plain BOOTP, truncated or malformed packets -- is `None`.
+/// Untrusted input from any device on the segment: every offset is checked.
+fn parse_dhcp_request(frame: &[u8]) -> Option<DhcpSighting> {
+    let (ethertype, ip) = ethernet_payload(frame)?;
+    if ethertype != ETHERTYPE_IPV4 || ip.len() < 20 || ip[0] >> 4 != 4 {
+        return None;
+    }
+    let ihl = usize::from(ip[0] & 0x0f) * 4;
+    // More-fragments flag or a fragment offset: not a whole datagram.
+    let fragment = u16::from_be_bytes([ip[6], ip[7]]) & 0x3fff;
+    if ihl < 20 || ip[9] != IPPROTO_UDP || fragment != 0 {
+        return None;
+    }
+    let udp = ip.get(ihl..)?;
+    if udp.len() < 8 || u16::from_be_bytes([udp[2], udp[3]]) != DHCP_SERVER_PORT {
+        return None;
+    }
+    // The BOOTP/DHCP parsing itself is the registration DHCP server's
+    // (abyssal_portal_net): one bounds-checked parser for both.
+    let req = abyssal_portal_net::dhcp::parse_request(&udp[8..])?;
+    if !matches!(
+        req.message_type,
+        abyssal_portal_net::dhcp::DISCOVER
+            | abyssal_portal_net::dhcp::REQUEST
+            | abyssal_portal_net::dhcp::INFORM
+    ) {
+        return None;
+    }
+    Some(DhcpSighting {
+        mac: abyssal_portal_net::dhcp::mac_string(&req.chaddr),
+        prl: req.prl,
+        vendor_class: req.vendor_class,
+        hostname: req.hostname,
+    })
 }
 
 /// Parses one captured Ethernet frame for an ARP sender mapping (the
@@ -85,6 +164,20 @@ fn parse_arp_sender(frame: &[u8]) -> Option<ArpSighting> {
     })
 }
 
+async fn ingest_dhcp(pool: &DbPool, s: DhcpSighting) {
+    if let Err(e) = repo::panopticon_fingerprints::upsert(
+        pool,
+        &s.mac,
+        s.prl.as_deref(),
+        s.vendor_class.as_deref(),
+        s.hostname.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, mac = %s.mac, "DHCP fingerprint ingest failed");
+    }
+}
+
 async fn ingest(pool: &DbPool, notifications: &NotificationDispatcher, sighting: ArpSighting) {
     // 0.0.0.0 is ARP "probe" traffic (duplicate address detection) --
     // it's not the sender's real address, so there's nothing useful to
@@ -128,7 +221,7 @@ pub fn spawn_panopticon_arp_listener(
     interface_name: String,
     notifications: Arc<NotificationDispatcher>,
 ) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ArpSighting>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Sighting>();
 
     tokio::task::spawn_blocking(move || {
         let interfaces = pnet_datalink::interfaces();
@@ -158,7 +251,10 @@ pub fn spawn_panopticon_arp_listener(
         loop {
             match receiver.next() {
                 Ok(frame) => {
-                    if let Some(sighting) = parse_arp_sender(frame)
+                    let sighting = parse_arp_sender(frame)
+                        .map(Sighting::Arp)
+                        .or_else(|| parse_dhcp_request(frame).map(Sighting::Dhcp));
+                    if let Some(sighting) = sighting
                         && tx.send(sighting).is_err()
                     {
                         break; // receiving end dropped, control plane shutting down
@@ -174,7 +270,10 @@ pub fn spawn_panopticon_arp_listener(
 
     tokio::spawn(async move {
         while let Some(sighting) = rx.recv().await {
-            ingest(&pool, &notifications, sighting).await;
+            match sighting {
+                Sighting::Arp(s) => ingest(&pool, &notifications, s).await,
+                Sighting::Dhcp(s) => ingest_dhcp(&pool, s).await,
+            }
         }
     });
 }
@@ -182,6 +281,9 @@ pub fn spawn_panopticon_arp_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BOOTREQUEST: u8 = 1;
+    const DHCP_MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
 
     fn build_arp_request(sender_mac: [u8; 6], sender_ip: [u8; 4]) -> Vec<u8> {
         let mut frame = Vec::new();
@@ -238,6 +340,92 @@ mod tests {
         let mut frame = vec![0u8; 14];
         frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes()); // IPv4, not ARP
         assert!(parse_arp_sender(&frame).is_none());
+    }
+
+    /// An Ethernet/IPv4/UDP frame carrying a DHCP BOOTREQUEST with `options`
+    /// (after the magic cookie), from `mac`, to port 67.
+    fn dhcp_frame(mac: [u8; 6], options: &[u8]) -> Vec<u8> {
+        let mut bootp = vec![0u8; 236];
+        bootp[0] = BOOTREQUEST;
+        bootp[1] = 1;
+        bootp[2] = 6;
+        bootp[28..34].copy_from_slice(&mac);
+        bootp.extend_from_slice(&DHCP_MAGIC_COOKIE);
+        bootp.extend_from_slice(options);
+        let mut udp = Vec::new();
+        udp.extend_from_slice(&68u16.to_be_bytes());
+        udp.extend_from_slice(&67u16.to_be_bytes());
+        udp.extend_from_slice(&((8 + bootp.len()) as u16).to_be_bytes());
+        udp.extend_from_slice(&[0, 0]);
+        udp.extend_from_slice(&bootp);
+        let mut ip = vec![0x45, 0, 0, 0, 0, 0, 0, 0, 64, IPPROTO_UDP, 0, 0];
+        ip.extend_from_slice(&[0, 0, 0, 0, 255, 255, 255, 255]);
+        let total = (ip.len() + udp.len()) as u16;
+        ip[2..4].copy_from_slice(&total.to_be_bytes());
+        ip.extend_from_slice(&udp);
+        let mut frame = vec![0xff; 6];
+        frame.extend_from_slice(&mac);
+        frame.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        frame.extend_from_slice(&ip);
+        frame
+    }
+
+    const MAC: [u8; 6] = [0x3c, 0x22, 0xfb, 0x01, 0x02, 0x03];
+
+    #[test]
+    fn parses_a_windows_dhcp_discover() {
+        let mut opts = vec![53, 1, 1]; // DISCOVER
+        opts.extend_from_slice(&[55, 4, 1, 3, 6, 252]);
+        opts.extend_from_slice(&[60, 8]);
+        opts.extend_from_slice(b"MSFT 5.0");
+        opts.extend_from_slice(&[12, 15]);
+        opts.extend_from_slice(b"DESKTOP-4F2K9QZ");
+        opts.push(255);
+        let s = parse_dhcp_request(&dhcp_frame(MAC, &opts)).expect("a DHCP discover");
+        assert_eq!(s.mac, "3c:22:fb:01:02:03");
+        assert_eq!(s.prl.as_deref(), Some("1,3,6,252"));
+        assert_eq!(s.vendor_class.as_deref(), Some("MSFT 5.0"));
+        assert_eq!(s.hostname.as_deref(), Some("DESKTOP-4F2K9QZ"));
+    }
+
+    #[test]
+    fn ignores_replies_plain_bootp_and_other_traffic() {
+        // DHCP ACK (5) isn't a client fingerprint.
+        assert!(parse_dhcp_request(&dhcp_frame(MAC, &[53, 1, 5, 255])).is_none());
+        // No message type: plain BOOTP.
+        assert!(parse_dhcp_request(&dhcp_frame(MAC, &[55, 1, 1, 255])).is_none());
+        // A server-to-client packet (op 2).
+        let mut f = dhcp_frame(MAC, &[53, 1, 1, 255]);
+        f[14 + 20 + 8] = 2;
+        assert!(parse_dhcp_request(&f).is_none());
+        // A fragment.
+        let mut f = dhcp_frame(MAC, &[53, 1, 1, 255]);
+        f[14 + 6] = 0x20;
+        assert!(parse_dhcp_request(&f).is_none());
+        // An all-zero client MAC.
+        assert!(parse_dhcp_request(&dhcp_frame([0; 6], &[53, 1, 1, 255])).is_none());
+        // ARP isn't DHCP.
+        assert!(parse_dhcp_request(&build_arp_request(MAC, [10, 0, 0, 1])).is_none());
+    }
+
+    #[test]
+    fn control_characters_in_dhcp_text_are_dropped() {
+        // A hostname with a BEL and a newline in it.
+        let mut opts = vec![53, 1, 3, 12, 6, b'p', b'c', 0x07, b'\n', b'0', b'1', 255];
+        let s = parse_dhcp_request(&dhcp_frame(MAC, &opts)).unwrap();
+        assert_eq!(s.hostname.as_deref(), Some("pc01"));
+        // An option running past the packet ends parsing without a panic.
+        opts = vec![53, 1, 3, 60, 200, b'x'];
+        assert!(parse_dhcp_request(&dhcp_frame(MAC, &opts)).is_none());
+    }
+
+    #[test]
+    fn truncated_dhcp_never_panics() {
+        let frame = dhcp_frame(MAC, &[53, 1, 1, 55, 2, 1, 3, 60, 3, b'a', b'b', b'c', 255]);
+        assert!(parse_dhcp_request(&frame).is_some());
+        for cut in 0..frame.len() {
+            let _ = parse_dhcp_request(&frame[..cut]);
+        }
     }
 
     #[test]

@@ -35,6 +35,10 @@
     <input type="number" id="policy-new-window" name="new_window_minutes" min="0" max="10080" value="{{ new_window_minutes }}" style="max-width:110px;">
     <label for="policy-cooldown">Cooldown (min)</label>
     <input type="number" id="policy-cooldown" name="cooldown_minutes" min="0" max="10080" value="{{ cooldown_minutes }}" style="max-width:110px;">
+    <label for="policy-signal-window">Signal window (min)</label>
+    <input type="number" id="policy-signal-window" name="signal_window_minutes" min="1" max="10080" value="{{ signal_window_minutes }}" style="max-width:110px;">
+    <label for="policy-max-devices">Max devices per port</label>
+    <input type="number" id="policy-max-devices" name="max_devices_per_port" min="1" max="64" value="{{ max_devices_per_port }}" style="max-width:110px;">
     <button type="submit" class="btn-warning">Save</button>
   </form>
   <p style="color:var(--text-muted); margin-top:8px;">
@@ -42,7 +46,11 @@
     &mdash; the safe way to watch a new policy before switching to <strong>Active</strong>. The
     <em>new-device window</em> bounds how recently a device must have first appeared to count as
     "new / unclassified". The <em>cooldown</em> stops the engine re-enforcing a port that was acted
-    on (or manually released) within that many minutes.
+    on (or manually released) within that many minutes. The <em>signal window</em> is how far back
+    the Scourge and Thanatos triggers look for an alert or open event.
+    <br>Two guards apply to every rule: the control plane's own server is never auto-enforced, and
+    neither is a port that faces another polled switch or has more than <em>max devices per
+    port</em> located on it (it's probably an uplink). Manual enforcement isn't limited by either.
     {% if !quarantine_vlan_set %}<br><em>Note: no quarantine VLAN is configured, so quarantine rules
     will be skipped until one is set in Settings.</em>{% endif %}
   </p>
@@ -58,7 +66,7 @@
   {% else %}
   <table>
     <thead>
-      <tr><th>#</th><th>Name</th><th>Trigger</th><th>Scope</th><th>Action</th><th>Auto-revert</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr>
+      <tr><th>#</th><th>Name</th><th>Condition</th><th>Scope</th><th>Action</th><th>Auto-revert</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr>
     </thead>
     <tbody>
       {% for r in rules %}
@@ -116,6 +124,19 @@
     <select id="rule-trigger" name="trigger">
       {% for (key, label) in triggers %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
     </select>
+
+    <label for="rule-severity">Minimum severity &mdash; IDS alert and security event triggers</label>
+    <select id="rule-severity" name="min_severity">
+      {% for (key, label, selected) in severities %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+
+    <label for="rule-posture">Posture score below &mdash; failing posture trigger (1&ndash;100)</label>
+    <input type="number" id="rule-posture" name="posture_below" min="1" max="100" value="{{ default_posture_below }}" style="max-width:110px;">
+    <p style="color:var(--text-muted); margin:4px 0 0;">
+      IDS alerts match the device as the <em>source</em> of the flow, never the destination.
+      Security events (open only, so acknowledging one stands the rule down) and posture match
+      through the managed host the device belongs to.
+    </p>
 
     <label for="rule-action">Action</label>
     <select id="rule-action" name="action">

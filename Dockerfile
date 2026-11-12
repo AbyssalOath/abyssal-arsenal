@@ -29,6 +29,7 @@ COPY crates/workflows/Cargo.toml crates/workflows/Cargo.toml
 COPY crates/agent-protocol/Cargo.toml crates/agent-protocol/Cargo.toml
 COPY crates/internal-ca/Cargo.toml crates/internal-ca/Cargo.toml
 COPY crates/posture/Cargo.toml crates/posture/Cargo.toml
+COPY crates/portal-net/Cargo.toml crates/portal-net/Cargo.toml
 COPY crates/web/Cargo.toml crates/web/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
 COPY crates/agent/Cargo.toml crates/agent/Cargo.toml
@@ -60,7 +61,7 @@ COPY crates/arsenals/sepulchre/Cargo.toml crates/arsenals/sepulchre/Cargo.toml
 COPY crates/arsenals/scourge/Cargo.toml crates/arsenals/scourge/Cargo.toml
 COPY crates/arsenals/gravekeeper/Cargo.toml crates/arsenals/gravekeeper/Cargo.toml
 
-RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol internal-ca posture web \
+RUN for crate in core database auth rbac audit notifications execution hosts modules workflows agent-protocol internal-ca posture portal-net web \
         arsenals/cystoolbox arsenals/cadavault arsenals/necrolink arsenals/postmortem arsenals/reliquary \
         arsenals/mortiscope arsenals/incarnation arsenals/resurrection arsenals/necropsy arsenals/necropolis \
         arsenals/obituary arsenals/reanimation arsenals/ossuary arsenals/catacomb arsenals/parish \
@@ -128,7 +129,14 @@ COPY --from=builder /agent-bundle /app/agent-bundle
 # unprivileged), so `USER abyssal` two lines down doesn't lose it. Docker
 # already grants containers CAP_NET_RAW by default; docker-compose.yml's
 # `cap_add: [NET_RAW]` makes that explicit rather than relying on it.
-RUN setcap cap_net_raw+eip /app/abyssal-arsenal
+#
+# The registration portal (crates/web/src/panopticon_portal.rs, off by
+# default) also binds DHCP (67), DNS (53) and HTTP (80) on the
+# registration VLAN, which needs CAP_NET_BIND_SERVICE, and pins those
+# sockets to that one interface (SO_BINDTODEVICE), which needs CAP_NET_RAW.
+# Docker grants both by default; nothing binds those ports unless the
+# portal is enabled.
+RUN setcap cap_net_raw,cap_net_bind_service+eip /app/abyssal-arsenal
 RUN chown -R abyssal:abyssal /app
 
 # Reliquary backups (GitHub issue #9) default to /backups

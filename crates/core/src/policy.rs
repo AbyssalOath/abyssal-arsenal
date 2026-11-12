@@ -1,9 +1,10 @@
 //! Panopticon NAC auto-enforcement policy (phase 4) model -- the ordered rules
 //! that let enforcement fire without a human in the loop. A rule pairs a
-//! *trigger* (why: a device is untrusted, or newly-appeared and unclassified)
-//! with an *action* (disable / quarantine, reusing `EnforcementKind`) and
-//! optional *scope* filters (subnet / switch / device type) that narrow which
-//! devices it applies to.
+//! *trigger* (why: a device is untrusted, newly-appeared and unclassified, or
+//! -- 0.2.7 N1 -- flagged by Scourge, Thanatos or Cadavault) with an *action*
+//! (disable / quarantine, reusing `EnforcementKind`) and optional *scope*
+//! filters (subnet / switch / device type) that narrow which devices it
+//! applies to.
 //!
 //! Pure data; the matching + the actual (gated) enforcement live in
 //! `abyssal_web::panopticon_policy`, which evaluates enabled rules in `priority`
@@ -13,7 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{DeviceType, EnforcementKind};
+use crate::{DeviceType, EnforcementKind, Severity};
 
 /// Why a policy rule fires against a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,13 +30,33 @@ pub enum PolicyTrigger {
     /// never-classified device on the network. See
     /// `abyssal_web::panopticon_policy` for the window.
     NewUnknown,
+    /// Scourge (Suricata) raised an alert at or above the rule's minimum
+    /// severity with this device as the flow's *source*, within the signal
+    /// window. Never the destination: that's the victim of an inbound attack.
+    IdsAlert,
+    /// Thanatos has an *open* security event at or above the rule's minimum
+    /// severity, within the signal window, on the managed host this device
+    /// belongs to. Acknowledging or resolving the event stands the rule down.
+    SecurityEvent,
+    /// The latest Cadavault posture run on the managed host this device
+    /// belongs to scored below the rule's threshold.
+    PostureFailing,
 }
+
+/// The minimum severity a signal trigger uses when the rule doesn't set one.
+pub const DEFAULT_SIGNAL_MIN_SEVERITY: Severity = Severity::High;
+/// The posture score `PostureFailing` compares against when the rule doesn't
+/// set one: below this fails.
+pub const DEFAULT_POSTURE_BELOW: u8 = 60;
 
 impl PolicyTrigger {
     pub const fn as_str(self) -> &'static str {
         match self {
             PolicyTrigger::Untrusted => "untrusted",
             PolicyTrigger::NewUnknown => "new_unknown",
+            PolicyTrigger::IdsAlert => "ids_alert",
+            PolicyTrigger::SecurityEvent => "security_event",
+            PolicyTrigger::PostureFailing => "posture_failing",
         }
     }
 
@@ -43,11 +64,32 @@ impl PolicyTrigger {
         match self {
             PolicyTrigger::Untrusted => "Untrusted device",
             PolicyTrigger::NewUnknown => "New / unclassified device",
+            PolicyTrigger::IdsAlert => "IDS alert from the device (Scourge)",
+            PolicyTrigger::SecurityEvent => "Open security event on the host (Thanatos)",
+            PolicyTrigger::PostureFailing => "Failing posture (Cadavault)",
         }
     }
 
-    pub const ALL: &'static [PolicyTrigger] =
-        &[PolicyTrigger::Untrusted, PolicyTrigger::NewUnknown];
+    /// Whether the rule's `min_severity` applies to this trigger.
+    pub const fn uses_severity(self) -> bool {
+        matches!(self, PolicyTrigger::IdsAlert | PolicyTrigger::SecurityEvent)
+    }
+
+    /// Whether this trigger needs the device linked to a managed host.
+    pub const fn needs_managed_host(self) -> bool {
+        matches!(
+            self,
+            PolicyTrigger::SecurityEvent | PolicyTrigger::PostureFailing
+        )
+    }
+
+    pub const ALL: &'static [PolicyTrigger] = &[
+        PolicyTrigger::Untrusted,
+        PolicyTrigger::NewUnknown,
+        PolicyTrigger::IdsAlert,
+        PolicyTrigger::SecurityEvent,
+        PolicyTrigger::PostureFailing,
+    ];
 }
 
 impl std::str::FromStr for PolicyTrigger {
@@ -57,6 +99,9 @@ impl std::str::FromStr for PolicyTrigger {
         match s {
             "untrusted" => Ok(PolicyTrigger::Untrusted),
             "new_unknown" => Ok(PolicyTrigger::NewUnknown),
+            "ids_alert" => Ok(PolicyTrigger::IdsAlert),
+            "security_event" => Ok(PolicyTrigger::SecurityEvent),
+            "posture_failing" => Ok(PolicyTrigger::PostureFailing),
             _ => Err(()),
         }
     }
@@ -121,6 +166,12 @@ pub struct PolicyRule {
     pub enabled: bool,
     pub trigger: PolicyTrigger,
     pub action: EnforcementKind,
+    /// `IdsAlert` / `SecurityEvent`: the lowest severity that fires the rule.
+    /// `None` = [`DEFAULT_SIGNAL_MIN_SEVERITY`]. Ignored by other triggers.
+    pub min_severity: Option<Severity>,
+    /// `PostureFailing`: fires when the latest score is below this. `None` =
+    /// [`DEFAULT_POSTURE_BELOW`]. Ignored by other triggers.
+    pub posture_below: Option<u8>,
     /// Scope filters -- all optional, AND-combined. `None` means "any".
     /// Matched against the device's normalized `network` (e.g. "10.0.9.0/24").
     pub subnet: Option<String>,
@@ -131,4 +182,30 @@ pub struct PolicyRule {
     pub timeout_minutes: Option<u32>,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
+}
+
+impl PolicyRule {
+    pub fn effective_min_severity(&self) -> Severity {
+        self.min_severity.unwrap_or(DEFAULT_SIGNAL_MIN_SEVERITY)
+    }
+
+    pub fn effective_posture_below(&self) -> u8 {
+        self.posture_below.unwrap_or(DEFAULT_POSTURE_BELOW)
+    }
+
+    /// The trigger with its threshold, for the rule table, e.g. "IDS alert
+    /// from the device (Scourge): high or worse".
+    pub fn condition_label(&self) -> String {
+        match self.trigger {
+            t if t.uses_severity() => {
+                format!("{}: {} or worse", t.label(), self.effective_min_severity())
+            }
+            PolicyTrigger::PostureFailing => format!(
+                "{}: score below {}",
+                self.trigger.label(),
+                self.effective_posture_below()
+            ),
+            t => t.label().to_string(),
+        }
+    }
 }

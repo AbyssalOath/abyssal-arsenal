@@ -17,14 +17,17 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use abyssal_core::settings::{
-    PANOPTICON_QUARANTINE_VLAN, PANOPTICON_QUARANTINE_VLAN_DEFAULT, PANOPTICON_RADIUS_ACCT_PORT,
+    PANOPTICON_PORTAL_VLAN, PANOPTICON_PORTAL_VLAN_DEFAULT, PANOPTICON_QUARANTINE_VLAN,
+    PANOPTICON_QUARANTINE_VLAN_DEFAULT, PANOPTICON_RADIUS_ACCT_PORT,
     PANOPTICON_RADIUS_ACCT_PORT_DEFAULT, PANOPTICON_RADIUS_AUTH_PORT,
     PANOPTICON_RADIUS_AUTH_PORT_DEFAULT, PANOPTICON_RADIUS_GUEST_VLAN,
     PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT, PANOPTICON_RADIUS_TRUSTED_VLAN,
     PANOPTICON_RADIUS_TRUSTED_VLAN_DEFAULT, PANOPTICON_RADIUS_UNKNOWN_ACTION,
     PANOPTICON_RADIUS_UNTRUSTED_ACTION,
 };
-use abyssal_core::{EncryptionKey, RadiusClient, TrustState, network_of, parse_cidr};
+use abyssal_core::{
+    EncryptionKey, EnforcementKind, RadiusClient, TrustState, network_of, parse_cidr,
+};
 use abyssal_database::{DbPool, repo};
 
 use crate::radius::{self, Packet};
@@ -32,19 +35,30 @@ use crate::radius::{self, Packet};
 const MAX_PACKET: usize = 4096;
 
 /// Per-trust-state admission policy, read from settings once per packet (cheap).
-struct RadiusPolicy {
+pub(crate) struct RadiusPolicy {
     trusted_vlan: u32,
     quarantine_vlan: u32,
     /// "quarantine" | "reject"
     untrusted_action: String,
-    /// "accept" | "guest" | "reject"
+    /// "accept" | "guest" | "register" | "reject"
     unknown_action: String,
     guest_vlan: u32,
+    /// The registration VLAN, for `unknown_action = register` (0 = unset).
+    registration_vlan: u32,
+}
+
+/// How the device got this far: MAC authentication only, or a real 802.1X
+/// login (EAP, through FreeRADIUS). The registration portal is for devices
+/// that can't authenticate, so an authenticated one never goes there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    Mab,
+    Authenticated,
 }
 
 /// The MAB authorization outcome.
 #[derive(Debug, PartialEq, Eq)]
-enum Decision {
+pub(crate) enum Decision {
     /// Access-Accept, optionally with a VLAN assignment.
     Accept(Option<u32>),
     /// Access-Reject.
@@ -53,7 +67,34 @@ enum Decision {
 
 /// The core MAB decision: maps a device's trust state (or its absence) to an
 /// admission outcome under the configured policy. Pure and table-tested.
-fn decide(trust: Option<TrustState>, p: &RadiusPolicy) -> Decision {
+///
+/// `enforced` is the enforcement action in effect on the device's switch port
+/// (0.2.7 N2), and it wins over trust: a quarantined port's device goes to the
+/// quarantine VLAN (or is rejected if none is configured), a disabled port's
+/// is rejected. Without this, a device re-authenticating on a quarantined port
+/// -- which a CoA now makes happen at once -- would get its trusted VLAN back
+/// and walk straight out of quarantine.
+///
+/// `registered` is whether the device has an approved, unexpired guest
+/// registration (only read when `unknown_action = register`, 0.2.7 N5).
+fn decide(
+    trust: Option<TrustState>,
+    enforced: Option<EnforcementKind>,
+    registered: bool,
+    admission: Admission,
+    p: &RadiusPolicy,
+) -> Decision {
+    match enforced {
+        Some(EnforcementKind::Disable) => return Decision::Reject,
+        Some(EnforcementKind::Quarantine) => {
+            return if p.quarantine_vlan > 0 {
+                Decision::Accept(Some(p.quarantine_vlan))
+            } else {
+                Decision::Reject
+            };
+        }
+        None => {}
+    }
     match trust {
         Some(TrustState::Trusted) => {
             Decision::Accept((p.trusted_vlan > 0).then_some(p.trusted_vlan))
@@ -74,6 +115,17 @@ fn decide(trust: Option<TrustState>, p: &RadiusPolicy) -> Decision {
         _ => match p.unknown_action.as_str() {
             "reject" => Decision::Reject,
             "guest" => Decision::Accept((p.guest_vlan > 0).then_some(p.guest_vlan)),
+            // The registration portal: registered guests to the guest VLAN,
+            // everyone else to the registration VLAN -- or, with none
+            // configured, nowhere (fail closed).
+            // An 802.1X-authenticated device that isn't classified yet is
+            // admitted plainly, as before the portal existed.
+            "register" if admission == Admission::Authenticated => Decision::Accept(None),
+            "register" if registered => {
+                Decision::Accept((p.guest_vlan > 0).then_some(p.guest_vlan))
+            }
+            "register" if p.registration_vlan > 0 => Decision::Accept(Some(p.registration_vlan)),
+            "register" => Decision::Reject,
             // "accept" (the safe default): admit with no VLAN assignment.
             _ => Decision::Accept(None),
         },
@@ -83,7 +135,7 @@ fn decide(trust: Option<TrustState>, p: &RadiusPolicy) -> Decision {
 /// Normalizes a MAC from whatever punctuation a NAS used (`aa-bb-..`,
 /// `aabb.ccdd.eeff`, `AABBCCDDEEFF`, `aa:bb:..`) to lowercase colon form, or
 /// `None` if it isn't 12 hex digits.
-fn normalize_mac(raw: &str) -> Option<String> {
+pub(crate) fn normalize_mac(raw: &str) -> Option<String> {
     let hex: String = raw.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if hex.len() != 12 {
         return None;
@@ -95,7 +147,7 @@ fn normalize_mac(raw: &str) -> Option<String> {
 
 /// Outcome of resolving the MAC a MAB request authenticates as.
 #[derive(Debug, PartialEq, Eq)]
-enum MacResolution {
+pub(crate) enum MacResolution {
     /// A single, consistent MAC to authorize.
     Resolved(String),
     /// User-Name and Calling-Station-Id are both MACs but disagree -- a request
@@ -108,7 +160,10 @@ enum MacResolution {
 /// Resolves the MAB MAC from the (already normalized) Calling-Station-Id and
 /// User-Name values. Calling-Station-Id (the switch-observed source MAC) is the
 /// anchor; a User-Name MAC, if present, must match it.
-fn resolve_mab_mac(calling: Option<String>, username_mac: Option<String>) -> MacResolution {
+pub(crate) fn resolve_mab_mac(
+    calling: Option<String>,
+    username_mac: Option<String>,
+) -> MacResolution {
     match (calling, username_mac) {
         (Some(c), Some(u)) => {
             if c == u {
@@ -137,7 +192,8 @@ fn client_matches(nas_address: &str, src: IpAddr) -> bool {
 
 /// Finds the enabled RADIUS client matching a source address and returns its
 /// decrypted shared secret, or `None` if no client matches / decryption fails.
-async fn secret_for(
+/// Also how the CoA sender (`crate::panopticon_coa`) finds a session's NAS.
+pub(crate) async fn client_for(
     pool: &DbPool,
     key: &EncryptionKey,
     src: IpAddr,
@@ -155,6 +211,63 @@ async fn secret_for(
             None
         }
     }
+}
+
+/// The admission decision for a MAC -- the device's trust state, unless an
+/// enforcement action is in effect on the port it was last located on, or
+/// on the device itself (enforcement through RADIUS) -- and
+/// what it was based on. Shared by the embedded server and the FreeRADIUS
+/// front end (`crate::panopticon_freeradius`), so the two can't drift apart.
+pub(crate) async fn decide_for_mac(
+    pool: &DbPool,
+    mac: &str,
+    admission: Admission,
+) -> (Decision, Option<TrustState>, Option<EnforcementKind>) {
+    let device = repo::network_devices::find_by_mac(pool, mac)
+        .await
+        .ok()
+        .flatten();
+    let trust = device.as_ref().map(|d| d.trust_state);
+    let enforced = match device
+        .as_ref()
+        .and_then(|d| Some((d.switch_id?, d.switch_port.clone()?)))
+    {
+        Some((switch_id, port)) => {
+            repo::panopticon_enforcement::find_in_effect_for_port_label(pool, switch_id, &port)
+                .await
+                .ok()
+                .flatten()
+                .map(|a| a.kind)
+        }
+        None => None,
+    };
+    // No port action: a device action (enforcement through RADIUS) instead.
+    let enforced = match enforced {
+        Some(kind) => Some(kind),
+        None if !mac.is_empty() => {
+            repo::panopticon_device_enforcement::find_in_effect_for_mac(pool, mac)
+                .await
+                .ok()
+                .flatten()
+                .map(|a| a.kind)
+        }
+        None => None,
+    };
+    let policy = load_policy(pool).await;
+    // A registration only matters for a device that isn't classified.
+    let registered = policy.unknown_action == "register"
+        && !matches!(trust, Some(TrustState::Trusted | TrustState::Untrusted))
+        && !mac.is_empty()
+        && repo::panopticon_registrations::find(pool, mac)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.grants_access(chrono::Utc::now()));
+    (
+        decide(trust, enforced, registered, admission, &policy),
+        trust,
+        enforced,
+    )
 }
 
 async fn load_policy(pool: &DbPool) -> RadiusPolicy {
@@ -192,6 +305,7 @@ async fn load_policy(pool: &DbPool) -> RadiusPolicy {
             PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT,
         )
         .await,
+        registration_vlan: g(PANOPTICON_PORTAL_VLAN, PANOPTICON_PORTAL_VLAN_DEFAULT).await,
     }
 }
 
@@ -207,7 +321,7 @@ async fn handle_auth(
     if packet.code != radius::CODE_ACCESS_REQUEST {
         return None;
     }
-    let (client, secret) = secret_for(pool, key, src).await?;
+    let (client, secret) = client_for(pool, key, src).await?;
     let secret = secret.as_bytes();
 
     // Integrity: if the request carries a Message-Authenticator it must validate.
@@ -264,14 +378,7 @@ async fn handle_auth(
         MacResolution::Missing => return reject("no MAC to authorize (MAB only)"),
     };
 
-    let trust = repo::network_devices::find_by_mac(pool, &mac)
-        .await
-        .ok()
-        .flatten()
-        .map(|d| d.trust_state);
-
-    let policy = load_policy(pool).await;
-    let decision = decide(trust, &policy);
+    let (decision, trust, enforced) = decide_for_mac(pool, &mac, Admission::Mab).await;
 
     let (code, attrs) = match &decision {
         Decision::Accept(vlan) => {
@@ -284,6 +391,7 @@ async fn handle_auth(
         client = %client.name,
         mac = %mac,
         trust = trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
+        enforced = enforced.map(|k| k.as_str()).unwrap_or("none"),
         decision = ?decision,
         "RADIUS MAB decision"
     );
@@ -309,7 +417,7 @@ async fn handle_acct(
     if packet.code != radius::CODE_ACCOUNTING_REQUEST {
         return None;
     }
-    let (client, secret) = secret_for(pool, key, src).await?;
+    let (client, secret) = client_for(pool, key, src).await?;
     let secret = secret.as_bytes();
 
     if !packet.verify_accounting_authenticator(secret) {
@@ -373,6 +481,15 @@ pub async fn spawn_panopticon_radius(pool: DbPool, encryption_key: Option<Arc<En
     .await
     .unwrap_or(false);
     if !enabled {
+        return;
+    }
+    // With FreeRADIUS in front (it shares this container's network and owns
+    // UDP 1812/1813), binding here would fight it for the ports.
+    if crate::panopticon_freeradius::enabled() {
+        tracing::warn!(
+            "Panopticon RADIUS is enabled, but FREERADIUS_API_TOKEN is set, so FreeRADIUS answers \
+             RADIUS; the embedded listener isn't started"
+        );
         return;
     }
     let Some(key) = encryption_key else {
@@ -459,13 +576,20 @@ mod tests {
             untrusted_action: "quarantine".into(),
             unknown_action: "accept".into(),
             guest_vlan: 50,
+            registration_vlan: 99,
         }
     }
 
     #[test]
     fn trusted_device_is_accepted_with_its_vlan() {
         assert_eq!(
-            decide(Some(TrustState::Trusted), &policy()),
+            decide(
+                Some(TrustState::Trusted),
+                None,
+                false,
+                Admission::Mab,
+                &policy()
+            ),
             Decision::Accept(Some(10))
         );
     }
@@ -474,30 +598,135 @@ mod tests {
     fn untrusted_device_is_quarantined_or_rejected() {
         let mut p = policy();
         assert_eq!(
-            decide(Some(TrustState::Untrusted), &p),
+            decide(Some(TrustState::Untrusted), None, false, Admission::Mab, &p),
             Decision::Accept(Some(999))
         );
         p.untrusted_action = "reject".into();
-        assert_eq!(decide(Some(TrustState::Untrusted), &p), Decision::Reject);
+        assert_eq!(
+            decide(Some(TrustState::Untrusted), None, false, Admission::Mab, &p),
+            Decision::Reject
+        );
         // Quarantine with no VLAN configured fails closed.
         p.untrusted_action = "quarantine".into();
         p.quarantine_vlan = 0;
-        assert_eq!(decide(Some(TrustState::Untrusted), &p), Decision::Reject);
+        assert_eq!(
+            decide(Some(TrustState::Untrusted), None, false, Admission::Mab, &p),
+            Decision::Reject
+        );
     }
 
     #[test]
     fn unknown_device_follows_unknown_action() {
         let mut p = policy();
         // Default "accept" admits with no VLAN.
-        assert_eq!(decide(None, &p), Decision::Accept(None));
         assert_eq!(
-            decide(Some(TrustState::Unknown), &p),
+            decide(None, None, false, Admission::Mab, &p),
+            Decision::Accept(None)
+        );
+        assert_eq!(
+            decide(Some(TrustState::Unknown), None, false, Admission::Mab, &p),
             Decision::Accept(None)
         );
         p.unknown_action = "guest".into();
-        assert_eq!(decide(None, &p), Decision::Accept(Some(50)));
+        assert_eq!(
+            decide(None, None, false, Admission::Mab, &p),
+            Decision::Accept(Some(50))
+        );
         p.unknown_action = "reject".into();
-        assert_eq!(decide(None, &p), Decision::Reject);
+        assert_eq!(
+            decide(None, None, false, Admission::Mab, &p),
+            Decision::Reject
+        );
+    }
+
+    #[test]
+    fn registration_portal_sends_unregistered_devices_to_register() {
+        let mut p = policy();
+        p.unknown_action = "register".into();
+        assert_eq!(
+            decide(None, None, false, Admission::Mab, &p),
+            Decision::Accept(Some(99))
+        );
+        assert_eq!(
+            decide(None, None, true, Admission::Mab, &p),
+            Decision::Accept(Some(50))
+        );
+        assert_eq!(
+            decide(Some(TrustState::Unknown), None, true, Admission::Mab, &p),
+            Decision::Accept(Some(50))
+        );
+        // Classified devices don't go through the portal.
+        assert_eq!(
+            decide(Some(TrustState::Trusted), None, false, Admission::Mab, &p),
+            Decision::Accept(Some(10))
+        );
+        // A registered guest on a quarantined port is still quarantined.
+        assert_eq!(
+            decide(
+                None,
+                Some(EnforcementKind::Quarantine),
+                true,
+                Admission::Mab,
+                &p
+            ),
+            Decision::Accept(Some(999))
+        );
+        // No registration VLAN configured: fail closed.
+        p.registration_vlan = 0;
+        assert_eq!(
+            decide(None, None, false, Admission::Mab, &p),
+            Decision::Reject
+        );
+        // A device that passed 802.1X never needs the portal.
+        assert_eq!(
+            decide(None, None, false, Admission::Authenticated, &p),
+            Decision::Accept(None)
+        );
+        // No guest VLAN: a registered guest is accepted without one.
+        p.guest_vlan = 0;
+        assert_eq!(
+            decide(None, None, true, Admission::Mab, &p),
+            Decision::Accept(None)
+        );
+    }
+
+    #[test]
+    fn port_enforcement_wins_over_trust() {
+        let mut p = policy();
+        let trusted = Some(TrustState::Trusted);
+        // A trusted device on a quarantined port stays quarantined.
+        assert_eq!(
+            decide(
+                trusted,
+                Some(EnforcementKind::Quarantine),
+                false,
+                Admission::Mab,
+                &p
+            ),
+            Decision::Accept(Some(999))
+        );
+        assert_eq!(
+            decide(
+                trusted,
+                Some(EnforcementKind::Disable),
+                false,
+                Admission::Mab,
+                &p
+            ),
+            Decision::Reject
+        );
+        // No quarantine VLAN: fail closed rather than admit.
+        p.quarantine_vlan = 0;
+        assert_eq!(
+            decide(
+                trusted,
+                Some(EnforcementKind::Quarantine),
+                false,
+                Admission::Mab,
+                &p
+            ),
+            Decision::Reject
+        );
     }
 
     #[test]

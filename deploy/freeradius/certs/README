@@ -1,0 +1,1 @@
+server.pem, server.key and ca.pem go here (see ../README.md). Never commit them.

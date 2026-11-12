@@ -20,6 +20,21 @@
     server won't start. Set it, then add NAS clients.
   </div>
   {% endif %}
+  {% if freeradius_enabled %}
+  <div class="info-banner">
+    <strong>802.1X through FreeRADIUS is configured</strong> (<code>FREERADIUS_API_TOKEN</code> is set).
+    FreeRADIUS answers RADIUS on these ports and handles EAP-TLS and MAB; Panopticon still decides every
+    device's admission with the policy below, supplies the NAS clients' secrets, and records accounting.
+    The embedded server stays off.
+    {% if freeradius_last_call.is_empty() %}<br><em>FreeRADIUS hasn't called in since this server started.
+    Start it with <code>docker compose --profile freeradius up -d</code>.</em>{% else %}<br>Last request from
+    FreeRADIUS: {{ freeradius_last_call }}.{% endif %}
+    See <code>deploy/freeradius/README.md</code>.
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted);">For 802.1X (EAP-TLS, certificate-based) logins, run FreeRADIUS in front of
+  this server: see <code>deploy/freeradius/README.md</code>.</p>
+  {% endif %}
 </div>
 
 <div class="card">
@@ -48,7 +63,10 @@
     <select id="radius-unknown" name="unknown_action">
       {% for (key, label, selected) in unknown_actions %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
     </select>
-    <label for="radius-guest-vlan">Guest VLAN (for "Guest VLAN" action)</label>
+    <small style="color:var(--text-muted);"><em>Registration portal</em> sends unknown devices to the
+      registration VLAN until a guest registration for them is approved, then to the guest VLAN
+      (<a href="/arsenals/panopticon/portal">Registration portal</a>).</small>
+    <label for="radius-guest-vlan">Guest VLAN (for "Guest VLAN", and approved registrations)</label>
     <input type="number" id="radius-guest-vlan" name="guest_vlan" min="0" max="4094" value="{{ guest_vlan }}" style="max-width:120px;">
 
     <p style="color:var(--text-muted); margin-top:8px;">
@@ -69,17 +87,34 @@
 
 <div class="card">
   <h3>{% call macros::icon("host") %} NAS clients</h3>
-  <p style="color:var(--text-muted); margin-top:0;">The switches/APs allowed to talk to the RADIUS server, each with its shared secret.</p>
+  <p style="color:var(--text-muted); margin-top:0;">The switches/APs allowed to talk to the RADIUS server, each with its shared secret.
+  <strong>CoA</strong> is how Panopticon tells a NAS to re-authorize a session when a device's trust changes or its port
+  is quarantined or released, so the change applies now instead of at the next login: <em>Disconnect</em> (RFC 5176,
+  most switches and controllers; the device briefly drops) or <em>Reauthenticate</em> (Cisco CoA; no drop). The NAS must
+  accept dynamic authorization from this server's address with the same shared secret (Cisco:
+  <code>aaa server radius dynamic-author</code>), on UDP port 3799 unless you set another.</p>
   {% if clients.is_empty() %}
   <p style="color:var(--text-muted);">No clients yet &mdash; add one below.</p>
   {% else %}
   <table>
-    <thead><tr><th>Name</th><th>NAS address</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr></thead>
+    <thead><tr><th>Name</th><th>NAS address</th><th>CoA</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr></thead>
     <tbody>
       {% for c in clients %}
       <tr>
         <td>{{ c.name }}</td>
         <td>{{ c.nas_address }}</td>
+        <td>
+          {% if can_manage %}
+          <form method="post" action="/arsenals/panopticon/radius/clients/{{ c.id }}/coa" style="display:flex; gap:4px; flex-wrap:wrap; align-items:center;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <select name="coa_mode" aria-label="CoA mode for {{ c.name }}">
+              {% for (key, label, selected) in c.coa_modes %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+            <input type="number" name="coa_port" min="1" max="65535" value="{{ c.coa_port }}" style="max-width:90px;" aria-label="CoA port for {{ c.name }}">
+            <button type="submit" class="btn btn-secondary btn-sm">Save</button>
+          </form>
+          {% else %}{{ c.coa_label }}{% if c.coa_label != "Off" %} (port {{ c.coa_port }}){% endif %}{% endif %}
+        </td>
         <td>{% if c.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-muted">Disabled</span>{% endif %}</td>
         {% if can_manage %}
         <td class="actions">
@@ -109,6 +144,12 @@
     <input type="text" id="client-addr" name="nas_address" required maxlength="64" style="max-width:220px;" placeholder="10.0.0.2 or 10.0.0.0/24">
     <label for="client-secret">Shared secret</label>
     <input type="password" id="client-secret" name="shared_secret" required autocomplete="new-password" style="max-width:280px;">
+    <label for="client-coa">CoA (re-authorize sessions on change)</label>
+    <select id="client-coa" name="coa_mode">
+      {% for (key, label, selected) in new_client_coa_modes %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <label for="client-coa-port">CoA port</label>
+    <input type="number" id="client-coa-port" name="coa_port" min="1" max="65535" value="3799" style="max-width:110px;">
     <div class="actions" style="margin-top:12px;">
       <button type="submit" class="btn btn-warning">{% call macros::icon("generate") %} Add NAS client</button>
     </div>
@@ -122,7 +163,7 @@
   <p style="color:var(--text-muted); margin-top:0;">No accounted sessions yet. Configure your NAS to send accounting here to see "who authenticated where".</p>
   {% else %}
   <table>
-    <thead><tr><th>MAC</th><th>Identity</th><th>NAS</th><th>Port</th><th>Framed IP</th><th>Method</th><th>Started</th><th>Last seen</th><th>State</th></tr></thead>
+    <thead><tr><th>MAC</th><th>Identity</th><th>NAS</th><th>Port</th><th>Framed IP</th><th>Method</th><th>Started</th><th>Last seen</th><th>State</th><th>Last CoA</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for s in sessions %}
       <tr>
@@ -135,6 +176,17 @@
         <td>{{ s.started_at }}</td>
         <td>{{ s.last_seen_at }}</td>
         <td>{% if s.active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-muted">Closed</span>{% endif %}</td>
+        <td>{% if s.last_coa.is_empty() %}&mdash;{% else %}{{ s.last_coa }}{% endif %}</td>
+        {% if can_manage %}
+        <td>
+          {% if s.active %}
+          <form method="post" action="/arsenals/panopticon/radius/sessions/{{ s.id }}/reauthorize" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-secondary btn-sm" title="Ask the NAS to re-authorize this session now">Reauthorize</button>
+          </form>
+          {% endif %}
+        </td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

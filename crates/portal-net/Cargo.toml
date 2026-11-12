@@ -1,0 +1,19 @@
+[package]
+name = "abyssal-portal-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# The registration portal's network services (0.2.7 N5): a small DHCP server
+# and a captive DNS responder for the registration VLAN. No database or web
+# code, so it builds and tests on its own (examples/portal_net.rs is the
+# harness deploy/registration/test/run.sh runs against real clients).
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+socket2.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
