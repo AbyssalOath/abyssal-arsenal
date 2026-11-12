@@ -76,7 +76,7 @@ is audited.
 
 | Operation | Kind | What it does |
 | --- | --- | --- |
-| `ScourgeInstall` | Write | Install Suricata via Apothecary (never a raw package-manager call) |
+| `ScourgeInstall` | Write | Install Suricata via Apothecary (never a raw package-manager call), then set it up: rules, capture interface, start + enable |
 | `ScourgeSensorStatus` | Read | Engine presence/version, service state, EVE-log readability |
 | `ScourgeCollectEvents` | Read | The unattended sweep's reader: tail new EVE alerts from a cursor/offset |
 | `ScourgeListRules` | Read | List/search the active ruleset |
@@ -110,16 +110,39 @@ sweep robust even when the agent's `PATH` is minimal.
 
 ## Getting a new sensor running
 
-A freshly installed Suricata package usually can't start yet: the stock
-config listens on `eth0`, which many hosts don't have (`ens18`, `enp0s3`,
-...), and no rules have been downloaded. **Sensor Status** says so under
-*What to fix*, lists the host's own interfaces, and, when the service has
-failed, shows its last log lines. In order:
+A bare Suricata package usually can't start: the stock config listens on
+`eth0`, which many hosts don't have (`ens18`, `enp3s0`, ...), and no rules
+have been downloaded. So **Install sensor** (`ScourgeInstall`) doesn't stop
+at the package. After installing it, the agent:
 
-1. **Sensor configuration:** set the interface(s) to watch, from the host's
-   list.
-2. **Update rules:** runs `suricata-update` to download the ruleset.
-3. **Service: Start**, then **Sensor Status** again.
+1. runs `suricata-update` to download rules;
+2. clears systemd's start limit (`systemctl reset-failed suricata`), which a
+   sensor crash-looping on a missing interface has usually hit;
+3. picks the capture interface, unless every configured one already exists
+   on the host (a working choice is never replaced):
+   - the NIC carrying the IPv4 default route (lowest metric), skipping
+     tunnels and container plumbing (`docker*`, `br-*`, `veth*`, `virbr*`,
+     `wg*`, `tun*`, CNI interfaces, ...). A bridged hypervisor whose default
+     route is on `br0` gets `br0`;
+   - otherwise the only physical NIC (`/sys/class/net/<nic>/device`) that is
+     up;
+   - otherwise nothing: several candidates and no default route is the
+     operator's call, and the result says which ones.
+
+   The interface is applied like **Sensor configuration** does it (Scourge's
+   override, `suricata -T`, then start, with rollback on failure), keeping
+   any `HOME_NET`/`EXTERNAL_NET` and EVE output already in the override;
+4. enables the service at boot and reports whether it's running.
+
+The result lists what was done and anything still to do (no internet for
+`suricata-update`, no interface it could choose, a service that still won't
+start). Install is safe to re-run on an installed sensor, which is the
+one-click fix for one stuck on `eth0`; **Sensor Status** suggests it, naming
+the interface it would pick.
+
+To do it by hand instead: **Sensor configuration** (interface), **Update
+rules**, then **Service: Start**. **Sensor Status** lists the host's
+interfaces and, when the service has failed, its last log lines.
 
 Applying a config and updating rules put the change into effect with
 `systemctl reload-or-restart`, so they also work while the service is
