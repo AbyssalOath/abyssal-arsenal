@@ -146,7 +146,6 @@ askama_axum = "0.4"
 dotenvy = "0.15"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 tokio-util = "0.7"
-strum = { version = "0.26", features = ["derive"] }
 time = "0.3"
 aes-gcm = { version = "0.10", features = ["zeroize", "stream"] }
 tar = "0.4"

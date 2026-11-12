@@ -233,7 +233,6 @@ impl Executor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     async fn audit_host_op(
         &self,
         ctx: &AuthContext,
