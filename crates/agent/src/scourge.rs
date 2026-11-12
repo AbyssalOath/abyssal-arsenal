@@ -221,19 +221,11 @@ mod linux {
         // else the main config's -- only real entries, not comments or the
         // `default` template -- each checked against this host's NICs.
         let host_nics = host_interfaces().await;
-        let override_yaml = tokio::fs::read_to_string(OVERRIDE_FILE)
-            .await
-            .unwrap_or_default();
-        let (configured, source) = match af_packet_interfaces(&override_yaml) {
-            set if !set.is_empty() => (set, " (set by Scourge)"),
-            _ => (
-                af_packet_interfaces(
-                    &tokio::fs::read_to_string(SURICATA_YAML)
-                        .await
-                        .unwrap_or_default(),
-                ),
-                "",
-            ),
+        let (configured, override_yaml) = configured_interfaces().await;
+        let source = if af_packet_interfaces(&override_yaml).is_empty() {
+            ""
+        } else {
+            " (set by Scourge)"
         };
         let missing: Vec<&String> = configured
             .iter()
@@ -263,21 +255,31 @@ mod linux {
                 host_nics.join(", ")
             ));
         }
-        if configured.is_empty() {
-            problems.push(
-                "No capture interface is configured. Set one under Sensor configuration.".into(),
-            );
-        } else if !missing.is_empty() {
-            problems.push(format!(
-                "Suricata is set to listen on {}, which this host doesn't have, so it can't \
-                 start. Set the interface to one of: {} (Sensor configuration).",
-                missing
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                host_nics.join(", ")
-            ));
+        if configured.is_empty() || !missing.is_empty() {
+            // Name the NIC Install sensor would pick, so the fix is one click.
+            let fix = match detect_capture_interface().await {
+                Ok((nic, why)) => format!(
+                    "Re-run Install sensor to set it to {nic} ({why}) and start it, or set \
+                     it under Sensor configuration."
+                ),
+                Err(_) => format!(
+                    "Set it under Sensor configuration to one of: {}.",
+                    host_nics.join(", ")
+                ),
+            };
+            problems.push(if configured.is_empty() {
+                format!("No capture interface is configured. {fix}")
+            } else {
+                format!(
+                    "Suricata is set to listen on {}, which this host doesn't have, so it \
+                     can't start. {fix}",
+                    missing
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            });
         }
 
         // Rules: missing (never downloaded), unreadable, or loaded.
@@ -425,6 +427,156 @@ mod linux {
         }
         names.sort();
         names
+    }
+
+    /// A NIC as far as choosing a capture interface is concerned.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Nic {
+        name: String,
+        /// Backed by a device (`/sys/class/net/<nic>/device`), i.e. a real
+        /// NIC rather than a bridge, veth, tunnel or other software interface.
+        physical: bool,
+        /// `operstate` is `up`.
+        up: bool,
+    }
+
+    /// Interface name prefixes that are never the network a sensor should
+    /// watch: container plumbing (Docker, Podman, LXC, Kubernetes CNIs),
+    /// hypervisor guest taps, VPN tunnels, and kernel pseudo-devices.
+    const NOT_A_CAPTURE_NIC: &[&str] = &[
+        "lo",
+        "docker",
+        "br-",
+        "veth",
+        "virbr",
+        "vnet",
+        "tun",
+        "tap",
+        "wg",
+        "tailscale",
+        "zt",
+        "cni",
+        "flannel",
+        "cali",
+        "vxlan",
+        "kube",
+        "lxc",
+        "lxd",
+        "podman",
+        "cilium",
+        "dummy",
+        "sit",
+        "ip6tnl",
+        "gre",
+        "erspan",
+        "ifb",
+        "nlmon",
+    ];
+
+    fn is_capture_candidate(name: &str) -> bool {
+        !NOT_A_CAPTURE_NIC.iter().any(|p| name.starts_with(p))
+    }
+
+    /// Picks the interface a fresh sensor should listen on, and says why:
+    ///
+    /// 1. the one carrying the IPv4 default route (lowest metric first),
+    ///    unless that's a tunnel or container bridge -- this is the host's
+    ///    "real" network on almost every server, and it's how a bridged
+    ///    hypervisor host (default route on `br0`) still gets the right one;
+    /// 2. else the only physical NIC that's up.
+    ///
+    /// Anything else (no candidates, or several physical NICs and no default
+    /// route to choose between them) is the operator's call, so it's an
+    /// error naming the candidates rather than a guess.
+    fn pick_capture_interface(
+        route_table: &str,
+        nics: &[Nic],
+    ) -> Result<(String, &'static str), String> {
+        let exists = |name: &str| nics.iter().any(|n| n.name == name);
+        let mut defaults: Vec<(u32, &str)> = route_table
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let f: Vec<&str> = line.split_whitespace().collect();
+                // Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+                let flags = u32::from_str_radix(f.get(3)?, 16).ok()?;
+                let is_default = f.get(1)? == &"00000000" && f.get(7)? == &"00000000";
+                (is_default && flags & 0x1 != 0)
+                    .then(|| Some((f.get(6)?.parse().ok()?, f[0])))
+                    .flatten()
+            })
+            .collect();
+        defaults.sort();
+        if let Some((_, name)) = defaults
+            .iter()
+            .find(|(_, n)| is_capture_candidate(n) && exists(n))
+        {
+            return Ok((name.to_string(), "it carries this host's default route"));
+        }
+        let physical: Vec<&Nic> = nics
+            .iter()
+            .filter(|n| n.physical && n.up && is_capture_candidate(&n.name))
+            .collect();
+        match physical.as_slice() {
+            [only] => Ok((only.name.clone(), "it's the only active physical NIC")),
+            [] => Err(
+                "couldn't find a network interface to monitor (no default route \
+                       and no active physical NIC)"
+                    .to_string(),
+            ),
+            several => Err(format!(
+                "this host has several active NICs ({}) and no default route to choose \
+                 between them",
+                several
+                    .iter()
+                    .map(|n| n.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    /// [`pick_capture_interface`] on this host's live route table and NICs.
+    async fn detect_capture_interface() -> Result<(String, &'static str), String> {
+        let route_table = tokio::fs::read_to_string("/proc/net/route")
+            .await
+            .unwrap_or_default();
+        let mut nics = Vec::new();
+        for name in host_interfaces().await {
+            let base = format!("/sys/class/net/{name}");
+            let physical = tokio::fs::metadata(format!("{base}/device")).await.is_ok();
+            let up = tokio::fs::read_to_string(format!("{base}/operstate"))
+                .await
+                .is_ok_and(|s| s.trim() == "up");
+            nics.push(Nic { name, physical, up });
+        }
+        pick_capture_interface(&route_table, &nics)
+    }
+
+    /// The interfaces Suricata is set to listen on (Scourge's override wins,
+    /// else the main config), and the text of Scourge's override.
+    async fn configured_interfaces() -> (Vec<String>, String) {
+        let override_yaml = tokio::fs::read_to_string(OVERRIDE_FILE)
+            .await
+            .unwrap_or_default();
+        let set = match af_packet_interfaces(&override_yaml) {
+            set if !set.is_empty() => set,
+            _ => af_packet_interfaces(
+                &tokio::fs::read_to_string(SURICATA_YAML)
+                    .await
+                    .unwrap_or_default(),
+            ),
+        };
+        (set, override_yaml)
+    }
+
+    /// An address-group value (`HOME_NET` / `EXTERNAL_NET`) from Scourge's
+    /// override, so rewriting the override to change interfaces keeps it.
+    fn override_var(yaml: &str, var: &str) -> String {
+        yaml.lines()
+            .find_map(|l| l.trim().strip_prefix(var)?.strip_prefix(':'))
+            .map(|v| v.trim().trim_matches('"').to_string())
+            .unwrap_or_default()
     }
 
     // ---- Event collection (the sweep op) -------------------------------
@@ -822,9 +974,145 @@ mod linux {
         }
     }
 
+    /// Installs Suricata, then gets it running with no further clicks: points
+    /// it at the right NIC, downloads rules, and starts and enables the
+    /// service. Safe to re-run on an installed sensor (that's how a sensor
+    /// stuck on the packaged `eth0` default gets fixed); a working interface
+    /// choice is never replaced.
+    ///
+    /// A failed package install is an error. Once the package is in, it's
+    /// always Ok: each setup step reports what it did, and anything left for
+    /// the operator is listed under "Still to do".
     pub async fn install(elevation: &ElevationState) -> CommandOutcome {
         // Always via Apothecary's package backend, never a raw package call.
-        crate::apothecary::install_package("suricata".to_string(), elevation).await
+        let package =
+            match crate::apothecary::install_package("suricata".to_string(), elevation).await {
+                CommandOutcome::Ok(o) => o,
+                err => return err,
+            };
+        let mut done: Vec<String> = vec!["Installed the suricata package.".into()];
+        let mut todo: Vec<String> = Vec::new();
+
+        // 1. Rules first, so the config check and first start load a ruleset.
+        match elevation.run_allow_failure("suricata-update", &[]).await {
+            Ok(o) if o.exit_code == Some(0) => {
+                done.push("Downloaded rules (suricata-update).".into())
+            }
+            Ok(o) => todo.push(format!(
+                "suricata-update failed, so no rules are loaded yet (often no internet \
+                 access from this host); run Update rules once it can reach the rule \
+                 sources. Last output: {}",
+                last_line(&o.stderr)
+                    .or(last_line(&o.stdout))
+                    .unwrap_or("none")
+            )),
+            Err(e) => todo.push(format!("suricata-update couldn't run: {e}")),
+        }
+
+        // A sensor that crash-looped on a missing interface has hit systemd's
+        // start limit and would refuse to start until this.
+        if init_system::detect().await == InitSystem::Systemd {
+            let _ = elevation
+                .run_allow_failure("systemctl", &["reset-failed", "suricata"])
+                .await;
+        }
+
+        // 2. Interface: keep a working choice, otherwise detect one.
+        let host_nics = host_interfaces().await;
+        let (configured, override_yaml) = configured_interfaces().await;
+        let configured_ok =
+            !configured.is_empty() && configured.iter().all(|i| host_nics.contains(i));
+        if configured_ok {
+            done.push(format!(
+                "Kept the configured interface: {}.",
+                configured.join(", ")
+            ));
+        } else {
+            match detect_capture_interface().await {
+                Ok((nic, why)) => {
+                    // apply_config validates, then starts or reloads the
+                    // service, and rolls back if either fails.
+                    // HOME_NET/EXTERNAL_NET and EVE output carry over from
+                    // the override being replaced.
+                    let outcome = apply_config(
+                        vec![nic.clone()],
+                        override_var(&override_yaml, "HOME_NET"),
+                        override_var(&override_yaml, "EXTERNAL_NET"),
+                        override_yaml.lines().any(|l| l.starts_with("outputs:")),
+                        elevation,
+                    )
+                    .await;
+                    match outcome {
+                        CommandOutcome::Ok(_) => {
+                            done.push(format!("Set the capture interface to {nic} ({why})."))
+                        }
+                        CommandOutcome::Err(e) => todo.push(format!(
+                            "Setting the capture interface to {nic} failed and was rolled \
+                             back: {e}"
+                        )),
+                    }
+                }
+                Err(e) => todo.push(format!(
+                    "Choose the capture interface under Sensor configuration: {e}."
+                )),
+            }
+        }
+
+        // 3. Service: enabled at boot, and running on the current config.
+        if init_system::detect().await == InitSystem::Systemd {
+            if elevation
+                .run_allow_failure("systemctl", &["enable", "suricata"])
+                .await
+                .is_ok_and(|o| o.exit_code == Some(0))
+            {
+                done.push("Enabled suricata at boot.".into());
+            }
+            // apply_config already started it; otherwise (interface kept) load
+            // the new rules now, but only past a config check.
+            if configured_ok {
+                match validate_config(elevation).await {
+                    Ok(_) => {
+                        if let Err(e) = reload(elevation).await {
+                            todo.push(format!("Starting suricata failed: {e}"));
+                        }
+                    }
+                    Err(e) => todo.push(format!("Not started: {e}")),
+                }
+            }
+            let state = run_command_allow_failure("systemctl", &["is-active", "suricata"])
+                .await
+                .map(|o| o.stdout.trim().to_string())
+                .unwrap_or_else(|_| "unknown".into());
+            if state == "active" {
+                done.push("suricata is running.".into());
+            } else {
+                todo.push(format!(
+                    "suricata is {state}. Check Sensor status for why, then Start it."
+                ));
+            }
+        } else {
+            todo.push("This host doesn't use systemd; start suricata yourself.".into());
+        }
+
+        let mut report = String::from("Sensor setup:\n");
+        for line in &done {
+            report.push_str(&format!("  - {line}\n"));
+        }
+        if !todo.is_empty() {
+            report.push_str("Still to do:\n");
+            for line in &todo {
+                report.push_str(&format!("  - {line}\n"));
+            }
+        }
+        report.push_str(&format!(
+            "\nPackage install output:\n{}",
+            package.stdout.trim()
+        ));
+        ok(report)
+    }
+
+    fn last_line(s: &str) -> Option<&str> {
+        s.lines().map(str::trim).rfind(|l| !l.is_empty())
     }
 
     pub async fn apply_config(
@@ -1970,6 +2258,113 @@ netmap:
   - interface: eth2
   - interface: default
 "#;
+
+        const ROUTE_HEADER: &str =
+            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n";
+
+        fn route(iface: &str, dest: &str, flags: &str, metric: u32, mask: &str) -> String {
+            format!("{iface}\t{dest}\t0101A8C0\t{flags}\t0\t0\t{metric}\t{mask}\t0\t0\t0\n")
+        }
+
+        fn nic(name: &str, physical: bool, up: bool) -> Nic {
+            Nic {
+                name: name.into(),
+                physical,
+                up,
+            }
+        }
+
+        /// A Docker host like the one that hit the `eth0` default: one real
+        /// NIC among bridges and veths.
+        fn docker_host() -> Vec<Nic> {
+            let mut nics = vec![
+                nic("br-4a987c5126b1", false, true),
+                nic("docker0", false, true),
+                nic("enp3s0", true, true),
+            ];
+            nics.extend((0..17).map(|i| nic(&format!("veth{i:07x}"), false, true)));
+            nics
+        }
+
+        #[test]
+        fn picks_the_default_route_nic() {
+            let table = format!(
+                "{ROUTE_HEADER}{}{}{}",
+                route("docker0", "000011AC", "0001", 0, "0000FFFF"),
+                route("enp3s0", "00000000", "0003", 100, "00000000"),
+                route("enp3s0", "0001A8C0", "0001", 100, "00FFFFFF"),
+            );
+            assert_eq!(
+                pick_capture_interface(&table, &docker_host()).unwrap().0,
+                "enp3s0"
+            );
+        }
+
+        #[test]
+        fn lowest_metric_default_route_wins_and_tunnels_are_skipped() {
+            let nics = vec![
+                nic("eno1", true, true),
+                nic("eno2", true, true),
+                nic("wg0", false, true),
+            ];
+            let table = format!(
+                "{ROUTE_HEADER}{}{}{}",
+                route("wg0", "00000000", "0001", 0, "00000000"),
+                route("eno2", "00000000", "0003", 200, "00000000"),
+                route("eno1", "00000000", "0003", 100, "00000000"),
+            );
+            assert_eq!(pick_capture_interface(&table, &nics).unwrap().0, "eno1");
+        }
+
+        #[test]
+        fn a_bridged_hypervisor_uses_its_bridge() {
+            let nics = vec![
+                nic("br0", false, true),
+                nic("eno1", true, true),
+                nic("vnet0", false, true),
+            ];
+            let table = format!(
+                "{ROUTE_HEADER}{}",
+                route("br0", "00000000", "0003", 0, "00000000")
+            );
+            assert_eq!(pick_capture_interface(&table, &nics).unwrap().0, "br0");
+        }
+
+        #[test]
+        fn without_a_default_route_only_a_lone_physical_nic_is_picked() {
+            assert_eq!(
+                pick_capture_interface(ROUTE_HEADER, &docker_host())
+                    .unwrap()
+                    .0,
+                "enp3s0"
+            );
+            // A down NIC doesn't count; two up ones is the operator's call.
+            let nics = vec![nic("eno1", true, true), nic("eno2", true, false)];
+            assert_eq!(pick_capture_interface("", &nics).unwrap().0, "eno1");
+            let nics = vec![nic("eno1", true, true), nic("eno2", true, true)];
+            let err = pick_capture_interface("", &nics).unwrap_err();
+            assert!(err.contains("eno1, eno2"), "{err}");
+            assert!(pick_capture_interface("", &[nic("docker0", false, true)]).is_err());
+        }
+
+        #[test]
+        fn a_default_route_on_a_missing_or_down_flagged_nic_is_ignored() {
+            let nics = vec![nic("enp3s0", true, true)];
+            // Route not RTF_UP, and a route on a NIC that isn't listed.
+            let table = format!(
+                "{ROUTE_HEADER}{}{}",
+                route("eno9", "00000000", "0002", 0, "00000000"),
+                route("eth0", "00000000", "0003", 0, "00000000"),
+            );
+            assert_eq!(pick_capture_interface(&table, &nics).unwrap().0, "enp3s0");
+        }
+
+        #[test]
+        fn reads_override_vars() {
+            let yaml = "%YAML 1.1\n---\nvars:\n  address-groups:\n    HOME_NET: \"[10.0.0.0/8]\"\naf-packet:\n  - interface: eth0\n";
+            assert_eq!(override_var(yaml, "HOME_NET"), "[10.0.0.0/8]");
+            assert_eq!(override_var(yaml, "EXTERNAL_NET"), "");
+        }
 
         #[test]
         fn reads_only_real_af_packet_interfaces() {

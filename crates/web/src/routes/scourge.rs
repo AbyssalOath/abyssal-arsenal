@@ -1366,7 +1366,10 @@ pub async fn install_confirm(
         host_id,
         "Install Suricata sensor",
         "This installs the Suricata IDS/IPS engine on this host via Apothecary's package \
-         backend. It needs elevation (sudo)."
+         backend, then sets it up: it points Suricata at the host's network interface (the \
+         one carrying the default route) unless a working one is already configured, \
+         downloads rules, and starts and enables the service. Re-running it on an installed \
+         sensor repairs one stuck on a missing interface. It needs elevation (sudo)."
             .to_string(),
         format!("/arsenals/scourge/{host_id}/install"),
         None,
