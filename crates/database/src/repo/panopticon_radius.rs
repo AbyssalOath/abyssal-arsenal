@@ -1,7 +1,7 @@
 //! Persistence for Panopticon's embedded RADIUS server (phase 5): the NAS
 //! clients it accepts requests from and the sessions it accounts.
 
-use abyssal_core::{CoaMode, RadiusClient, RadiusSession};
+use abyssal_core::{CoaMode, RadiusClient, RadiusGroupRule, RadiusSession, RoleAttribute};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -23,6 +23,7 @@ struct ClientRow {
     enabled: bool,
     coa_mode: String,
     coa_port: u16,
+    role_attribute: String,
     created_at: NaiveDateTime,
 }
 
@@ -36,6 +37,7 @@ impl From<ClientRow> for RadiusClient {
             enabled: r.enabled,
             coa_mode: r.coa_mode.parse().unwrap_or_default(),
             coa_port: r.coa_port,
+            role_attribute: r.role_attribute.parse().unwrap_or_default(),
             created_at: utc(r.created_at),
         }
     }
@@ -48,12 +50,13 @@ pub async fn create_client(
     shared_secret_encrypted: &str,
     coa_mode: CoaMode,
     coa_port: u16,
+    role_attribute: RoleAttribute,
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO panopticon_radius_clients \
-         (id, name, nas_address, shared_secret_encrypted, coa_mode, coa_port) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (id, name, nas_address, shared_secret_encrypted, coa_mode, coa_port, role_attribute) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(name)
@@ -61,6 +64,7 @@ pub async fn create_client(
     .bind(shared_secret_encrypted)
     .bind(coa_mode.as_str())
     .bind(coa_port)
+    .bind(role_attribute.as_str())
     .execute(pool)
     .await?;
     Ok(id)
@@ -104,6 +108,20 @@ pub async fn set_client_coa(
     sqlx::query("UPDATE panopticon_radius_clients SET coa_mode = ?, coa_port = ? WHERE id = ?")
         .bind(coa_mode.as_str())
         .bind(coa_port)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Sets which attribute carries a role name to this NAS (0.2.8 P2).
+pub async fn set_client_role_attribute(
+    pool: &DbPool,
+    id: Uuid,
+    role_attribute: RoleAttribute,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE panopticon_radius_clients SET role_attribute = ? WHERE id = ?")
+        .bind(role_attribute.as_str())
         .bind(id.to_string())
         .execute(pool)
         .await?;
@@ -323,4 +341,81 @@ pub async fn macs_with_open_sessions(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(m,)| m).collect())
+}
+
+// ---- AD group -> VLAN rules (0.2.8 P1) ----
+
+#[derive(FromRow)]
+struct GroupRuleRow {
+    id: String,
+    group_name: String,
+    vlan: u16,
+    role: Option<String>,
+    position: i32,
+    created_at: NaiveDateTime,
+}
+
+impl From<GroupRuleRow> for RadiusGroupRule {
+    fn from(r: GroupRuleRow) -> Self {
+        RadiusGroupRule {
+            id: Uuid::parse_str(&r.id).unwrap_or_default(),
+            group_name: r.group_name,
+            vlan: r.vlan,
+            role: r.role.filter(|r| !r.is_empty()),
+            position: r.position,
+            created_at: utc(r.created_at),
+        }
+    }
+}
+
+/// Every group rule, in the order they're evaluated: position, then age.
+pub async fn list_group_rules(pool: &DbPool) -> anyhow::Result<Vec<RadiusGroupRule>> {
+    let rows: Vec<GroupRuleRow> = sqlx::query_as(
+        "SELECT id, group_name, vlan, role, position, created_at \
+         FROM panopticon_radius_group_rules ORDER BY position ASC, created_at ASC, id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+pub async fn create_group_rule(
+    pool: &DbPool,
+    group_name: &str,
+    vlan: u16,
+    role: Option<&str>,
+    position: i32,
+) -> anyhow::Result<Uuid> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO panopticon_radius_group_rules (id, group_name, vlan, role, position) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(group_name)
+    .bind(vlan)
+    .bind(role)
+    .bind(position)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Deletes a rule, returning it (for the audit record), or `None` if there
+/// was no such rule.
+pub async fn delete_group_rule(pool: &DbPool, id: Uuid) -> anyhow::Result<Option<RadiusGroupRule>> {
+    let row: Option<GroupRuleRow> = sqlx::query_as(
+        "SELECT id, group_name, vlan, role, position, created_at \
+         FROM panopticon_radius_group_rules WHERE id = ?",
+    )
+    .bind(id.to_string())
+    .fetch_optional(pool)
+    .await?;
+    if row.is_some() {
+        sqlx::query("DELETE FROM panopticon_radius_group_rules WHERE id = ?")
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
+    }
+    Ok(row.map(Into::into))
 }

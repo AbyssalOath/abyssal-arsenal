@@ -1,0 +1,65 @@
+#  Abyssal Arsenal: the inside of a PEAP tunnel (mods-enabled/eap, peap).
+#
+#  Only EAP-MSCHAPv2, checked against Active Directory by the mschap module
+#  (ntlm_auth through winbindd). There's no local password store, so any
+#  other inner method is rejected. Which VLAN the device gets is decided
+#  afterwards, by MAC, in the outer server's post-auth (sites-enabled/abyssal),
+#  exactly as for EAP-TLS.
+#
+#  No listen section: only reachable from inside a PEAP tunnel.
+
+server abyssal-inner {
+	authorize {
+		#  The inner EAP conversation. Like the outer server, "updated"
+		#  (mid-conversation) must end authorize too.
+		eap {
+			ok = return
+			updated = return
+		}
+		reject
+	}
+
+	authenticate {
+		#  The eap module's mschapv2 method hands the MSCHAPv2 exchange to
+		#  this Auth-Type.
+		Auth-Type MS-CHAP {
+			mschap
+		}
+		eap
+	}
+
+	post-auth {
+		#  The outer User-Name is often "anonymous": pass the real login on,
+		#  so the NAS's accounting and Panopticon's logs show who it was.
+		update outer.session-state {
+			&User-Name := &request:User-Name
+		}
+
+		#  VLAN by AD group (0.2.8 P1): which of the groups Panopticon's
+		#  group rules name this login is in. No rules, or the call fails:
+		#  nothing to look up, and Panopticon decides without groups (a
+		#  failed call must not fail the login, hence the overrides).
+		abyssal_groups {
+			fail = 1
+			reject = 1
+			invalid = 1
+			notfound = 1
+			userlock = 1
+		}
+		if (&control:Abyssal-AD-Group-Candidates) {
+			update control {
+				&Abyssal-AD-Login := "%{mschap:User-Name}"
+			}
+			update outer.session-state {
+				&Abyssal-AD-Groups := "%{abyssal_ad_groups:/usr/local/bin/abyssal-ad-groups}"
+			}
+		}
+
+		Post-Auth-Type REJECT {
+			attr_filter.access_reject
+			update outer.session-state {
+				&Module-Failure-Message := &request:Module-Failure-Message
+			}
+		}
+	}
+}

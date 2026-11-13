@@ -33,6 +33,13 @@ class H(BaseHTTPRequestHandler):
         if not self.check(): return
         u = urlparse(self.path)
         print("API GET", u.path, parse_qs(u.query), flush=True)
+        if u.path == "/internal/radius/group-names":
+            # The groups Panopticon's AD group rules name. A marker file
+            # makes it fail, to test that a failure doesn't fail the login.
+            import os
+            if os.path.exists("/tmp/group-names-fail"):
+                return self.reply(500)
+            return self.reply(200, {"control:Abyssal-AD-Group-Candidates": L("TEST\\WiFi-Users;Staff;Nobody-Group;Domain Computers")})
         if u.path == "/internal/radius/client":
             ip = parse_qs(u.query)["ip"][0]
             # The name carries an expansion: it must arrive literally.
@@ -49,12 +56,20 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, {"control:Auth-Type": L("Reject"), "reply:Reply-Message": L("only 802.1X (EAP) and MAC authentication are accepted")})
             mac = norm(first(attrs, "Calling-Station-Id"))
             if mac == "aa:bb:cc:dd:ee:ff":
-                return self.reply(200, {"control:Auth-Type": L("Accept"), **VLAN(10)})
+                # A role as Panopticon sends it to a Filter-Id NAS (0.2.8 P2),
+                # and a re-authentication timeout (P4).
+                return self.reply(200, {"control:Auth-Type": L("Accept"), **VLAN(10), "reply:Filter-Id": L("EMPLOYEE.in"),
+                                        "reply:Session-Timeout": L("900"), "reply:Termination-Action": L("RADIUS-Request")})
             return self.reply(200, {"control:Auth-Type": L("Reject")})
         if u.path == "/internal/radius/post-auth":
             if norm(first(attrs, "Calling-Station-Id")) == "66:66:66:66:66:66":
                 return self.reply(200, {"control:Tmp-String-0": L("reject")})
-            return self.reply(200, VLAN(20))
+            # Like Panopticon's AD group rules: "Staff" -> VLAN 30.
+            groups = (first(attrs, "Abyssal-AD-Groups") or "").split(";")
+            if "Staff" in groups:
+                return self.reply(200, VLAN(30))
+            # A role as Panopticon sends it to an Aruba NAS (0.2.8 P2).
+            return self.reply(200, {**VLAN(20), "reply:Aruba-User-Role": L("staff")})
         if u.path == "/internal/radius/accounting":
             return self.reply(204)
         self.reply(404)

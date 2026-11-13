@@ -33,6 +33,11 @@ pub const ATTR_USER_PASSWORD: u8 = 2;
 pub const ATTR_CHAP_PASSWORD: u8 = 3;
 pub const ATTR_NAS_IP_ADDRESS: u8 = 4;
 pub const ATTR_FRAMED_IP_ADDRESS: u8 = 8;
+pub const ATTR_FILTER_ID: u8 = 11;
+pub const ATTR_SESSION_TIMEOUT: u8 = 27;
+pub const ATTR_TERMINATION_ACTION: u8 = 29;
+/// Termination-Action value: re-authenticate (RFC 2865 5.29).
+pub const TERMINATION_ACTION_RADIUS_REQUEST: u32 = 1;
 pub const ATTR_VENDOR_SPECIFIC: u8 = 26;
 pub const ATTR_CALLED_STATION_ID: u8 = 30;
 pub const ATTR_CALLING_STATION_ID: u8 = 31;
@@ -49,6 +54,9 @@ pub const ATTR_ERROR_CAUSE: u8 = 101;
 
 /// Cisco's IANA enterprise number, for its `Cisco-AVPair` VSA (type 1).
 const VENDOR_CISCO: u32 = 9;
+/// Aruba's IANA enterprise number, for its `Aruba-User-Role` VSA (type 1).
+const VENDOR_ARUBA: u32 = 14823;
+const ARUBA_USER_ROLE: u8 = 1;
 const CISCO_AVPAIR: u8 = 1;
 
 /// RFC 5176 Error-Cause: "the NAS has no such session".
@@ -308,6 +316,39 @@ pub fn build_response(
     let resp_auth = hasher.finalize();
     out[4..20].copy_from_slice(&resp_auth);
     out
+}
+
+/// The attribute naming a role (ACL / user role) for a NAS, 0.2.8 P2:
+/// `Filter-Id`, or Aruba's `Aruba-User-Role` VSA. Nothing for a NAS without
+/// a role attribute. Role names are validated (`validate_role_name`: 64
+/// ASCII characters at most), so they always fit.
+pub fn role_attributes(kind: abyssal_core::RoleAttribute, role: &str) -> Vec<(u8, Vec<u8>)> {
+    use abyssal_core::RoleAttribute;
+    let role = &role.as_bytes()[..role.len().min(247)];
+    match kind {
+        RoleAttribute::None => Vec::new(),
+        RoleAttribute::FilterId => vec![(ATTR_FILTER_ID, role.to_vec())],
+        RoleAttribute::ArubaUserRole => {
+            let mut v = VENDOR_ARUBA.to_be_bytes().to_vec();
+            v.push(ARUBA_USER_ROLE);
+            v.push((role.len() + 2) as u8);
+            v.extend_from_slice(role);
+            vec![(ATTR_VENDOR_SPECIFIC, v)]
+        }
+    }
+}
+
+/// Session-Timeout (seconds) with Termination-Action = RADIUS-Request,
+/// 0.2.8 P4: at the timeout the NAS re-authenticates the session (a new
+/// Access-Request) instead of ending it, so the link stays up.
+pub fn session_timeout_attributes(secs: u32) -> Vec<(u8, Vec<u8>)> {
+    vec![
+        (ATTR_SESSION_TIMEOUT, secs.to_be_bytes().to_vec()),
+        (
+            ATTR_TERMINATION_ACTION,
+            TERMINATION_ACTION_RADIUS_REQUEST.to_be_bytes().to_vec(),
+        ),
+    ]
 }
 
 /// A Cisco `Cisco-AVPair` vendor-specific attribute (`subscriber:command=...`).
@@ -577,5 +618,31 @@ mod tests {
         assert_eq!(attrs[1], (ATTR_TUNNEL_MEDIUM_TYPE, vec![1, 0, 0, 6]));
         assert_eq!(attrs[2].0, ATTR_TUNNEL_PRIVATE_GROUP_ID);
         assert_eq!(attrs[2].1, vec![1, b'4', b'2']);
+    }
+
+    #[test]
+    fn session_timeout_reauthenticates() {
+        assert_eq!(
+            session_timeout_attributes(900),
+            vec![(27, vec![0, 0, 0x03, 0x84]), (29, vec![0, 0, 0, 1])]
+        );
+    }
+
+    #[test]
+    fn role_attributes_per_vendor() {
+        use abyssal_core::RoleAttribute;
+        assert!(role_attributes(RoleAttribute::None, "QUARANTINE").is_empty());
+        assert_eq!(
+            role_attributes(RoleAttribute::FilterId, "QUARANTINE.in"),
+            vec![(11, b"QUARANTINE.in".to_vec())]
+        );
+        // Vendor-Specific: vendor 14823, type 1, length 2 + 5, "guest".
+        assert_eq!(
+            role_attributes(RoleAttribute::ArubaUserRole, "guest"),
+            vec![(
+                26,
+                vec![0, 0, 0x39, 0xe7, 1, 7, b'g', b'u', b'e', b's', b't']
+            )]
+        );
     }
 }

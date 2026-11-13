@@ -1,0 +1,19 @@
+#  Abyssal Arsenal's internal attributes (deploy/freeradius/README.md).
+#
+#  Numbers 3000-4000 are FreeRADIUS's range for local, internal attributes:
+#  they never go into a RADIUS packet, and a NAS or client can't send them.
+#  That's what makes the AD groups below trustworthy in Panopticon's
+#  post-auth decision (docs/roadmap/0.2.8.md, P1).
+
+#  The groups the AD group rules name, ';'-separated, from
+#  GET /internal/radius/group-names.
+ATTRIBUTE	Abyssal-AD-Group-Candidates	3100	string
+
+#  Those of them the PEAP login is a member of (nested included), from
+#  abyssal-ad-groups, sent to post-auth.
+ATTRIBUTE	Abyssal-AD-Groups		3101	string
+
+#  The login whose groups to look up (the inner User-Name as mschap
+#  resolves it: "alice", or "pc1$" for host/pc1.example.com). Passed to
+#  abyssal-ad-groups in its environment, never on its command line.
+ATTRIBUTE	Abyssal-AD-Login		3102	string
