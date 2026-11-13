@@ -407,6 +407,37 @@ pub const PANOPTICON_RADIUS_TIMEOUT_UNKNOWN_MINUTES: &str =
 pub const PANOPTICON_RADIUS_TIMEOUT_GUEST_MINUTES: &str = "panopticon.radius_timeout_guest_minutes";
 pub const PANOPTICON_RADIUS_TIMEOUT_REGISTRATION_MINUTES: &str =
     "panopticon.radius_timeout_registration_minutes";
+/// How long RADIUS decision records (and the policy engine's simulated
+/// matches) are kept, in days, 0.2.9 Q2. `0` keeps them forever.
+pub const PANOPTICON_RADIUS_DECISION_RETENTION_DAYS: &str =
+    "panopticon.radius_decision_retention_days";
+pub const PANOPTICON_RADIUS_DECISION_RETENTION_DAYS_DEFAULT: u32 = 30;
+/// Live re-evaluation of open RADIUS sessions, 0.2.9 Q3
+/// (`docs/roadmap/0.2.9.md`): a sweep re-runs each open session's decision
+/// and, where the outcome, VLAN or role would change (a security signal, a
+/// policy change), re-authorizes it through CoA. Off by default.
+pub const PANOPTICON_RADIUS_REEVALUATE_ENABLED: &str = "panopticon.radius_reevaluate_enabled";
+/// Seconds between sweeps (10..=3600).
+pub const PANOPTICON_RADIUS_REEVALUATE_SECONDS: &str = "panopticon.radius_reevaluate_seconds";
+pub const PANOPTICON_RADIUS_REEVALUATE_SECONDS_DEFAULT: u32 = 60;
+pub const PANOPTICON_RADIUS_REEVALUATE_SECONDS_MIN: u32 = 10;
+pub const PANOPTICON_RADIUS_REEVALUATE_SECONDS_MAX: u32 = 3600;
+/// A session re-authorized (by anything) within this many minutes isn't
+/// re-authorized again by the sweep, so a NAS that NAKs or ignores CoA
+/// isn't hammered (1..=1440).
+pub const PANOPTICON_RADIUS_REEVALUATE_COOLDOWN_MINUTES: &str =
+    "panopticon.radius_reevaluate_cooldown_minutes";
+pub const PANOPTICON_RADIUS_REEVALUATE_COOLDOWN_MINUTES_DEFAULT: u32 = 15;
+/// At most this many CoAs per sweep (1..=500); the rest wait for the next,
+/// so a policy change doesn't disconnect a whole floor at once.
+pub const PANOPTICON_RADIUS_REEVALUATE_MAX_PER_SWEEP: &str =
+    "panopticon.radius_reevaluate_max_per_sweep";
+pub const PANOPTICON_RADIUS_REEVALUATE_MAX_PER_SWEEP_DEFAULT: u32 = 25;
+/// An open session not seen (accounting) for this many hours is treated as
+/// gone: not re-evaluated. Sessions of either kind not seen for the decision
+/// retention are pruned.
+pub const PANOPTICON_RADIUS_SESSION_STALE_HOURS: u32 = 24;
+
 /// The longest timeout accepted: one week.
 pub const PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES: u32 = 7 * 24 * 60;
 /// The shortest non-zero timeout accepted, so a NAS isn't kept busy
@@ -696,3 +727,28 @@ pub const GRAVEKEEPER_SETUP_COMPLETED: &str = "gravekeeper.setup_completed";
 /// declared here with the rest of the arsenal's settings.
 pub const GRAVEKEEPER_BULK_IMPORT_CAP: &str = "gravekeeper.bulk_import_cap";
 pub const GRAVEKEEPER_BULK_IMPORT_CAP_DEFAULT: u32 = 200;
+
+/// Rogue DHCP server detection, 0.2.9 Q4 (`docs/roadmap/0.2.9.md`): the
+/// DHCP servers allowed on the network, addresses and CIDR blocks separated
+/// by commas, spaces or newlines (`abyssal_core::parse_allowed_dhcp_servers`).
+/// Empty (the default) = detection off. Panopticon's own registration DHCP
+/// server is always allowed. A rogue raises an alert (to
+/// `PANOPTICON_ROGUE_ALERT_RECIPIENTS`) once a day, and is what the
+/// `rogue_dhcp` policy trigger matches (by the MAC that answered DHCP, see
+/// `abyssal_web::panopticon_rogue_dhcp`).
+pub const PANOPTICON_DHCP_ALLOWED_SERVERS: &str = "panopticon.dhcp_allowed_servers";
+
+/// SNMP traps, 0.2.9 Q5 (`docs/roadmap/0.2.9.md`): a UDP listener for
+/// linkUp/linkDown and Cisco MAC-notification traps from the switches
+/// Panopticon polls (by source address, with the switch's own v1/v2c
+/// community). A trap triggers an immediate poll of that switch and a
+/// policy pass, instead of waiting for the next sweep. Off by default; read
+/// at startup (restart to apply).
+pub const PANOPTICON_SNMP_TRAPS_ENABLED: &str = "panopticon.snmp_traps_enabled";
+pub const PANOPTICON_SNMP_TRAP_PORT: &str = "panopticon.snmp_trap_port";
+pub const PANOPTICON_SNMP_TRAP_PORT_DEFAULT: u32 = 162;
+/// At most one trap-triggered poll per switch per this many seconds; traps
+/// in between are folded into one more poll at the end (1..=3600).
+pub const PANOPTICON_SNMP_TRAP_MIN_INTERVAL_SECONDS: &str =
+    "panopticon.snmp_trap_min_interval_seconds";
+pub const PANOPTICON_SNMP_TRAP_MIN_INTERVAL_SECONDS_DEFAULT: u32 = 10;

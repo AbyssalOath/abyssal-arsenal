@@ -13,6 +13,7 @@
     password (PAP/CHAP) or EAP are rejected, since there's no credential store to verify them.
     <a href="/arsenals/panopticon/switches">{% call macros::icon("network") %} Switches</a>
     &nbsp; <a href="/arsenals/panopticon/policy">{% call macros::icon("firewall") %} Policy</a>
+    &nbsp; <a href="/arsenals/panopticon/radius/decisions">{% call macros::icon("audit") %} Decisions</a>
   </p>
   {% if !encryption_configured %}
   <div class="warning-banner">
@@ -111,6 +112,29 @@
       <label for="radius-timeout-registration">Registration VLAN</label>
       <input type="number" id="radius-timeout-registration" name="timeout_registration" min="0" max="{{ timeout_max_minutes }}" value="{{ timeout_registration }}" style="max-width:120px;">
     </fieldset>
+
+    <fieldset style="margin-top:12px;">
+      <legend>Live re-evaluation (CoA)</legend>
+      <p style="color:var(--text-muted); margin-top:0;">Every interval, each open session's decision is worked out again;
+        where the outcome, VLAN or role would change (a security signal started or cleared, a VLAN, role or AD group rule
+        changed), the session is re-authorized through its NAS client's <em>CoA</em> setting, so the change applies now
+        instead of at the next login or Session-Timeout. NAS clients with CoA off are left to the Session-Timeout. A
+        session re-authorized in the last <em>cooldown</em> minutes isn't touched again, at most the given number are
+        re-authorized per sweep (the rest next time), and this server itself never is. Trust changes, enforcement and
+        guest approvals already re-authorize at once, with or without this.</p>
+      <label><input type="checkbox" name="reevaluate_enabled" value="true"{% if reevaluate_enabled %} checked{% endif %}> Re-evaluate open sessions</label>
+      <label for="radius-reevaluate-seconds">Every (seconds, {{ reevaluate_seconds_min }}&ndash;{{ reevaluate_seconds_max }})</label>
+      <input type="number" id="radius-reevaluate-seconds" name="reevaluate_seconds" min="{{ reevaluate_seconds_min }}" max="{{ reevaluate_seconds_max }}" value="{{ reevaluate_seconds }}" style="max-width:120px;">
+      <label for="radius-reevaluate-cooldown">Cooldown per session (minutes)</label>
+      <input type="number" id="radius-reevaluate-cooldown" name="reevaluate_cooldown_minutes" min="1" max="1440" value="{{ reevaluate_cooldown_minutes }}" style="max-width:120px;">
+      <label for="radius-reevaluate-max">Re-authorizations per sweep at most</label>
+      <input type="number" id="radius-reevaluate-max" name="reevaluate_max_per_sweep" min="1" max="500" value="{{ reevaluate_max_per_sweep }}" style="max-width:120px;">
+    </fieldset>
+
+    <label for="radius-decision-retention">Keep decision records for (days; 0 = forever)</label>
+    <input type="number" id="radius-decision-retention" name="decision_retention_days" min="0" max="3650" value="{{ decision_retention_days }}" style="max-width:120px;">
+    <small style="color:var(--text-muted);">Every login and re-authentication is recorded with what it was based on
+      (<a href="/arsenals/panopticon/radius/decisions">Decisions</a>). Also how long the policy engine's simulated matches are kept.</small>
 
     <p style="color:var(--text-muted); margin-top:8px;">
       <strong>Unknown = Accept</strong> is the safe default: turning RADIUS on gives you identity
@@ -320,7 +344,7 @@
   <p style="color:var(--text-muted); margin-top:0;">No accounted sessions yet. Configure your NAS to send accounting here to see "who authenticated where".</p>
   {% else %}
   <table>
-    <thead><tr><th>MAC</th><th>Identity</th><th>NAS</th><th>Port</th><th>Framed IP</th><th>Method</th><th>Started</th><th>Last seen</th><th>State</th><th>Last CoA</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>MAC</th><th>Identity</th><th>NAS</th><th>Port</th><th>Framed IP</th><th>Method</th><th>Started</th><th>Last seen</th><th>State</th><th>Last CoA</th><th>Decision</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for s in sessions %}
       <tr>
@@ -334,6 +358,7 @@
         <td>{{ s.last_seen_at }}</td>
         <td>{% if s.active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-muted">Closed</span>{% endif %}</td>
         <td>{% if s.last_coa.is_empty() %}&mdash;{% else %}{{ s.last_coa }}{% endif %}</td>
+        <td>{% if s.decision.is_empty() %}&mdash;{% else %}<a href="/arsenals/panopticon/radius/decisions?mac={{ s.mac }}" title="{{ s.decision_why }}">{{ s.decision }}</a><br><small style="color:var(--text-muted);">{{ s.decision_why }}</small>{% endif %}</td>
         {% if can_manage %}
         <td>
           {% if s.active %}

@@ -256,7 +256,14 @@ async fn main() -> anyhow::Result<()> {
     );
     abyssal_web::spawn_panopticon_classify_sweep(state.pool.clone(), state.task_health.clone());
     abyssal_web::spawn_panopticon_portal(state.pool.clone(), encryption_key.clone()).await;
+    abyssal_web::spawn_radius_reevaluation(
+        state.pool.clone(),
+        encryption_key.clone(),
+        state.task_health.clone(),
+    );
+    abyssal_web::spawn_snmp_trap_listener(state.pool.clone(), encryption_key.clone()).await;
     abyssal_web::spawn_panopticon_radius(state.pool.clone(), encryption_key).await;
+    abyssal_web::spawn_radius_decision_retention(state.pool.clone(), state.task_health.clone());
     abyssal_web::spawn_panopticon_traffic_rollup(state.pool.clone(), state.task_health.clone());
     spawn_panopticon_listeners(state.pool.clone(), state.notifications.clone()).await;
     abyssal_web::spawn_audit_syslog_sweep(

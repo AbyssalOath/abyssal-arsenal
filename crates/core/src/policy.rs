@@ -41,6 +41,11 @@ pub enum PolicyTrigger {
     /// The latest Cadavault posture run on the managed host this device
     /// belongs to scored below the rule's threshold.
     PostureFailing,
+    /// The device answered DHCP as a server that isn't on the allowed list
+    /// (0.2.9 Q4), within the signal window: by the source MAC of an
+    /// unrelayed reply it sent, never by an address a packet names (which
+    /// any device can forge).
+    RogueDhcp,
 }
 
 /// The minimum severity a signal trigger uses when the rule doesn't set one.
@@ -57,6 +62,7 @@ impl PolicyTrigger {
             PolicyTrigger::IdsAlert => "ids_alert",
             PolicyTrigger::SecurityEvent => "security_event",
             PolicyTrigger::PostureFailing => "posture_failing",
+            PolicyTrigger::RogueDhcp => "rogue_dhcp",
         }
     }
 
@@ -67,6 +73,7 @@ impl PolicyTrigger {
             PolicyTrigger::IdsAlert => "IDS alert from the device (Scourge)",
             PolicyTrigger::SecurityEvent => "Open security event on the host (Thanatos)",
             PolicyTrigger::PostureFailing => "Failing posture (Cadavault)",
+            PolicyTrigger::RogueDhcp => "Rogue DHCP server (not on the allowed list)",
         }
     }
 
@@ -89,6 +96,7 @@ impl PolicyTrigger {
         PolicyTrigger::IdsAlert,
         PolicyTrigger::SecurityEvent,
         PolicyTrigger::PostureFailing,
+        PolicyTrigger::RogueDhcp,
     ];
 }
 
@@ -102,6 +110,7 @@ impl std::str::FromStr for PolicyTrigger {
             "ids_alert" => Ok(PolicyTrigger::IdsAlert),
             "security_event" => Ok(PolicyTrigger::SecurityEvent),
             "posture_failing" => Ok(PolicyTrigger::PostureFailing),
+            "rogue_dhcp" => Ok(PolicyTrigger::RogueDhcp),
             _ => Err(()),
         }
     }
@@ -208,4 +217,24 @@ impl PolicyRule {
             t => t.label().to_string(),
         }
     }
+}
+
+/// What a policy rule would have done to a device, recorded while the
+/// policy runs in Simulate mode (0.2.9 Q2, roadmap B6): one row per rule and
+/// device, updated each sweep it still matches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicySimulation {
+    pub rule_id: Uuid,
+    pub device_id: Uuid,
+    pub rule_name: String,
+    pub device_ip: String,
+    pub mac_address: Option<String>,
+    pub action: EnforcementKind,
+    /// `port` (SNMP), `radius`, or `skipped`.
+    pub path: String,
+    /// The port, or why it wouldn't be enforced; and the signal.
+    pub detail: String,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub times_seen: u32,
 }

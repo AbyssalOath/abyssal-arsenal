@@ -28,7 +28,6 @@ zeroize.workspace = true
 libc.workspace = true
 sha2.workspace = true
 rand.workspace = true
-chrono.workspace = true
 # Direct handles on the TLS stack reqwest and tokio-tungstenite already use
 # (same versions, same ring provider), so both share one ClientConfig that
 # can carry an operator-supplied CA -- see src/tls.rs.
@@ -41,5 +40,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 
 [target.'cfg(windows)'.dependencies]
+# The Windows service's log file timestamps (src/winservice.rs).
+chrono.workspace = true
 windows-service = "0.8.1"
 winreg = "0.55"

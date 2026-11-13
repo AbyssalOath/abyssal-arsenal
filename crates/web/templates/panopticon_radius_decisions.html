@@ -1,0 +1,104 @@
+{% extends "app_base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}RADIUS decisions — Abyssal Arsenal{% endblock %}
+{% block heading %}Panopticon — RADIUS decisions{% endblock %}
+{% block content %}
+
+<div class="card">
+  <p style="color:var(--text-muted); margin-top:0;">
+    Every RADIUS login and re-authentication, from the embedded server or FreeRADIUS, with what Panopticon
+    decided and why: the device's trust state, enforcement in effect, a security signal, an AD group rule.
+    Kept for the number of days set on the <a href="/arsenals/panopticon/radius">RADIUS page</a>.
+    &nbsp; <a href="/arsenals/panopticon/radius">{% call macros::icon("settings") %} RADIUS</a>
+    &nbsp; <a href="/arsenals/panopticon/policy">{% call macros::icon("firewall") %} Policy</a>
+  </p>
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("scan") %} Test a login</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Runs the same decision a login would get right now, for a MAC
+    asking through a NAS client, without recording it or sending anything to a switch. AD groups are those the login
+    would bring (only groups that have a rule matter), separated by <code>;</code>.</p>
+  <form method="get" action="/arsenals/panopticon/radius/decisions">
+    <label for="test-mac">MAC</label>
+    <input type="text" id="test-mac" name="test_mac" value="{{ test_mac }}" placeholder="aa:bb:cc:dd:ee:ff" style="max-width:240px;">
+    <label for="test-nas">NAS client</label>
+    <select id="test-nas" name="test_nas" style="max-width:280px;">
+      <option value="">None (an address that isn't a NAS client)</option>
+      {% for (id, name, selected) in test_nas %}<option value="{{ id }}"{% if selected %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    </select>
+    <label for="test-admission">Login</label>
+    <select id="test-admission" name="test_admission" style="max-width:280px;">
+      <option value="mab"{% if !test_dot1x %} selected{% endif %}>MAC authentication (MAB)</option>
+      <option value="dot1x"{% if test_dot1x %} selected{% endif %}>802.1X (EAP-TLS / PEAP)</option>
+    </select>
+    <label for="test-groups">AD groups (802.1X only)</label>
+    <input type="text" id="test-groups" name="test_groups" value="{{ test_groups }}" placeholder="CORP\Finance;Staff" style="max-width:360px;">
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn btn-secondary">Test</button>
+    </div>
+  </form>
+  {% if !test_error.is_empty() %}
+  <div class="warning-banner">{{ test_error }}</div>
+  {% endif %}
+  {% match test %}
+  {% when Some with (t) %}
+  <div class="{% if t.accepted %}info-banner{% else %}warning-banner{% endif %}" style="margin-top:12px;">
+    <strong>{{ t.mac }}</strong>: {{ t.summary }}<br>
+    Why: {{ t.why }}<br>
+    <small>Trust: {{ t.trust }}. NAS: {{ t.nas }}.</small>
+  </div>
+  {% when None %}
+  {% endmatch %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("audit") %} Decisions</h3>
+  <form method="get" action="/arsenals/panopticon/radius/decisions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+    <div>
+      <label for="filter-mac">MAC</label>
+      <input type="text" id="filter-mac" name="mac" value="{{ filter_mac }}" placeholder="any" style="max-width:200px; margin:0;">
+    </div>
+    <div>
+      <label for="filter-nas">NAS client</label>
+      <select id="filter-nas" name="nas" style="max-width:220px; margin:0;">
+        <option value="">Any</option>
+        {% for (id, name, selected) in filter_nas %}<option value="{{ id }}"{% if selected %} selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="filter-outcome">Outcome</label>
+      <select id="filter-outcome" name="outcome" style="max-width:180px; margin:0;">
+        {% for (key, label, selected) in filter_outcomes %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <button type="submit" class="btn btn-secondary">Filter</button>
+      {% if filtered %}<a class="btn btn-secondary" href="/arsenals/panopticon/radius/decisions">Clear</a>{% endif %}
+    </div>
+  </form>
+  {% if !notice.is_empty() %}<p style="color:var(--text-muted);">{{ notice }}</p>{% endif %}
+  {% if rows.is_empty() %}
+  <p style="color:var(--text-muted);">No decisions {% if filtered %}match{% else %}recorded yet{% endif %}.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>When</th><th>MAC</th><th>Identity</th><th>NAS</th><th>Via</th><th>Decision</th><th>Why</th><th>Trust</th></tr></thead>
+    <tbody>
+      {% for d in rows %}
+      <tr>
+        <td>{{ d.at }}</td>
+        <td>{% if d.mac.is_empty() %}&mdash;{% else %}<a href="/arsenals/panopticon/radius/decisions?mac={{ d.mac }}">{{ d.mac }}</a>{% endif %}</td>
+        <td>{% if d.identity.is_empty() %}&mdash;{% else %}{{ d.identity }}{% endif %}</td>
+        <td>{% if d.nas.is_empty() %}&mdash;{% else %}{{ d.nas }}{% endif %}</td>
+        <td>{{ d.via }}</td>
+        <td>{% if d.accepted %}<span class="badge badge-success">{{ d.summary }}</span>{% else %}<span class="badge badge-danger">{{ d.summary }}</span>{% endif %}</td>
+        <td>{{ d.why }}{% if !d.groups.is_empty() %}<br><small style="color:var(--text-muted);">AD groups: {{ d.groups }}</small>{% endif %}</td>
+        <td>{{ d.trust }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p style="color:var(--text-muted);">The newest {{ limit }}{% if filtered %} that match{% endif %}.</p>
+  {% endif %}
+</div>
+{% endblock %}

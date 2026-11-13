@@ -53,4 +53,58 @@
 </div>
 {% endif %}
 
+
+<div class="card">
+  <h3>{% call macros::icon("shield") %} DHCP servers</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Every DHCP server Panopticon's capture has seen: from the server clients name in their DHCP requests
+    (which also arrive through relays: add this server as an extra <code>ip helper-address</code>), and from
+    server replies on the captured segment. With the allowed list below filled in, any other server is a
+    <strong>rogue</strong>: an alert goes to the rogue-device recipients and the audit log, once a day per server,
+    and the policy engine's <em>Rogue DHCP server</em> trigger can quarantine the device that answered: by the MAC
+    its replies came from, never by an address a packet names, since any device can name any address. A rogue
+    that's only been named by clients (or seen through a relay) is <em>unconfirmed</em> and never enforced.
+    Empty = detection off. Panopticon's own registration DHCP server is always allowed.
+  </p>
+  {% if servers.is_empty() %}
+  <p style="color:var(--text-muted);">None seen yet (the ARP listener must be on to see DHCP).</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Server</th><th>MAC</th><th>Status</th><th>Replies</th><th>Chosen by clients</th><th>Last client</th><th>First seen</th><th>Last seen</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for s in servers %}
+      <tr>
+        <td>{{ s.ip }}</td>
+        <td>{% if s.mac.is_empty() %}&mdash;{% else %}{{ s.mac }}{% endif %}</td>
+        <td>{% if !detection_on %}<span class="badge badge-muted">detection off</span>{% else if s.rogue %}<span class="badge badge-danger">rogue</span>{% if s.mac.is_empty() %}<br><small style="color:var(--text-muted);" title="Only named by clients or seen through a relay, which any device can fake: shown and alerted on, but the policy trigger needs the server's own reply.">unconfirmed</small>{% endif %}{% if !s.alerted.is_empty() %}<br><small style="color:var(--text-muted);">alerted {{ s.alerted }}</small>{% endif %}{% else %}<span class="badge badge-success">allowed</span>{% endif %}</td>
+        <td>{{ s.replies }}</td>
+        <td>{{ s.chosen }}</td>
+        <td>{% if s.last_client.is_empty() %}&mdash;{% else %}{{ s.last_client }}{% endif %}</td>
+        <td>{{ s.first_seen }}</td>
+        <td>{{ s.last_seen }}</td>
+        {% if can_manage %}
+        <td>
+          <form method="post" action="/arsenals/panopticon/dhcp/servers/action" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+            <input type="hidden" name="server_ip" value="{{ s.ip }}">
+            {% if s.rogue %}<button type="submit" name="action" value="allow" class="btn btn-secondary btn-sm">Allow</button>{% endif %}
+            <button type="submit" name="action" value="forget" class="btn btn-secondary btn-sm">Forget</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/dhcp/servers/allowed" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label for="dhcp-allowed">Allowed DHCP servers (addresses or CIDR blocks, separated by commas or lines)</label>
+    <textarea id="dhcp-allowed" name="allowed_servers" rows="3" placeholder="10.0.0.10, 10.0.0.11">{{ allowed_servers }}</textarea>
+    <button type="submit" class="btn-secondary">Save</button>
+  </form>
+  {% endif %}
+</div>
+
 {% endblock %}

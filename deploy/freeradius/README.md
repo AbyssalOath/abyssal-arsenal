@@ -252,8 +252,9 @@ taken literally; accounting; EAP-TLS accepted with VLAN and correct MPPE
 keys; EAP-TLS rejected by Panopticon's decision; EAP-TLS with an untrusted
 client certificate rejected; PEAP rejected while no domain is
 configured; a role reaching the NAS as `Filter-Id` (MAB) and as
-`Aruba-User-Role` (EAP-TLS), and the NAS's address reaching Panopticon. It needs Docker and touches nothing outside its own
-containers.
+`Aruba-User-Role` (EAP-TLS), a re-authenticating `Session-Timeout`, and
+the NAS's address reaching Panopticon. It needs Docker and touches
+nothing outside its own containers.
 
 `deploy/freeradius/test/run-ad.sh` tests PEAP against a **real Samba AD
 domain controller** in a throwaway container. FreeRADIUS joins it, then
@@ -267,3 +268,9 @@ appearing in the logs. It also covers VLAN by AD group: direct and nested
 groups that have a rule reach Panopticon and others don't, the group's
 VLAN comes back, a computer brings its own groups, and a failing group
 lookup leaves the login to its device's VLAN.
+
+Both scripts stand in for Panopticon. The other half, Panopticon's real
+decisions against a real database, is `deploy/test/radius-e2e.sh`: the
+app is configured through its own forms, then asked through the
+FreeRADIUS API (as this configuration calls it) and through the embedded
+server, by `radclient`.

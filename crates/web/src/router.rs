@@ -2006,6 +2006,14 @@ pub fn build(state: AppState) -> Router {
             get(routes::panopticon_topology::topology),
         )
         .route(
+            "/arsenals/panopticon/dhcp/servers/allowed",
+            post(routes::panopticon_topology::dhcp_allowed_servers),
+        )
+        .route(
+            "/arsenals/panopticon/dhcp/servers/action",
+            post(routes::panopticon_topology::dhcp_server_action),
+        )
+        .route(
             "/arsenals/panopticon/dhcp",
             get(routes::panopticon_topology::dhcp),
         )
@@ -2051,6 +2059,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/switches",
             get(routes::panopticon::switches_show).post(routes::panopticon::switch_add),
+        )
+        .route(
+            "/arsenals/panopticon/switches/traps",
+            post(routes::panopticon::switches_traps),
         )
         .route(
             "/arsenals/panopticon/macros",
@@ -2179,6 +2191,14 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/arsenals/panopticon/radius/clients/:id/role-attribute",
             post(routes::panopticon::radius_client_set_role_attribute),
+        )
+        .route(
+            "/arsenals/panopticon/policy/simulations/clear",
+            post(routes::panopticon::policy_simulations_clear),
+        )
+        .route(
+            "/arsenals/panopticon/radius/decisions",
+            get(routes::panopticon::radius_decisions),
         )
         .route(
             "/arsenals/panopticon/radius/signals",

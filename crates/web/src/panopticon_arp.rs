@@ -41,6 +41,7 @@ const ETHERTYPE_ARP: u16 = 0x0806;
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const IPPROTO_UDP: u8 = 17;
 const DHCP_SERVER_PORT: u16 = 67;
+const DHCP_CLIENT_PORT: u16 = 68;
 const ETHERTYPE_VLAN: u16 = 0x8100;
 const ARP_HTYPE_ETHERNET: u16 = 1;
 const ARP_PTYPE_IPV4: u16 = 0x0800;
@@ -60,12 +61,28 @@ struct DhcpSighting {
     prl: Option<String>,
     vendor_class: Option<String>,
     hostname: Option<String>,
+    /// A REQUEST's server identifier (option 54): the server this client
+    /// chose (0.2.9 Q4, rogue DHCP detection).
+    server_id: Option<Ipv4Addr>,
+}
+
+/// A DHCP server's reply (OFFER/ACK/NAK) to a client (0.2.9 Q4).
+#[derive(Debug, PartialEq, Eq)]
+struct DhcpServerSighting {
+    /// Option 54, else the packet's source address.
+    server_ip: Ipv4Addr,
+    /// The Ethernet source, for an unrelayed reply only: a relayed reply
+    /// comes from the relay, not the server.
+    server_mac: Option<String>,
+    /// The client it answered (`chaddr`).
+    client_mac: String,
 }
 
 /// What the capture loop hands to the async side.
 enum Sighting {
     Arp(ArpSighting),
     Dhcp(DhcpSighting),
+    DhcpServer(DhcpServerSighting),
 }
 
 /// The Ethernet payload and its ethertype, through at most one 802.1Q tag.
@@ -79,12 +96,10 @@ fn ethernet_payload(frame: &[u8]) -> Option<(u16, &[u8])> {
     Some((ethertype, frame.get(offset..)?))
 }
 
-/// Parses one captured frame for a DHCP client fingerprint: IPv4, UDP to
-/// port 67, an unfragmented BOOTREQUEST with the DHCP magic cookie and a
-/// DISCOVER (1), REQUEST (3) or INFORM (8) message type. Everything else --
-/// server replies, plain BOOTP, truncated or malformed packets -- is `None`.
-/// Untrusted input from any device on the segment: every offset is checked.
-fn parse_dhcp_request(frame: &[u8]) -> Option<DhcpSighting> {
+/// A whole (unfragmented) IPv4 UDP datagram in a frame: its IP source,
+/// source and destination ports, and the UDP payload. Untrusted input from
+/// any device on the segment: every offset is checked.
+fn udp_datagram(frame: &[u8]) -> Option<(Ipv4Addr, u16, u16, &[u8])> {
     let (ethertype, ip) = ethernet_payload(frame)?;
     if ethertype != ETHERTYPE_IPV4 || ip.len() < 20 || ip[0] >> 4 != 4 {
         return None;
@@ -95,13 +110,52 @@ fn parse_dhcp_request(frame: &[u8]) -> Option<DhcpSighting> {
     if ihl < 20 || ip[9] != IPPROTO_UDP || fragment != 0 {
         return None;
     }
+    let src = Ipv4Addr::new(ip[12], ip[13], ip[14], ip[15]);
     let udp = ip.get(ihl..)?;
-    if udp.len() < 8 || u16::from_be_bytes([udp[2], udp[3]]) != DHCP_SERVER_PORT {
+    if udp.len() < 8 {
+        return None;
+    }
+    let sport = u16::from_be_bytes([udp[0], udp[1]]);
+    let dport = u16::from_be_bytes([udp[2], udp[3]]);
+    Some((src, sport, dport, &udp[8..]))
+}
+
+/// Parses one captured frame for a DHCP server's reply to a client: UDP
+/// from port 67 to port 68, an OFFER, ACK or NAK (0.2.9 Q4). Replies a
+/// server sends to a relay (port 67 to 67) aren't on a client segment, so
+/// they aren't looked for.
+fn parse_dhcp_server_reply(frame: &[u8]) -> Option<DhcpServerSighting> {
+    let (src, sport, dport, payload) = udp_datagram(frame)?;
+    if sport != DHCP_SERVER_PORT || dport != DHCP_CLIENT_PORT {
+        return None;
+    }
+    let reply = abyssal_portal_net::dhcp::parse_server_reply(payload)?;
+    let server_ip = reply.server_id.unwrap_or(src);
+    if server_ip.is_unspecified() || server_ip.is_broadcast() {
+        return None;
+    }
+    let relayed = !reply.giaddr.is_unspecified();
+    let eth_src: [u8; 6] = frame.get(6..12)?.try_into().ok()?;
+    Some(DhcpServerSighting {
+        server_ip,
+        server_mac: (!relayed).then(|| abyssal_portal_net::dhcp::mac_string(&eth_src)),
+        client_mac: abyssal_portal_net::dhcp::mac_string(&reply.chaddr),
+    })
+}
+
+/// Parses one captured frame for a DHCP client fingerprint: IPv4, UDP to
+/// port 67, an unfragmented BOOTREQUEST with the DHCP magic cookie and a
+/// DISCOVER (1), REQUEST (3) or INFORM (8) message type. Everything else --
+/// server replies, plain BOOTP, truncated or malformed packets -- is `None`.
+/// Untrusted input from any device on the segment: every offset is checked.
+fn parse_dhcp_request(frame: &[u8]) -> Option<DhcpSighting> {
+    let (_, _, dport, payload) = udp_datagram(frame)?;
+    if dport != DHCP_SERVER_PORT {
         return None;
     }
     // The BOOTP/DHCP parsing itself is the registration DHCP server's
     // (abyssal_portal_net): one bounds-checked parser for both.
-    let req = abyssal_portal_net::dhcp::parse_request(&udp[8..])?;
+    let req = abyssal_portal_net::dhcp::parse_request(payload)?;
     if !matches!(
         req.message_type,
         abyssal_portal_net::dhcp::DISCOVER
@@ -115,6 +169,10 @@ fn parse_dhcp_request(frame: &[u8]) -> Option<DhcpSighting> {
         prl: req.prl,
         vendor_class: req.vendor_class,
         hostname: req.hostname,
+        server_id: req
+            .server_id
+            .filter(|_| req.message_type == abyssal_portal_net::dhcp::REQUEST)
+            .filter(|ip| !ip.is_unspecified()),
     })
 }
 
@@ -164,7 +222,18 @@ fn parse_arp_sender(frame: &[u8]) -> Option<ArpSighting> {
     })
 }
 
-async fn ingest_dhcp(pool: &DbPool, s: DhcpSighting) {
+async fn ingest_dhcp(pool: &DbPool, notifications: &NotificationDispatcher, s: DhcpSighting) {
+    if let Some(server) = s.server_id {
+        crate::panopticon_rogue_dhcp::observe(
+            pool,
+            notifications,
+            &server.to_string(),
+            None,
+            Some(&s.mac),
+            repo::panopticon_dhcp_servers::Seen::Chosen,
+        )
+        .await;
+    }
     if let Err(e) = repo::panopticon_fingerprints::upsert(
         pool,
         &s.mac,
@@ -253,7 +322,8 @@ pub fn spawn_panopticon_arp_listener(
                 Ok(frame) => {
                     let sighting = parse_arp_sender(frame)
                         .map(Sighting::Arp)
-                        .or_else(|| parse_dhcp_request(frame).map(Sighting::Dhcp));
+                        .or_else(|| parse_dhcp_request(frame).map(Sighting::Dhcp))
+                        .or_else(|| parse_dhcp_server_reply(frame).map(Sighting::DhcpServer));
                     if let Some(sighting) = sighting
                         && tx.send(sighting).is_err()
                     {
@@ -272,7 +342,18 @@ pub fn spawn_panopticon_arp_listener(
         while let Some(sighting) = rx.recv().await {
             match sighting {
                 Sighting::Arp(s) => ingest(&pool, &notifications, s).await,
-                Sighting::Dhcp(s) => ingest_dhcp(&pool, s).await,
+                Sighting::Dhcp(s) => ingest_dhcp(&pool, &notifications, s).await,
+                Sighting::DhcpServer(s) => {
+                    crate::panopticon_rogue_dhcp::observe(
+                        &pool,
+                        &notifications,
+                        &s.server_ip.to_string(),
+                        s.server_mac.as_deref(),
+                        Some(&s.client_mac),
+                        repo::panopticon_dhcp_servers::Seen::Reply,
+                    )
+                    .await
+                }
             }
         }
     });
@@ -417,6 +498,82 @@ mod tests {
         // An option running past the packet ends parsing without a panic.
         opts = vec![53, 1, 3, 60, 200, b'x'];
         assert!(parse_dhcp_request(&dhcp_frame(MAC, &opts)).is_none());
+    }
+
+    #[test]
+    fn a_request_names_the_server_its_client_chose() {
+        // REQUEST with option 54 = 10.0.0.1.
+        let s = parse_dhcp_request(&dhcp_frame(MAC, &[53, 1, 3, 54, 4, 10, 0, 0, 1, 255])).unwrap();
+        assert_eq!(s.server_id, Some(Ipv4Addr::new(10, 0, 0, 1)));
+        // A DISCOVER has no chosen server, whatever it carries.
+        let s = parse_dhcp_request(&dhcp_frame(MAC, &[53, 1, 1, 54, 4, 10, 0, 0, 1, 255])).unwrap();
+        assert_eq!(s.server_id, None);
+    }
+
+    /// A DHCP server's reply (BOOTREPLY) from `server_mac`/`src` to the
+    /// client `client`, through a relay when `giaddr` isn't zero.
+    fn reply_frame(
+        server_mac: [u8; 6],
+        src: [u8; 4],
+        client: [u8; 6],
+        giaddr: [u8; 4],
+        options: &[u8],
+    ) -> Vec<u8> {
+        let mut f = dhcp_frame(client, options);
+        let eth = 14;
+        let ip = eth;
+        let udp = ip + 20;
+        let bootp = udp + 8;
+        f[6..12].copy_from_slice(&server_mac);
+        f[ip + 12..ip + 16].copy_from_slice(&src);
+        f[udp..udp + 2].copy_from_slice(&67u16.to_be_bytes());
+        f[udp + 2..udp + 4].copy_from_slice(&68u16.to_be_bytes());
+        f[bootp] = 2; // BOOTREPLY
+        f[bootp + 24..bootp + 28].copy_from_slice(&giaddr);
+        f
+    }
+
+    const SERVER_MAC: [u8; 6] = [0x02, 0xde, 0xad, 0xbe, 0xef, 0x01];
+
+    #[test]
+    fn server_replies_name_the_server() {
+        // An OFFER from 192.168.1.1, option 54 = 192.168.1.1, unrelayed.
+        let f = reply_frame(
+            SERVER_MAC,
+            [192, 168, 1, 1],
+            MAC,
+            [0; 4],
+            &[53, 1, 2, 54, 4, 192, 168, 1, 1, 255],
+        );
+        let s = parse_dhcp_server_reply(&f).expect("an OFFER");
+        assert_eq!(s.server_ip, Ipv4Addr::new(192, 168, 1, 1));
+        assert_eq!(s.server_mac.as_deref(), Some("02:de:ad:be:ef:01"));
+        assert_eq!(s.client_mac, "3c:22:fb:01:02:03");
+        // No option 54: the packet's source.
+        let f = reply_frame(SERVER_MAC, [192, 168, 1, 2], MAC, [0; 4], &[53, 1, 5, 255]);
+        assert_eq!(
+            parse_dhcp_server_reply(&f).unwrap().server_ip,
+            Ipv4Addr::new(192, 168, 1, 2)
+        );
+        // Relayed: the Ethernet source is the relay, so no server MAC.
+        let f = reply_frame(
+            SERVER_MAC,
+            [10, 0, 0, 254],
+            MAC,
+            [10, 0, 0, 254],
+            &[53, 1, 2, 54, 4, 10, 1, 1, 1, 255],
+        );
+        let s = parse_dhcp_server_reply(&f).unwrap();
+        assert_eq!(s.server_ip, Ipv4Addr::new(10, 1, 1, 1));
+        assert_eq!(s.server_mac, None);
+        // A client's request isn't a server reply, and the reverse.
+        assert!(parse_dhcp_server_reply(&dhcp_frame(MAC, &[53, 1, 1, 255])).is_none());
+        let offer = reply_frame(SERVER_MAC, [192, 168, 1, 1], MAC, [0; 4], &[53, 1, 2, 255]);
+        assert!(parse_dhcp_request(&offer).is_none());
+        // Truncated anywhere: nothing, never a panic.
+        for cut in 0..offer.len() {
+            let _ = parse_dhcp_server_reply(&offer[..cut]);
+        }
     }
 
     #[test]

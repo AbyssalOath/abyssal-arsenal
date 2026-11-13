@@ -172,7 +172,7 @@
     <thead>
       <tr>
         <th>Name</th><th>Address</th><th>SNMP port</th><th>SNMP version</th><th>Status</th>
-        <th>Enforcement</th><th>Last polled</th><th>Last error</th><th>Ports</th>
+        <th>Enforcement</th><th>Last polled</th><th>Last error</th><th>Last trap</th><th>Ports</th>
         {% if can_manage || can_scan %}<th>Actions</th>{% endif %}
       </tr>
     </thead>
@@ -193,6 +193,7 @@
         </td>
         <td>{% if let Some(t) = s.last_polled_at %}{{ t }}{% else %}&mdash;{% endif %}</td>
         <td>{% if let Some(e) = s.last_poll_error %}<span style="color:var(--danger);">{{ e }}</span>{% else %}&mdash;{% endif %}</td>
+        <td>{% if s.last_trap.is_empty() %}&mdash;{% else %}{{ s.last_trap }}{% endif %}</td>
         <td><a class="btn btn-secondary" href="/arsenals/panopticon/switches/{{ s.id }}/traffic">{% call macros::icon("route") %} Ports</a></td>
         {% if can_manage || can_scan %}
         <td class="actions">
@@ -228,6 +229,33 @@
       {% endfor %}
     </tbody>
   </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("sensor") %} SNMP traps</h3>
+  <p style="color:var(--text-muted); margin-top:0;">
+    Switches can tell Panopticon when a port goes up or down, or (Cisco) when a MAC appears or leaves, instead of
+    it waiting for the next poll. A trap makes Panopticon poll that switch at once and run the policy, so a device
+    plugged in is seen, and checked, within seconds. Only traps from a switch listed above, polled over SNMP v1 or
+    v2c, with that switch's own community, are believed; anything else is dropped. Status: the listener
+    {% if traps_enabled %}<strong>is on</strong>, UDP {{ trap_port }}{% else %}is <strong>off</strong>{% endif %}
+    (changes apply on restart). Behind Docker's bridge network, publish the port (UDP). On a Cisco switch:
+    <code>snmp-server host &lt;this server&gt; version 2c &lt;community&gt;</code>,
+    <code>snmp-server enable traps snmp linkdown linkup</code>, and for MAC notifications
+    <code>snmp-server enable traps mac-notification change</code>, <code>mac address-table notification change</code>
+    and <code>snmp trap mac-notification change added</code> / <code>removed</code> on the access ports.
+  </p>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/switches/traps">
+    <input type="hidden" name="csrf_token" value="{{ base.csrf_token }}">
+    <label><input type="checkbox" name="enabled" value="true"{% if traps_enabled %} checked{% endif %}> Listen for SNMP traps</label>
+    <label for="trap-port">UDP port</label>
+    <input type="number" id="trap-port" name="port" min="1" max="65535" value="{{ trap_port }}" style="max-width:120px;">
+    <label for="trap-interval">At most one trap-triggered poll per switch every (seconds)</label>
+    <input type="number" id="trap-interval" name="min_interval" min="1" max="3600" value="{{ trap_min_interval }}" style="max-width:120px;">
+    <div class="actions" style="margin-top:12px;"><button type="submit" class="btn-secondary">Save</button></div>
+  </form>
   {% endif %}
 </div>
 

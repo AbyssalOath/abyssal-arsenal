@@ -109,7 +109,7 @@
         {% for d in filtered_devices %}
         <tr>
           <td>{{ d.ip_address }}</td>
-          <td>{% if let Some(mac) = d.mac_address %}{{ mac }}{% else %}&mdash;{% endif %}</td>
+          <td>{% if let Some(mac) = d.mac_address %}<a href="/arsenals/panopticon/radius/decisions?mac={{ mac }}" title="This device's RADIUS decisions">{{ mac }}</a>{% else %}&mdash;{% endif %}</td>
           <td>{% if let Some(v) = d.vendor %}{{ v }}{% else %}&mdash;{% endif %}</td>
           <td>{% if let Some(h) = d.hostname %}{{ h }}{% else %}&mdash;{% endif %}</td>
           <td>{% if let Some(p) = d.open_ports %}{{ p }}{% else %}&mdash;{% endif %}</td>
@@ -209,7 +209,7 @@
             {% for d in group.devices %}
             <tr>
               <td>{{ d.ip_address }}</td>
-              <td>{% if let Some(mac) = d.mac_address %}{{ mac }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if let Some(mac) = d.mac_address %}<a href="/arsenals/panopticon/radius/decisions?mac={{ mac }}" title="This device's RADIUS decisions">{{ mac }}</a>{% else %}&mdash;{% endif %}</td>
               <td>{% if let Some(v) = d.vendor %}{{ v }}{% else %}&mdash;{% endif %}</td>
               <td>{% if let Some(h) = d.hostname %}{{ h }}{% else %}&mdash;{% endif %}</td>
               <td>{% if let Some(p) = d.open_ports %}{{ p }}{% else %}&mdash;{% endif %}</td>

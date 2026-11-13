@@ -267,12 +267,23 @@ pub async fn mab(
     let d =
         crate::panopticon_radius::decide_for_mac(&state.pool, &mac, Admission::Mab, nas.as_ref())
             .await;
+    record(
+        &state,
+        &d,
+        Admission::Mab,
+        &mac,
+        attrs.get("User-Name"),
+        nas.as_ref(),
+        &q,
+        &attrs,
+    );
     tracing::info!(
         mac = %mac,
         nas = nas.as_ref().map_or("unknown", |c| c.name.as_str()),
         trust = d.trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
         enforced = d.enforced.map(|k| k.as_str()).unwrap_or("none"),
         signal = %d.signal_label(),
+        reason = %d.reason,
         decision = ?d.decision,
         role = sent_role(&d, nas.as_ref()).unwrap_or("none"),
         session_timeout = d.session_timeout.unwrap_or(0),
@@ -315,6 +326,16 @@ pub async fn post_auth(
             nas.as_ref(),
         )
         .await;
+        record(
+            &state,
+            &d,
+            Admission::Authenticated,
+            "",
+            Some(identity.clone()),
+            nas.as_ref(),
+            &q,
+            &attrs,
+        );
         return json_response(StatusCode::OK, admission_reply(&d, nas.as_ref(), false));
     };
     let nas = nas_client(&state, &q, &attrs).await;
@@ -326,6 +347,16 @@ pub async fn post_auth(
         &groups,
     )
     .await;
+    record(
+        &state,
+        &d,
+        Admission::Authenticated,
+        &mac,
+        Some(identity.clone()),
+        nas.as_ref(),
+        &q,
+        &attrs,
+    );
     tracing::info!(
         identity = %identity,
         mac = %mac,
@@ -346,6 +377,7 @@ pub async fn post_auth(
         trust = d.trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
         enforced = d.enforced.map(|k| k.as_str()).unwrap_or("none"),
         signal = %d.signal_label(),
+        reason = %d.reason,
         decision = ?d.decision,
         role = sent_role(&d, nas.as_ref()).unwrap_or("none"),
         session_timeout = d.session_timeout.unwrap_or(0),
@@ -371,6 +403,38 @@ async fn nas_client(
         }
     }
     None
+}
+
+/// Records a FreeRADIUS decision (0.2.9 Q2). The NAS address is the one
+/// accounting records sessions under (NAS-IP-Address, else the packet's
+/// source), so a session finds its decision.
+#[allow(clippy::too_many_arguments)]
+fn record(
+    state: &AppState,
+    d: &crate::panopticon_radius::LoginDecision,
+    admission: Admission,
+    mac: &str,
+    identity: Option<String>,
+    nas: Option<&abyssal_core::RadiusClient>,
+    q: &AccountingQuery,
+    attrs: &Attrs,
+) {
+    use crate::panopticon_radius::{DecisionContext, FrontEnd};
+    crate::panopticon_radius::record(
+        &state.pool,
+        d,
+        DecisionContext {
+            front_end: FrontEnd::FreeRadius,
+            admission,
+            mac,
+            identity: identity.as_deref(),
+            nas,
+            nas_address: attrs
+                .get("NAS-IP-Address")
+                .or_else(|| q.src.clone())
+                .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok()),
+        },
+    );
 }
 
 /// The role actually sent: only on an Accept, to a NAS that applies roles.

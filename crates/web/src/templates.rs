@@ -2828,6 +2828,8 @@ pub struct PanopticonSwitchRow {
     pub enforcement_enabled: bool,
     pub last_polled_at: Option<String>,
     pub last_poll_error: Option<String>,
+    /// The last accepted SNMP trap and when (0.2.9 Q5); empty = none.
+    pub last_trap: String,
 }
 
 /// Managed-switch list + add form -- see `routes/panopticon.rs::switches_*`.
@@ -2869,6 +2871,24 @@ pub struct PanopticonDhcpTemplate {
     pub lease_count: i64,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// Rogue DHCP detection (0.2.9 Q4): the allowed list as typed, whether
+    /// detection is on (the list isn't empty), and every server seen.
+    pub allowed_servers: String,
+    pub detection_on: bool,
+    pub servers: Vec<DhcpServerRow>,
+}
+
+/// One DHCP server the capture has seen.
+pub struct DhcpServerRow {
+    pub ip: String,
+    pub mac: String,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub replies: u32,
+    pub chosen: u32,
+    pub last_client: String,
+    pub rogue: bool,
+    pub alerted: String,
 }
 
 pub struct DhcpHostOption {
@@ -2880,6 +2900,10 @@ pub struct DhcpHostOption {
 #[template(path = "panopticon_switches.html")]
 pub struct PanopticonSwitchesTemplate {
     pub base: BaseCtx,
+    /// SNMP traps (0.2.9 Q5): the listener's settings.
+    pub traps_enabled: bool,
+    pub trap_port: u32,
+    pub trap_min_interval: u32,
     pub can_manage: bool,
     pub can_scan: bool,
     /// `network.nac`: the per-switch "allow enforcement" toggle.
@@ -3130,6 +3154,25 @@ pub struct PanopticonPolicyTemplate {
     pub actions: Vec<(String, String)>,
     pub device_types: Vec<(String, String)>,
     pub switches: Vec<(String, String)>,
+    /// Simulate mode's matches (0.2.9 Q2, B6), most recently seen first.
+    pub simulating: bool,
+    pub simulations: Vec<PolicySimulationRow>,
+}
+
+/// What a rule would have done to a device in Simulate mode.
+pub struct PolicySimulationRow {
+    pub last_seen: String,
+    pub first_seen: String,
+    pub times_seen: u32,
+    pub rule: String,
+    pub device_ip: String,
+    pub mac: String,
+    pub action: String,
+    /// "switch port (SNMP)", "RADIUS", "not enforced".
+    pub path: String,
+    /// Whether it would have acted (false: matched, but skipped).
+    pub enforced: bool,
+    pub detail: String,
 }
 
 /// One policy rule for the management table.
@@ -3237,6 +3280,15 @@ pub struct PanopticonRadiusTemplate {
     pub timeout_guest: u32,
     pub timeout_registration: u32,
     pub timeout_min_minutes: u32,
+    /// Live re-evaluation of open sessions (0.2.9 Q3).
+    pub reevaluate_enabled: bool,
+    pub reevaluate_seconds: u32,
+    pub reevaluate_cooldown_minutes: u32,
+    pub reevaluate_max_per_sweep: u32,
+    pub reevaluate_seconds_min: u32,
+    pub reevaluate_seconds_max: u32,
+    /// Days decision records are kept (0.2.9 Q2); 0 = forever.
+    pub decision_retention_days: u32,
     pub timeout_max_minutes: u32,
     pub signal_posture_actions: Vec<(String, String, bool)>,
     pub signal_event_severities: Vec<(String, String, bool)>,
@@ -3270,8 +3322,62 @@ pub struct RadiusClientRow {
     pub role_attributes: Vec<(String, String, bool)>,
 }
 
+/// The Decisions page (0.2.9 Q2). See
+/// `routes/panopticon.rs::radius_decisions`.
+#[derive(Template)]
+#[template(path = "panopticon_radius_decisions.html")]
+pub struct PanopticonRadiusDecisionsTemplate {
+    pub base: BaseCtx,
+    pub filter_mac: String,
+    /// (client id, name, selected) for the NAS filter.
+    pub filter_nas: Vec<(String, String, bool)>,
+    pub filter_outcomes: Vec<(String, String, bool)>,
+    pub filtered: bool,
+    /// E.g. a MAC filter that isn't a MAC.
+    pub notice: String,
+    pub rows: Vec<RadiusDecisionRow>,
+    pub limit: u32,
+    /// "Test a login": its inputs and result.
+    pub test_mac: String,
+    pub test_nas: Vec<(String, String, bool)>,
+    pub test_dot1x: bool,
+    pub test_groups: String,
+    pub test: Option<RadiusTestResult>,
+    pub test_error: String,
+}
+
+/// One recorded decision.
+pub struct RadiusDecisionRow {
+    pub at: String,
+    pub accepted: bool,
+    /// "accept, VLAN 10, role EMPLOYEE.in, re-auth 8 h" / "reject".
+    pub summary: String,
+    pub why: String,
+    pub mac: String,
+    pub identity: String,
+    pub nas: String,
+    /// "MAB (embedded)", "802.1X (FreeRADIUS)".
+    pub via: String,
+    pub trust: String,
+    pub groups: String,
+}
+
+/// What "test a login" decided.
+pub struct RadiusTestResult {
+    pub mac: String,
+    pub accepted: bool,
+    pub summary: String,
+    pub why: String,
+    pub trust: String,
+    pub nas: String,
+}
+
 pub struct RadiusSessionRow {
     pub id: String,
+    /// The decision the session runs on (0.2.9 Q2), e.g. "accept, VLAN 10",
+    /// and why; empty when none is recorded.
+    pub decision: String,
+    pub decision_why: String,
     /// The latest CoA's result and time, or empty.
     pub last_coa: String,
     pub mac: String,

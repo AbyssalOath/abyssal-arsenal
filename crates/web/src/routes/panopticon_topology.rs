@@ -24,8 +24,8 @@ use crate::extract::CurrentUser;
 use crate::host_context;
 use crate::state::AppState;
 use crate::templates::{
-    BaseCtx, DhcpHostOption, PanopticonDhcpTemplate, PanopticonTopologyTemplate, TopologyLink,
-    TopologySwitch,
+    BaseCtx, DhcpHostOption, DhcpServerRow, PanopticonDhcpTemplate, PanopticonTopologyTemplate,
+    TopologyLink, TopologySwitch,
 };
 use crate::theme;
 
@@ -184,6 +184,32 @@ async fn render_dhcp(
         host_context::current(jar),
     )
     .await?;
+    let allowed_servers = repo::settings::get_string(
+        &state.pool,
+        abyssal_core::settings::PANOPTICON_DHCP_ALLOWED_SERVERS,
+        "",
+    )
+    .await?;
+    let (list, always) = crate::panopticon_rogue_dhcp::allowed(&state.pool).await;
+    let tz = &ctx.user.timezone;
+    let servers = repo::panopticon_dhcp_servers::list(&state.pool)
+        .await?
+        .into_iter()
+        .map(|s| DhcpServerRow {
+            rogue: abyssal_core::is_rogue_dhcp_server(&s.server_ip, &list, &always),
+            ip: s.server_ip,
+            mac: s.server_mac.unwrap_or_default(),
+            first_seen: crate::common::format_in_tz(s.first_seen_at, tz),
+            last_seen: crate::common::format_in_tz(s.last_seen_at, tz),
+            replies: s.replies,
+            chosen: s.chosen,
+            last_client: s.last_client_mac.unwrap_or_default(),
+            alerted: s
+                .alerted_at
+                .map(|t| crate::common::format_in_tz(t, tz))
+                .unwrap_or_default(),
+        })
+        .collect();
     let tpl = PanopticonDhcpTemplate {
         base,
         can_manage: ctx.has(Permission::NetworkManage),
@@ -191,12 +217,125 @@ async fn render_dhcp(
         lease_count: repo::panopticon_topology::lease_count(&state.pool).await?,
         result,
         error,
+        detection_on: !list.is_empty(),
+        allowed_servers,
+        servers,
     };
     let jar = match new_cookie {
         Some(c) => jar.clone().add(c),
         None => jar.clone(),
     };
     Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct DhcpAllowedForm {
+    csrf_token: String,
+    #[serde(default)]
+    allowed_servers: String,
+}
+
+/// Saves the allowed DHCP servers (0.2.9 Q4). Empty turns rogue DHCP
+/// detection off.
+pub async fn dhcp_allowed_servers(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<DhcpAllowedForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let raw = form.allowed_servers.trim();
+    if let Err(e) = abyssal_core::parse_allowed_dhcp_servers(raw) {
+        return render_dhcp(&state, &jar, &ctx, None, Some(format!("Not saved: {e}."))).await;
+    }
+    save_allowed(&state, &ctx, raw).await?;
+    let msg = if raw.is_empty() {
+        "Allowed DHCP servers cleared: rogue DHCP detection is off.".to_string()
+    } else {
+        "Allowed DHCP servers saved: any other DHCP server is reported as a rogue.".to_string()
+    };
+    render_dhcp(&state, &jar, &ctx, Some(msg), None).await
+}
+
+async fn save_allowed(
+    state: &AppState,
+    ctx: &abyssal_rbac::AuthContext,
+    raw: &str,
+) -> Result<(), WebError> {
+    repo::settings::set(
+        &state.pool,
+        abyssal_core::settings::PANOPTICON_DHCP_ALLOWED_SERVERS,
+        serde_json::json!(raw),
+        Some(ctx.user.id),
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(abyssal_core::settings::PANOPTICON_DHCP_ALLOWED_SERVERS)
+            .metadata(serde_json::json!({ "allowed_servers": raw })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct DhcpServerForm {
+    csrf_token: String,
+    server_ip: String,
+    /// "allow" adds it to the allowed list; "forget" removes it from the
+    /// table (it's gone for good).
+    action: String,
+}
+
+/// One seen DHCP server's buttons (0.2.9 Q4): allow it, or forget it.
+pub async fn dhcp_server_action(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<DhcpServerForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let ip: std::net::IpAddr = form
+        .server_ip
+        .trim()
+        .parse()
+        .map_err(|_| AppError::Validation("Not an address.".into()))?;
+    match form.action.as_str() {
+        "allow" => {
+            let current = repo::settings::get_string(
+                &state.pool,
+                abyssal_core::settings::PANOPTICON_DHCP_ALLOWED_SERVERS,
+                "",
+            )
+            .await?;
+            let updated = if current.trim().is_empty() {
+                ip.to_string()
+            } else {
+                format!("{}, {ip}", current.trim())
+            };
+            save_allowed(&state, &ctx, &updated).await?;
+            render_dhcp(
+                &state,
+                &jar,
+                &ctx,
+                Some(format!("{ip} is now an allowed DHCP server.")),
+                None,
+            )
+            .await
+        }
+        "forget" => {
+            repo::panopticon_dhcp_servers::delete(&state.pool, &ip.to_string()).await?;
+            render_dhcp(&state, &jar, &ctx, Some(format!("Forgot {ip}.")), None).await
+        }
+        _ => Err(WebError(AppError::Validation("Unknown action.".into()))),
+    }
 }
 
 pub async fn dhcp(

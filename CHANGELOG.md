@@ -10,6 +10,96 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-11-13
+
+This release closes the loop on Panopticon's NAC decisions: what each one
+was based on is recorded and shown, live sessions follow security signals
+and policy changes through CoA instead of waiting for the next login, and
+two detections arrive (rogue DHCP servers, SNMP traps). The plan and its
+decisions are in [docs/roadmap/0.2.9.md](docs/roadmap/0.2.9.md). Everything
+new that acts is off until configured; decisions are recorded from the
+start. See **Upgrading** at the end. No agent protocol change.
+
+### Added
+
+- **SNMP traps.** Switches can now tell Panopticon at once when a port goes
+  up or down, or (Cisco) when a MAC appears or leaves: the switch is polled
+  straight away and the policy runs, so a device plugged in is seen and
+  checked within seconds instead of at the next five-minute poll. Only traps
+  from a switch Panopticon polls over SNMP v1/v2c, with that switch's
+  community, are believed; a burst is folded into two polls. Off by default
+  (switches page, applies on restart; publish UDP 162 behind Docker's
+  bridge). The switches page shows each switch's last trap. Plan:
+  [docs/roadmap/0.2.9.md](docs/roadmap/0.2.9.md) (Q5).
+
+- **Rogue DHCP server detection.** Panopticon's capture now also notes
+  which DHCP server each client chose (from its requests, which also arrive
+  through relays) and server replies on the captured segment. List your
+  real DHCP servers on the DHCP page, and any other one is reported as a
+  rogue: an alert to the rogue-device recipients and the audit log, once a
+  day per server, and a new policy trigger, *Rogue DHCP server*, that can
+  quarantine the device that answered, matched by the MAC its replies came
+  from (never by an address a packet names, which any device can forge; a
+  rogue only named by clients is shown as unconfirmed and never enforced).
+  The page lists every server seen, with Allow and Forget. Off until the allowed list is filled in. Plan:
+  [docs/roadmap/0.2.9.md](docs/roadmap/0.2.9.md) (Q4).
+
+- **Live re-evaluation of RADIUS sessions.** With it on (RADIUS page, off
+  by default), Panopticon works out every open session's decision again
+  each minute, and where the outcome, VLAN or role would change, because a
+  security signal started or cleared, or a VLAN, role or AD group rule
+  changed, it re-authorizes the session through the NAS client's CoA
+  setting. A compromised machine leaves its VLAN within a minute instead of
+  at its next login, and a fixed one leaves quarantine as fast. Guards: a
+  per-session cooldown, a cap per sweep, NAS clients without CoA left to the
+  Session-Timeout, and this server itself never touched. Each CoA is audited
+  with what changed. Plan: [docs/roadmap/0.2.9.md](docs/roadmap/0.2.9.md) (Q3).
+
+- **RADIUS decisions, and why.** Every RADIUS login and re-authentication
+  (embedded server or FreeRADIUS) is recorded with what Panopticon decided
+  (accept or reject, VLAN, role, Session-Timeout) and what it was based on:
+  trust state, enforcement, a security signal, an AD group rule. A new
+  **Decisions** page lists them with filters and has **test a login**, which
+  shows what a MAC would get through a given NAS client, without recording
+  it or touching a switch. The RADIUS sessions table shows each session's
+  decision, and inventory MACs link to theirs. Kept 30 days by default
+  (RADIUS page). Plan: [docs/roadmap/0.2.9.md](docs/roadmap/0.2.9.md) (Q2).
+- **Policy Simulate results on the policy page.** In Simulate mode, what
+  each rule would have done to each device (through its switch port, through
+  RADIUS, or why not) is listed on the policy page instead of only in the
+  server log.
+
+- **RADIUS end-to-end test**, `deploy/test/radius-e2e.sh`: the real app and
+  a real MariaDB, configured through the app's own forms, then asked by a
+  real RADIUS client through the embedded server and through the
+  FreeRADIUS API. It checks VLANs, roles per NAS client, Session-Timeout,
+  security signals, guests, the rejects, decision records, policy
+  simulation, live re-evaluation against a stand-in switch, rogue DHCP
+  servers and SNMP traps (105 checks). Needs Docker and cargo; run it
+  before a release.
+
+### Changed
+
+- **Accounted RADIUS sessions are now pruned** after the decision retention
+  (30 days by default). Nothing pruned them before.
+- Unused dependencies removed (`crates/hosts`), and `chrono` is now a
+  Windows-only dependency of the agent, so the build is warning-free.
+
+### Upgrading
+
+- **Migrations 0064 to 0066** (decision records and policy simulations,
+  DHCP servers seen, each switch's last trap) run at startup.
+- **Decisions are recorded from the first start**, every login and
+  re-authentication, kept 30 days (RADIUS page). Accounted RADIUS sessions
+  are now pruned after the same time; nothing pruned them before.
+- **The FreeRADIUS configuration is unchanged**: no rebuild needed for it.
+- **SNMP traps** need the listener turned on (Switches page, then a
+  restart) and UDP 162 published: uncomment `"162:162/udp"` in
+  `docker-compose.yml`, unless the host runs `snmptrapd` on it.
+- **Live re-evaluation** only acts through NAS clients with CoA on, and
+  only once turned on (RADIUS page). Turn on login signals first and watch
+  the Decisions page before turning it on.
+
 ## [0.2.8] - 2026-11-13
 
 This release is about **identity and policy** in Panopticon's NAC: who
