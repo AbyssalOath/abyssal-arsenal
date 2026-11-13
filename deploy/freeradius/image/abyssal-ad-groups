@@ -1,0 +1,52 @@
+#!/bin/bash
+# Called by FreeRADIUS inside the PEAP tunnel, after the password check
+# (deploy/freeradius/sites-enabled/abyssal-inner), with two environment
+# variables from FreeRADIUS's control list, named as the attributes are
+# (hyphens and all, so read with printenv):
+#
+#   Abyssal-AD-Login             the login: "alice", or "pc1$" for a computer
+#   Abyssal-AD-Group-Candidates  ';'-separated group names from Panopticon's
+#                                AD group rules: "DOMAIN\Group" or "Group"
+#
+# Prints which of the candidates the login is a member of, nested membership
+# included, ';'-separated, in the candidates' order and spelling. Only the
+# candidates: FreeRADIUS truncates a program's output at 2047 characters,
+# and a user can be in hundreds of groups.
+#
+# Environment rather than arguments, because FreeRADIUS backslash-escapes
+# characters such as ';' in arguments. Prints nothing (and succeeds) when
+# there's nothing to report, so a lookup that fails just means "no group
+# rule applies".
+set -u
+[ -f /run/abyssal-ad/enabled ] || exit 0
+user=$(printenv Abyssal-AD-Login)
+candidates=$(printenv Abyssal-AD-Group-Candidates)
+[ -n "$user" ] && [ -n "$candidates" ] || exit 0
+
+# User (or computer, "pc1$") -> SID -> every group SID in its token.
+sid=$(wbinfo --name-to-sid="$user" 2>/dev/null | awk 'NR == 1 { print $1 }')
+[[ "$sid" == S-1-* ]] || exit 0
+mapfile -t sids < <(wbinfo --user-sids="$sid" 2>/dev/null)
+[ ${#sids[@]} -gt 0 ] || exit 0
+
+# Group SIDs -> "DOMAIN\name". One --sid-to-name per SID: the batch
+# --lookup-sids reports the domain as "<none>". wbinfo prints
+# "DOMAIN\name <type>".
+declare -A member=()
+for s in "${sids[@]}"; do
+  line=$(wbinfo --sid-to-name="$s" 2>/dev/null) || continue
+  name=${line% *}
+  [ -n "$name" ] || continue
+  lower=${name,,}
+  member["$lower"]=1
+  # A plain "Group" candidate matches the name in any domain.
+  [[ "$lower" == *\\* ]] && member["${lower##*\\}"]=1
+done
+
+out=()
+IFS=';' read -ra wanted <<< "$candidates"
+for c in "${wanted[@]}"; do
+  [ -n "$c" ] || continue
+  [ -n "${member[${c,,}]:-}" ] && out+=("$c")
+done
+(IFS=';'; printf '%s' "${out[*]}")

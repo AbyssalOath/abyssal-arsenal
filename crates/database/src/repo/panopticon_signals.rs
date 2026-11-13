@@ -128,6 +128,65 @@ pub async fn latest_posture_scores(pool: &DbPool) -> anyhow::Result<HashMap<Uuid
         .collect())
 }
 
+// ---- One device at a RADIUS login (0.2.8 P3) ---------------------------
+
+/// The managed host behind a network device: its linked host (`host_id`),
+/// else an active host last seen at `ip`. Returns the host and whether it is
+/// the control plane's own server.
+pub async fn host_for_device(
+    pool: &DbPool,
+    host_id: Option<Uuid>,
+    ip: &str,
+) -> anyhow::Result<Option<(Uuid, bool)>> {
+    let row: Option<(String, bool)> = match host_id {
+        Some(id) => {
+            sqlx::query_as("SELECT id, is_control_plane FROM hosts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(pool)
+                .await?
+        }
+        None if !ip.is_empty() => {
+            sqlx::query_as(
+                "SELECT id, is_control_plane FROM hosts \
+                 WHERE last_seen_ip = ? AND revoked_at IS NULL \
+                 ORDER BY last_seen_at DESC LIMIT 1",
+            )
+            .bind(ip)
+            .fetch_optional(pool)
+            .await?
+        }
+        None => None,
+    };
+    Ok(row.and_then(|(id, cp)| Some((Uuid::parse_str(&id).ok()?, cp))))
+}
+
+/// Whether an active control-plane host was last seen at `ip`.
+pub async fn is_control_plane_ip(pool: &DbPool, ip: &str) -> anyhow::Result<bool> {
+    if ip.is_empty() {
+        return Ok(false);
+    }
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hosts \
+         WHERE is_control_plane = 1 AND revoked_at IS NULL AND last_seen_ip = ?",
+    )
+    .bind(ip)
+    .fetch_one(pool)
+    .await?;
+    Ok(n > 0)
+}
+
+/// A host's latest Cadavault posture score; `None` without a run, or when
+/// the latest run has no score (every check not applicable).
+pub async fn latest_posture_score(pool: &DbPool, host_id: Uuid) -> anyhow::Result<Option<u8>> {
+    let row: Option<(Option<u8>,)> = sqlx::query_as(
+        "SELECT score FROM posture_runs WHERE host_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(host_id.to_string())
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(s,)| s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

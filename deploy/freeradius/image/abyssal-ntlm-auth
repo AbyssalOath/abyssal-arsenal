@@ -1,0 +1,26 @@
+#!/bin/sh
+# Called by FreeRADIUS's mschap module (deploy/freeradius/mods-enabled/mschap)
+# for every PEAP/MSCHAPv2 login. FreeRADIUS execs this directly (no shell),
+# one argument per option, so user-supplied values never reach a shell.
+#
+# Adds the settings the entrypoint wrote from AD_* (FreeRADIUS doesn't pass
+# its own environment to programs it runs), then hands off to ntlm_auth,
+# which asks the domain controller through winbindd.
+conf=/run/abyssal-ad
+if [ ! -f "$conf/enabled" ]; then
+  echo "Active Directory isn't configured (AD_REALM is empty)" >&2
+  exit 1
+fi
+
+# Drop an empty --domain= (a login without DOMAIN\): ntlm_auth then uses
+# the joined domain's workgroup.
+for a in "$@"; do
+  shift
+  [ "$a" = "--domain=" ] && continue
+  set -- "$@" "$a"
+done
+
+if [ -s "$conf/require-group" ]; then
+  set -- "$@" "--require-membership-of=$(cat "$conf/require-group")"
+fi
+exec /usr/bin/ntlm_auth "$@"

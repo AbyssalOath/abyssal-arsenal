@@ -1,8 +1,9 @@
 #  Abyssal Arsenal's RADIUS front end (docs/roadmap/0.2.7.md, N4).
 #
 #  FreeRADIUS authenticates; Panopticon decides:
-#    - EAP (802.1X): EAP-TLS here, then Panopticon's admission decision for
-#      the device's MAC in post-auth (VLAN, quarantine, or reject).
+#    - EAP (802.1X): EAP-TLS, or PEAP/MSCHAPv2 against Active Directory
+#      (abyssal-inner), then Panopticon's admission decision for the
+#      device's MAC in post-auth (VLAN, quarantine, or reject).
 #    - Anything else: Panopticon's MAB decision in authorize, which rejects a
 #      request that isn't MAB (no password store).
 #    - Accounting: sessions recorded in Panopticon, so CoA keeps working.
@@ -58,6 +59,23 @@ server abyssal {
 	post-auth {
 		#  EAP succeeded: ask Panopticon what this device gets.
 		if (&request:EAP-Message) {
+			#  PEAP: the login inside the tunnel (abyssal-inner), rather
+			#  than the outer, often anonymous, identity. Sent to the NAS
+			#  too, so its accounting names the user.
+			if (&session-state:User-Name) {
+				update request {
+					&User-Name := &session-state:User-Name
+				}
+				update reply {
+					&User-Name := &session-state:User-Name
+				}
+			}
+			#  Its AD groups that have a group rule (abyssal-inner).
+			if (&session-state:Abyssal-AD-Groups) {
+				update request {
+					&Abyssal-AD-Groups := &session-state:Abyssal-AD-Groups
+				}
+			}
 			abyssal
 			if (&control:Tmp-String-0 == "reject") {
 				reject

@@ -23,11 +23,11 @@
   {% if freeradius_enabled %}
   <div class="info-banner">
     <strong>802.1X through FreeRADIUS is configured</strong> (<code>FREERADIUS_API_TOKEN</code> is set).
-    FreeRADIUS answers RADIUS on these ports and handles EAP-TLS and MAB; Panopticon still decides every
+    FreeRADIUS answers RADIUS on these ports and handles EAP-TLS, PEAP against Active Directory (when joined) and MAB; Panopticon still decides every
     device's admission with the policy below, supplies the NAS clients' secrets, and records accounting.
     The embedded server stays off.
     {% if freeradius_last_call.is_empty() %}<br><em>FreeRADIUS hasn't called in since this server started.
-    Start it with <code>docker compose --profile freeradius up -d</code>.</em>{% else %}<br>Last request from
+    Start it with <code>docker compose --profile freeradius up -d --build</code>.</em>{% else %}<br>Last request from
     FreeRADIUS: {{ freeradius_last_call }}.{% endif %}
     See <code>deploy/freeradius/README.md</code>.
   </div>
@@ -69,6 +69,49 @@
     <label for="radius-guest-vlan">Guest VLAN (for "Guest VLAN", and approved registrations)</label>
     <input type="number" id="radius-guest-vlan" name="guest_vlan" min="0" max="4094" value="{{ guest_vlan }}" style="max-width:120px;">
 
+    <fieldset style="margin-top:12px;">
+      <legend>Roles (ACLs / user roles)</legend>
+      <p style="color:var(--text-muted); margin-top:0;">The name of an ACL or user role <strong>already defined on the
+        switch or controller</strong>, sent with each Accept to NAS clients that have a <em>role attribute</em> (below):
+        Cisco named ACLs as <code>NAME.in</code> through <em>Filter-Id</em>, Aruba user roles through
+        <em>Aruba-User-Role</em>. Empty = no role. Letters, digits, <code>_ - . :</code>.
+        A <strong>quarantine role</strong> also lets quarantine work without a quarantine VLAN, on NAS clients that
+        apply roles: a quarantined device then keeps its VLAN, restricted by the role (for example to reach WSUS and
+        your AV servers). Elsewhere, quarantine without a VLAN still rejects.</p>
+      <label for="radius-role-trusted">Trusted devices</label>
+      <input type="text" id="radius-role-trusted" name="role_trusted" maxlength="64" value="{{ role_trusted }}" style="max-width:240px;" placeholder="e.g. EMPLOYEE">
+      <label for="radius-role-quarantine">Quarantine (untrusted devices, quarantined ports and devices)</label>
+      <input type="text" id="radius-role-quarantine" name="role_quarantine" maxlength="64" value="{{ role_quarantine }}" style="max-width:240px;" placeholder="e.g. QUARANTINE.in">
+      <label for="radius-role-unknown">Unknown devices (admitted under Accept, or after 802.1X)</label>
+      <input type="text" id="radius-role-unknown" name="role_unknown" maxlength="64" value="{{ role_unknown }}" style="max-width:240px;">
+      <label for="radius-role-guest">Guest VLAN and approved registrations</label>
+      <input type="text" id="radius-role-guest" name="role_guest" maxlength="64" value="{{ role_guest }}" style="max-width:240px;">
+      <label for="radius-role-registration">Registration VLAN</label>
+      <input type="text" id="radius-role-registration" name="role_registration" maxlength="64" value="{{ role_registration }}" style="max-width:240px;">
+    </fieldset>
+
+    <fieldset style="margin-top:12px;">
+      <legend>Re-authentication (Session-Timeout)</legend>
+      <p style="color:var(--text-muted); margin-top:0;">Minutes until the switch or AP asks again, sent as
+        <em>Session-Timeout</em> with <em>Termination-Action = RADIUS-Request</em>: the NAS re-authenticates the session
+        without dropping the link, and the device gets whatever the policy says by then. That's how a trust change,
+        a lifted quarantine or a fixed posture reaches NAS clients <strong>without CoA</strong>. 0 = none (the NAS keeps
+        the decision until the device reconnects); otherwise {{ timeout_min_minutes }}&ndash;{{ timeout_max_minutes }}.
+        Suggested: quarantine and registration 5&ndash;15, trusted 480&ndash;1440. Some NAS clients only honour it with
+        re-authentication enabled on the port (Cisco: <code>authentication periodic</code> and
+        <code>authentication timer reauthenticate server</code>).</p>
+      <label for="radius-timeout-trusted">Trusted devices</label>
+      <input type="number" id="radius-timeout-trusted" name="timeout_trusted" min="0" max="{{ timeout_max_minutes }}" value="{{ timeout_trusted }}" style="max-width:120px;">
+      <label for="radius-timeout-quarantine">Quarantine (untrusted, quarantined ports and devices, security signals)</label>
+      <input type="number" id="radius-timeout-quarantine" name="timeout_quarantine" min="0" max="{{ timeout_max_minutes }}" value="{{ timeout_quarantine }}" style="max-width:120px;">
+      <label for="radius-timeout-unknown">Unknown devices (admitted)</label>
+      <input type="number" id="radius-timeout-unknown" name="timeout_unknown" min="0" max="{{ timeout_max_minutes }}" value="{{ timeout_unknown }}" style="max-width:120px;">
+      <label for="radius-timeout-guest">Guest VLAN and approved registrations (a registration's session also ends when it expires)</label>
+      <input type="number" id="radius-timeout-guest" name="timeout_guest" min="0" max="{{ timeout_max_minutes }}" value="{{ timeout_guest }}" style="max-width:120px;">
+      <label for="radius-timeout-registration">Registration VLAN</label>
+      <input type="number" id="radius-timeout-registration" name="timeout_registration" min="0" max="{{ timeout_max_minutes }}" value="{{ timeout_registration }}" style="max-width:120px;">
+    </fieldset>
+
     <p style="color:var(--text-muted); margin-top:8px;">
       <strong>Unknown = Accept</strong> is the safe default: turning RADIUS on gives you identity
       and accounting visibility without locking anyone out. Classify your fleet (Trusted /
@@ -97,7 +140,7 @@
   <p style="color:var(--text-muted);">No clients yet &mdash; add one below.</p>
   {% else %}
   <table>
-    <thead><tr><th>Name</th><th>NAS address</th><th>CoA</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr></thead>
+    <thead><tr><th>Name</th><th>NAS address</th><th>CoA</th><th>Role attribute</th><th>Status</th>{% if can_manage %}<th>Controls</th>{% endif %}</tr></thead>
     <tbody>
       {% for c in clients %}
       <tr>
@@ -114,6 +157,17 @@
             <button type="submit" class="btn btn-secondary btn-sm">Save</button>
           </form>
           {% else %}{{ c.coa_label }}{% if c.coa_label != "Off" %} (port {{ c.coa_port }}){% endif %}{% endif %}
+        </td>
+        <td>
+          {% if can_manage %}
+          <form method="post" action="/arsenals/panopticon/radius/clients/{{ c.id }}/role-attribute" style="display:flex; gap:4px; flex-wrap:wrap; align-items:center;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <select name="role_attribute" aria-label="Role attribute for {{ c.name }}">
+              {% for (key, label, selected) in c.role_attributes %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+            <button type="submit" class="btn btn-secondary btn-sm">Save</button>
+          </form>
+          {% else %}{{ c.role_attribute_label }}{% endif %}
         </td>
         <td>{% if c.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-muted">Disabled</span>{% endif %}</td>
         {% if can_manage %}
@@ -150,8 +204,111 @@
     </select>
     <label for="client-coa-port">CoA port</label>
     <input type="number" id="client-coa-port" name="coa_port" min="1" max="65535" value="3799" style="max-width:110px;">
+    <label for="client-role-attr">Role attribute (how this NAS is sent a role)</label>
+    <select id="client-role-attr" name="role_attribute">
+      {% for (key, label, selected) in new_client_role_attributes %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
     <div class="actions" style="margin-top:12px;">
       <button type="submit" class="btn btn-warning">{% call macros::icon("generate") %} Add NAS client</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("shield-check") %} Security signals at login</h3>
+  <p style="color:var(--text-muted); margin-top:0;">Checked at every RADIUS login (MAB, EAP-TLS, PEAP), for devices
+    linked to a managed host (or, for Scourge, by the device's address): the same signals as the
+    <a href="/arsenals/panopticon/policy">policy engine</a>'s triggers, but a failing device never reaches its normal
+    VLAN in the first place. A signal only tightens: it turns an admitting decision into <em>quarantine</em> (the
+    quarantine VLAN and role, as for an untrusted device) or a <em>reject</em>. Port and device enforcement still come
+    first, and the control plane's own server is never restricted. Events and alerts count for the last
+    {{ signal_window_minutes }} minutes (the policy engine's signal window). A device that's fixed leaves quarantine at
+    its next login (re-authenticate its session below, or wait for the switch's re-authentication timer).</p>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/radius/signals">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="radius-signal-posture">Cadavault posture score below (0 = off)</label>
+    <input type="number" id="radius-signal-posture" name="posture_below" min="0" max="100" value="{{ signal_posture_below }}" style="max-width:120px;">
+    <select name="posture_action" aria-label="Posture outcome" style="max-width:160px;">
+      {% for (key, label, selected) in signal_posture_actions %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+
+    <label for="radius-signal-event">Open Thanatos event</label>
+    <select id="radius-signal-event" name="event_min_severity" style="max-width:200px;">
+      {% for (key, label, selected) in signal_event_severities %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="event_action" aria-label="Thanatos outcome" style="max-width:160px;">
+      {% for (key, label, selected) in signal_event_actions %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+
+    <label for="radius-signal-ids">Scourge alert from the device</label>
+    <select id="radius-signal-ids" name="ids_min_severity" style="max-width:200px;">
+      {% for (key, label, selected) in signal_ids_severities %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="ids_action" aria-label="Scourge outcome" style="max-width:160px;">
+      {% for (key, label, selected) in signal_ids_actions %}<option value="{{ key }}"{% if selected %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn-warning">Save</button>
+    </div>
+  </form>
+  {% else %}
+  <p style="color:var(--text-muted);">Posture below: {% if signal_posture_below > 0 %}{{ signal_posture_below }}{% else %}off{% endif %}
+    (you need network.nac to change these).</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>{% call macros::icon("user") %} VLAN by AD group</h3>
+  <p style="color:var(--text-muted); margin-top:0;">For 802.1X logins checked against Active Directory (PEAP
+  through FreeRADIUS, <code>deploy/freeradius/README.md</code>): the <strong>first rule, in order,</strong> whose group
+  the user or computer is in chooses the VLAN, the role, or both (a blank VLAN keeps the device's VLAN; a blank role
+  keeps the role set above). Groups are <code>DOMAIN\Group</code>, or just <code>Group</code> for that
+  name in any domain, and nested membership counts. A rule only chooses the VLAN of a device that would be admitted
+  anyway: a quarantined or disabled port or device, an <em>Untrusted</em> device, and an unknown device under
+  <em>Reject</em> are treated as above. MAB and EAP-TLS logins don't use these rules. Changes apply at each
+  device's next login (or <em>Reauthorize</em> a session below).</p>
+  {% if group_rules.is_empty() %}
+  <p style="color:var(--text-muted);">No group rules: logins get their device's VLAN, as set above.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Order</th><th>AD group</th><th>VLAN</th><th>Role</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for r in group_rules %}
+      <tr>
+        <td>{{ r.position }}</td>
+        <td>{{ r.group_name }}</td>
+        <td>{% if r.vlan == 0 %}&mdash;{% else %}{{ r.vlan }}{% endif %}</td>
+        <td>{% if r.role.is_empty() %}&mdash;{% else %}<code>{{ r.role }}</code>{% endif %}</td>
+        {% if can_manage %}
+        <td class="actions">
+          <form method="post" action="/arsenals/panopticon/radius/group-rules/{{ r.id }}/delete" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-danger btn-sm" aria-label="Delete the rule for {{ r.group_name }}">{% call macros::icon("danger") %} Delete</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/radius/group-rules" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="group-rule-name">AD group</label>
+    <input type="text" id="group-rule-name" name="group_name" required maxlength="256" style="max-width:320px;" placeholder="CORP\Finance">
+    <label for="group-rule-vlan">VLAN</label>
+    <input type="number" id="group-rule-vlan" name="vlan" min="1" max="4094" style="max-width:120px;" placeholder="blank = keep">
+    <label for="group-rule-role">Role (optional)</label>
+    <input type="text" id="group-rule-role" name="role" maxlength="64" style="max-width:240px;" placeholder="e.g. FINANCE">
+    <label for="group-rule-position">Order (lower is checked first)</label>
+    <input type="number" id="group-rule-position" name="position" min="0" max="1000000" value="{{ next_group_position }}" style="max-width:120px;">
+    <div class="actions" style="margin-top:12px;">
+      <button type="submit" class="btn btn-warning">{% call macros::icon("generate") %} Add group rule</button>
     </div>
   </form>
   {% endif %}

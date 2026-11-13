@@ -10,6 +10,97 @@ for what that means for cloning and updating.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-13
+
+This release is about **identity and policy** in Panopticon's NAC: who
+logged in, what a device may reach once admitted, and what the other
+arsenals know about it. The plan and its decisions are in
+[docs/roadmap/0.2.8.md](docs/roadmap/0.2.8.md). Everything new is off until
+configured: with no AD settings, group rules, roles, login signals or
+timeouts set, every RADIUS decision is exactly what 0.2.7 gives. See
+**Upgrading** at the end. No agent protocol change.
+
+### Added
+
+- **802.1X with Active Directory passwords (PEAP/MSCHAPv2).** FreeRADIUS
+  can now check usernames and passwords against your domain, so Windows
+  machines can do 802.1X with their domain login (or their computer
+  account, before anyone logs on) without client certificates. Set
+  `AD_REALM`, plus a join account for the first start (`AD_JOIN_USER`,
+  `AD_JOIN_PASSWORD`). The FreeRADIUS container then joins the domain once,
+  as `AD_NETBIOS_NAME` (default `ABYSSAL-RADIUS`), and checks every login
+  with the domain controller through Samba's winbind. `AD_REQUIRE_GROUP`
+  limits logins to members of one group. Panopticon still decides each
+  device's VLAN, quarantine or reject by its MAC, exactly as for EAP-TLS,
+  and now logs the real login instead of the anonymous outer identity.
+  EAP-TLS and MAB are unchanged, and PEAP is rejected while `AD_REALM` is
+  empty. Setup: [deploy/freeradius/README.md](deploy/freeradius/README.md#peap-against-active-directory);
+  `deploy/freeradius/test/run-ad.sh` tests it against a real Samba AD
+  domain controller.
+
+- **VLAN by AD group.** On the RADIUS page, an ordered list of rules maps
+  Active Directory groups to VLANs (`CORP\Finance` → VLAN 30). For a
+  login that passed PEAP against AD, the first rule whose group the user
+  or computer is in (nested membership included) chooses the VLAN. It
+  only ever chooses the VLAN of a device that would be admitted anyway:
+  port or device enforcement, an *Untrusted* device and an unknown device
+  under *Reject* are unaffected. FreeRADIUS checks membership of just the
+  groups the rules name, inside the PEAP tunnel, and Panopticon's log
+  names the rule that applied. No rules: nothing changes. Plan:
+  [docs/roadmap/0.2.8.md](docs/roadmap/0.2.8.md) (P1).
+
+- **Roles and ACLs, not just VLANs.** An Accept can now name a role: an ACL
+  or user role already defined on the switch or controller. Each NAS client
+  has a *role attribute*: **Filter-Id** (Cisco named ACLs as `NAME.in`, and
+  most vendors), **Aruba-User-Role**, or **None**, the default, so existing
+  clients see no change. Roles are set per outcome (trusted, quarantine,
+  unknown, guest, registration) and per AD group rule, whose VLAN can now be
+  left blank. With a **quarantine role**, quarantine works without a
+  quarantine VLAN on NAS clients that apply roles: the device keeps its VLAN,
+  restricted by the role. On other NAS clients, quarantine without a VLAN
+  still rejects. Plan: [docs/roadmap/0.2.8.md](docs/roadmap/0.2.8.md) (P2).
+- **Security signals at login.** Every RADIUS login (MAB, EAP-TLS, PEAP) can
+  now check what the other arsenals know about the machine: its latest
+  **Cadavault posture score** below a threshold, an **open Thanatos event**,
+  or a **Scourge alert** from its address, each at a severity you choose.
+  Each signal quarantines or rejects the device, so a failing machine never
+  reaches its normal VLAN; the log names the signal. All three are off
+  until set on the RADIUS page. A signal only ever tightens a decision, port
+  and device enforcement still come first, and the control plane's own
+  server is never restricted. Plan:
+  [docs/roadmap/0.2.8.md](docs/roadmap/0.2.8.md) (P3).
+- **Periodic re-authentication.** Each RADIUS outcome (trusted,
+  quarantine, unknown, guest, registration) can now carry a
+  **Session-Timeout**, sent with *Termination-Action = RADIUS-Request*, so
+  the switch or AP re-authenticates the session without dropping the link
+  and picks up a trust change, a lifted quarantine or a fixed posture, even
+  where CoA isn't available. An approved guest's session also ends when its
+  registration does. Off (0) until set on the RADIUS page. Plan:
+  [docs/roadmap/0.2.8.md](docs/roadmap/0.2.8.md) (P4).
+
+### Changed
+
+- **The FreeRADIUS service is now built locally** from
+  `deploy/freeradius/image` (the official 3.2.7 image plus Samba winbind)
+  instead of pulled. `docker compose --profile freeradius up -d --build`
+  builds it; it adds the `abyssal_freeradius_samba` volume, which holds the
+  domain join.
+
+### Upgrading
+
+- **Migrations 0062 and 0063** (AD group rules; role attribute per NAS
+  client and role per group rule) run at startup. Existing NAS clients get
+  role attribute *None*, so their replies don't change.
+- **If you run the FreeRADIUS front end**, rebuild it:
+  `docker compose --profile freeradius up -d --build`. It's now built from
+  `deploy/freeradius/image`, and its config now passes the NAS's address to
+  Panopticon (`?src=`) and asks for AD groups, so the new config and the new
+  control plane go together. PEAP stays rejected until `AD_REALM` is set
+  (see `.env.example`).
+- **Session-Timeout** only takes effect where the NAS re-authenticates on
+  it (Cisco: `authentication periodic` and
+  `authentication timer reauthenticate server` on the port).
+
 ## [0.2.7] - 2026-11-12
 
 This release is about Panopticon's network access control (NAC); the plan

@@ -2177,6 +2177,22 @@ pub fn build(state: AppState) -> Router {
             post(routes::panopticon::radius_session_reauthorize),
         )
         .route(
+            "/arsenals/panopticon/radius/clients/:id/role-attribute",
+            post(routes::panopticon::radius_client_set_role_attribute),
+        )
+        .route(
+            "/arsenals/panopticon/radius/signals",
+            post(routes::panopticon::radius_set_signals),
+        )
+        .route(
+            "/arsenals/panopticon/radius/group-rules",
+            post(routes::panopticon::radius_create_group_rule),
+        )
+        .route(
+            "/arsenals/panopticon/radius/group-rules/:id/delete",
+            post(routes::panopticon::radius_delete_group_rule),
+        )
+        .route(
             "/arsenals/panopticon/radius/clients/:id/delete",
             post(routes::panopticon::radius_client_delete),
         )
@@ -2284,6 +2300,10 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/radius/mab",
             post(crate::panopticon_freeradius::mab),
+        )
+        .route(
+            "/internal/radius/group-names",
+            get(crate::panopticon_freeradius::group_names),
         )
         .route(
             "/internal/radius/post-auth",

@@ -3214,6 +3214,46 @@ pub struct PanopticonRadiusTemplate {
     pub freeradius_last_call: String,
     /// CoA mode options for the add-client form (Disconnect preselected).
     pub new_client_coa_modes: Vec<(String, String, bool)>,
+    /// AD group -> VLAN rules (0.2.8 P1), in evaluation order.
+    pub group_rules: Vec<RadiusGroupRuleRow>,
+    /// The order prefilled for a new rule (after the last one).
+    pub next_group_position: i32,
+    /// Roles per outcome (0.2.8 P2), empty = none.
+    pub role_trusted: String,
+    pub role_quarantine: String,
+    pub role_unknown: String,
+    pub role_guest: String,
+    pub role_registration: String,
+    /// Role attribute options for the add-client form (None preselected).
+    pub new_client_role_attributes: Vec<(String, String, bool)>,
+    /// Security signals checked at login (0.2.8 P3): the posture threshold
+    /// (0 = off), the Thanatos / Scourge minimum severities ("" = off), each
+    /// signal's outcome, and the look-back window (the policy engine's).
+    pub signal_posture_below: u32,
+    /// Session-Timeout per outcome, minutes (0.2.8 P4); 0 = none.
+    pub timeout_trusted: u32,
+    pub timeout_quarantine: u32,
+    pub timeout_unknown: u32,
+    pub timeout_guest: u32,
+    pub timeout_registration: u32,
+    pub timeout_min_minutes: u32,
+    pub timeout_max_minutes: u32,
+    pub signal_posture_actions: Vec<(String, String, bool)>,
+    pub signal_event_severities: Vec<(String, String, bool)>,
+    pub signal_event_actions: Vec<(String, String, bool)>,
+    pub signal_ids_severities: Vec<(String, String, bool)>,
+    pub signal_ids_actions: Vec<(String, String, bool)>,
+    pub signal_window_minutes: u32,
+}
+
+pub struct RadiusGroupRuleRow {
+    pub id: String,
+    pub group_name: String,
+    /// 0 = keep the device's VLAN.
+    pub vlan: u16,
+    /// Empty = none.
+    pub role: String,
+    pub position: i32,
 }
 
 pub struct RadiusClientRow {
@@ -3225,6 +3265,9 @@ pub struct RadiusClientRow {
     pub coa_port: u16,
     /// (key, label, selected) for the row's CoA mode select.
     pub coa_modes: Vec<(String, String, bool)>,
+    pub role_attribute_label: String,
+    /// (key, label, selected) for the row's role attribute select.
+    pub role_attributes: Vec<(String, String, bool)>,
 }
 
 pub struct RadiusSessionRow {

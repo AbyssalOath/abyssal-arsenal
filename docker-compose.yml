@@ -191,14 +191,18 @@ services:
     networks:
       - abyssal
 
-  # Optional FreeRADIUS front end for 802.1X (EAP-TLS) -- see
+  # Optional FreeRADIUS front end for 802.1X (EAP-TLS, and PEAP against Active Directory) -- see
   # deploy/freeradius/README.md. Only started with
-  # `docker compose --profile freeradius up -d`. It joins the app
+  # `docker compose --profile freeradius up -d --build`. It joins the app
   # container's network namespace, so it answers RADIUS on the ports the app
   # publishes (1812/1813; Panopticon's embedded server stands down when
   # FREERADIUS_API_TOKEN is set) and reaches Panopticon on 127.0.0.1:8080.
   freeradius:
-    image: freeradius/freeradius-server:3.2.7
+    # The official 3.2.7 image plus Samba winbind, for PEAP/MSCHAPv2 against
+    # Active Directory (deploy/freeradius/image). Built locally the first
+    # time the profile starts.
+    build: deploy/freeradius/image
+    image: abyssal-arsenal-freeradius:3.2.7
     container_name: abyssal-arsenal-freeradius
     profiles: ["freeradius"]
     restart: unless-stopped
@@ -207,12 +211,26 @@ services:
       - app
     environment:
       ABYSSAL_FREERADIUS_TOKEN: ${FREERADIUS_API_TOKEN:-}
+      # PEAP/MSCHAPv2 against Active Directory (optional; empty AD_REALM =
+      # EAP-TLS and MAB only). See deploy/freeradius/README.md.
+      AD_REALM: ${AD_REALM:-}
+      AD_WORKGROUP: ${AD_WORKGROUP:-}
+      AD_NETBIOS_NAME: ${AD_NETBIOS_NAME:-}
+      AD_DC: ${AD_DC:-}
+      AD_REQUIRE_GROUP: ${AD_REQUIRE_GROUP:-}
+      # Only needed for the first start (the domain join); remove after.
+      AD_JOIN_USER: ${AD_JOIN_USER:-}
+      AD_JOIN_PASSWORD: ${AD_JOIN_PASSWORD:-}
+      AD_JOIN_OU: ${AD_JOIN_OU:-}
     volumes:
       - ./deploy/freeradius/clients.conf:/etc/freeradius/clients.conf:ro
       - ./deploy/freeradius/mods-enabled/abyssal:/etc/freeradius/mods-enabled/abyssal:ro
       - ./deploy/freeradius/mods-enabled/eap:/etc/freeradius/mods-enabled/eap:ro
+      - ./deploy/freeradius/mods-enabled/mschap:/etc/freeradius/mods-enabled/mschap:ro
       - ./deploy/freeradius/sites-enabled:/etc/freeradius/sites-enabled:ro
       - ./deploy/freeradius/certs:/etc/freeradius/certs-abyssal:ro
+      # The domain join (machine account secret) and winbind's caches.
+      - abyssal_freeradius_samba:/var/lib/samba
 
   caddy:
     image: caddy:2-alpine
@@ -251,6 +269,7 @@ volumes:
   abyssal_tls_ca:
   abyssal_tls_server:
   abyssal_caddy_admin:
+  abyssal_freeradius_samba:
 
 networks:
   abyssal:

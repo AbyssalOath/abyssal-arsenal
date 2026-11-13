@@ -13,9 +13,12 @@
 //! - `POST /internal/radius/mab` -- a non-EAP request, from `authorize`:
 //!   authorized as MAB with the same decision as the embedded server, or
 //!   rejected (a password login that isn't MAB has no credential store).
+//! - `GET  /internal/radius/group-names` -- the groups the AD group rules
+//!   name (0.2.8 P1), which FreeRADIUS checks a PEAP login's membership of.
 //! - `POST /internal/radius/post-auth` -- after a successful EAP
 //!   authentication: the device's admission decision (its VLAN, quarantine,
-//!   or a reject) by its MAC.
+//!   or a reject) by its MAC, with the VLAN of the login's first matching
+//!   AD group rule where the device is admitted.
 //! - `POST /internal/radius/accounting` -- sessions, as the embedded server
 //!   records them, so CoA (`crate::panopticon_coa`) keeps working.
 //!
@@ -221,6 +224,7 @@ pub async fn mab(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(q): Query<AccountingQuery>,
     body: Bytes,
 ) -> Response {
     if let Err(status) = gate(peer, &headers) {
@@ -259,16 +263,22 @@ pub async fn mab(
             return json_response(StatusCode::OK, reject_reply(true, "no MAC"));
         }
     };
-    let (decision, trust, enforced) =
-        crate::panopticon_radius::decide_for_mac(&state.pool, &mac, Admission::Mab).await;
+    let nas = nas_client(&state, &q, &attrs).await;
+    let d =
+        crate::panopticon_radius::decide_for_mac(&state.pool, &mac, Admission::Mab, nas.as_ref())
+            .await;
     tracing::info!(
         mac = %mac,
-        trust = trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
-        enforced = enforced.map(|k| k.as_str()).unwrap_or("none"),
-        decision = ?decision,
+        nas = nas.as_ref().map_or("unknown", |c| c.name.as_str()),
+        trust = d.trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
+        enforced = d.enforced.map(|k| k.as_str()).unwrap_or("none"),
+        signal = %d.signal_label(),
+        decision = ?d.decision,
+        role = sent_role(&d, nas.as_ref()).unwrap_or("none"),
+        session_timeout = d.session_timeout.unwrap_or(0),
         "FreeRADIUS MAB decision"
     );
-    json_response(StatusCode::OK, decision_reply(&decision, true))
+    json_response(StatusCode::OK, admission_reply(&d, nas.as_ref(), true))
 }
 
 /// `post-auth` after a successful EAP authentication: the device's
@@ -277,6 +287,7 @@ pub async fn post_auth(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(q): Query<AccountingQuery>,
     body: Bytes,
 ) -> Response {
     if let Err(status) = gate(peer, &headers) {
@@ -286,25 +297,125 @@ pub async fn post_auth(
         return StatusCode::BAD_REQUEST.into_response();
     };
     let identity = attrs.get("User-Name").unwrap_or_default();
+    // PEAP against AD: the login's AD groups that have a group rule
+    // (0.2.8 P1), looked up inside the tunnel by deploy/freeradius. An
+    // internal attribute, so neither a NAS nor a client can supply it.
+    let groups = attrs
+        .get(AD_GROUPS_ATTR)
+        .map(|g| abyssal_core::split_group_list(&g))
+        .unwrap_or_default();
     let Some(mac) = attrs.mac("Calling-Station-Id") else {
         // No MAC, no device to decide for: admit as an unknown device would
         // be, under the configured policy.
-        let (decision, _, _) =
-            crate::panopticon_radius::decide_for_mac(&state.pool, "", Admission::Authenticated)
-                .await;
-        return json_response(StatusCode::OK, decision_reply(&decision, false));
+        let nas = nas_client(&state, &q, &attrs).await;
+        let d = crate::panopticon_radius::decide_for_mac(
+            &state.pool,
+            "",
+            Admission::Authenticated,
+            nas.as_ref(),
+        )
+        .await;
+        return json_response(StatusCode::OK, admission_reply(&d, nas.as_ref(), false));
     };
-    let (decision, trust, enforced) =
-        crate::panopticon_radius::decide_for_mac(&state.pool, &mac, Admission::Authenticated).await;
+    let nas = nas_client(&state, &q, &attrs).await;
+    let d = crate::panopticon_radius::decide_for_login(
+        &state.pool,
+        &mac,
+        Admission::Authenticated,
+        nas.as_ref(),
+        &groups,
+    )
+    .await;
     tracing::info!(
         identity = %identity,
         mac = %mac,
-        trust = trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
-        enforced = enforced.map(|k| k.as_str()).unwrap_or("none"),
-        decision = ?decision,
+        nas = nas.as_ref().map_or("unknown", |c| c.name.as_str()),
+        groups = %groups.join(";"),
+        group_rule = d
+            .group_rule
+            .as_ref()
+            .map(|r| {
+                format!(
+                    "{} -> VLAN {} role {}",
+                    r.group_name,
+                    r.vlan,
+                    r.role.as_deref().unwrap_or("-")
+                )
+            })
+            .unwrap_or_else(|| "none".into()),
+        trust = d.trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
+        enforced = d.enforced.map(|k| k.as_str()).unwrap_or("none"),
+        signal = %d.signal_label(),
+        decision = ?d.decision,
+        role = sent_role(&d, nas.as_ref()).unwrap_or("none"),
+        session_timeout = d.session_timeout.unwrap_or(0),
         "FreeRADIUS 802.1X decision"
     );
-    json_response(StatusCode::OK, decision_reply(&decision, false))
+    json_response(StatusCode::OK, admission_reply(&d, nas.as_ref(), false))
+}
+
+/// The NAS client a request came from: by the packet's source address
+/// (`?src=%{Packet-Src-IP-Address}`), else its NAS-IP-Address. `None` when
+/// neither matches an enabled client; then no role is sent, and quarantine
+/// can't fall back to a role (0.2.8 P2).
+async fn nas_client(
+    state: &AppState,
+    q: &AccountingQuery,
+    attrs: &Attrs,
+) -> Option<abyssal_core::RadiusClient> {
+    for candidate in [q.src.clone(), attrs.get("NAS-IP-Address")] {
+        if let Some(ip) = candidate.and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            && let Some(c) = crate::panopticon_radius::client_by_ip(&state.pool, ip).await
+        {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// The role actually sent: only on an Accept, to a NAS that applies roles.
+fn sent_role<'a>(
+    d: &'a crate::panopticon_radius::LoginDecision,
+    nas: Option<&abyssal_core::RadiusClient>,
+) -> Option<&'a str> {
+    match (&d.decision, nas) {
+        (Decision::Accept(_), Some(c)) if c.role_attribute.sends_roles() => d.role.as_deref(),
+        _ => None,
+    }
+}
+
+/// [`decision_reply`] plus the role attribute for this NAS (0.2.8 P2).
+fn admission_reply(
+    d: &crate::panopticon_radius::LoginDecision,
+    nas: Option<&abyssal_core::RadiusClient>,
+    accept_auth_type: bool,
+) -> Value {
+    let mut v = decision_reply(&d.decision, accept_auth_type);
+    if let (Some(role), Some(nas), Value::Object(o)) = (sent_role(d, nas), nas, &mut v) {
+        insert_role(o, nas.role_attribute, role);
+    }
+    if let (Some(secs), Value::Object(o)) = (d.session_timeout, &mut v) {
+        insert_session_timeout(o, secs);
+    }
+    v
+}
+
+/// Session-Timeout and Termination-Action = RADIUS-Request (0.2.8 P4), so
+/// the NAS re-authenticates at the timeout without dropping the link.
+fn insert_session_timeout(out: &mut Map<String, Value>, secs: u32) {
+    out.insert("reply:Session-Timeout".into(), lit(secs.to_string()));
+    out.insert("reply:Termination-Action".into(), lit("RADIUS-Request"));
+}
+
+/// The `rlm_rest` name of a role attribute, and the role (literal).
+fn insert_role(out: &mut Map<String, Value>, kind: abyssal_core::RoleAttribute, role: &str) {
+    use abyssal_core::RoleAttribute;
+    let name = match kind {
+        RoleAttribute::None => return,
+        RoleAttribute::FilterId => "reply:Filter-Id",
+        RoleAttribute::ArubaUserRole => "reply:Aruba-User-Role",
+    };
+    out.insert(name.into(), lit(role));
 }
 
 #[derive(Deserialize)]
@@ -407,6 +518,75 @@ pub async fn client(
     )
 }
 
+/// The AD groups of a PEAP login that have a group rule, `;`-separated
+/// (`deploy/freeradius/image/dictionary.abyssal`).
+const AD_GROUPS_ATTR: &str = "Abyssal-AD-Groups";
+/// What `group-names` answers with: the rule groups FreeRADIUS checks a
+/// login's membership of.
+const AD_GROUP_CANDIDATES_ATTR: &str = "control:Abyssal-AD-Group-Candidates";
+/// FreeRADIUS expands each command-line argument of the group helper into a
+/// 2048-byte buffer (`deploy/freeradius/README.md`); stay clear of it.
+pub(crate) const GROUP_CANDIDATES_MAX_LEN: usize = 1900;
+
+/// Joins the distinct rule groups (case-insensitively, first spelling wins)
+/// into the candidate list, in rule order, stopping before
+/// [`GROUP_CANDIDATES_MAX_LEN`]. Returns the list and whether any group
+/// didn't fit.
+pub(crate) fn group_candidates(rules: &[abyssal_core::RadiusGroupRule]) -> (String, bool) {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::new();
+    let mut truncated = false;
+    for r in rules {
+        if !seen.insert(r.group_name.to_lowercase()) {
+            continue;
+        }
+        let extra = r.group_name.len() + usize::from(!out.is_empty());
+        if out.len() + extra > GROUP_CANDIDATES_MAX_LEN {
+            truncated = true;
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(abyssal_core::GROUP_LIST_SEPARATOR);
+        }
+        out.push_str(&r.group_name);
+    }
+    (out, truncated)
+}
+
+/// `GET /internal/radius/group-names`: the groups the AD group rules name,
+/// for FreeRADIUS to check a PEAP login's membership against (0.2.8 P1). No
+/// rules: an empty reply, and FreeRADIUS skips the lookup.
+pub async fn group_names(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(status) = gate(peer, &headers) {
+        return status.into_response();
+    }
+    let rules = match repo::panopticon_radius::list_group_rules(&state.pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "FreeRADIUS API: couldn't read the RADIUS group rules");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let (candidates, truncated) = group_candidates(&rules);
+    if truncated {
+        tracing::warn!(
+            "RADIUS group rules name more groups than fit in one lookup \
+             ({GROUP_CANDIDATES_MAX_LEN} characters); the later rules' groups are skipped"
+        );
+    }
+    if candidates.is_empty() {
+        return json_response(StatusCode::OK, json!({}));
+    }
+    json_response(
+        StatusCode::OK,
+        json!({ AD_GROUP_CANDIDATES_ATTR: lit(candidates) }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,6 +645,67 @@ mod tests {
         assert!(!a.has("EAP-Message"));
         assert!(Attrs::parse(b"[1,2]").is_none());
         assert!(Attrs::parse(b"not json").is_none());
+    }
+
+    #[test]
+    fn group_candidates_are_distinct_ordered_and_bounded() {
+        let rule = |g: &str| abyssal_core::RadiusGroupRule {
+            id: uuid::Uuid::new_v4(),
+            group_name: g.into(),
+            vlan: 10,
+            role: None,
+            position: 0,
+            created_at: Utc::now(),
+        };
+        let rules = vec![rule("CORP\\Staff"), rule("Finance"), rule("corp\\staff")];
+        assert_eq!(
+            group_candidates(&rules),
+            ("CORP\\Staff;Finance".into(), false)
+        );
+        assert_eq!(group_candidates(&[]), (String::new(), false));
+        let long: Vec<_> = (0..20)
+            .map(|i| rule(&format!("{i:02}{}", "x".repeat(198))))
+            .collect();
+        let (c, truncated) = group_candidates(&long);
+        assert!(truncated);
+        assert!(c.len() <= GROUP_CANDIDATES_MAX_LEN);
+        assert_eq!(c.split(';').count(), 9);
+    }
+
+    #[test]
+    fn reads_ad_groups_from_post_auth() {
+        let body = r#"{"Calling-Station-Id":{"type":"string","value":["aa:bb:cc:dd:ee:ff"]},
+            "Abyssal-AD-Groups":{"type":"string","value":["TEST\\WiFi-Users;Staff"]}}"#;
+        let a = Attrs::parse(body.as_bytes()).unwrap();
+        assert_eq!(
+            abyssal_core::split_group_list(&a.get(AD_GROUPS_ATTR).unwrap()),
+            vec!["TEST\\WiFi-Users".to_string(), "Staff".to_string()]
+        );
+    }
+
+    #[test]
+    fn roles_use_rlm_rest_names() {
+        use abyssal_core::RoleAttribute;
+        let l = |v: &str| json!({"value": v, "do_xlat": false});
+        let mut m = Map::new();
+        insert_role(&mut m, RoleAttribute::FilterId, "QUARANTINE.in");
+        insert_role(&mut m, RoleAttribute::ArubaUserRole, "guest");
+        insert_role(&mut m, RoleAttribute::None, "ignored");
+        assert_eq!(
+            Value::Object(m),
+            json!({"reply:Filter-Id": l("QUARANTINE.in"), "reply:Aruba-User-Role": l("guest")})
+        );
+    }
+
+    #[test]
+    fn session_timeout_uses_rlm_rest_names() {
+        let l = |v: &str| json!({"value": v, "do_xlat": false});
+        let mut m = Map::new();
+        insert_session_timeout(&mut m, 900);
+        assert_eq!(
+            Value::Object(m),
+            json!({"reply:Session-Timeout": l("900"), "reply:Termination-Action": l("RADIUS-Request")})
+        );
     }
 
     #[test]

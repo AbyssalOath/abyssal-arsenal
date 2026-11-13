@@ -359,6 +359,60 @@ pub const PANOPTICON_PORTAL_TERMS: &str = "panopticon.portal_terms";
 pub const PANOPTICON_RADIUS_GUEST_VLAN: &str = "panopticon.radius_guest_vlan";
 pub const PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT: u32 = 0;
 
+/// Roles (ACL / user role names) per RADIUS outcome, 0.2.8 P2
+/// (`docs/roadmap/0.2.8.md`). Empty = no role. Sent only to NAS clients with
+/// a role attribute (`abyssal_core::RoleAttribute`); the role or ACL itself
+/// is defined on the NAS. The quarantine role also covers port and device
+/// quarantine, and lets quarantine work without a quarantine VLAN on a NAS
+/// that applies roles.
+pub const PANOPTICON_RADIUS_ROLE_TRUSTED: &str = "panopticon.radius_role_trusted";
+pub const PANOPTICON_RADIUS_ROLE_QUARANTINE: &str = "panopticon.radius_role_quarantine";
+pub const PANOPTICON_RADIUS_ROLE_UNKNOWN: &str = "panopticon.radius_role_unknown";
+pub const PANOPTICON_RADIUS_ROLE_GUEST: &str = "panopticon.radius_role_guest";
+pub const PANOPTICON_RADIUS_ROLE_REGISTRATION: &str = "panopticon.radius_role_registration";
+
+/// Security signals checked at every RADIUS login, 0.2.8 P3
+/// (`docs/roadmap/0.2.8.md`): the same signals as the policy engine's
+/// triggers, for devices linked to a managed host (or, for Scourge, by the
+/// device's address). Each one is off until set, and has its own outcome,
+/// `quarantine` or `reject`. They look back over
+/// `PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES`.
+///
+/// Latest Cadavault posture score strictly below this; `0` = off.
+pub const PANOPTICON_RADIUS_SIGNAL_POSTURE_BELOW: &str = "panopticon.radius_signal_posture_below";
+pub const PANOPTICON_RADIUS_SIGNAL_POSTURE_ACTION: &str = "panopticon.radius_signal_posture_action";
+/// An open Thanatos event at or above this severity (`low`..`critical`);
+/// empty = off.
+pub const PANOPTICON_RADIUS_SIGNAL_EVENT_MIN_SEVERITY: &str =
+    "panopticon.radius_signal_event_min_severity";
+pub const PANOPTICON_RADIUS_SIGNAL_EVENT_ACTION: &str = "panopticon.radius_signal_event_action";
+/// A Scourge alert from the device's address at or above this severity;
+/// empty = off.
+pub const PANOPTICON_RADIUS_SIGNAL_IDS_MIN_SEVERITY: &str =
+    "panopticon.radius_signal_ids_min_severity";
+pub const PANOPTICON_RADIUS_SIGNAL_IDS_ACTION: &str = "panopticon.radius_signal_ids_action";
+
+/// Session-Timeout per RADIUS outcome, in minutes, 0.2.8 P4
+/// (`docs/roadmap/0.2.8.md`); `0` = none (the default). Sent with
+/// `Termination-Action = RADIUS-Request`, so the NAS re-authenticates the
+/// session at the timeout without dropping the link, and a decision that
+/// changed reaches NAS clients without CoA. The quarantine timeout also
+/// covers port/device quarantine and security signals.
+pub const PANOPTICON_RADIUS_TIMEOUT_TRUSTED_MINUTES: &str =
+    "panopticon.radius_timeout_trusted_minutes";
+pub const PANOPTICON_RADIUS_TIMEOUT_QUARANTINE_MINUTES: &str =
+    "panopticon.radius_timeout_quarantine_minutes";
+pub const PANOPTICON_RADIUS_TIMEOUT_UNKNOWN_MINUTES: &str =
+    "panopticon.radius_timeout_unknown_minutes";
+pub const PANOPTICON_RADIUS_TIMEOUT_GUEST_MINUTES: &str = "panopticon.radius_timeout_guest_minutes";
+pub const PANOPTICON_RADIUS_TIMEOUT_REGISTRATION_MINUTES: &str =
+    "panopticon.radius_timeout_registration_minutes";
+/// The longest timeout accepted: one week.
+pub const PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES: u32 = 7 * 24 * 60;
+/// The shortest non-zero timeout accepted, so a NAS isn't kept busy
+/// re-authenticating.
+pub const PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES: u32 = 5;
+
 // -----------------------------------------------------------------------
 // Scourge (network IDS/IPS). Every gate below is off/empty by default; the
 // three `*_enabled` bools are second gates in the sense of

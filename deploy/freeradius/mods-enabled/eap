@@ -1,6 +1,11 @@
-#  Abyssal Arsenal: EAP-TLS only (certificate-based 802.1X). Replaces the
-#  stock eap module, whose PEAP/TTLS methods need an inner-tunnel server and
-#  a password store this deployment doesn't have.
+#  Abyssal Arsenal: EAP-TLS (certificate-based 802.1X) and PEAP/MSCHAPv2
+#  against Active Directory. Replaces the stock eap module. TTLS, MD5 and
+#  GTC are left out: there's no password store to check them against.
+#
+#  PEAP logins are checked in sites-enabled/abyssal-inner (mschap module,
+#  ntlm_auth through winbindd), and only succeed when the container is
+#  joined to a domain (AD_REALM; README "PEAP against Active Directory").
+#  Without it they're rejected, and EAP-TLS is unaffected.
 #
 #  Certificates (deploy/freeradius/certs, mounted read-only at
 #  /etc/freeradius/certs-abyssal; see deploy/freeradius/README.md):
@@ -10,7 +15,8 @@
 #
 #  Any client certificate chaining to ca.pem is accepted at the EAP layer;
 #  Panopticon then decides the device's VLAN, quarantine or reject by its
-#  MAC (post-auth), exactly as for MAB.
+#  MAC (post-auth), exactly as for MAB. PEAP clients check server.pem too,
+#  so it must chain to a CA they trust.
 
 eap {
 	default_eap_type = tls
@@ -45,5 +51,17 @@ eap {
 
 	tls {
 		tls = tls-common
+	}
+
+	peap {
+		tls = tls-common
+		default_eap_type = mschapv2
+		copy_request_to_tunnel = no
+		use_tunneled_reply = no
+		virtual_server = "abyssal-inner"
+	}
+
+	mschapv2 {
+		send_error = no
 	}
 }

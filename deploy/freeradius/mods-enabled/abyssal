@@ -4,13 +4,16 @@
 #  so Panopticon is on 127.0.0.1:8080 and only answers there, with HTTP Basic
 #  "freeradius:<FREERADIUS_API_TOKEN>".
 #
+#  The packet's source address (?src=) tells Panopticon which NAS client
+#  asked, for its role attribute (0.2.8 P2).
+#
 #  Connections are opened on demand (pool start = 0), so FreeRADIUS starts
 #  even while the app is still starting; a call that fails rejects the
 #  request (fail closed).
 
 rest abyssal {
 	authorize {
-		uri = "http://127.0.0.1:8080/internal/radius/mab"
+		uri = "http://127.0.0.1:8080/internal/radius/mab?src=%{Packet-Src-IP-Address}"
 		method = 'post'
 		body = 'json'
 		auth = 'basic'
@@ -20,7 +23,7 @@ rest abyssal {
 		timeout = 4.0
 	}
 	post-auth {
-		uri = "http://127.0.0.1:8080/internal/radius/post-auth"
+		uri = "http://127.0.0.1:8080/internal/radius/post-auth?src=%{Packet-Src-IP-Address}"
 		method = 'post'
 		body = 'json'
 		auth = 'basic'
@@ -72,4 +75,41 @@ rest abyssal_clients {
 		lifetime = 0
 		idle_timeout = 60
 	}
+}
+
+#  AD group rules (0.2.8 P1): the groups they name, for the membership
+#  check inside the PEAP tunnel (sites-enabled/abyssal-inner).
+rest abyssal_groups {
+	post-auth {
+		uri = "http://127.0.0.1:8080/internal/radius/group-names"
+		method = 'get'
+		auth = 'basic'
+		username = 'freeradius'
+		password = $ENV{ABYSSAL_FREERADIUS_TOKEN}
+		require_auth = yes
+		timeout = 4.0
+	}
+	pool {
+		start = 0
+		min = 0
+		max = 8
+		spare = 2
+		uses = 0
+		retry_delay = 1
+		lifetime = 0
+		idle_timeout = 60
+	}
+}
+
+#  Runs abyssal-ad-groups (deploy/freeradius/image): which of those groups
+#  the login is in. The login and the candidate groups reach it as
+#  environment variables from the control list (named as the attributes:
+#  Abyssal-AD-Login, Abyssal-AD-Group-Candidates): FreeRADIUS backslash-escapes characters
+#  such as ';' in command-line arguments, but passes these through as they
+#  are. No shell is involved either way.
+exec abyssal_ad_groups {
+	wait = yes
+	input_pairs = control
+	shell_escape = no
+	timeout = 10
 }

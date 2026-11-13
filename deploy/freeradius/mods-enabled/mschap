@@ -1,0 +1,26 @@
+#  Abyssal Arsenal: MSCHAPv2 checked against Active Directory, for PEAP
+#  logins (inner tunnel: sites-enabled/abyssal-inner). Replaces the stock
+#  mschap module, which needs a local password store.
+#
+#  ntlm_auth asks a domain controller through winbindd; the container joins
+#  the domain at startup when AD_REALM is set (deploy/freeradius/image,
+#  README "PEAP against Active Directory"). The wrapper adds
+#  AD_REQUIRE_GROUP, and fails at once when AD isn't configured, so a PEAP
+#  login is then simply rejected.
+#
+#  %{mschap:User-Name} strips DOMAIN\ and turns a computer's
+#  "host/pc1.example.com" into "pc1$", so machine logins work too.
+
+mschap {
+	use_mppe = yes
+	require_encryption = yes
+	require_strong = yes
+	with_ntdomain_hack = yes
+
+	ntlm_auth = "/usr/local/bin/abyssal-ntlm-auth --request-nt-key --allow-mschapv2 --username=%{%{mschap:User-Name}:-None} --domain=%{mschap:NT-Domain} --challenge=%{%{mschap:Challenge}:-00} --nt-response=%{%{mschap:NT-Response}:-00}"
+	ntlm_auth_timeout = 10
+
+	#  No password changes over RADIUS.
+	passchange {
+	}
+}

@@ -24,7 +24,91 @@ pub struct RadiusClient {
     pub coa_mode: CoaMode,
     /// UDP port the NAS listens on for CoA/Disconnect (RFC 5176 default 3799).
     pub coa_port: u16,
+    /// Which attribute carries a role name in an Access-Accept (0.2.8 P2).
+    pub role_attribute: RoleAttribute,
     pub created_at: DateTime<Utc>,
+}
+
+/// How a NAS is told which role (ACL, user role) an admitted device gets
+/// (0.2.8 P2). The role or ACL itself is defined on the NAS; Panopticon only
+/// names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RoleAttribute {
+    /// No role is sent (the default, and what every NAS got before 0.2.8).
+    #[default]
+    None,
+    /// RFC 2865 `Filter-Id`: Cisco IOS named ACLs (`NAME.in`), Juniper,
+    /// HPE/Aruba switches, and most others.
+    FilterId,
+    /// `Aruba-User-Role` (vendor 14823, type 1): Aruba controllers and
+    /// AOS-CX/AOS-S switches with local user roles.
+    ArubaUserRole,
+}
+
+impl RoleAttribute {
+    pub const ALL: &'static [RoleAttribute] = &[
+        RoleAttribute::None,
+        RoleAttribute::FilterId,
+        RoleAttribute::ArubaUserRole,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RoleAttribute::None => "none",
+            RoleAttribute::FilterId => "filter_id",
+            RoleAttribute::ArubaUserRole => "aruba_role",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            RoleAttribute::None => "None (VLAN only)",
+            RoleAttribute::FilterId => "Filter-Id (Cisco ACL, most vendors)",
+            RoleAttribute::ArubaUserRole => "Aruba-User-Role",
+        }
+    }
+
+    /// Whether this NAS applies a role at all.
+    pub const fn sends_roles(self) -> bool {
+        !matches!(self, RoleAttribute::None)
+    }
+}
+
+impl std::str::FromStr for RoleAttribute {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        RoleAttribute::ALL
+            .iter()
+            .copied()
+            .find(|m| m.as_str() == s)
+            .ok_or(())
+    }
+}
+
+/// Longest role name accepted (the column is VARCHAR(64)).
+pub const ROLE_NAME_MAX_LEN: usize = 64;
+
+/// Checks and trims a role (ACL / user role) name: 1 to
+/// [`ROLE_NAME_MAX_LEN`] characters of letters, digits and `_ - . :`.
+/// Strict on purpose: it goes verbatim into a RADIUS attribute that the NAS
+/// matches against its own configuration. An empty input means "no role"
+/// (`Ok(None)`).
+pub fn validate_role_name(raw: &str) -> Result<Option<String>, &'static str> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.len() > ROLE_NAME_MAX_LEN {
+        return Err("A role name can be 64 characters at most.");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+    {
+        return Err("A role name can only contain letters, digits, '_', '-', '.' and ':'.");
+    }
+    Ok(Some(name.to_string()))
 }
 
 /// How Panopticon asks a NAS to re-authorize a session after a device's trust
@@ -110,5 +194,191 @@ impl RadiusSession {
     /// Whether this session is still open (no Stop recorded).
     pub fn is_active(&self) -> bool {
         self.stopped_at.is_none()
+    }
+}
+
+/// An Active Directory group -> VLAN rule for 802.1X logins that passed PEAP
+/// against AD (0.2.8 P1, `docs/roadmap/0.2.8.md`). Rules are ordered by
+/// `position` (then age); the first whose group the login is in wins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadiusGroupRule {
+    pub id: Uuid,
+    /// `DOMAIN\Group`, or a plain `Group` matching that name in any domain.
+    pub group_name: String,
+    /// 0 = keep the device's VLAN (the rule only sets a role).
+    pub vlan: u16,
+    /// The role (ACL / user role) the login gets, 0.2.8 P2.
+    pub role: Option<String>,
+    pub position: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Longest group name accepted (the column is VARCHAR(256)).
+pub const GROUP_NAME_MAX_LEN: usize = 256;
+
+/// Separates group names on their way through FreeRADIUS
+/// (`Abyssal-AD-Group-Candidates`, `Abyssal-AD-Groups`). AD doesn't allow it
+/// in a group's pre-Windows 2000 name, which is the name winbind reports.
+pub const GROUP_LIST_SEPARATOR: char = ';';
+
+/// Checks and trims a group name for a rule: non-empty, at most
+/// [`GROUP_NAME_MAX_LEN`] characters, no [`GROUP_LIST_SEPARATOR`], no
+/// control characters, and at most one `DOMAIN\` prefix with both sides
+/// non-empty.
+pub fn validate_group_name(raw: &str) -> Result<String, &'static str> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("The group name is required.");
+    }
+    if name.chars().count() > GROUP_NAME_MAX_LEN {
+        return Err("The group name is too long (256 characters at most).");
+    }
+    if name.contains(GROUP_LIST_SEPARATOR) || name.chars().any(char::is_control) {
+        return Err("The group name can't contain ';' or control characters.");
+    }
+    if let Some((domain, group)) = name.split_once('\\')
+        && (domain.trim().is_empty() || group.trim().is_empty() || group.contains('\\'))
+    {
+        return Err("Write the group as DOMAIN\\Group, or just Group.");
+    }
+    Ok(name.to_string())
+}
+
+/// Whether a login's group (`DOMAIN\Group` or `Group`, as FreeRADIUS reports
+/// it) is the group a rule names. Case-insensitive; a rule without a domain
+/// matches the name in any domain.
+pub fn group_matches(rule_group: &str, login_group: &str) -> bool {
+    let rule = rule_group.trim().to_lowercase();
+    let login = login_group.trim().to_lowercase();
+    if rule.is_empty() || login.is_empty() {
+        return false;
+    }
+    if rule == login {
+        return true;
+    }
+    match (rule.contains('\\'), login.rsplit_once('\\')) {
+        // A plain rule name matches the login group's name in any domain.
+        (false, Some((_, name))) => rule == name,
+        _ => false,
+    }
+}
+
+/// The first rule (in the given order: callers pass rules sorted by
+/// position) whose group is one of the login's groups.
+pub fn first_matching_group_rule<'a>(
+    rules: &'a [RadiusGroupRule],
+    groups: &[String],
+) -> Option<&'a RadiusGroupRule> {
+    rules
+        .iter()
+        .find(|r| groups.iter().any(|g| group_matches(&r.group_name, g)))
+}
+
+/// Splits a `;`-separated group list from FreeRADIUS, dropping empty items.
+pub fn split_group_list(raw: &str) -> Vec<String> {
+    raw.split(GROUP_LIST_SEPARATOR)
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod group_rule_tests {
+    use super::*;
+
+    fn rule(group: &str, vlan: u16) -> RadiusGroupRule {
+        RadiusGroupRule {
+            id: Uuid::new_v4(),
+            group_name: group.into(),
+            vlan,
+            role: None,
+            position: 0,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn group_names_are_validated() {
+        assert_eq!(
+            validate_group_name("  CORP\\WiFi Users ").unwrap(),
+            "CORP\\WiFi Users"
+        );
+        assert_eq!(validate_group_name("Finance").unwrap(), "Finance");
+        assert!(validate_group_name("").is_err());
+        assert!(validate_group_name("   ").is_err());
+        assert!(validate_group_name("a;b").is_err());
+        assert!(validate_group_name("a\nb").is_err());
+        assert!(validate_group_name("\\Finance").is_err());
+        assert!(validate_group_name("CORP\\").is_err());
+        assert!(validate_group_name("A\\B\\C").is_err());
+        assert!(validate_group_name(&"x".repeat(257)).is_err());
+        assert!(validate_group_name(&"x".repeat(256)).is_ok());
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_and_domain_aware() {
+        assert!(group_matches("CORP\\Finance", "corp\\finance"));
+        assert!(group_matches("Finance", "CORP\\Finance"));
+        assert!(group_matches("Finance", "finance"));
+        assert!(!group_matches("CORP\\Finance", "OTHER\\Finance"));
+        assert!(!group_matches("CORP\\Finance", "Finance"));
+        assert!(!group_matches("Finance", "CORP\\Finance-Admins"));
+        assert!(!group_matches("", "Finance"));
+        assert!(!group_matches("Finance", ""));
+    }
+
+    #[test]
+    fn first_rule_in_order_wins() {
+        let rules = vec![
+            rule("CORP\\Admins", 10),
+            rule("Staff", 20),
+            rule("Finance", 30),
+        ];
+        let groups = vec!["CORP\\Finance".to_string(), "CORP\\Staff".to_string()];
+        assert_eq!(first_matching_group_rule(&rules, &groups).unwrap().vlan, 20);
+        assert!(first_matching_group_rule(&rules, &[]).is_none());
+        assert!(first_matching_group_rule(&[], &groups).is_none());
+        let none = vec!["CORP\\Sales".to_string()];
+        assert!(first_matching_group_rule(&rules, &none).is_none());
+    }
+
+    #[test]
+    fn role_names_are_validated() {
+        assert_eq!(
+            validate_role_name(" QUARANTINE.in ").unwrap().as_deref(),
+            Some("QUARANTINE.in")
+        );
+        assert_eq!(
+            validate_role_name("guest-role_1:a").unwrap().as_deref(),
+            Some("guest-role_1:a")
+        );
+        assert_eq!(validate_role_name("  ").unwrap(), None);
+        assert!(validate_role_name("has space").is_err());
+        assert!(validate_role_name("semi;colon").is_err());
+        assert!(validate_role_name("%{User-Name}").is_err());
+        assert!(validate_role_name("ünicode").is_err());
+        assert!(validate_role_name(&"r".repeat(65)).is_err());
+        assert!(validate_role_name(&"r".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn role_attributes_round_trip() {
+        for a in RoleAttribute::ALL {
+            assert_eq!(a.as_str().parse::<RoleAttribute>(), Ok(*a));
+        }
+        assert!("cisco".parse::<RoleAttribute>().is_err());
+        assert!(!RoleAttribute::None.sends_roles());
+        assert!(RoleAttribute::FilterId.sends_roles());
+    }
+
+    #[test]
+    fn group_lists_split_on_semicolons() {
+        assert_eq!(
+            split_group_list("CORP\\WiFi Users; Staff;;"),
+            vec!["CORP\\WiFi Users".to_string(), "Staff".to_string()]
+        );
+        assert!(split_group_list("").is_empty());
+        assert!(split_group_list(" ; ").is_empty());
     }
 }

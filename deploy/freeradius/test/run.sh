@@ -6,14 +6,19 @@
 #
 #   deploy/freeradius/test/run.sh
 #
-# Checks: config parses; MAB accept (with VLAN) and reject; a non-MAB
+# Checks: config parses; MAB accept (with VLAN, a Filter-Id role, a
+# re-authenticating Session-Timeout, and the NAS's address passed to
+# Panopticon) and reject; a non-MAB
 # password login rejected; wrong NAS secret ignored; accounting; EAP-TLS
-# accepted with VLAN and correct MPPE keys; EAP-TLS rejected by Panopticon's
-# decision; EAP-TLS with an untrusted client certificate rejected.
+# accepted with VLAN, correct MPPE keys and an Aruba-User-Role; EAP-TLS rejected by Panopticon's
+# decision; EAP-TLS with an untrusted client certificate rejected; PEAP
+# rejected while no domain is configured. PEAP against a real Samba AD
+# domain controller: run-ad.sh.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 conf=$(cd "$here/.." && pwd)
-image=freeradius/freeradius-server:3.2.7
+image=abyssal-arsenal-freeradius:3.2.7
+docker build -q -t $image "$conf/image" >/dev/null
 token=0123456789abcdef0123456789abcdef
 tmp=$(mktemp -d)
 # FreeRADIUS runs as uid 101: it must be able to read the certificates.
@@ -32,6 +37,7 @@ printf "extendedKeyUsage=clientAuth\n" > c.ext
 openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client.pem -days 1 -extfile c.ext 2>/dev/null
 openssl req -x509 -newkey rsa:2048 -nodes -keyout rogue.key -out rogue.pem -days 1 -subj "/CN=rogue" 2>/dev/null
 chmod 644 ./*.key
+printf 'network={\n key_mgmt=IEEE8021X\n eap=PEAP\n identity="alice"\n anonymous_identity="anonymous"\n password="Passw0rd!"\n phase2="auth=MSCHAPV2"\n ca_cert="/certs/ca.pem"\n eapol_flags=0\n}\n' > peap.conf
 for c in client rogue; do
   printf 'network={\n key_mgmt=IEEE8021X\n eap=TLS\n identity="laptop1"\n ca_cert="/certs/ca.pem"\n client_cert="/certs/%s.pem"\n private_key="/certs/%s.key"\n eapol_flags=0\n}\n' "$c" "$c" > "$c.conf"
 done
@@ -39,6 +45,7 @@ done
 mounts="-v $conf/clients.conf:/etc/freeradius/clients.conf:ro
  -v $conf/mods-enabled/eap:/etc/freeradius/mods-enabled/eap:ro
  -v $conf/mods-enabled/abyssal:/etc/freeradius/mods-enabled/abyssal:ro
+ -v $conf/mods-enabled/mschap:/etc/freeradius/mods-enabled/mschap:ro
  -v $conf/sites-enabled:/etc/freeradius/sites-enabled:ro
  -v $tmp:/etc/freeradius/certs-abyssal:ro"
 
@@ -57,6 +64,10 @@ rc() { docker exec aa-fr sh -c "echo '$1' | radclient -x -r1 -t3 127.0.0.1:$2 $3
 out=$(rc "User-Name=aabbccddeeff,User-Password=aabbccddeeff,Calling-Station-Id=AA-BB-CC-DD-EE-FF" 1812 auth testing123)
 check "MAB: admitted device gets Access-Accept" "$out" "Received Access-Accept"
 check "MAB: ... with its VLAN" "$out" 'Tunnel-Private-Group-Id:0 = "10"'
+check "MAB: ... and its role, as Filter-Id" "$out" 'Filter-Id = "EMPLOYEE.in"'
+check "MAB: ... and a Session-Timeout" "$out" 'Session-Timeout = 900'
+check "MAB: ... that re-authenticates (Termination-Action)" "$out" 'Termination-Action = RADIUS-Request'
+check "MAB: Panopticon is told which NAS asked (?src=)" "$(docker logs aa-fr-api 2>&1 | grep -m1 'POST /internal/radius/mab')" 'mab?src=127.0.0.1'
 out=$(rc "User-Name=112233445566,User-Password=112233445566,Calling-Station-Id=11-22-33-44-55-66" 1812 auth testing123)
 check "MAB: refused device gets Access-Reject" "$out" "Received Access-Reject"
 out=$(rc "User-Name=alice,User-Password=hunter2" 1812 auth testing123)
@@ -74,10 +85,14 @@ out=$(eap client aa:bb:cc:dd:ee:ff)
 check "EAP-TLS: trusted certificate, admitted device: Access-Accept" "$out" "code=2 (Access-Accept)"
 check "EAP-TLS: ... with its VLAN" "$out" "Tunnel-Private-Group-Id"
 check "EAP-TLS: ... and correct MPPE keys" "$out" "MPPE keys OK: 1  mismatch: 0"
+# Aruba-User-Role: Vendor-Specific (26), vendor 14823 (0x39e7), type 1, "staff".
+check "EAP-TLS: ... and its role, as Aruba-User-Role" "$out" "Value: 000039e7010773746166660*$"
 out=$(eap client 66:66:66:66:66:66)
 check "EAP-TLS: device Panopticon refuses: Access-Reject" "$out" "code=3 (Access-Reject)"
 out=$(eap rogue aa:bb:cc:dd:ee:ff)
 check "EAP-TLS: untrusted client certificate: Access-Reject" "$out" "code=3 (Access-Reject)"
+out=$(eap peap aa:bb:cc:dd:ee:ff)
+check "PEAP without Active Directory configured: Access-Reject" "$out" "code=3 (Access-Reject)"
 
 [ $fail -eq 0 ] && echo "all FreeRADIUS checks passed"
 exit $fail

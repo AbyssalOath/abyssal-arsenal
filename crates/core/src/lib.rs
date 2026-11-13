@@ -36,7 +36,10 @@ pub use network_device::{
 pub use oui::lookup_vendor;
 pub use permission::Permission;
 pub use policy::{PolicyMode, PolicyRule, PolicyTrigger};
-pub use radius::{CoaMode, RadiusClient, RadiusSession};
+pub use radius::{
+    CoaMode, GROUP_LIST_SEPARATOR, RadiusClient, RadiusGroupRule, RadiusSession, RoleAttribute,
+    first_matching_group_rule, split_group_list, validate_group_name, validate_role_name,
+};
 pub use registration::{PortalMode, Registration, RegistrationStatus};
 pub use reliquary_backup::{
     BackupComponent, BackupJob, BackupJobType, BackupManifest, BackupStatus, BackupTrigger,

@@ -14,7 +14,16 @@ use abyssal_core::settings::{
     PANOPTICON_QUARANTINE_VLAN, PANOPTICON_QUARANTINE_VLAN_DEFAULT, PANOPTICON_RADIUS_ACCT_PORT,
     PANOPTICON_RADIUS_ACCT_PORT_DEFAULT, PANOPTICON_RADIUS_AUTH_PORT,
     PANOPTICON_RADIUS_AUTH_PORT_DEFAULT, PANOPTICON_RADIUS_ENABLED, PANOPTICON_RADIUS_GUEST_VLAN,
-    PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT, PANOPTICON_RADIUS_TRUSTED_VLAN,
+    PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT, PANOPTICON_RADIUS_ROLE_GUEST,
+    PANOPTICON_RADIUS_ROLE_QUARANTINE, PANOPTICON_RADIUS_ROLE_REGISTRATION,
+    PANOPTICON_RADIUS_ROLE_TRUSTED, PANOPTICON_RADIUS_ROLE_UNKNOWN,
+    PANOPTICON_RADIUS_SIGNAL_EVENT_ACTION, PANOPTICON_RADIUS_SIGNAL_EVENT_MIN_SEVERITY,
+    PANOPTICON_RADIUS_SIGNAL_IDS_ACTION, PANOPTICON_RADIUS_SIGNAL_IDS_MIN_SEVERITY,
+    PANOPTICON_RADIUS_SIGNAL_POSTURE_ACTION, PANOPTICON_RADIUS_SIGNAL_POSTURE_BELOW,
+    PANOPTICON_RADIUS_TIMEOUT_GUEST_MINUTES, PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES,
+    PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES, PANOPTICON_RADIUS_TIMEOUT_QUARANTINE_MINUTES,
+    PANOPTICON_RADIUS_TIMEOUT_REGISTRATION_MINUTES, PANOPTICON_RADIUS_TIMEOUT_TRUSTED_MINUTES,
+    PANOPTICON_RADIUS_TIMEOUT_UNKNOWN_MINUTES, PANOPTICON_RADIUS_TRUSTED_VLAN,
     PANOPTICON_RADIUS_TRUSTED_VLAN_DEFAULT, PANOPTICON_RADIUS_UNKNOWN_ACTION,
     PANOPTICON_RADIUS_UNTRUSTED_ACTION, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
     PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
@@ -24,7 +33,8 @@ use abyssal_core::settings::{
 use abyssal_core::{
     AppError, CoaMode, DeviceType, EnforcementAction, EnforcementKind, EnforcementState,
     IfAdminStatus, IfOperStatus, MacroScope, NetworkDevice, Permission, PolicyMode, PolicyTrigger,
-    Severity, SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion, TrustState,
+    RoleAttribute, Severity, SnmpAuthProtocol, SnmpPrivProtocol, SnmpSecurityLevel, SnmpVersion,
+    TrustState,
 };
 use abyssal_database::repo;
 use abyssal_database::repo::network_devices::GroupCount;
@@ -3615,8 +3625,25 @@ pub async fn radius_show(
             coa_label: c.coa_mode.label().to_string(),
             coa_port: c.coa_port,
             coa_modes: coa_mode_options(c.coa_mode),
+            role_attribute_label: c.role_attribute.label().to_string(),
+            role_attributes: role_attribute_options(c.role_attribute),
         })
         .collect();
+    let group_rules: Vec<crate::templates::RadiusGroupRuleRow> =
+        repo::panopticon_radius::list_group_rules(&state.pool)
+            .await?
+            .into_iter()
+            .map(|r| crate::templates::RadiusGroupRuleRow {
+                id: r.id.to_string(),
+                group_name: r.group_name,
+                vlan: r.vlan,
+                role: r.role.unwrap_or_default(),
+                position: r.position,
+            })
+            .collect();
+    let next_group_position = group_rules
+        .last()
+        .map_or(10, |r| r.position.saturating_add(10));
     let sessions = repo::panopticon_radius::list_recent_sessions(&state.pool, 100)
         .await?
         .into_iter()
@@ -3680,6 +3707,59 @@ pub async fn radius_show(
         ),
         clients,
         sessions,
+        group_rules,
+        next_group_position,
+        role_trusted: string_setting(&state.pool, PANOPTICON_RADIUS_ROLE_TRUSTED).await?,
+        role_quarantine: string_setting(&state.pool, PANOPTICON_RADIUS_ROLE_QUARANTINE).await?,
+        role_unknown: string_setting(&state.pool, PANOPTICON_RADIUS_ROLE_UNKNOWN).await?,
+        role_guest: string_setting(&state.pool, PANOPTICON_RADIUS_ROLE_GUEST).await?,
+        role_registration: string_setting(&state.pool, PANOPTICON_RADIUS_ROLE_REGISTRATION).await?,
+        new_client_role_attributes: role_attribute_options(RoleAttribute::None),
+        timeout_trusted: minutes_setting(&state.pool, PANOPTICON_RADIUS_TIMEOUT_TRUSTED_MINUTES)
+            .await?,
+        timeout_quarantine: minutes_setting(
+            &state.pool,
+            PANOPTICON_RADIUS_TIMEOUT_QUARANTINE_MINUTES,
+        )
+        .await?,
+        timeout_unknown: minutes_setting(&state.pool, PANOPTICON_RADIUS_TIMEOUT_UNKNOWN_MINUTES)
+            .await?,
+        timeout_guest: minutes_setting(&state.pool, PANOPTICON_RADIUS_TIMEOUT_GUEST_MINUTES)
+            .await?,
+        timeout_registration: minutes_setting(
+            &state.pool,
+            PANOPTICON_RADIUS_TIMEOUT_REGISTRATION_MINUTES,
+        )
+        .await?,
+        timeout_min_minutes: PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES,
+        timeout_max_minutes: PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES,
+        signal_posture_below: repo::settings::get_u32(
+            &state.pool,
+            PANOPTICON_RADIUS_SIGNAL_POSTURE_BELOW,
+            0,
+        )
+        .await?,
+        signal_posture_actions: signal_action_options(
+            &string_setting(&state.pool, PANOPTICON_RADIUS_SIGNAL_POSTURE_ACTION).await?,
+        ),
+        signal_event_severities: signal_severity_options(
+            &string_setting(&state.pool, PANOPTICON_RADIUS_SIGNAL_EVENT_MIN_SEVERITY).await?,
+        ),
+        signal_event_actions: signal_action_options(
+            &string_setting(&state.pool, PANOPTICON_RADIUS_SIGNAL_EVENT_ACTION).await?,
+        ),
+        signal_ids_severities: signal_severity_options(
+            &string_setting(&state.pool, PANOPTICON_RADIUS_SIGNAL_IDS_MIN_SEVERITY).await?,
+        ),
+        signal_ids_actions: signal_action_options(
+            &string_setting(&state.pool, PANOPTICON_RADIUS_SIGNAL_IDS_ACTION).await?,
+        ),
+        signal_window_minutes: repo::settings::get_u32(
+            &state.pool,
+            PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES,
+            PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES_DEFAULT,
+        )
+        .await?,
         new_client_coa_modes: coa_mode_options(CoaMode::Disconnect),
         freeradius_enabled: crate::panopticon_freeradius::enabled(),
         freeradius_last_call: crate::panopticon_freeradius::last_call()
@@ -3691,6 +3771,14 @@ pub async fn radius_show(
         None => jar,
     };
     Ok((jar, tpl).into_response())
+}
+
+async fn minutes_setting(pool: &abyssal_database::DbPool, key: &str) -> Result<u32, WebError> {
+    Ok(repo::settings::get_u32(pool, key, 0).await?)
+}
+
+async fn string_setting(pool: &abyssal_database::DbPool, key: &str) -> Result<String, WebError> {
+    Ok(repo::settings::get_string(pool, key, "").await?)
 }
 
 #[derive(Deserialize)]
@@ -3708,6 +3796,73 @@ pub struct RadiusSettingsForm {
     guest_vlan: u32,
     untrusted_action: String,
     unknown_action: String,
+    #[serde(default)]
+    role_trusted: String,
+    #[serde(default)]
+    role_quarantine: String,
+    #[serde(default)]
+    role_unknown: String,
+    #[serde(default)]
+    role_guest: String,
+    #[serde(default)]
+    role_registration: String,
+    #[serde(default)]
+    timeout_trusted: u32,
+    #[serde(default)]
+    timeout_quarantine: u32,
+    #[serde(default)]
+    timeout_unknown: u32,
+    #[serde(default)]
+    timeout_guest: u32,
+    #[serde(default)]
+    timeout_registration: u32,
+}
+
+/// The Session-Timeout settings (0.2.8 P4) with their form values (minutes).
+fn radius_timeout_fields(form: &RadiusSettingsForm) -> [(&'static str, u32); 5] {
+    [
+        (
+            PANOPTICON_RADIUS_TIMEOUT_TRUSTED_MINUTES,
+            form.timeout_trusted,
+        ),
+        (
+            PANOPTICON_RADIUS_TIMEOUT_QUARANTINE_MINUTES,
+            form.timeout_quarantine,
+        ),
+        (
+            PANOPTICON_RADIUS_TIMEOUT_UNKNOWN_MINUTES,
+            form.timeout_unknown,
+        ),
+        (PANOPTICON_RADIUS_TIMEOUT_GUEST_MINUTES, form.timeout_guest),
+        (
+            PANOPTICON_RADIUS_TIMEOUT_REGISTRATION_MINUTES,
+            form.timeout_registration,
+        ),
+    ]
+}
+
+/// 0 (none), or between the minimum and maximum.
+fn valid_timeout_minutes(minutes: u32) -> bool {
+    minutes == 0
+        || (PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES..=PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES)
+            .contains(&minutes)
+}
+
+/// The role settings (0.2.8 P2) with their form values, in form order.
+fn radius_role_fields(form: &RadiusSettingsForm) -> [(&'static str, &str); 5] {
+    [
+        (PANOPTICON_RADIUS_ROLE_TRUSTED, form.role_trusted.as_str()),
+        (
+            PANOPTICON_RADIUS_ROLE_QUARANTINE,
+            form.role_quarantine.as_str(),
+        ),
+        (PANOPTICON_RADIUS_ROLE_UNKNOWN, form.role_unknown.as_str()),
+        (PANOPTICON_RADIUS_ROLE_GUEST, form.role_guest.as_str()),
+        (
+            PANOPTICON_RADIUS_ROLE_REGISTRATION,
+            form.role_registration.as_str(),
+        ),
+    ]
 }
 
 pub async fn radius_set_settings(
@@ -3738,6 +3893,21 @@ pub async fn radius_set_settings(
         return Err(WebError(AppError::Validation(
             "Invalid unknown action.".into(),
         )));
+    }
+    if !radius_timeout_fields(&form)
+        .iter()
+        .all(|(_, m)| valid_timeout_minutes(*m))
+    {
+        return Err(WebError(AppError::Validation(format!(
+            "Re-authentication intervals must be 0 (none) or between {PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES} and {PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES} minutes."
+        ))));
+    }
+    let mut roles = Vec::new();
+    for (key, raw) in radius_role_fields(&form) {
+        let role = abyssal_core::validate_role_name(raw)
+            .map_err(|e| AppError::Validation(e.into()))?
+            .unwrap_or_default();
+        roles.push((key, role));
     }
     let auth_port = if form.auth_port == 0 {
         PANOPTICON_RADIUS_AUTH_PORT_DEFAULT
@@ -3800,6 +3970,12 @@ pub async fn radius_set_settings(
         uid,
     )
     .await?;
+    for (key, role) in &roles {
+        repo::settings::set(&state.pool, key, serde_json::json!(role), uid).await?;
+    }
+    for (key, minutes) in radius_timeout_fields(&form) {
+        repo::settings::set(&state.pool, key, serde_json::json!(minutes), uid).await?;
+    }
 
     abyssal_audit::record(
         &state.pool,
@@ -3816,6 +3992,134 @@ pub async fn radius_set_settings(
     Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
 }
 
+/// Quarantine (the default) / reject, for a login signal's outcome.
+fn signal_action_options(selected: &str) -> Vec<(String, String, bool)> {
+    let selected = if selected == "reject" {
+        "reject"
+    } else {
+        "quarantine"
+    };
+    radius_action_options(
+        selected,
+        &[("quarantine", "Quarantine"), ("reject", "Reject")],
+    )
+}
+
+/// Off (empty) or a minimum severity, for a login signal.
+fn signal_severity_options(selected: &str) -> Vec<(String, String, bool)> {
+    let selected = Severity::from_key(selected).map_or("", Severity::as_key);
+    radius_action_options(
+        selected,
+        &[
+            ("", "Off"),
+            ("low", "Low or worse"),
+            ("medium", "Medium or worse"),
+            ("high", "High or worse"),
+            ("critical", "Critical"),
+        ],
+    )
+}
+
+#[derive(Deserialize)]
+pub struct RadiusSignalsForm {
+    csrf_token: String,
+    #[serde(default)]
+    posture_below: u32,
+    #[serde(default)]
+    posture_action: String,
+    #[serde(default)]
+    event_min_severity: String,
+    #[serde(default)]
+    event_action: String,
+    #[serde(default)]
+    ids_min_severity: String,
+    #[serde(default)]
+    ids_action: String,
+}
+
+/// Security signals checked at login (0.2.8 P3).
+pub async fn radius_set_signals(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<RadiusSignalsForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    if form.posture_below > 100 {
+        return Err(WebError(AppError::Validation(
+            "The posture threshold must be between 1 and 100 (or 0 for off).".into(),
+        )));
+    }
+    let severity = |raw: &str, what: &str| -> Result<String, WebError> {
+        match raw {
+            "" => Ok(String::new()),
+            s => Severity::from_key(s)
+                .map(|s| s.as_key().to_string())
+                .ok_or_else(|| WebError(AppError::Validation(format!("Invalid {what} severity.")))),
+        }
+    };
+    let action = |raw: &str| -> Result<&'static str, WebError> {
+        match raw {
+            "" | "quarantine" => Ok("quarantine"),
+            "reject" => Ok("reject"),
+            _ => Err(WebError(AppError::Validation(
+                "Invalid signal action.".into(),
+            ))),
+        }
+    };
+    let values = [
+        (
+            PANOPTICON_RADIUS_SIGNAL_POSTURE_BELOW,
+            serde_json::json!(form.posture_below),
+        ),
+        (
+            PANOPTICON_RADIUS_SIGNAL_POSTURE_ACTION,
+            serde_json::json!(action(&form.posture_action)?),
+        ),
+        (
+            PANOPTICON_RADIUS_SIGNAL_EVENT_MIN_SEVERITY,
+            serde_json::json!(severity(&form.event_min_severity, "Thanatos")?),
+        ),
+        (
+            PANOPTICON_RADIUS_SIGNAL_EVENT_ACTION,
+            serde_json::json!(action(&form.event_action)?),
+        ),
+        (
+            PANOPTICON_RADIUS_SIGNAL_IDS_MIN_SEVERITY,
+            serde_json::json!(severity(&form.ids_min_severity, "Scourge")?),
+        ),
+        (
+            PANOPTICON_RADIUS_SIGNAL_IDS_ACTION,
+            serde_json::json!(action(&form.ids_action)?),
+        ),
+    ];
+    let uid = Some(ctx.user.id);
+    for (key, value) in &values {
+        repo::settings::set(&state.pool, key, value.clone(), uid).await?;
+    }
+
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("panopticon.radius_signals")
+            .metadata(serde_json::json!(
+                values
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.clone()))
+                    .collect::<serde_json::Map<_, _>>()
+            )),
+    )
+    .await?;
+
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
 #[derive(Deserialize)]
 pub struct RadiusClientForm {
     csrf_token: String,
@@ -3826,6 +4130,26 @@ pub struct RadiusClientForm {
     coa_mode: String,
     #[serde(default)]
     coa_port: String,
+    #[serde(default)]
+    role_attribute: String,
+}
+
+/// (key, label, selected) for a role attribute select (0.2.8 P2).
+fn role_attribute_options(current: RoleAttribute) -> Vec<(String, String, bool)> {
+    RoleAttribute::ALL
+        .iter()
+        .map(|m| (m.as_str().to_string(), m.label().to_string(), *m == current))
+        .collect()
+}
+
+/// Parses a role attribute field (blank = none).
+fn parse_role_attribute(raw: &str) -> Result<RoleAttribute, WebError> {
+    match raw.trim() {
+        "" => Ok(RoleAttribute::None),
+        r => Ok(r
+            .parse()
+            .map_err(|()| AppError::Validation("Unknown role attribute.".into()))?),
+    }
 }
 
 /// (key, label, selected) for a CoA mode select.
@@ -3892,6 +4216,7 @@ pub async fn radius_create_client(
         .map_err(|e| AppError::Validation(format!("Failed to encrypt shared secret: {e}")))?;
 
     let (coa_mode, coa_port) = parse_coa(&form.coa_mode, &form.coa_port)?;
+    let role_attribute = parse_role_attribute(&form.role_attribute)?;
     repo::panopticon_radius::create_client(
         &state.pool,
         name,
@@ -3899,6 +4224,7 @@ pub async fn radius_create_client(
         &secret_encrypted,
         coa_mode,
         coa_port,
+        role_attribute,
     )
     .await?;
 
@@ -3948,6 +4274,28 @@ pub async fn radius_client_set_coa(
 }
 
 #[derive(Deserialize)]
+pub struct RadiusClientRoleForm {
+    csrf_token: String,
+    role_attribute: String,
+}
+
+/// Sets which attribute carries a role to this NAS (0.2.8 P2). Applies at
+/// each session's next authentication.
+pub async fn radius_client_set_role_attribute(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RadiusClientRoleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let role_attribute = parse_role_attribute(&form.role_attribute)?;
+    repo::panopticon_radius::set_client_role_attribute(&state.pool, id, role_attribute).await?;
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
 pub struct RadiusSessionReauthForm {
     csrf_token: String,
 }
@@ -3986,6 +4334,142 @@ pub async fn radius_session_reauthorize(
             "CoA is off for this session's NAS client. Choose a CoA mode for it first.".into(),
         )));
     }
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RadiusGroupRuleForm {
+    csrf_token: String,
+    group_name: String,
+    #[serde(default)]
+    vlan: String,
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    position: String,
+}
+
+/// Adds an AD group -> VLAN rule (0.2.8 P1). Applies at each device's next
+/// 802.1X login.
+pub async fn radius_create_group_rule(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<RadiusGroupRuleForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+
+    let group_name = abyssal_core::validate_group_name(&form.group_name)
+        .map_err(|e| AppError::Validation(e.into()))?;
+    let vlan = match form.vlan.trim() {
+        "" => 0,
+        v => v
+            .parse::<u16>()
+            .ok()
+            .filter(|v| *v <= 4094)
+            .ok_or_else(|| {
+                AppError::Validation("The VLAN must be between 1 and 4094 (or blank).".into())
+            })?,
+    };
+    let role =
+        abyssal_core::validate_role_name(&form.role).map_err(|e| AppError::Validation(e.into()))?;
+    if vlan == 0 && role.is_none() {
+        return Err(WebError(AppError::Validation(
+            "A group rule needs a VLAN, a role, or both.".into(),
+        )));
+    }
+    let position = match form.position.trim() {
+        "" => 100,
+        p => p
+            .parse::<i32>()
+            .ok()
+            .filter(|p| (0..=1_000_000).contains(p))
+            .ok_or_else(|| {
+                AppError::Validation("The order must be a number from 0 to 1000000.".into())
+            })?,
+    };
+    // Every rule's group has to fit in the one membership lookup FreeRADIUS
+    // makes per login (see panopticon_freeradius::group_candidates).
+    let mut rules = repo::panopticon_radius::list_group_rules(&state.pool).await?;
+    rules.push(abyssal_core::RadiusGroupRule {
+        id: Uuid::nil(),
+        group_name: group_name.clone(),
+        vlan,
+        role: role.clone(),
+        position,
+        created_at: chrono::Utc::now(),
+    });
+    if crate::panopticon_freeradius::group_candidates(&rules).1 {
+        return Err(WebError(AppError::Validation(format!(
+            "The group rules' names can't add up to more than {} characters, which is what \
+             FreeRADIUS can check in one login. Remove a rule, or use shorter group names.",
+            crate::panopticon_freeradius::GROUP_CANDIDATES_MAX_LEN
+        ))));
+    }
+
+    let id = repo::panopticon_radius::create_group_rule(
+        &state.pool,
+        &group_name,
+        vlan,
+        role.as_deref(),
+        position,
+    )
+    .await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("panopticon.radius_group_rule")
+            .metadata(serde_json::json!({
+                "action": "created",
+                "id": id.to_string(),
+                "group": group_name,
+                "vlan": vlan,
+                "role": role,
+                "position": position,
+            })),
+    )
+    .await?;
+    Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RadiusGroupRuleDeleteForm {
+    csrf_token: String,
+}
+
+pub async fn radius_delete_group_rule(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RadiusGroupRuleDeleteForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let rule = repo::panopticon_radius::delete_group_rule(&state.pool, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("panopticon.radius_group_rule")
+            .metadata(serde_json::json!({
+                "action": "deleted",
+                "id": id.to_string(),
+                "group": rule.group_name,
+                "vlan": rule.vlan,
+            })),
+    )
+    .await?;
     Ok(Redirect::to("/arsenals/panopticon/radius").into_response())
 }
 
@@ -4289,6 +4773,17 @@ pub async fn portal_decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn re_authentication_interval_is_off_or_within_bounds() {
+        assert!(valid_timeout_minutes(0));
+        assert!(valid_timeout_minutes(PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES));
+        assert!(valid_timeout_minutes(PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES));
+        assert!(!valid_timeout_minutes(1));
+        assert!(!valid_timeout_minutes(
+            PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES + 1
+        ));
+    }
 
     #[test]
     fn safe_return_to_rejects_offsite() {
