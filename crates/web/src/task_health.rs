@@ -30,6 +30,8 @@ pub mod names {
     pub const PANOPTICON_ENFORCEMENT_REVERT: &str = "panopticon_enforcement_revert";
     pub const PANOPTICON_POLICY_SWEEP: &str = "panopticon_policy_sweep";
     pub const PANOPTICON_CLASSIFY_SWEEP: &str = "panopticon_classify_sweep";
+    pub const PANOPTICON_RADIUS_RETENTION: &str = "panopticon_radius_retention";
+    pub const PANOPTICON_RADIUS_REEVALUATE: &str = "panopticon_radius_reevaluate";
     pub const SCOURGE_SWEEP: &str = "scourge_sweep";
     pub const SCOURGE_RETENTION: &str = "scourge_retention";
     pub const ELEVATION_EXPIRY_SWEEP: &str = "elevation_expiry_sweep";

@@ -1,5 +1,6 @@
 pub mod classify;
 pub mod crypto;
+pub mod dhcp_server;
 pub mod enforcement;
 pub mod error;
 pub mod host;
@@ -23,6 +24,9 @@ pub mod subnet;
 pub mod user;
 
 pub use crypto::{CryptoError, EncryptionKey};
+pub use dhcp_server::{
+    AllowedServer, DhcpServer, is_rogue_dhcp_server, parse_allowed_dhcp_servers,
+};
 pub use enforcement::{DeviceEnforcement, EnforcementAction, EnforcementKind, EnforcementState};
 pub use error::AppError;
 pub use host::Host;
@@ -35,10 +39,12 @@ pub use network_device::{
 };
 pub use oui::lookup_vendor;
 pub use permission::Permission;
-pub use policy::{PolicyMode, PolicyRule, PolicyTrigger};
+pub use policy::{PolicyMode, PolicyRule, PolicySimulation, PolicyTrigger};
 pub use radius::{
-    CoaMode, GROUP_LIST_SEPARATOR, RadiusClient, RadiusGroupRule, RadiusSession, RoleAttribute,
-    first_matching_group_rule, split_group_list, validate_group_name, validate_role_name,
+    CoaMode, DECISION_BEFORE_SESSION_SLACK_SECS, GROUP_LIST_SEPARATOR, RadiusClient,
+    RadiusDecisionRecord, RadiusGroupRule, RadiusSession, RoleAttribute, decision_for_session,
+    duration_label, first_matching_group_rule, split_group_list, validate_group_name,
+    validate_role_name,
 };
 pub use registration::{PortalMode, Registration, RegistrationStatus};
 pub use reliquary_backup::{

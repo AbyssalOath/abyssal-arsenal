@@ -283,6 +283,125 @@ pub fn split_group_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// One RADIUS admission decision as recorded (0.2.9 Q2,
+/// `docs/roadmap/0.2.9.md`): what was decided, for whom, and why.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadiusDecisionRecord {
+    pub id: Uuid,
+    pub decided_at: DateTime<Utc>,
+    pub mac_address: Option<String>,
+    pub nas_client_id: Option<Uuid>,
+    pub nas_name: Option<String>,
+    pub nas_address: Option<String>,
+    /// `embedded` | `freeradius`
+    pub front_end: String,
+    /// `mab` | `dot1x`
+    pub admission: String,
+    pub identity: Option<String>,
+    /// `accept` | `reject`
+    pub outcome: String,
+    pub vlan: Option<u16>,
+    /// The role sent, if any.
+    pub role: Option<String>,
+    pub session_timeout: Option<u32>,
+    /// What it was based on, e.g. "security signal: quarantine".
+    pub reason: String,
+    pub trust_state: Option<String>,
+    pub enforcement: Option<String>,
+    pub signal_action: Option<String>,
+    pub signal_detail: Option<String>,
+    pub group_rule: Option<String>,
+    /// The login's AD groups that have a rule, `;`-separated.
+    pub ad_groups: Option<String>,
+}
+
+impl RadiusDecisionRecord {
+    pub fn accepted(&self) -> bool {
+        self.outcome == "accept"
+    }
+
+    /// One line for a table: "accept, VLAN 10, role EMPLOYEE.in, 8 h" or
+    /// "reject".
+    pub fn summary(&self) -> String {
+        if !self.accepted() {
+            return "reject".into();
+        }
+        let mut parts = vec!["accept".to_string()];
+        if let Some(v) = self.vlan {
+            parts.push(format!("VLAN {v}"));
+        }
+        if let Some(r) = &self.role {
+            parts.push(format!("role {r}"));
+        }
+        if let Some(t) = self.session_timeout {
+            parts.push(format!("re-auth {}", duration_label(t)));
+        }
+        parts.join(", ")
+    }
+
+    /// The reasons for a table: the reason, then the signal and group rule.
+    pub fn why(&self) -> String {
+        let mut parts = vec![self.reason.clone()];
+        if let Some(d) = &self.signal_detail {
+            parts.push(d.clone());
+        }
+        if let Some(g) = &self.group_rule {
+            parts.push(format!("AD group rule {g}"));
+        }
+        parts.join("; ")
+    }
+}
+
+/// "45 s", "10 min", "8 h", "1 h 30 min".
+pub fn duration_label(secs: u32) -> String {
+    match secs {
+        s if s < 60 => format!("{s} s"),
+        s if s < 3600 => format!("{} min", s / 60),
+        s if s % 3600 < 60 => format!("{} h", s / 3600),
+        s => format!("{} h {} min", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// How long before a session's accounting Start its Access-Accept can be:
+/// the Accept always comes first, by seconds.
+pub const DECISION_BEFORE_SESSION_SLACK_SECS: i64 = 300;
+
+/// The decision a session is running on (0.2.9 Q2): of `decisions` (one
+/// MAC's, any order), the latest made between shortly before the session
+/// started and when it stopped (if it has), preferring those from the
+/// session's own NAS address. Re-authentications make new decisions, so
+/// the latest is the one in force.
+pub fn decision_for_session<'a>(
+    session: &RadiusSession,
+    decisions: &'a [RadiusDecisionRecord],
+) -> Option<&'a RadiusDecisionRecord> {
+    let from = session.started_at - chrono::Duration::seconds(DECISION_BEFORE_SESSION_SLACK_SECS);
+    let mac = session.mac_address.as_deref()?.to_ascii_lowercase();
+    let in_window = |d: &&RadiusDecisionRecord| {
+        d.mac_address
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+            == Some(mac.as_str())
+            && d.decided_at >= from
+            && session.stopped_at.is_none_or(|stop| d.decided_at <= stop)
+    };
+    let same_nas = |d: &&RadiusDecisionRecord| {
+        session.nas_ip.is_some() && d.nas_address.as_deref() == session.nas_ip.as_deref()
+    };
+    decisions
+        .iter()
+        .filter(in_window)
+        .filter(same_nas)
+        .max_by_key(|d| d.decided_at)
+        .or_else(|| {
+            decisions
+                .iter()
+                .filter(in_window)
+                .max_by_key(|d| d.decided_at)
+        })
+}
+
 #[cfg(test)]
 mod group_rule_tests {
     use super::*;
@@ -380,5 +499,122 @@ mod group_rule_tests {
         );
         assert!(split_group_list("").is_empty());
         assert!(split_group_list(" ; ").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    use chrono::{Duration, TimeZone};
+
+    fn at(min: i64) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, 13, 12, 0, 0).unwrap() + Duration::minutes(min)
+    }
+
+    fn decision(min: i64, mac: &str, nas: &str, vlan: u16) -> RadiusDecisionRecord {
+        RadiusDecisionRecord {
+            id: Uuid::new_v4(),
+            decided_at: at(min),
+            mac_address: Some(mac.into()),
+            nas_client_id: None,
+            nas_name: None,
+            nas_address: Some(nas.into()),
+            front_end: "embedded".into(),
+            admission: "mab".into(),
+            identity: None,
+            outcome: "accept".into(),
+            vlan: Some(vlan),
+            role: None,
+            session_timeout: None,
+            reason: "trusted device".into(),
+            trust_state: None,
+            enforcement: None,
+            signal_action: None,
+            signal_detail: None,
+            group_rule: None,
+            ad_groups: None,
+        }
+    }
+
+    fn session(started: i64, stopped: Option<i64>, nas: &str) -> RadiusSession {
+        RadiusSession {
+            id: Uuid::new_v4(),
+            username: None,
+            mac_address: Some("AA:BB:CC:00:00:01".into()),
+            nas_ip: Some(nas.into()),
+            nas_port: None,
+            framed_ip: None,
+            acct_session_id: None,
+            auth_method: None,
+            started_at: at(started),
+            last_seen_at: at(started),
+            stopped_at: stopped.map(at),
+            terminate_cause: None,
+            last_coa_at: None,
+            last_coa_result: None,
+        }
+    }
+
+    #[test]
+    fn a_session_runs_on_its_latest_decision() {
+        let mac = "aa:bb:cc:00:00:01";
+        let ds = vec![
+            decision(-60, mac, "10.0.0.1", 1),  // long before: another session
+            decision(0, mac, "10.0.0.1", 10),   // its Accept
+            decision(30, mac, "10.0.0.1", 999), // a re-authentication
+            decision(31, "aa:bb:cc:00:00:02", "10.0.0.1", 5),
+        ];
+        let s = session(0, None, "10.0.0.1");
+        assert_eq!(
+            decision_for_session(&s, &ds).and_then(|d| d.vlan),
+            Some(999)
+        );
+        // Stopped before the re-authentication.
+        let s = session(0, Some(20), "10.0.0.1");
+        assert_eq!(decision_for_session(&s, &ds).and_then(|d| d.vlan), Some(10));
+        // The Accept a little before accounting Start counts.
+        let s = session(3, Some(20), "10.0.0.1");
+        assert_eq!(decision_for_session(&s, &ds).and_then(|d| d.vlan), Some(10));
+        // Nothing in the window.
+        let s = session(-200, Some(-100), "10.0.0.1");
+        assert!(decision_for_session(&s, &ds).is_none());
+    }
+
+    #[test]
+    fn the_sessions_own_nas_is_preferred() {
+        let mac = "aa:bb:cc:00:00:01";
+        let ds = vec![
+            decision(1, mac, "10.0.0.1", 10),
+            decision(2, mac, "10.0.0.2", 20),
+        ];
+        let s = session(0, None, "10.0.0.1");
+        assert_eq!(decision_for_session(&s, &ds).and_then(|d| d.vlan), Some(10));
+        // A NAS that reports another address than it sends from: any NAS.
+        let s = session(0, None, "192.0.2.9");
+        assert_eq!(decision_for_session(&s, &ds).and_then(|d| d.vlan), Some(20));
+    }
+
+    #[test]
+    fn summaries_and_durations() {
+        let mut d = decision(0, "aa:bb:cc:00:00:01", "10.0.0.1", 10);
+        d.role = Some("EMPLOYEE.in".into());
+        d.session_timeout = Some(8 * 3600);
+        assert_eq!(
+            d.summary(),
+            "accept, VLAN 10, role EMPLOYEE.in, re-auth 8 h"
+        );
+        d.signal_detail = Some("Cadavault posture score 40 (below 60)".into());
+        d.group_rule = Some("CORP\\Finance".into());
+        assert_eq!(
+            d.why(),
+            "trusted device; Cadavault posture score 40 (below 60); AD group rule CORP\\Finance"
+        );
+        d.outcome = "reject".into();
+        assert_eq!(d.summary(), "reject");
+        assert_eq!(duration_label(45), "45 s");
+        assert_eq!(duration_label(600), "10 min");
+        assert_eq!(duration_label(1197), "19 min");
+        assert_eq!(duration_label(3600), "1 h");
+        assert_eq!(duration_label(5400), "1 h 30 min");
     }
 }

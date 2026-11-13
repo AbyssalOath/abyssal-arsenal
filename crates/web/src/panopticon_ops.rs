@@ -330,7 +330,7 @@ async fn maybe_alert_rogue_device(
 
 /// Parses a comma/newline-separated recipient list (shared shape with
 /// Thanatos's own recipient settings).
-fn parse_recipients(raw: &str) -> Vec<String> {
+pub(crate) fn parse_recipients(raw: &str) -> Vec<String> {
     raw.split([',', '\n'])
         .map(str::trim)
         .filter(|s| !s.is_empty())

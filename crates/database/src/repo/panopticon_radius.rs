@@ -274,6 +274,26 @@ pub async fn prune_sessions_older_than(
     Ok(r.rows_affected())
 }
 
+/// Sessions with no Stop recorded and accounting seen since `since`, with a
+/// MAC, oldest-touched first, at most `limit`: what the re-evaluation sweep
+/// (0.2.9 Q3) goes through.
+pub async fn open_sessions_seen_since(
+    pool: &DbPool,
+    since: DateTime<Utc>,
+    limit: u32,
+) -> anyhow::Result<Vec<RadiusSession>> {
+    let rows: Vec<SessionRow> = sqlx::query_as(
+        "SELECT * FROM panopticon_radius_sessions \
+         WHERE stopped_at IS NULL AND mac_address IS NOT NULL AND last_seen_at >= ? \
+         ORDER BY COALESCE(last_coa_at, started_at) ASC LIMIT ?",
+    )
+    .bind(since.naive_utc())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
 /// A MAC's sessions with no Stop recorded, newest first -- the ones a
 /// re-authorization targets. Capped: a NAS that never sends Stop shouldn't
 /// make one change fan out to every session the MAC ever had.

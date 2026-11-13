@@ -112,6 +112,39 @@
   {% endif %}
 </div>
 
+<div class="card">
+  <h3>{% call macros::icon("scan") %} Simulated matches</h3>
+  <p style="color:var(--text-muted); margin-top:0;">While the mode is <em>Simulate</em>, each sweep records what every
+    rule would have done, one row per rule and device, instead of doing it. Check this before switching to
+    <em>Active</em>. {% if !simulating %}<strong>The mode isn't Simulate now</strong>, so nothing new is added.{% endif %}</p>
+  {% if simulations.is_empty() %}
+  <p style="color:var(--text-muted);">Nothing yet.{% if simulating %} Rows appear at the next sweep that matches a device.{% endif %}</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Last seen</th><th>Rule</th><th>Device</th><th>Would</th><th>Through</th><th>Details</th><th>Sweeps</th></tr></thead>
+    <tbody>
+      {% for s in simulations %}
+      <tr>
+        <td>{{ s.last_seen }}<br><small style="color:var(--text-muted);">since {{ s.first_seen }}</small></td>
+        <td>{{ s.rule }}</td>
+        <td>{{ s.device_ip }}{% if !s.mac.is_empty() %}<br><small><a href="/arsenals/panopticon/radius/decisions?mac={{ s.mac }}">{{ s.mac }}</a></small>{% endif %}</td>
+        <td>{% if s.enforced %}<span class="badge badge-warning">{{ s.action }}</span>{% else %}<span class="badge badge-muted">nothing</span>{% endif %}</td>
+        <td>{{ s.path }}</td>
+        <td>{{ s.detail }}</td>
+        <td>{{ s.times_seen }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if can_manage %}
+  <form method="post" action="/arsenals/panopticon/policy/simulations/clear" style="margin-top:8px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn btn-secondary">Clear</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</div>
+
 {% if can_manage %}
 <div class="card">
   <h3>{% call macros::icon("generate") %} Add rule</h3>

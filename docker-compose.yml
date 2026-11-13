@@ -72,6 +72,11 @@ services:
       # the container -- but NOT if this host runs a DHCP server itself
       # (the port would clash). Nothing in the container answers on it.
       # - "67:67/udp"
+      # SNMP traps from switches (Panopticon, 0.2.9, off by default; turn
+      # them on on the Switches page). Uncomment to let switches reach the
+      # trap listener -- but NOT if this host runs snmptrapd itself (the
+      # port would clash). Nothing in the container binds it until enabled.
+      # - "162:162/udp"
     # Panopticon's ARP listener (off by default, crates/web/src/panopticon_arp.rs)
     # needs CAP_NET_RAW to open a raw packet capture socket -- explicit
     # here even though it's already one of Docker's default capabilities,

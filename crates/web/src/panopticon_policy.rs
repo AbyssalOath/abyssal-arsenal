@@ -58,6 +58,10 @@ struct Signals {
     events: HashMap<Uuid, Severity>,
     /// Latest Cadavault posture score per host (hosts with a score only).
     posture: HashMap<Uuid, u8>,
+    /// The source MACs of rogue DHCP servers that answered DHCP themselves
+    /// in the window (0.2.9 Q4), lowercase. Not addresses: any device can
+    /// name any address as a server.
+    rogue_dhcp: HashSet<String>,
     /// Active hosts by the address the control plane sees them at -- the
     /// fallback when a device isn't linked (`host_id`) to its host.
     host_by_ip: HashMap<String, Uuid>,
@@ -122,6 +126,10 @@ fn trigger_matches(
         PolicyTrigger::PostureFailing => host()
             .and_then(|h| signals.posture.get(&h))
             .is_some_and(|score| *score < rule.effective_posture_below()),
+        PolicyTrigger::RogueDhcp => device
+            .mac_address
+            .as_deref()
+            .is_some_and(|m| signals.rogue_dhcp.contains(&m.to_ascii_lowercase())),
     }
 }
 
@@ -258,6 +266,21 @@ impl Uplinks {
 
 const POLICY_SWEEP_INTERVAL_SECS: u64 = 120;
 
+/// One policy pass at a time: the sweep and a pass an SNMP trap asks for
+/// (0.2.9 Q5) must not both act on the same device at once (each checks
+/// "already enforced" before acting).
+static PASS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Runs one policy pass now, outside the sweep's schedule (after an SNMP
+/// trap's poll, 0.2.9 Q5), waiting for a pass in progress to finish first.
+pub(crate) async fn run_policy_pass_now(
+    pool: &DbPool,
+    encryption_key: Option<&Arc<EncryptionKey>>,
+) -> anyhow::Result<()> {
+    let _guard = PASS_LOCK.lock().await;
+    run_policy_sweep(pool, encryption_key).await
+}
+
 /// Spawns the auto-enforcement policy sweep. No-ops cheaply when the mode is
 /// `off` or no rules are enabled (one settings read per tick).
 pub fn spawn_panopticon_policy_sweep(
@@ -277,7 +300,7 @@ pub fn spawn_panopticon_policy_sweep(
             heartbeats
                 .ok(names::PANOPTICON_POLICY_SWEEP, POLICY_SWEEP_INTERVAL_SECS)
                 .await;
-            if let Err(e) = run_policy_sweep(&pool, encryption_key.as_ref()).await {
+            if let Err(e) = run_policy_pass_now(&pool, encryption_key.as_ref()).await {
                 tracing::error!(error = %e, "NAC policy sweep failed");
             }
         }
@@ -374,6 +397,10 @@ async fn run_policy_sweep(
     if wants(|t| t == PolicyTrigger::PostureFailing) {
         signals.posture = repo::panopticon_signals::latest_posture_scores(pool).await?;
     }
+    if wants(|t| t == PolicyTrigger::RogueDhcp) {
+        signals.rogue_dhcp =
+            crate::panopticon_rogue_dhcp::rogue_macs_since(pool, signal_since).await?;
+    }
 
     // Every recent device with a MAC: located ones can be enforced at their
     // port, and any whose access RADIUS controls, through RADIUS.
@@ -456,6 +483,44 @@ async fn signal_detail(
                 rule.effective_posture_below()
             ))
         }
+        PolicyTrigger::RogueDhcp => Some(format!(
+            "rogue DHCP server: answered DHCP from {} (not an allowed server)",
+            device.mac_address.as_deref().unwrap_or("its MAC")
+        )),
+    }
+}
+
+/// `what`, and the signal behind the match if there is one.
+fn with_signal(what: String, detail: &Option<String>) -> String {
+    match detail {
+        Some(d) => format!("{what}: {d}"),
+        None => what,
+    }
+}
+
+/// Stores a simulated match for the policy page (0.2.9 Q2, B6). A failure
+/// is only logged: the server log has it too.
+async fn record_simulation(
+    pass: &Pass<'_>,
+    rule: &PolicyRule,
+    device: &NetworkDevice,
+    path: &str,
+    detail: &str,
+) {
+    if let Err(e) = repo::panopticon_radius_decisions::record_simulation(
+        pass.pool,
+        rule.id,
+        &rule.name,
+        device.id,
+        &device.ip_address,
+        device.mac_address.as_deref(),
+        rule.action,
+        path,
+        detail,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, rule = %rule.name, "couldn't record a simulated policy match");
     }
 }
 
@@ -485,19 +550,20 @@ async fn act_on_match(
     device: &NetworkDevice,
 ) -> anyhow::Result<()> {
     let simulate = pass.mode == PolicyMode::Simulate;
-    let skip = |why: &str| {
+    let skip = |why: String| async move {
         // Visible while an admin is watching a simulated policy; quiet once
         // it's active (it would repeat every sweep).
         if simulate {
             tracing::info!(rule = %rule.name, device = %device.ip_address,
                 "NAC policy [simulate]: matched, but not enforced: {why}");
+            record_simulation(pass, rule, device, "skipped", &why).await;
         } else {
             tracing::debug!(rule = %rule.name, device = %device.ip_address,
                 "NAC policy: matched, but not enforced: {why}");
         }
     };
     if pass.signals.is_control_plane(device) {
-        skip("it's the control plane's own server");
+        skip("it's the control plane's own server".into()).await;
         return Ok(());
     }
     let why_not_port = match try_port(pass, rule, device).await? {
@@ -507,7 +573,7 @@ async fn act_on_match(
     match radius_target(device, &pass.radius_macs) {
         Ok(mac) => try_radius(pass, rule, device, &mac).await,
         Err(why_not_radius) => {
-            skip(&format!("{why_not_port}, and {why_not_radius}"));
+            skip(format!("{why_not_port}, and {why_not_radius}")).await;
             Ok(())
         }
     }
@@ -610,6 +676,8 @@ async fn try_port(
             signal = detail.as_deref().unwrap_or(""),
             "NAC policy [simulate]: would enforce the port over SNMP (set mode to active to apply)"
         );
+        let what = format!("{} port {port_label}", switch.name);
+        record_simulation(pass, rule, device, "port", &with_signal(what, &detail)).await;
         return Ok(PortPath::Done);
     }
 
@@ -665,6 +733,12 @@ async fn try_radius(
             signal = detail.as_deref().unwrap_or(""),
             "NAC policy [simulate]: would enforce the device through RADIUS (set mode to active to apply)"
         );
+        let what = if pass.global_enforcement {
+            format!("MAC {mac}")
+        } else {
+            format!("MAC {mac} (enforcement is turned off globally, so not even when active)")
+        };
+        record_simulation(pass, rule, device, "radius", &with_signal(what, &detail)).await;
         return Ok(());
     }
     if !pass.global_enforcement {
@@ -882,6 +956,28 @@ mod tests {
         // A host with no score isn't failing.
         signals.posture.clear();
         assert!(!rule_matches(&r, &d, false, &signals));
+    }
+
+    #[test]
+    fn a_rogue_dhcp_server_matches_by_the_mac_it_answered_from() {
+        let mut d = device(TrustState::Trusted);
+        d.mac_address = Some("AA:BB:CC:00:00:06".into());
+        let r = rule(PolicyTrigger::RogueDhcp);
+        let mut signals = none();
+        assert!(!rule_matches(&r, &d, false, &signals));
+        signals.rogue_dhcp.insert("aa:bb:cc:00:00:06".into());
+        assert!(rule_matches(&r, &d, false, &signals));
+        // Its address being named as a server isn't enough.
+        signals.rogue_dhcp = [d.ip_address.clone()].into_iter().collect();
+        assert!(!rule_matches(&r, &d, false, &signals));
+        d.mac_address = None;
+        signals.rogue_dhcp.insert("aa:bb:cc:00:00:06".into());
+        assert!(!rule_matches(&r, &d, false, &signals));
+        assert_eq!(
+            "rogue_dhcp".parse::<PolicyTrigger>(),
+            Ok(PolicyTrigger::RogueDhcp)
+        );
+        assert!(PolicyTrigger::ALL.contains(&PolicyTrigger::RogueDhcp));
     }
 
     #[test]

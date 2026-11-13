@@ -258,3 +258,40 @@ pub async fn delete(pool: &DbPool, id: Uuid) -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
+
+/// Records the last trap a switch sent that was accepted (0.2.9 Q5).
+pub async fn record_trap(pool: &DbPool, id: Uuid, summary: &str) -> anyhow::Result<()> {
+    let summary: String = summary.chars().take(255).collect();
+    sqlx::query(
+        "UPDATE panopticon_switches SET last_trap_at = CURRENT_TIMESTAMP(6), last_trap = ? \
+         WHERE id = ?",
+    )
+    .bind(summary)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Each switch's last accepted trap: when, and what.
+pub async fn last_traps(
+    pool: &DbPool,
+) -> anyhow::Result<std::collections::HashMap<Uuid, (DateTime<Utc>, String)>> {
+    let rows: Vec<(String, Option<chrono::NaiveDateTime>, Option<String>)> = sqlx::query_as(
+        "SELECT id, last_trap_at, last_trap FROM panopticon_switches WHERE last_trap_at IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, at, what)| {
+            Some((
+                Uuid::parse_str(&id).ok()?,
+                (
+                    DateTime::from_naive_utc_and_offset(at?, Utc),
+                    what.unwrap_or_default(),
+                ),
+            ))
+        })
+        .collect())
+}

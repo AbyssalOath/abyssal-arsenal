@@ -202,6 +202,60 @@ pub fn parse_request(bootp: &[u8]) -> Option<Request> {
     (1..=8).contains(&req.message_type).then_some(req)
 }
 
+/// What a DHCP server's reply says about the server (0.2.9 Q4, rogue DHCP
+/// detection): which server, offering what to whom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerReply {
+    /// OFFER, ACK or NAK.
+    pub message_type: u8,
+    /// Option 54, the server identifier.
+    pub server_id: Option<Ipv4Addr>,
+    pub yiaddr: Ipv4Addr,
+    pub giaddr: Ipv4Addr,
+    pub chaddr: Mac,
+}
+
+/// Parses a BOOTP payload (the UDP data) as a DHCP server's OFFER, ACK or
+/// NAK. `None` for anything else: requests, plain BOOTP, non-Ethernet,
+/// malformed. Untrusted input: every offset is checked.
+pub fn parse_server_reply(bootp: &[u8]) -> Option<ServerReply> {
+    if bootp.len() < 240
+        || bootp[0] != BOOTREPLY
+        || bootp[1] != 1
+        || bootp[2] != 6
+        || bootp[236..240] != MAGIC_COOKIE
+    {
+        return None;
+    }
+    let mut reply = ServerReply {
+        message_type: 0,
+        server_id: None,
+        yiaddr: ipv4(&bootp[16..20])?,
+        giaddr: ipv4(&bootp[24..28])?,
+        chaddr: bootp[28..34].try_into().ok()?,
+    };
+    let mut i = 240;
+    while i < bootp.len() {
+        let code = bootp[i];
+        if code == 0 {
+            i += 1;
+            continue;
+        }
+        if code == 255 {
+            break;
+        }
+        let len = usize::from(*bootp.get(i + 1)?);
+        let value = bootp.get(i + 2..i + 2 + len)?;
+        match code {
+            53 if len == 1 => reply.message_type = value[0],
+            54 => reply.server_id = ipv4(value),
+            _ => {}
+        }
+        i += 2 + len;
+    }
+    matches!(reply.message_type, OFFER | ACK | NAK).then_some(reply)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Lease {
     ip: Ipv4Addr,
@@ -542,6 +596,27 @@ mod tests {
             i += 2 + len;
         }
         (opts[&53][0], ipv4(&b[16..20]).unwrap(), opts)
+    }
+
+    #[test]
+    fn server_replies_parse_back_and_requests_dont() {
+        let c = cfg();
+        let mut pool = LeasePool::new(c.clone());
+        let now = Instant::now();
+        let offer = handle(&c, &mut pool, &req(A, DISCOVER, &[]), now).unwrap();
+        let r = parse_server_reply(&offer.bytes).expect("an OFFER");
+        assert_eq!(r.message_type, OFFER);
+        assert_eq!(r.server_id, Some(c.server_ip));
+        assert_eq!(r.chaddr, A);
+        assert_eq!(r.yiaddr, Ipv4Addr::new(10, 99, 0, 100));
+        // A client's request isn't a server reply, and the reverse.
+        let request = packet(A, DISCOVER, [0; 4], &[]);
+        assert!(parse_server_reply(&request).is_none());
+        assert!(parse_request(&offer.bytes).is_none());
+        // Truncated anywhere: nothing, never a panic.
+        for len in 0..offer.bytes.len() {
+            let _ = parse_server_reply(&offer.bytes[..len]);
+        }
     }
 
     #[test]

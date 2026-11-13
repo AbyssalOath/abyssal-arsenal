@@ -69,6 +69,10 @@ pub enum AuditAction {
     /// changed. `metadata`: `{"nas", "nas_ip", "session", "mode", "result",
     /// "why"}`. `Failure` = NAK, no response, or not sent.
     NetworkRadiusReauthorized,
+    /// Panopticon (0.2.9 Q4): a DHCP server that isn't on the allowed list
+    /// was seen (`resource` = the server's address; `metadata`: how it was
+    /// seen, its MAC, a client that used it). At most once a day per server.
+    NetworkRogueDhcpServer,
     /// Panopticon NAC (0.2.7): a device quarantined or blocked through the
     /// RADIUS decision rather than an SNMP write (`resource` = MAC;
     /// `metadata`: kind, by, rule, reason, timeout).
@@ -222,6 +226,7 @@ impl AuditAction {
             AuditAction::NetworkPortEnforced => "NETWORK_PORT_ENFORCED",
             AuditAction::NetworkPortReleased => "NETWORK_PORT_RELEASED",
             AuditAction::NetworkRadiusReauthorized => "NETWORK_RADIUS_REAUTHORIZED",
+            AuditAction::NetworkRogueDhcpServer => "NETWORK_ROGUE_DHCP_SERVER",
             AuditAction::NetworkDeviceEnforced => "NETWORK_DEVICE_ENFORCED",
             AuditAction::NetworkDeviceReleased => "NETWORK_DEVICE_RELEASED",
             AuditAction::NetworkGuestRegistered => "NETWORK_GUEST_REGISTERED",
@@ -329,6 +334,7 @@ impl AuditAction {
         AuditAction::NetworkPortEnforced,
         AuditAction::NetworkPortReleased,
         AuditAction::NetworkRadiusReauthorized,
+        AuditAction::NetworkRogueDhcpServer,
         AuditAction::NetworkDeviceEnforced,
         AuditAction::NetworkDeviceReleased,
         AuditAction::NetworkGuestRegistered,

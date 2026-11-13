@@ -22,7 +22,8 @@ use abyssal_core::settings::{
     PANOPTICON_AUTO_ENFORCE_SIGNAL_WINDOW_MINUTES_DEFAULT, PANOPTICON_PORTAL_VLAN,
     PANOPTICON_PORTAL_VLAN_DEFAULT, PANOPTICON_QUARANTINE_VLAN, PANOPTICON_QUARANTINE_VLAN_DEFAULT,
     PANOPTICON_RADIUS_ACCT_PORT, PANOPTICON_RADIUS_ACCT_PORT_DEFAULT, PANOPTICON_RADIUS_AUTH_PORT,
-    PANOPTICON_RADIUS_AUTH_PORT_DEFAULT, PANOPTICON_RADIUS_GUEST_VLAN,
+    PANOPTICON_RADIUS_AUTH_PORT_DEFAULT, PANOPTICON_RADIUS_DECISION_RETENTION_DAYS,
+    PANOPTICON_RADIUS_DECISION_RETENTION_DAYS_DEFAULT, PANOPTICON_RADIUS_GUEST_VLAN,
     PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT, PANOPTICON_RADIUS_ROLE_GUEST,
     PANOPTICON_RADIUS_ROLE_QUARANTINE, PANOPTICON_RADIUS_ROLE_REGISTRATION,
     PANOPTICON_RADIUS_ROLE_TRUSTED, PANOPTICON_RADIUS_ROLE_UNKNOWN,
@@ -186,10 +187,23 @@ const MIN_SESSION_TIMEOUT_SECS: u32 = 60;
 /// a NAS without CoA re-asks: short for quarantine and registration, long
 /// for trusted. An approved guest's session ends no later than its
 /// registration, where a guest timeout is set.
+#[cfg(test)]
 fn decide_full(i: &DecisionInputs, p: &RadiusPolicy) -> Verdict {
+    decide_explained(i, p).0
+}
+
+/// [`decide_full`], and what it was based on, for the decision record and
+/// the log (0.2.9 Q2): "trusted device", "security signal: quarantine
+/// (otherwise: trusted device)", ...
+fn decide_explained(i: &DecisionInputs, p: &RadiusPolicy) -> (Verdict, String) {
     let authenticated = i.admission == Admission::Authenticated;
     let group_vlan = i.group_vlan.filter(|v| *v > 0 && authenticated);
     let group_role = i.group_role.clone().filter(|_| authenticated);
+    let by_group = if group_vlan.is_some() || group_role.is_some() {
+        ", by AD group rule"
+    } else {
+        ""
+    };
     let accept = |vlan: Option<u32>, role: Option<String>, timeout: u32| Verdict {
         decision: Decision::Accept(vlan),
         role,
@@ -200,17 +214,26 @@ fn decide_full(i: &DecisionInputs, p: &RadiusPolicy) -> Verdict {
         role: None,
         session_timeout: None,
     };
-    let quarantine = || {
+    let quarantine = |why: &str| {
         if p.quarantine_vlan > 0 {
-            accept(
-                Some(p.quarantine_vlan),
-                p.role_quarantine.clone(),
-                p.timeout_quarantine,
+            (
+                accept(
+                    Some(p.quarantine_vlan),
+                    p.role_quarantine.clone(),
+                    p.timeout_quarantine,
+                ),
+                why.to_string(),
             )
         } else if i.nas_applies_roles && p.role_quarantine.is_some() {
-            accept(None, p.role_quarantine.clone(), p.timeout_quarantine)
+            (
+                accept(None, p.role_quarantine.clone(), p.timeout_quarantine),
+                format!("{why} (by role)"),
+            )
         } else {
-            reject()
+            (
+                reject(),
+                format!("{why}, but no quarantine VLAN (or role this NAS applies): rejected"),
+            )
         }
     };
     let registered_guest_timeout = match i.registration_expires_in {
@@ -220,64 +243,95 @@ fn decide_full(i: &DecisionInputs, p: &RadiusPolicy) -> Verdict {
     let vlan_or = |fallback: u32| group_vlan.or((fallback > 0).then_some(fallback));
 
     match i.enforced {
-        Some(EnforcementKind::Disable) => return reject(),
-        Some(EnforcementKind::Quarantine) => return quarantine(),
+        Some(EnforcementKind::Disable) => {
+            return (reject(), "disabled by enforcement (port or device)".into());
+        }
+        Some(EnforcementKind::Quarantine) => {
+            return quarantine("quarantined by enforcement (port or device)");
+        }
         None => {}
     }
     let base = match i.trust {
-        Some(TrustState::Trusted) => accept(
-            vlan_or(p.trusted_vlan),
-            group_role.or_else(|| p.role_trusted.clone()),
-            p.timeout_trusted,
+        Some(TrustState::Trusted) => (
+            accept(
+                vlan_or(p.trusted_vlan),
+                group_role.or_else(|| p.role_trusted.clone()),
+                p.timeout_trusted,
+            ),
+            format!("trusted device{by_group}"),
         ),
         Some(TrustState::Untrusted) => match p.untrusted_action.as_str() {
-            "reject" => reject(),
+            "reject" => (reject(), "untrusted device: reject".into()),
             // "quarantine": isolate onto the quarantine VLAN (or role).
-            _ => quarantine(),
+            _ => quarantine("untrusted device: quarantine"),
         },
         // Unknown trust, or a device not in inventory at all.
         _ => match p.unknown_action.as_str() {
-            "reject" => reject(),
-            "guest" => accept(
-                vlan_or(p.guest_vlan),
-                group_role.or_else(|| p.role_guest.clone()),
-                p.timeout_guest,
+            "reject" => (reject(), "unknown device: reject".into()),
+            "guest" => (
+                accept(
+                    vlan_or(p.guest_vlan),
+                    group_role.or_else(|| p.role_guest.clone()),
+                    p.timeout_guest,
+                ),
+                format!("unknown device: guest VLAN{by_group}"),
             ),
             // The registration portal: registered guests to the guest VLAN,
             // everyone else to the registration VLAN -- or, with none
             // configured, nowhere (fail closed).
             // An 802.1X-authenticated device that isn't classified yet is
             // admitted plainly, as before the portal existed.
-            "register" if authenticated => accept(
-                group_vlan,
-                group_role.or_else(|| p.role_unknown.clone()),
-                p.timeout_unknown,
+            "register" if authenticated => (
+                accept(
+                    group_vlan,
+                    group_role.or_else(|| p.role_unknown.clone()),
+                    p.timeout_unknown,
+                ),
+                format!("unknown device, 802.1X login: admitted{by_group}"),
             ),
-            "register" if i.registered => accept(
-                (p.guest_vlan > 0).then_some(p.guest_vlan),
-                p.role_guest.clone(),
-                registered_guest_timeout,
+            "register" if i.registered => (
+                accept(
+                    (p.guest_vlan > 0).then_some(p.guest_vlan),
+                    p.role_guest.clone(),
+                    registered_guest_timeout,
+                ),
+                "unknown device, approved registration: guest VLAN".into(),
             ),
-            "register" if p.registration_vlan > 0 => accept(
-                Some(p.registration_vlan),
-                p.role_registration.clone(),
-                p.timeout_registration,
+            "register" if p.registration_vlan > 0 => (
+                accept(
+                    Some(p.registration_vlan),
+                    p.role_registration.clone(),
+                    p.timeout_registration,
+                ),
+                "unknown device, not registered: registration VLAN".into(),
             ),
-            "register" => reject(),
+            "register" => (
+                reject(),
+                "unknown device, not registered, and no registration VLAN: reject".into(),
+            ),
             // "accept" (the safe default): admit with no VLAN assignment
             // (or the AD group's).
-            _ => accept(
-                group_vlan,
-                group_role.or_else(|| p.role_unknown.clone()),
-                p.timeout_unknown,
+            _ => (
+                accept(
+                    group_vlan,
+                    group_role.or_else(|| p.role_unknown.clone()),
+                    p.timeout_unknown,
+                ),
+                format!("unknown device: admitted{by_group}"),
             ),
         },
     };
     match i.signal {
-        _ if base.decision == Decision::Reject => base,
+        _ if base.0.decision == Decision::Reject => base,
         None => base,
-        Some(SignalAction::Reject) => reject(),
-        Some(SignalAction::Quarantine) => quarantine(),
+        Some(SignalAction::Reject) => (
+            reject(),
+            format!("security signal: reject (otherwise: {})", base.1),
+        ),
+        Some(SignalAction::Quarantine) => quarantine(&format!(
+            "security signal: quarantine (otherwise: {})",
+            base.1
+        )),
     }
 }
 
@@ -580,9 +634,155 @@ pub(crate) struct LoginDecision {
     pub signal: Option<LoginSignal>,
     /// Session-Timeout for an Accept, in seconds (0.2.8 P4).
     pub session_timeout: Option<u32>,
+    /// What the decision was based on (0.2.9 Q2).
+    pub reason: String,
+    /// The login's AD groups that have a rule, as given (0.2.9 Q2).
+    pub groups: Vec<String>,
+}
+
+/// Prunes decision records, simulated policy matches and accounted
+/// sessions not seen for `panopticon.radius_decision_retention_days`
+/// (0.2.9 Q2, Q3), every six hours.
+pub fn spawn_radius_decision_retention(
+    pool: DbPool,
+    task_health: crate::task_health::TaskHeartbeats,
+) {
+    use crate::task_health::names::PANOPTICON_RADIUS_RETENTION as NAME;
+    const INTERVAL_SECS: u64 = 6 * 60 * 60;
+    tokio::spawn(async move {
+        task_health.register(NAME, INTERVAL_SECS).await;
+        tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+        loop {
+            let days = repo::settings::get_u32(
+                &pool,
+                PANOPTICON_RADIUS_DECISION_RETENTION_DAYS,
+                PANOPTICON_RADIUS_DECISION_RETENTION_DAYS_DEFAULT,
+            )
+            .await
+            .unwrap_or(PANOPTICON_RADIUS_DECISION_RETENTION_DAYS_DEFAULT);
+            let result = if days == 0 {
+                Ok(())
+            } else {
+                let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(days));
+                prune_decisions(&pool, cutoff).await
+            };
+            match result {
+                Ok(()) => task_health.ok(NAME, INTERVAL_SECS).await,
+                Err(e) => {
+                    tracing::error!(error = %e, "RADIUS decision retention failed");
+                    task_health.error(NAME, INTERVAL_SECS, e.to_string()).await;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(INTERVAL_SECS)).await;
+        }
+    });
+}
+
+async fn prune_decisions(
+    pool: &DbPool,
+    cutoff: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<()> {
+    use repo::panopticon_radius_decisions as decisions;
+    let n = decisions::prune_older_than(pool, cutoff).await?;
+    let m = decisions::prune_simulations_older_than(pool, cutoff).await?;
+    // Accounted sessions not seen for as long (0.2.9 Q3): nothing pruned
+    // them before. An open one that old is a NAS that never sent Stop.
+    let k = repo::panopticon_radius::prune_sessions_older_than(pool, cutoff).await?;
+    if n + m + k > 0 {
+        tracing::info!(
+            decisions = n,
+            simulations = m,
+            sessions = k,
+            "RADIUS retention pruned old records"
+        );
+    }
+    Ok(())
+}
+
+/// Which front end made a decision, for its record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrontEnd {
+    Embedded,
+    FreeRadius,
+}
+
+impl FrontEnd {
+    fn as_str(self) -> &'static str {
+        match self {
+            FrontEnd::Embedded => "embedded",
+            FrontEnd::FreeRadius => "freeradius",
+        }
+    }
+}
+
+/// Where a decision was asked from, for its record.
+pub(crate) struct DecisionContext<'a> {
+    pub front_end: FrontEnd,
+    pub admission: Admission,
+    /// Lowercase colon form, or empty when the login had none.
+    pub mac: &'a str,
+    pub identity: Option<&'a str>,
+    pub nas: Option<&'a RadiusClient>,
+    /// The address the request came from (the NAS).
+    pub nas_address: Option<String>,
+}
+
+/// Records a decision (0.2.9 Q2) without holding up the reply: written in
+/// the background, and a failure is only logged. A record is for people,
+/// never part of the decision.
+pub(crate) fn record(pool: &DbPool, d: &LoginDecision, ctx: DecisionContext<'_>) {
+    let rec = d.to_record(&ctx);
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = repo::panopticon_radius_decisions::insert(&pool, &rec).await {
+            tracing::warn!(error = %e, "RADIUS: couldn't record a decision");
+        }
+    });
 }
 
 impl LoginDecision {
+    /// The record of this decision, as asked in `ctx`. The role is the one
+    /// actually sent: none to a NAS without a role attribute.
+    pub(crate) fn to_record(
+        &self,
+        ctx: &DecisionContext<'_>,
+    ) -> abyssal_core::RadiusDecisionRecord {
+        let (outcome, vlan) = match self.decision {
+            Decision::Accept(vlan) => ("accept", vlan.and_then(|v| u16::try_from(v).ok())),
+            Decision::Reject => ("reject", None),
+        };
+        let applies_roles = ctx.nas.is_some_and(|c| c.role_attribute.sends_roles());
+        abyssal_core::RadiusDecisionRecord {
+            id: uuid::Uuid::new_v4(),
+            decided_at: chrono::Utc::now(),
+            mac_address: (!ctx.mac.is_empty()).then(|| ctx.mac.to_ascii_lowercase()),
+            nas_client_id: ctx.nas.map(|c| c.id),
+            nas_name: ctx.nas.map(|c| c.name.clone()),
+            nas_address: ctx.nas_address.clone(),
+            front_end: ctx.front_end.as_str().into(),
+            admission: match ctx.admission {
+                Admission::Mab => "mab",
+                Admission::Authenticated => "dot1x",
+            }
+            .into(),
+            identity: ctx.identity.filter(|s| !s.is_empty()).map(str::to_string),
+            outcome: outcome.into(),
+            vlan,
+            role: self.role.clone().filter(|_| applies_roles),
+            session_timeout: self.session_timeout,
+            reason: self.reason.clone(),
+            trust_state: self.trust.map(|t| t.as_str().to_string()),
+            enforcement: self.enforced.map(|k| k.as_str().to_string()),
+            signal_action: self.signal.as_ref().map(|s| s.action.as_str().to_string()),
+            signal_detail: self.signal.as_ref().map(|s| s.detail.clone()),
+            group_rule: self.group_rule.as_ref().map(|r| r.group_name.clone()),
+            ad_groups: (!self.groups.is_empty()).then(|| {
+                self.groups
+                    .join(&abyssal_core::GROUP_LIST_SEPARATOR.to_string())
+            }),
+        }
+    }
+
     /// The signal for the log: `"quarantine: Cadavault posture ..."`.
     pub(crate) fn signal_label(&self) -> String {
         self.signal
@@ -681,7 +881,7 @@ pub(crate) async fn decide_for_login(
         }
         _ => None,
     };
-    let verdict = decide_full(
+    let (verdict, reason) = decide_explained(
         &DecisionInputs {
             trust,
             enforced,
@@ -703,6 +903,8 @@ pub(crate) async fn decide_for_login(
         group_rule,
         signal,
         session_timeout: verdict.session_timeout,
+        reason,
+        groups: groups.to_vec(),
     }
 }
 
@@ -839,6 +1041,23 @@ async fn handle_auth(
     };
 
     let d = decide_for_mac(pool, &mac, Admission::Mab, Some(&client)).await;
+    record(
+        pool,
+        &d,
+        DecisionContext {
+            front_end: FrontEnd::Embedded,
+            admission: Admission::Mab,
+            mac: &mac,
+            identity: packet.get_string(radius::ATTR_USER_NAME).as_deref(),
+            nas: Some(&client),
+            // As accounting files the session (handle_acct).
+            nas_address: Some(
+                packet
+                    .get_ipv4(radius::ATTR_NAS_IP_ADDRESS)
+                    .unwrap_or_else(|| src.to_string()),
+            ),
+        },
+    );
 
     let (code, attrs) = match &d.decision {
         Decision::Accept(vlan) => {
@@ -859,6 +1078,7 @@ async fn handle_auth(
         trust = d.trust.map(|t| t.as_str()).unwrap_or("unknown/none"),
         enforced = d.enforced.map(|k| k.as_str()).unwrap_or("none"),
         signal = %d.signal_label(),
+        reason = %d.reason,
         decision = ?d.decision,
         role = d.role.as_deref().filter(|_| client.role_attribute.sends_roles()).unwrap_or("none"),
         session_timeout = d.session_timeout.unwrap_or(0),
@@ -1243,6 +1463,112 @@ mod tests {
         // No guest timeout set: nothing sent (off until configured).
         p.timeout_guest = 0;
         assert_eq!(timeout_of(&i, &p), None);
+    }
+
+    fn reason(i: &DecisionInputs, p: &RadiusPolicy) -> String {
+        decide_explained(i, p).1
+    }
+
+    #[test]
+    fn every_decision_says_what_it_was_based_on() {
+        let mut p = roles(policy());
+        assert_eq!(
+            reason(&inputs(Some(TrustState::Trusted)), &p),
+            "trusted device"
+        );
+        assert_eq!(
+            reason(&inputs(Some(TrustState::Untrusted)), &p),
+            "untrusted device: quarantine"
+        );
+        assert_eq!(reason(&inputs(None), &p), "unknown device: admitted");
+        let mut i = inputs(Some(TrustState::Trusted));
+        i.enforced = Some(EnforcementKind::Disable);
+        assert_eq!(reason(&i, &p), "disabled by enforcement (port or device)");
+        let mut i = inputs(Some(TrustState::Trusted));
+        i.signal = Some(SignalAction::Quarantine);
+        assert_eq!(
+            reason(&i, &p),
+            "security signal: quarantine (otherwise: trusted device)"
+        );
+        let mut i = inputs(Some(TrustState::Trusted));
+        i.admission = Admission::Authenticated;
+        i.group_vlan = Some(30);
+        assert_eq!(reason(&i, &p), "trusted device, by AD group rule");
+        // Quarantine by role alone, and its fail-closed reject, say so.
+        p.quarantine_vlan = 0;
+        assert_eq!(
+            reason(&inputs(Some(TrustState::Untrusted)), &p),
+            "untrusted device: quarantine (by role)"
+        );
+        let mut i = inputs(Some(TrustState::Untrusted));
+        i.nas_applies_roles = false;
+        assert_eq!(
+            reason(&i, &p),
+            "untrusted device: quarantine, but no quarantine VLAN (or role this NAS applies): rejected"
+        );
+        p.unknown_action = "register".into();
+        p.registration_vlan = 0;
+        assert_eq!(
+            reason(&inputs(None), &p),
+            "unknown device, not registered, and no registration VLAN: reject"
+        );
+    }
+
+    fn client(attr: abyssal_core::RoleAttribute) -> RadiusClient {
+        RadiusClient {
+            id: uuid::Uuid::new_v4(),
+            name: "lab-sw".into(),
+            nas_address: "10.0.0.1".into(),
+            shared_secret_encrypted: String::new(),
+            enabled: true,
+            coa_mode: abyssal_core::CoaMode::Disconnect,
+            coa_port: 3799,
+            role_attribute: attr,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn the_record_holds_what_was_sent_and_why() {
+        let d = LoginDecision {
+            decision: Decision::Accept(Some(999)),
+            role: Some("QUARANTINE.in".into()),
+            trust: Some(TrustState::Trusted),
+            enforced: None,
+            group_rule: None,
+            signal: Some(LoginSignal {
+                action: SignalAction::Quarantine,
+                detail: "Cadavault posture score 40 (below 60)".into(),
+            }),
+            session_timeout: Some(600),
+            reason: "security signal: quarantine (otherwise: trusted device)".into(),
+            groups: vec!["CORP\\Finance".into(), "Staff".into()],
+        };
+        let filter_id = client(abyssal_core::RoleAttribute::FilterId);
+        let ctx = |nas| DecisionContext {
+            front_end: FrontEnd::FreeRadius,
+            admission: Admission::Authenticated,
+            mac: "AA:BB:CC:00:00:01",
+            identity: Some("alice"),
+            nas,
+            nas_address: Some("10.0.0.1".into()),
+        };
+        let r = d.to_record(&ctx(Some(&filter_id)));
+        assert_eq!(r.mac_address.as_deref(), Some("aa:bb:cc:00:00:01"));
+        assert_eq!((r.outcome.as_str(), r.vlan), ("accept", Some(999)));
+        assert_eq!(r.role.as_deref(), Some("QUARANTINE.in"));
+        assert_eq!(r.session_timeout, Some(600));
+        assert_eq!(
+            (r.front_end.as_str(), r.admission.as_str()),
+            ("freeradius", "dot1x")
+        );
+        assert_eq!(r.nas_name.as_deref(), Some("lab-sw"));
+        assert_eq!(r.signal_action.as_deref(), Some("quarantine"));
+        assert_eq!(r.ad_groups.as_deref(), Some("CORP\\Finance;Staff"));
+        // A NAS without a role attribute was sent no role: none recorded.
+        let none = client(abyssal_core::RoleAttribute::None);
+        assert_eq!(d.to_record(&ctx(Some(&none))).role, None);
+        assert_eq!(d.to_record(&ctx(None)).role, None);
     }
 
     #[test]

@@ -13,22 +13,28 @@ use abyssal_core::settings::{
     PANOPTICON_INVENTORY_RENDER_BUDGET, PANOPTICON_INVENTORY_RENDER_BUDGET_DEFAULT,
     PANOPTICON_QUARANTINE_VLAN, PANOPTICON_QUARANTINE_VLAN_DEFAULT, PANOPTICON_RADIUS_ACCT_PORT,
     PANOPTICON_RADIUS_ACCT_PORT_DEFAULT, PANOPTICON_RADIUS_AUTH_PORT,
-    PANOPTICON_RADIUS_AUTH_PORT_DEFAULT, PANOPTICON_RADIUS_ENABLED, PANOPTICON_RADIUS_GUEST_VLAN,
-    PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT, PANOPTICON_RADIUS_ROLE_GUEST,
-    PANOPTICON_RADIUS_ROLE_QUARANTINE, PANOPTICON_RADIUS_ROLE_REGISTRATION,
-    PANOPTICON_RADIUS_ROLE_TRUSTED, PANOPTICON_RADIUS_ROLE_UNKNOWN,
-    PANOPTICON_RADIUS_SIGNAL_EVENT_ACTION, PANOPTICON_RADIUS_SIGNAL_EVENT_MIN_SEVERITY,
-    PANOPTICON_RADIUS_SIGNAL_IDS_ACTION, PANOPTICON_RADIUS_SIGNAL_IDS_MIN_SEVERITY,
-    PANOPTICON_RADIUS_SIGNAL_POSTURE_ACTION, PANOPTICON_RADIUS_SIGNAL_POSTURE_BELOW,
-    PANOPTICON_RADIUS_TIMEOUT_GUEST_MINUTES, PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES,
-    PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES, PANOPTICON_RADIUS_TIMEOUT_QUARANTINE_MINUTES,
-    PANOPTICON_RADIUS_TIMEOUT_REGISTRATION_MINUTES, PANOPTICON_RADIUS_TIMEOUT_TRUSTED_MINUTES,
-    PANOPTICON_RADIUS_TIMEOUT_UNKNOWN_MINUTES, PANOPTICON_RADIUS_TRUSTED_VLAN,
-    PANOPTICON_RADIUS_TRUSTED_VLAN_DEFAULT, PANOPTICON_RADIUS_UNKNOWN_ACTION,
-    PANOPTICON_RADIUS_UNTRUSTED_ACTION, PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS,
-    PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS,
-    PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS,
-    PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
+    PANOPTICON_RADIUS_AUTH_PORT_DEFAULT, PANOPTICON_RADIUS_DECISION_RETENTION_DAYS,
+    PANOPTICON_RADIUS_DECISION_RETENTION_DAYS_DEFAULT, PANOPTICON_RADIUS_ENABLED,
+    PANOPTICON_RADIUS_GUEST_VLAN, PANOPTICON_RADIUS_GUEST_VLAN_DEFAULT,
+    PANOPTICON_RADIUS_REEVALUATE_COOLDOWN_MINUTES,
+    PANOPTICON_RADIUS_REEVALUATE_COOLDOWN_MINUTES_DEFAULT, PANOPTICON_RADIUS_REEVALUATE_ENABLED,
+    PANOPTICON_RADIUS_REEVALUATE_MAX_PER_SWEEP, PANOPTICON_RADIUS_REEVALUATE_MAX_PER_SWEEP_DEFAULT,
+    PANOPTICON_RADIUS_REEVALUATE_SECONDS, PANOPTICON_RADIUS_REEVALUATE_SECONDS_DEFAULT,
+    PANOPTICON_RADIUS_REEVALUATE_SECONDS_MAX, PANOPTICON_RADIUS_REEVALUATE_SECONDS_MIN,
+    PANOPTICON_RADIUS_ROLE_GUEST, PANOPTICON_RADIUS_ROLE_QUARANTINE,
+    PANOPTICON_RADIUS_ROLE_REGISTRATION, PANOPTICON_RADIUS_ROLE_TRUSTED,
+    PANOPTICON_RADIUS_ROLE_UNKNOWN, PANOPTICON_RADIUS_SIGNAL_EVENT_ACTION,
+    PANOPTICON_RADIUS_SIGNAL_EVENT_MIN_SEVERITY, PANOPTICON_RADIUS_SIGNAL_IDS_ACTION,
+    PANOPTICON_RADIUS_SIGNAL_IDS_MIN_SEVERITY, PANOPTICON_RADIUS_SIGNAL_POSTURE_ACTION,
+    PANOPTICON_RADIUS_SIGNAL_POSTURE_BELOW, PANOPTICON_RADIUS_TIMEOUT_GUEST_MINUTES,
+    PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES, PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES,
+    PANOPTICON_RADIUS_TIMEOUT_QUARANTINE_MINUTES, PANOPTICON_RADIUS_TIMEOUT_REGISTRATION_MINUTES,
+    PANOPTICON_RADIUS_TIMEOUT_TRUSTED_MINUTES, PANOPTICON_RADIUS_TIMEOUT_UNKNOWN_MINUTES,
+    PANOPTICON_RADIUS_TRUSTED_VLAN, PANOPTICON_RADIUS_TRUSTED_VLAN_DEFAULT,
+    PANOPTICON_RADIUS_UNKNOWN_ACTION, PANOPTICON_RADIUS_UNTRUSTED_ACTION,
+    PANOPTICON_TRAFFIC_DAILY_RETENTION_DAYS, PANOPTICON_TRAFFIC_DAILY_RETENTION_DEFAULT_DAYS,
+    PANOPTICON_TRAFFIC_HOURLY_RETENTION_DAYS, PANOPTICON_TRAFFIC_HOURLY_RETENTION_DEFAULT_DAYS,
+    PANOPTICON_TRAFFIC_RAW_RETENTION_DAYS, PANOPTICON_TRAFFIC_RAW_RETENTION_DEFAULT_DAYS,
 };
 use abyssal_core::{
     AppError, CoaMode, DeviceType, EnforcementAction, EnforcementKind, EnforcementState,
@@ -1436,9 +1442,19 @@ async fn render_switches(
         .collect();
 
     let switches = repo::panopticon_switches::list(&state.pool).await?;
+    let mut traps = repo::panopticon_switches::last_traps(&state.pool).await?;
     let switch_rows = switches
         .into_iter()
         .map(|s| crate::templates::PanopticonSwitchRow {
+            last_trap: traps
+                .remove(&s.id)
+                .map(|(at, what)| {
+                    format!(
+                        "{what} ({})",
+                        crate::common::format_in_tz(at, &ctx.user.timezone)
+                    )
+                })
+                .unwrap_or_default(),
             id: s.id.to_string(),
             name: s.name,
             ip_address: s.ip_address,
@@ -1489,6 +1505,24 @@ async fn render_switches(
         result_label,
         result_output,
         result_error,
+        traps_enabled: repo::settings::get_bool(
+            &state.pool,
+            abyssal_core::settings::PANOPTICON_SNMP_TRAPS_ENABLED,
+            false,
+        )
+        .await?,
+        trap_port: repo::settings::get_u32(
+            &state.pool,
+            abyssal_core::settings::PANOPTICON_SNMP_TRAP_PORT,
+            abyssal_core::settings::PANOPTICON_SNMP_TRAP_PORT_DEFAULT,
+        )
+        .await?,
+        trap_min_interval: repo::settings::get_u32(
+            &state.pool,
+            abyssal_core::settings::PANOPTICON_SNMP_TRAP_MIN_INTERVAL_SECONDS,
+            abyssal_core::settings::PANOPTICON_SNMP_TRAP_MIN_INTERVAL_SECONDS_DEFAULT,
+        )
+        .await?,
     };
     let jar = jar.clone();
     let jar = match new_cookie {
@@ -1496,6 +1530,70 @@ async fn render_switches(
         None => jar,
     };
     Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct SnmpTrapsForm {
+    csrf_token: String,
+    #[serde(default)]
+    enabled: bool,
+    port: u32,
+    min_interval: u32,
+}
+
+/// The SNMP trap listener's settings (0.2.9 Q5). Read at startup.
+pub async fn switches_traps(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<SnmpTrapsForm>,
+) -> Result<Response, WebError> {
+    use abyssal_core::settings::{
+        PANOPTICON_SNMP_TRAP_MIN_INTERVAL_SECONDS, PANOPTICON_SNMP_TRAP_PORT,
+        PANOPTICON_SNMP_TRAPS_ENABLED,
+    };
+    abyssal_rbac::ensure(&ctx, Permission::NetworkManage)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    if !(1..=65535).contains(&form.port) {
+        return Err(WebError(AppError::Validation(
+            "The trap port must be between 1 and 65535.".into(),
+        )));
+    }
+    if !(1..=3600).contains(&form.min_interval) {
+        return Err(WebError(AppError::Validation(
+            "The poll interval must be between 1 and 3600 seconds.".into(),
+        )));
+    }
+    let uid = Some(ctx.user.id);
+    for (key, value) in [
+        (
+            PANOPTICON_SNMP_TRAPS_ENABLED,
+            serde_json::json!(form.enabled),
+        ),
+        (PANOPTICON_SNMP_TRAP_PORT, serde_json::json!(form.port)),
+        (
+            PANOPTICON_SNMP_TRAP_MIN_INTERVAL_SECONDS,
+            serde_json::json!(form.min_interval),
+        ),
+    ] {
+        repo::settings::set(&state.pool, key, value, uid).await?;
+    }
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource(PANOPTICON_SNMP_TRAPS_ENABLED)
+            .metadata(serde_json::json!({
+                "enabled": form.enabled,
+                "port": form.port,
+                "min_interval": form.min_interval,
+            })),
+    )
+    .await?;
+    Ok(Redirect::to("/arsenals/panopticon/switches").into_response())
 }
 
 pub async fn switches_show(
@@ -3260,12 +3358,64 @@ pub async fn policy_show(
         actions,
         device_types,
         switches: switch_opts,
+        simulating: current_mode == PolicyMode::Simulate,
+        simulations: repo::panopticon_radius_decisions::list_simulations(&state.pool, 500)
+            .await?
+            .into_iter()
+            .map(|s| crate::templates::PolicySimulationRow {
+                last_seen: crate::common::format_in_tz(s.last_seen_at, &ctx.user.timezone),
+                first_seen: crate::common::format_in_tz(s.first_seen_at, &ctx.user.timezone),
+                times_seen: s.times_seen,
+                rule: s.rule_name,
+                device_ip: s.device_ip,
+                mac: s.mac_address.unwrap_or_default(),
+                action: s.action.as_str().to_string(),
+                path: match s.path.as_str() {
+                    "port" => "switch port (SNMP)",
+                    "radius" => "RADIUS",
+                    _ => "not enforced",
+                }
+                .to_string(),
+                enforced: s.path != "skipped",
+                detail: s.detail,
+            })
+            .collect(),
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
         None => jar,
     };
     Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct CsrfOnlyForm {
+    csrf_token: String,
+}
+
+/// Forgets the policy engine's simulated matches (0.2.9 Q2), e.g. after
+/// changing a rule, so the table shows only what the rules do now.
+pub async fn policy_simulations_clear(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Result<Response, WebError> {
+    abyssal_rbac::ensure(&ctx, Permission::NetworkNac)?;
+    require_csrf(&jar, &form.csrf_token)?;
+    let cleared = repo::panopticon_radius_decisions::clear_simulations(&state.pool).await?;
+    abyssal_audit::record(
+        &state.pool,
+        AuditEvent::new(AuditAction::ConfigurationChanged, AuditOutcome::Success)
+            .actor(Actor {
+                user_id: ctx.user.id,
+                username: &ctx.user.username,
+            })
+            .resource("panopticon.policy_simulations")
+            .metadata(serde_json::json!({ "cleared": cleared })),
+    )
+    .await?;
+    Ok(Redirect::to("/arsenals/panopticon/policy").into_response())
 }
 
 #[derive(Deserialize)]
@@ -3644,29 +3794,50 @@ pub async fn radius_show(
     let next_group_position = group_rules
         .last()
         .map_or(10, |r| r.position.saturating_add(10));
-    let sessions = repo::panopticon_radius::list_recent_sessions(&state.pool, 100)
-        .await?
+    let sessions = repo::panopticon_radius::list_recent_sessions(&state.pool, 100).await?;
+    // Each session's decision (0.2.9 Q2), from its MACs' recent records.
+    let decisions = match sessions.iter().map(|s| s.started_at).min() {
+        Some(oldest) => {
+            let macs: Vec<String> = sessions
+                .iter()
+                .filter_map(|s| s.mac_address.as_deref().map(str::to_ascii_lowercase))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let since = oldest
+                - chrono::Duration::seconds(abyssal_core::DECISION_BEFORE_SESSION_SLACK_SECS);
+            repo::panopticon_radius_decisions::for_macs_since(&state.pool, &macs, since, 5000)
+                .await?
+        }
+        None => Vec::new(),
+    };
+    let sessions = sessions
         .into_iter()
-        .map(|s| crate::templates::RadiusSessionRow {
-            id: s.id.to_string(),
-            last_coa: match (&s.last_coa_result, s.last_coa_at) {
-                (Some(r), Some(at)) => {
-                    format!(
-                        "{r} ({})",
-                        crate::common::format_in_tz(at, &ctx.user.timezone)
-                    )
-                }
-                _ => String::new(),
-            },
-            mac: s.mac_address.unwrap_or_default(),
-            username: s.username.unwrap_or_default(),
-            nas_ip: s.nas_ip.unwrap_or_default(),
-            nas_port: s.nas_port.unwrap_or_default(),
-            framed_ip: s.framed_ip.unwrap_or_default(),
-            method: s.auth_method.unwrap_or_default(),
-            started_at: crate::common::format_in_tz(s.started_at, &ctx.user.timezone),
-            last_seen_at: crate::common::format_in_tz(s.last_seen_at, &ctx.user.timezone),
-            active: s.stopped_at.is_none(),
+        .map(|s| {
+            let decision = abyssal_core::decision_for_session(&s, &decisions);
+            crate::templates::RadiusSessionRow {
+                decision: decision.map(|d| d.summary()).unwrap_or_default(),
+                decision_why: decision.map(|d| d.why()).unwrap_or_default(),
+                id: s.id.to_string(),
+                last_coa: match (&s.last_coa_result, s.last_coa_at) {
+                    (Some(r), Some(at)) => {
+                        format!(
+                            "{r} ({})",
+                            crate::common::format_in_tz(at, &ctx.user.timezone)
+                        )
+                    }
+                    _ => String::new(),
+                },
+                mac: s.mac_address.unwrap_or_default(),
+                username: s.username.unwrap_or_default(),
+                nas_ip: s.nas_ip.unwrap_or_default(),
+                nas_port: s.nas_port.unwrap_or_default(),
+                framed_ip: s.framed_ip.unwrap_or_default(),
+                method: s.auth_method.unwrap_or_default(),
+                started_at: crate::common::format_in_tz(s.started_at, &ctx.user.timezone),
+                last_seen_at: crate::common::format_in_tz(s.last_seen_at, &ctx.user.timezone),
+                active: s.stopped_at.is_none(),
+            }
         })
         .collect();
 
@@ -3732,6 +3903,38 @@ pub async fn radius_show(
         )
         .await?,
         timeout_min_minutes: PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES,
+        reevaluate_enabled: repo::settings::get_bool(
+            &state.pool,
+            PANOPTICON_RADIUS_REEVALUATE_ENABLED,
+            false,
+        )
+        .await?,
+        reevaluate_seconds: repo::settings::get_u32(
+            &state.pool,
+            PANOPTICON_RADIUS_REEVALUATE_SECONDS,
+            PANOPTICON_RADIUS_REEVALUATE_SECONDS_DEFAULT,
+        )
+        .await?,
+        reevaluate_cooldown_minutes: repo::settings::get_u32(
+            &state.pool,
+            PANOPTICON_RADIUS_REEVALUATE_COOLDOWN_MINUTES,
+            PANOPTICON_RADIUS_REEVALUATE_COOLDOWN_MINUTES_DEFAULT,
+        )
+        .await?,
+        reevaluate_max_per_sweep: repo::settings::get_u32(
+            &state.pool,
+            PANOPTICON_RADIUS_REEVALUATE_MAX_PER_SWEEP,
+            PANOPTICON_RADIUS_REEVALUATE_MAX_PER_SWEEP_DEFAULT,
+        )
+        .await?,
+        reevaluate_seconds_min: PANOPTICON_RADIUS_REEVALUATE_SECONDS_MIN,
+        reevaluate_seconds_max: PANOPTICON_RADIUS_REEVALUATE_SECONDS_MAX,
+        decision_retention_days: repo::settings::get_u32(
+            &state.pool,
+            PANOPTICON_RADIUS_DECISION_RETENTION_DAYS,
+            PANOPTICON_RADIUS_DECISION_RETENTION_DAYS_DEFAULT,
+        )
+        .await?,
         timeout_max_minutes: PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES,
         signal_posture_below: repo::settings::get_u32(
             &state.pool,
@@ -3765,6 +3968,198 @@ pub async fn radius_show(
         freeradius_last_call: crate::panopticon_freeradius::last_call()
             .map(|t| crate::common::format_in_tz(t, &ctx.user.timezone))
             .unwrap_or_default(),
+    };
+    let jar = match new_cookie {
+        Some(c) => jar.add(c),
+        None => jar,
+    };
+    Ok((jar, tpl).into_response())
+}
+
+#[derive(Deserialize, Default)]
+pub struct RadiusDecisionsQuery {
+    #[serde(default)]
+    mac: String,
+    #[serde(default)]
+    nas: String,
+    #[serde(default)]
+    outcome: String,
+    /// "Test a login": run the decision without recording it.
+    #[serde(default)]
+    test_mac: String,
+    #[serde(default)]
+    test_nas: String,
+    #[serde(default)]
+    test_admission: String,
+    #[serde(default)]
+    test_groups: String,
+}
+
+/// How many decisions the list shows.
+const DECISIONS_LIMIT: u32 = 200;
+
+/// The Decisions page (0.2.9 Q2): recorded RADIUS decisions with what each
+/// was based on, filterable by MAC, NAS client and outcome; and "test a
+/// login", which runs the same decision for a MAC, NAS and AD groups
+/// without recording it or touching any NAS. Read-only, so `network.view`.
+pub async fn radius_decisions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(ctx): CurrentUser,
+    Query(q): Query<RadiusDecisionsQuery>,
+) -> Result<Response, WebError> {
+    use crate::panopticon_radius::{Admission, DecisionContext, FrontEnd, normalize_mac};
+    abyssal_rbac::ensure(&ctx, Permission::NetworkView)?;
+
+    let clients = repo::panopticon_radius::list_clients(&state.pool).await?;
+    let mut notice = String::new();
+    let filter_mac = q.mac.trim();
+    let mac = if filter_mac.is_empty() {
+        None
+    } else {
+        let m = normalize_mac(filter_mac);
+        if m.is_none() {
+            notice = format!("\"{filter_mac}\" isn't a MAC address; showing every device.");
+        }
+        m
+    };
+    let filter = repo::panopticon_radius_decisions::DecisionFilter {
+        mac: mac.clone(),
+        nas_client_id: Uuid::parse_str(q.nas.trim()).ok(),
+        outcome: matches!(q.outcome.as_str(), "accept" | "reject").then(|| q.outcome.clone()),
+    };
+    let rows = repo::panopticon_radius_decisions::list(&state.pool, &filter, DECISIONS_LIMIT)
+        .await?
+        .into_iter()
+        .map(|d| crate::templates::RadiusDecisionRow {
+            at: crate::common::format_in_tz(d.decided_at, &ctx.user.timezone),
+            accepted: d.accepted(),
+            summary: d.summary(),
+            why: d.why(),
+            mac: d.mac_address.clone().unwrap_or_default(),
+            identity: d.identity.clone().unwrap_or_default(),
+            nas: d
+                .nas_name
+                .clone()
+                .or_else(|| {
+                    d.nas_address
+                        .clone()
+                        .map(|a| format!("{a} (not a NAS client)"))
+                })
+                .unwrap_or_default(),
+            via: format!(
+                "{} {}",
+                if d.admission == "dot1x" {
+                    "802.1X"
+                } else {
+                    "MAB"
+                },
+                if d.front_end == "freeradius" {
+                    "(FreeRADIUS)"
+                } else {
+                    "(embedded)"
+                }
+            ),
+            trust: d
+                .trust_state
+                .clone()
+                .unwrap_or_else(|| "not in inventory".into()),
+            groups: d.ad_groups.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    // "Test a login".
+    let mut test = None;
+    let mut test_error = String::new();
+    let test_admission = if q.test_admission == "dot1x" {
+        Admission::Authenticated
+    } else {
+        Admission::Mab
+    };
+    let test_nas = clients
+        .iter()
+        .find(|c| c.id.to_string() == q.test_nas.trim());
+    if !q.test_mac.trim().is_empty() {
+        match normalize_mac(q.test_mac.trim()) {
+            None => test_error = format!("\"{}\" isn't a MAC address.", q.test_mac.trim()),
+            Some(test_mac) => {
+                let groups = abyssal_core::split_group_list(&q.test_groups);
+                let d = crate::panopticon_radius::decide_for_login(
+                    &state.pool,
+                    &test_mac,
+                    test_admission,
+                    test_nas,
+                    &groups,
+                )
+                .await;
+                let r = d.to_record(&DecisionContext {
+                    front_end: FrontEnd::Embedded,
+                    admission: test_admission,
+                    mac: &test_mac,
+                    identity: None,
+                    nas: test_nas,
+                    nas_address: None,
+                });
+                test = Some(crate::templates::RadiusTestResult {
+                    mac: test_mac,
+                    accepted: r.accepted(),
+                    summary: r.summary(),
+                    why: r.why(),
+                    trust: r.trust_state.unwrap_or_else(|| "not in inventory".into()),
+                    nas: test_nas.map_or_else(
+                        || "no NAS client (no role is sent)".into(),
+                        |c| format!("{} ({})", c.name, c.role_attribute.label()),
+                    ),
+                });
+            }
+        }
+    }
+
+    let client_options = |selected: &str| -> Vec<(String, String, bool)> {
+        clients
+            .iter()
+            .map(|c| {
+                (
+                    c.id.to_string(),
+                    c.name.clone(),
+                    c.id.to_string() == selected.trim(),
+                )
+            })
+            .collect()
+    };
+    let (csrf_token, new_cookie) = csrf::ensure_token(&jar);
+    let base = BaseCtx::build(
+        &ctx,
+        &theme::current(&jar),
+        &csrf_token,
+        &state.elevation,
+        &state.hosts,
+        &state.pool,
+        host_context::current(&jar),
+    )
+    .await?;
+    let tpl = crate::templates::PanopticonRadiusDecisionsTemplate {
+        base,
+        filter_mac: filter_mac.to_string(),
+        filter_nas: client_options(&q.nas),
+        filter_outcomes: radius_action_options(
+            &q.outcome,
+            &[
+                ("", "Any outcome"),
+                ("accept", "Accepted"),
+                ("reject", "Rejected"),
+            ],
+        ),
+        filtered: mac.is_some() || filter.nas_client_id.is_some() || filter.outcome.is_some(),
+        notice,
+        rows,
+        limit: DECISIONS_LIMIT,
+        test_mac: q.test_mac.trim().to_string(),
+        test_nas: client_options(&q.test_nas),
+        test_dot1x: test_admission == Admission::Authenticated,
+        test_groups: q.test_groups.trim().to_string(),
+        test,
+        test_error,
     };
     let jar = match new_cookie {
         Some(c) => jar.add(c),
@@ -3816,6 +4211,57 @@ pub struct RadiusSettingsForm {
     timeout_guest: u32,
     #[serde(default)]
     timeout_registration: u32,
+    /// Absent (an older form) keeps the current value.
+    #[serde(default)]
+    decision_retention_days: Option<u32>,
+    /// Live re-evaluation (0.2.9 Q3). The numbers, when absent, keep their
+    /// current values.
+    #[serde(default)]
+    reevaluate_enabled: bool,
+    #[serde(default)]
+    reevaluate_seconds: Option<u32>,
+    #[serde(default)]
+    reevaluate_cooldown_minutes: Option<u32>,
+    #[serde(default)]
+    reevaluate_max_per_sweep: Option<u32>,
+}
+
+/// The live re-evaluation numbers (0.2.9 Q3) that were submitted, checked:
+/// (setting, value).
+fn reevaluate_fields(form: &RadiusSettingsForm) -> Result<Vec<(&'static str, u32)>, String> {
+    let checks: [(&'static str, Option<u32>, u32, u32, &str); 3] = [
+        (
+            PANOPTICON_RADIUS_REEVALUATE_SECONDS,
+            form.reevaluate_seconds,
+            PANOPTICON_RADIUS_REEVALUATE_SECONDS_MIN,
+            PANOPTICON_RADIUS_REEVALUATE_SECONDS_MAX,
+            "The re-evaluation interval",
+        ),
+        (
+            PANOPTICON_RADIUS_REEVALUATE_COOLDOWN_MINUTES,
+            form.reevaluate_cooldown_minutes,
+            1,
+            1440,
+            "The re-evaluation cooldown",
+        ),
+        (
+            PANOPTICON_RADIUS_REEVALUATE_MAX_PER_SWEEP,
+            form.reevaluate_max_per_sweep,
+            1,
+            500,
+            "Re-authorizations per sweep",
+        ),
+    ];
+    let mut out = Vec::new();
+    for (key, value, min, max, what) in checks {
+        if let Some(v) = value {
+            if !(min..=max).contains(&v) {
+                return Err(format!("{what} must be between {min} and {max}."));
+            }
+            out.push((key, v));
+        }
+    }
+    Ok(out)
 }
 
 /// The Session-Timeout settings (0.2.8 P4) with their form values (minutes).
@@ -3902,6 +4348,7 @@ pub async fn radius_set_settings(
             "Re-authentication intervals must be 0 (none) or between {PANOPTICON_RADIUS_TIMEOUT_MIN_MINUTES} and {PANOPTICON_RADIUS_TIMEOUT_MAX_MINUTES} minutes."
         ))));
     }
+    let reevaluate = reevaluate_fields(&form).map_err(AppError::Validation)?;
     let mut roles = Vec::new();
     for (key, raw) in radius_role_fields(&form) {
         let role = abyssal_core::validate_role_name(raw)
@@ -3975,6 +4422,25 @@ pub async fn radius_set_settings(
     }
     for (key, minutes) in radius_timeout_fields(&form) {
         repo::settings::set(&state.pool, key, serde_json::json!(minutes), uid).await?;
+    }
+    repo::settings::set(
+        &state.pool,
+        PANOPTICON_RADIUS_REEVALUATE_ENABLED,
+        serde_json::json!(form.reevaluate_enabled),
+        uid,
+    )
+    .await?;
+    for (key, value) in reevaluate {
+        repo::settings::set(&state.pool, key, serde_json::json!(value), uid).await?;
+    }
+    if let Some(days) = form.decision_retention_days {
+        repo::settings::set(
+            &state.pool,
+            PANOPTICON_RADIUS_DECISION_RETENTION_DAYS,
+            serde_json::json!(days.min(3650)),
+            uid,
+        )
+        .await?;
     }
 
     abyssal_audit::record(
@@ -4773,6 +5239,50 @@ pub async fn portal_decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn re_evaluation_numbers_are_checked_and_absent_ones_kept() {
+        let form = |secs, cooldown, max| RadiusSettingsForm {
+            csrf_token: String::new(),
+            enabled: false,
+            auth_port: 0,
+            acct_port: 0,
+            trusted_vlan: 0,
+            guest_vlan: 0,
+            untrusted_action: "quarantine".into(),
+            unknown_action: "accept".into(),
+            role_trusted: String::new(),
+            role_quarantine: String::new(),
+            role_unknown: String::new(),
+            role_guest: String::new(),
+            role_registration: String::new(),
+            timeout_trusted: 0,
+            timeout_quarantine: 0,
+            timeout_unknown: 0,
+            timeout_guest: 0,
+            timeout_registration: 0,
+            decision_retention_days: None,
+            reevaluate_enabled: true,
+            reevaluate_seconds: secs,
+            reevaluate_cooldown_minutes: cooldown,
+            reevaluate_max_per_sweep: max,
+        };
+        assert_eq!(
+            reevaluate_fields(&form(Some(60), Some(15), Some(25)))
+                .unwrap()
+                .len(),
+            3
+        );
+        // Absent: nothing to set, the current values stay.
+        assert!(
+            reevaluate_fields(&form(None, None, None))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(reevaluate_fields(&form(Some(5), None, None)).is_err());
+        assert!(reevaluate_fields(&form(None, Some(0), None)).is_err());
+        assert!(reevaluate_fields(&form(None, None, Some(501))).is_err());
+    }
 
     #[test]
     fn re_authentication_interval_is_off_or_within_bounds() {
